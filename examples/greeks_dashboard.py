@@ -359,13 +359,18 @@ def compute_walls(agg):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fit_risk_model(log_returns):
-    """Ajusta distribuição t-Student e calcula VaR/CVaR."""
+    """Ajusta distribuição t-Student e calcula VaR/CVaR a 95% e 99%."""
     tdf, tloc, tscale = student_t.fit(log_returns)
+    var_95 = student_t.ppf(0.05, tdf, tloc, tscale)
+    cvar_95 = student_t.expect(
+        lambda x: x, args=(tdf,), loc=tloc, scale=tscale,
+        lb=-np.inf, ub=var_95) / 0.05
     var_99 = student_t.ppf(0.01, tdf, tloc, tscale)
     cvar_99 = student_t.expect(
         lambda x: x, args=(tdf,), loc=tloc, scale=tscale,
         lb=-np.inf, ub=var_99) / 0.01
     return {'tdf': tdf, 'tloc': tloc, 'tscale': tscale,
+            'var_95': var_95, 'cvar_95': cvar_95,
             'var_99': var_99, 'cvar_99': cvar_99}
 
 
@@ -827,6 +832,7 @@ def run_analysis(_):
                 IV 30d ATM: {iv_30d:.2%} | RV 30d: {rv_30d:.2%} |
                 Prêmio: {vol_premium:+.2f}% | Skew: {skew:+.2%}<br><br>
                 <b>Métricas de Risco Caudal</b><br>
+                VaR 95%: {risk['var_95']:.2%} | CVaR 95%: {risk['cvar_95']:.2%}<br>
                 VaR 99%: {risk['var_99']:.2%} | CVaR 99%: {risk['cvar_99']:.2%}<br><br>
                 <b>Posicionamento</b><br>
                 Gamma Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} |
@@ -915,31 +921,44 @@ def run_analysis(_):
             tab4 = wd.VBox([fig_pnl, wd.HBox([fig_dealer, fig_hedge])])
 
             # ─── ABA 5: MONTE CARLO ──────────────────────────────────────
-            pnl_sorted = np.sort(mc_pnl)
-            colors_mc = ['limegreen' if x > 0 else 'crimson' for x in pnl_sorted]
-            fig_tornado = go.FigureWidget()
-            fig_tornado.add_trace(go.Bar(
-                y=np.arange(len(pnl_sorted)),
-                x=pnl_sorted / 1e9,
-                orientation='h', marker_color=colors_mc))
-            fig_tornado.update_layout(
-                title="Distribuição de P&L do Livro (10k Simulações, 1 Dia)",
-                xaxis_title="P&L ($ Bi)", height=400,
-                template="plotly_white",
-                yaxis={'showticklabels': False, 'title': 'Cenários'})
+            sim_var_95 = np.percentile(mc_pnl, 5)
+            sim_cvar_95 = mc_pnl[mc_pnl <= sim_var_95].mean() if np.any(mc_pnl <= sim_var_95) else sim_var_95
+            sim_var_99 = np.percentile(mc_pnl, 1)
+            sim_cvar_99 = mc_pnl[mc_pnl <= sim_var_99].mean() if np.any(mc_pnl <= sim_var_99) else sim_var_99
 
-            sim_var = np.percentile(mc_pnl, 1)
-            sim_cvar = mc_pnl[mc_pnl <= sim_var].mean() if np.any(mc_pnl <= sim_var) else sim_var
+            fig_mc_hist = go.FigureWidget()
+            fig_mc_hist.add_trace(go.Histogram(
+                x=mc_pnl / 1e6, nbinsx=80,
+                marker_color='#636EFA', opacity=0.7, name='P&L'))
+            fig_mc_hist.add_vline(x=sim_var_95 / 1e6, line_dash='dash',
+                                  line_color='orange',
+                                  annotation_text=f'VaR 95% ${sim_var_95/1e6:,.1f}M')
+            fig_mc_hist.add_vline(x=sim_var_99 / 1e6, line_dash='dash',
+                                  line_color='darkred',
+                                  annotation_text=f'VaR 99% ${sim_var_99/1e6:,.1f}M')
+            fig_mc_hist.add_vline(x=0, line_width=0.5, line_color='black')
+            fig_mc_hist.update_layout(
+                title='Distribuição de P&L do Livro (10k Simulações t-Student, 1 Dia)',
+                xaxis_title='P&L ($ Mi)', yaxis_title='Frequência',
+                height=420, template='plotly_white')
+
+            mc_win_pct = (mc_pnl > 0).mean() * 100
             mc_table = pd.DataFrame({
-                'Métrica': ['P&L Médio', 'VaR 99% (Sim.)', 'CVaR 99% (Sim.)'],
-                'Valor': [f"${np.mean(mc_pnl)/1e9:,.4f} Bi",
-                          f"${sim_var/1e9:,.4f} Bi",
-                          f"${sim_cvar/1e9:,.4f} Bi"]
+                'Métrica': ['P&L Médio', 'P&L Mediano', '% Cenários Positivos',
+                            'VaR 95% (Sim.)', 'CVaR 95% (Sim.)',
+                            'VaR 99% (Sim.)', 'CVaR 99% (Sim.)'],
+                'Valor': [f'${np.mean(mc_pnl)/1e6:,.2f} Mi',
+                          f'${np.median(mc_pnl)/1e6:,.2f} Mi',
+                          f'{mc_win_pct:.1f}%',
+                          f'${sim_var_95/1e6:,.2f} Mi',
+                          f'${sim_cvar_95/1e6:,.2f} Mi',
+                          f'${sim_var_99/1e6:,.2f} Mi',
+                          f'${sim_cvar_99/1e6:,.2f} Mi']
             }).to_html(classes='table table-sm', index=False, border=0)
 
             tab5 = wd.VBox([
-                wd.HTML("<h3>Simulação Monte Carlo (t-Student)</h3>"),
-                wd.HBox([fig_tornado, wd.HTML(
+                wd.HTML('<h3>Simulação Monte Carlo (t-Student)</h3>'),
+                wd.HBox([fig_mc_hist, wd.HTML(
                     f"<div style='padding:20px;'>{mc_table}</div>")])
             ])
 
@@ -1050,30 +1069,130 @@ def run_analysis(_):
             hedge_contracts = -np.nansum(greeks_now['delta'] * oi_100) / FUTURES_MULTIPLIER
             hedge_action = "COMPRAR" if hedge_contracts > 0 else "VENDER"
 
+            # ── Lógica de decisão do MM ──
+            # Bias direcional
+            if abs(delta_notional) < 50e6:
+                delta_signal = '🟢 NEUTRO'
+                delta_rec = 'Sem ajuste necessário.'
+            elif delta_notional > 0:
+                delta_signal = '🔴 COMPRADO'
+                delta_rec = (f'VENDER {abs(hedge_contracts):,.0f} {FUTURES_TICKER} '
+                             f'ou comprar puts para reduzir exposição.')
+            else:
+                delta_signal = '🔵 VENDIDO'
+                delta_rec = (f'COMPRAR {abs(hedge_contracts):,.0f} {FUTURES_TICKER} '
+                             f'ou comprar calls para reduzir exposição.')
+
+            # Regime de gamma
+            if total_gex_val > 0:
+                gex_signal = '🟢 GAMMA POSITIVO'
+                gex_rec = ('Mercado tende a se estabilizar. MM vende em alta, compra em '
+                           'baixa → menor volatilidade realizada. Pode VENDER vol (straddles/strangles).')
+            else:
+                gex_signal = '🔴 GAMMA NEGATIVO'
+                gex_rec = ('Mercado tende a se ACELERAR. MM compra em alta, vende em '
+                           'baixa → maior volatilidade realizada. REDUZIR tamanho e '
+                           'colocar stops mais apertados.')
+
+            # Vol trade
+            if vol_premium > 2:
+                vol_signal = '🟢 IV > RV (prêmio alto)'
+                vol_rec = 'Oportunidade de VENDER vol — spreads de crédito, iron condors.'
+            elif vol_premium < -2:
+                vol_signal = '🔴 RV > IV (vol barata)'
+                vol_rec = 'Oportunidade de COMPRAR vol — straddles, calendars.'
+            else:
+                vol_signal = '🟡 VOL NEUTRA'
+                vol_rec = 'Sem edge claro em vol. Preferir posições direcionais.'
+
+            # Skew trade
+            if skew > 0.03:
+                skew_signal = '🔴 SKEW ELEVADO'
+                skew_rec = ('Puts caras vs calls. Considerar risk reversals '
+                            '(vender put OTM, comprar call OTM) ou put spreads.')
+            elif skew < 0.01:
+                skew_signal = '🟢 SKEW COMPRIMIDO'
+                skew_rec = 'Proteção barata. Comprar puts OTM como hedge de cauda.'
+            else:
+                skew_signal = '🟡 SKEW NORMAL'
+                skew_rec = 'Sem distorção significativa no skew.'
+
+            # Vanna/Zomma trade
+            if vanna_impact > 0:
+                vanna_rec = ('Vol subindo → dealers precisam VENDER o ativo (pressão baixista). '
+                             'Cuidado com posições compradas.')
+            else:
+                vanna_rec = ('Vol subindo → dealers precisam COMPRAR o ativo (pressão altista). '
+                             'Suporte adicional em quedas.')
+
+            # Theta vs Gamma
+            daily_theta = np.nansum(greeks_now['theta'] * oi_100) / TRADING_DAYS
+            gamma_pnl_1pct = total_gex_val
+            theta_gamma_ratio = abs(daily_theta / gamma_pnl_1pct) if gamma_pnl_1pct != 0 else 0
+            if theta_gamma_ratio > 1:
+                tg_signal = '🟢 THETA DOMINANTE'
+                tg_rec = ('Decaimento diário supera risco de gamma. '
+                          'Posições vendidas em vol são favorecidas.')
+            else:
+                tg_signal = '🔴 GAMMA DOMINANTE'
+                tg_rec = ('Risco de gamma supera o decaimento. '
+                          'Movimentos grandes serão caros. Reduzir exposição vendida.')
+
+            # Urgência geral
+            urgency_score = 0
+            if abs(delta_notional) > 200e6: urgency_score += 2
+            if total_gex_val < 0: urgency_score += 2
+            if abs(vol_premium) > 3: urgency_score += 1
+            if skew > 0.04: urgency_score += 1
+            if urgency_score >= 4:
+                urgency = '🔴 ALTA — Ajustes imediatos recomendados'
+            elif urgency_score >= 2:
+                urgency = '🟡 MÉDIA — Monitorar e preparar ordens'
+            else:
+                urgency = '🟢 BAIXA — Posição confortável'
+
             report_html = f"""
             <div style='font-family: monospace; font-size: 13px; padding: 15px;
                         background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;'>
-            <h3>RELATÓRIO COMPLETO DE RISCO E POSICIONAMENTO</h3>
+            <h2 style='color:#2c3e50;'>COCKPIT DO MARKET MAKER</h2>
             <p>Análise: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Spot: ${spot:,.2f} |
-               {len(df)} opções analisadas</p>
+               {len(df)} opções | Urgência: {urgency}</p>
             <hr>
 
-            <h4>1. HEDGE DIRECIONAL (DELTA)</h4>
-            <p>Delta Nocional Total: <b>{fmt_value(delta_notional)}</b></p>
-            <p>→ Para ficar delta-neutro: <b>{hedge_action} {abs(hedge_contracts):,.0f}</b>
-               contratos {FUTURES_TICKER}</p>
+            <h3 style='color:#e74c3c;'>DECISÕES RECOMENDADAS</h3>
 
-            <h4>2. REGIME DE MERCADO (GAMMA)</h4>
-            <p>GEX Total: <b>{fmt_value(total_gex_val)}</b> per 1% move</p>
-            <p>Gamma Flip: <b>~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'}</b></p>
-            <p>Regime atual: <b>{gamma_regime}</b></p>
+            <table style='border-collapse:collapse; width:100%; font-size:13px;'>
+            <tr style='background:#ecf0f1;'>
+                <th style='text-align:left; padding:8px; width:20%;'>Dimensão</th>
+                <th style='text-align:center; padding:8px; width:20%;'>Sinal</th>
+                <th style='text-align:left; padding:8px; width:60%;'>Ação Recomendada</th></tr>
+            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Delta (Direção)</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{delta_signal}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{delta_rec}</td></tr>
+            <tr style='background:#f9f9f9;'>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Gamma (Regime)</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{gex_signal}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{gex_rec}</td></tr>
+            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Vol Premium</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{vol_signal}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{vol_rec}</td></tr>
+            <tr style='background:#f9f9f9;'>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Skew</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{skew_signal}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{skew_rec}</td></tr>
+            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Vanna (Vol→Spot)</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>
+                    {'🔴' if vanna_impact > 0 else '🟢'} {vanna_action}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{vanna_rec}</td></tr>
+            <tr style='background:#f9f9f9;'>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Theta vs Gamma</b></td>
+                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{tg_signal}</td>
+                <td style='padding:8px; border-bottom:1px solid #ddd;'>{tg_rec}</td></tr>
+            </table>
 
-            <h4>3. CENÁRIO: VOL +1%</h4>
-            <p>Vanna → Dealers forçados a <b>{vanna_action}</b>
-               ~{fmt_value(abs(vanna_impact))} do ativo</p>
-            <p>Zomma → Regime de preços ficaria <b>{zomma_action}</b></p>
+            <hr>
+            <h3 style='color:#2c3e50;'>POSIÇÃO ATUAL</h3>
 
-            <h4>4. EXPOSIÇÕES DE ORDEM SUPERIOR</h4>
             <table style='border-collapse: collapse; width: 100%;'>
             <tr><th style='text-align:left; padding:5px; border-bottom:1px solid #ccc;'>
                 Exposição</th>
@@ -1081,24 +1200,58 @@ def run_analysis(_):
                 Valor</th>
                 <th style='text-align:left; padding:5px; border-bottom:1px solid #ccc;'>
                 Interpretação</th></tr>
+            <tr><td style='padding:5px'>Delta Nocional</td>
+                <td style='text-align:right; padding:5px'>{fmt_value(delta_notional)}</td>
+                <td style='padding:5px'>Hedge: {hedge_action} {abs(hedge_contracts):,.0f} {FUTURES_TICKER}</td></tr>
+            <tr><td style='padding:5px'>GEX Total</td>
+                <td style='text-align:right; padding:5px'>{fmt_value(total_gex_val)}</td>
+                <td style='padding:5px'>Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} | {gamma_regime}</td></tr>
             <tr><td style='padding:5px'>Vega</td>
                 <td style='text-align:right; padding:5px'>{fmt_value(total_vega)}</td>
                 <td style='padding:5px'>P&L por 1% de aumento na vol</td></tr>
+            <tr><td style='padding:5px'>Vanna</td>
+                <td style='text-align:right; padding:5px'>{fmt_value(vanna_impact)}</td>
+                <td style='padding:5px'>Fluxo de rebalanceamento se vol mudar</td></tr>
             <tr><td style='padding:5px'>Zomma</td>
                 <td style='text-align:right; padding:5px'>{fmt_value(total_zomma)}</td>
-                <td style='padding:5px'>Mudança no Gamma por 1% vol</td></tr>
+                <td style='padding:5px'>Regime ficaria {zomma_action} com vol</td></tr>
             <tr><td style='padding:5px'>Speed</td>
                 <td style='text-align:right; padding:5px'>{fmt_value(total_speed)}</td>
-                <td style='padding:5px'>Mudança no Gamma por $1 no spot</td></tr>
-            <tr><td style='padding:5px'>Charm</td>
+                <td style='padding:5px'>Aceleração do gamma por $1 no spot</td></tr>
+            <tr><td style='padding:5px'>Charm (diário)</td>
                 <td style='text-align:right; padding:5px'>{fmt_value(total_charm)}</td>
-                <td style='padding:5px'>Decaimento diário do delta</td></tr>
+                <td style='padding:5px'>Decaimento do delta overnight</td></tr>
             </table>
 
-            <h4>5. MÉTRICAS DE RISCO CAUDAL</h4>
-            <p>VaR 99% (diário): <b>{risk['var_99']:.2%}</b> |
-               CVaR 99%: <b>{risk['cvar_99']:.2%}</b></p>
-            <p>Monte Carlo VaR 99%: <b>${np.percentile(mc_pnl, 1)/1e9:,.4f} Bi</b></p>
+            <hr>
+            <h3 style='color:#2c3e50;'>RISCO CAUDAL</h3>
+            <table style='border-collapse:collapse; width:60%;'>
+            <tr style='background:#ecf0f1;'>
+                <th style='padding:6px;'>Métrica</th>
+                <th style='padding:6px;'>Paramétrico</th>
+                <th style='padding:6px;'>Monte Carlo</th></tr>
+            <tr><td style='padding:6px;'>VaR 95%</td>
+                <td style='padding:6px;'>{risk['var_95']:.2%}</td>
+                <td style='padding:6px;'>${sim_var_95/1e6:,.2f} Mi</td></tr>
+            <tr style='background:#f9f9f9;'>
+                <td style='padding:6px;'>CVaR 95%</td>
+                <td style='padding:6px;'>{risk['cvar_95']:.2%}</td>
+                <td style='padding:6px;'>${sim_cvar_95/1e6:,.2f} Mi</td></tr>
+            <tr><td style='padding:6px;'>VaR 99%</td>
+                <td style='padding:6px;'>{risk['var_99']:.2%}</td>
+                <td style='padding:6px;'>${sim_var_99/1e6:,.2f} Mi</td></tr>
+            <tr style='background:#f9f9f9;'>
+                <td style='padding:6px;'>CVaR 99%</td>
+                <td style='padding:6px;'>{risk['cvar_99']:.2%}</td>
+                <td style='padding:6px;'>${sim_cvar_99/1e6:,.2f} Mi</td></tr>
+            </table>
+
+            <hr>
+            <h3 style='color:#2c3e50;'>NÍVEIS-CHAVE</h3>
+            <p>🔵 <b>Call Wall:</b> {f'{call_wall:,.0f}' if call_wall else 'N/A'} — Resistência forte. MM vende acima deste nível.</p>
+            <p>🔴 <b>Put Wall:</b> {f'{put_wall:,.0f}' if put_wall else 'N/A'} — Suporte forte. MM compra abaixo deste nível.</p>
+            <p>🟡 <b>Gamma Flip:</b> {f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} — Acima = estabilidade, Abaixo = aceleração.</p>
+            <p>📊 <b>Mov. Implícito 1D:</b> ±{daily_move:.2f}% (±${spot * daily_move / 100:,.0f})</p>
             </div>"""
 
             tab8 = wd.VBox([wd.HTML(report_html)])
