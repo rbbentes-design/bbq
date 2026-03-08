@@ -33,7 +33,22 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 import bql
+import random as _random
 import warnings
+
+try:
+    import ipydatagrid as ipd
+    HAS_DATAGRID = True
+except ImportError:
+    HAS_DATAGRID = False
+
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline as SkPipeline
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
 
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -56,6 +71,19 @@ GREEK_CONFIGS = [
     {'name': 'Theta',  'key': 'theta',  'unit': '$ Mn / dia',      'scale': lambda L: 1.0/TRADING_DAYS, 'div': 1e6, 'op': np.add},
     {'name': 'Zomma',  'key': 'zomma',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
     {'name': 'Speed',  'key': 'speed',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
+]
+
+# ETFs passivos e alavancados
+INDEX_PROXY = 'B500 Index'
+PASSIVE_ETFS = ['VOO US Equity', 'SPY US Equity', 'IVV US Equity']
+LEVERAGED_ETFS = [
+    {'ticker': 'SPXL US Equity', 'name': 'SPXL', 'leverage': 3},
+    {'ticker': 'UPRO US Equity', 'name': 'UPRO', 'leverage': 3},
+    {'ticker': 'SSO US Equity',  'name': 'SSO',  'leverage': 2},
+    {'ticker': 'SH US Equity',   'name': 'SH',   'leverage': -1},
+    {'ticker': 'SDS US Equity',  'name': 'SDS',  'leverage': -2},
+    {'ticker': 'SPXS US Equity', 'name': 'SPXS', 'leverage': -3},
+    {'ticker': 'SPXU US Equity', 'name': 'SPXU', 'leverage': -3},
 ]
 
 
@@ -445,51 +473,229 @@ def compute_pnl_curves(greeks_now, df, spot, levels, skew):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SEÇÃO 5 — REBALANCEAMENTO DE ETFs
+# SEÇÃO 5 — REBALANCEAMENTO DE ETFs (passivos + alavancados)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_etf_rebalancing(ticker):
-    """Calcula fluxo teórico de rebalanceamento dos ETFs que seguem o índice."""
-    etfs = ['VOO US Equity', 'SPY US Equity', 'IVV US Equity']
+def _float_weights(idx, as_of=None):
+    """Retorna pesos float-adjusted normalizados."""
+    uni = bq.univ.members([idx], dates=[as_of]) if as_of else bq.univ.members([idx])
+    cap = bq.data.cur_mkt_cap(dates=[as_of]) if as_of else bq.data.cur_mkt_cap()
+    df_cap = bq.execute(bql.Request(uni, [cap], with_params=BQL_PARAMS)
+                        )[0].df().select_dtypes('number').rename(columns=lambda c: 'Cap')
+    df_ff = bq.execute(bql.Request(bq.univ.members([idx]),
+                                   [bq.data.eqy_free_float_pct()],
+                                   with_params=BQL_PARAMS)
+                       )[0].df().select_dtypes('number').rename(columns=lambda c: 'FF')
+    df_ = df_cap.join(df_ff, how='inner')
+    df_['FMC'] = df_['Cap'] * df_['FF'] / 100
+    df_['Weight'] = df_['FMC'] / df_['FMC'].sum()
+    return df_['Weight']
+
+
+def _adv5_usd(tickers_list):
+    """Média dos últimos 5 dias de $-volume."""
+    usd_val = (bq.data.px_volume(dates=bq.func.range('-5D', '-1D'))
+               * bq.data.px_last(dates=bq.func.range('-5D', '-1D')))
+    adv_item = bq.func.avg(usd_val)
+    return bq.execute(bql.Request(bq.univ.List(tickers_list),
+                                  {'ADV5': adv_item},
+                                  with_params=BQL_PARAMS))[0].df()['ADV5']
+
+
+def compute_full_etf_flows(index_proxy=INDEX_PROXY):
+    """
+    Calcula fluxos de rebalanceamento por ETF passivo + combinado.
+    Retorna (flows_dict, summary_df, start_date).
+    flows_dict: {'Combined': df, 'VOO US Equity': df, ...}
+    """
     start_date = (pd.Timestamp('today') - pd.tseries.offsets.BMonthBegin(1)).strftime('%Y-%m-%d')
 
-    def _float_weights(idx, as_of=None):
-        uni = bq.univ.members([idx], dates=[as_of]) if as_of else bq.univ.members([idx])
-        cap = bq.data.cur_mkt_cap(dates=[as_of]) if as_of else bq.data.cur_mkt_cap()
-        df_cap = bq.execute(bql.Request(uni, [cap], with_params=BQL_PARAMS)
-                            )[0].df().select_dtypes('number').rename(columns=lambda c: 'Cap')
-        df_ff = bq.execute(bql.Request(bq.univ.members([idx]),
-                                       [bq.data.eqy_free_float_pct()],
-                                       with_params=BQL_PARAMS)
-                           )[0].df().select_dtypes('number').rename(columns=lambda c: 'FF')
-        df_ = df_cap.join(df_ff, how='inner')
-        df_['FMC'] = df_['Cap'] * df_['FF'] / 100
-        df_['Weight'] = df_['FMC'] / df_['FMC'].sum()
-        return df_['Weight']
+    w0 = _float_weights(index_proxy, start_date)
+    w1 = _float_weights(index_proxy)
+    delta = pd.DataFrame({'Start': w0, 'Now': w1}).dropna()
+    delta['Delta'] = delta['Now'] - delta['Start']
 
-    def _adv5_usd(tickers_list):
-        usd_val = (bq.data.px_volume(dates=bq.func.range('-5D', '-1D'))
-                   * bq.data.px_last(dates=bq.func.range('-5D', '-1D')))
-        adv_item = bq.func.avg(usd_val)
-        return bq.execute(bql.Request(bq.univ.List(tickers_list),
-                                      {'ADV5': adv_item},
-                                      with_params=BQL_PARAMS))[0].df()['ADV5']
+    adv5 = _adv5_usd(delta.index.tolist()).fillna(1)
 
-    w0 = _float_weights(ticker, start_date)
-    w1 = _float_weights(ticker)
-    dw = pd.DataFrame({'Start': w0, 'Now': w1}).dropna()
-    dw['Delta'] = dw['Now'] - dw['Start']
-
-    adv5 = _adv5_usd(dw.index.tolist()).fillna(1)
     aum = bq.execute(bql.Request(
-        bq.univ.List(etfs), {'AUM': bq.data.fund_total_assets()},
+        bq.univ.List(PASSIVE_ETFS),
+        {'AUM': bq.data.fund_total_assets()},
         with_params=BQL_PARAMS))[0].df().select_dtypes('number').iloc[:, 0]
 
-    flow = dw.copy()
-    flow['Flow_$'] = flow['Delta'] * aum.sum()
-    flow['PctADV'] = (flow['Flow_$'] / adv5.reindex(flow.index).fillna(1)) * 100
-    flow = flow[flow['Flow_$'] != 0].sort_values('Flow_$', ascending=False)
-    return flow, start_date
+    flows = {}
+    for etf, aum_val in aum.items():
+        t = delta.copy()
+        t['Flow_$'] = t['Delta'] * aum_val
+        t['PctADV'] = (t['Flow_$'] / adv5.reindex(t.index).fillna(1)) * 100
+        flows[etf] = t[t['Flow_$'] != 0].sort_values('Flow_$', ascending=False)
+
+    combo = delta.copy()
+    combo['Flow_$'] = sum(flows[etf].reindex(delta.index, fill_value=0)['Flow_$']
+                          for etf in flows)
+    combo['PctADV'] = (combo['Flow_$'] / adv5.reindex(combo.index).fillna(1)) * 100
+    flows['Combined'] = combo[combo['Flow_$'] != 0].sort_values('Flow_$', ascending=False)
+
+    summary_rows = []
+    for etf in PASSIVE_ETFS:
+        df_f = flows.get(etf, pd.DataFrame(columns=['Flow_$']))
+        buy = df_f.loc[df_f['Flow_$'] > 0, 'Flow_$'].sum() if not df_f.empty else 0
+        sell = -df_f.loc[df_f['Flow_$'] < 0, 'Flow_$'].sum() if not df_f.empty else 0
+        summary_rows.append({'ETF': etf.split()[0], 'Buy_$': buy, 'Sell_$': sell, 'Net_$': buy - sell})
+    summary = pd.DataFrame(summary_rows).set_index('ETF')
+
+    return flows, summary, start_date
+
+
+def compute_leveraged_flows(daily_return):
+    """
+    Calcula fluxo de rebalanceamento end-of-day dos ETFs alavancados.
+    Fórmula: Rebalance_$ = AUM × L × (L-1) × r / (1 + L×r)
+    """
+    tickers = [e['ticker'] for e in LEVERAGED_ETFS]
+    aum_df = bq.execute(bql.Request(
+        bq.univ.List(tickers),
+        {'AUM': bq.data.fund_total_assets()},
+        with_params=BQL_PARAMS))[0].df()
+
+    rows = []
+    for etf in LEVERAGED_ETFS:
+        tk = etf['ticker']
+        L = etf['leverage']
+        r = daily_return
+        try:
+            aum = pd.to_numeric(aum_df.loc[tk].iloc[0], errors='coerce')
+        except (KeyError, TypeError, IndexError):
+            aum = np.nan
+
+        if pd.notna(aum) and (1 + L * r) != 0:
+            rebal = aum * L * (L - 1) * r / (1 + L * r)
+        else:
+            rebal = np.nan
+
+        rows.append({
+            'ETF': etf['name'],
+            'Leverage': f"{L:+d}x",
+            'AUM_$': aum,
+            'Rebalance_$': rebal,
+            'Direção': ('COMPRAR' if pd.notna(rebal) and rebal > 0
+                        else 'VENDER' if pd.notna(rebal) and rebal < 0
+                        else 'N/A')
+        })
+
+    result = pd.DataFrame(rows).set_index('ETF')
+    total_flow = result['Rebalance_$'].sum()
+    return result, total_flow
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5B — PREVISÃO DE REBALANCEAMENTO DO S&P 500 (inclusão/exclusão)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_spx_prediction():
+    """
+    Constrói modelo de previsão de inclusão/exclusão do S&P 500.
+    Usa 4 variáveis: FMC, FALR (annual liquidity ratio), FREE_FLOAT_PCT, NET_INC_TTM.
+    Retorna (top_in, top_out, model_df).
+    Requer sklearn.
+    """
+    if not HAS_SKLEARN:
+        raise ImportError("scikit-learn não disponível. Instale com: pip install scikit-learn")
+
+    def _fetch(u, item, name):
+        df_ = bq.execute(bql.Request(u, item))[0].df()
+        df_ = df_.select_dtypes('number').iloc[:, 0].to_frame(name)
+        return df_.loc[~df_.index.duplicated(keep='first')]
+
+    # 1 — Universos
+    spx_ids = bq.execute(
+        bql.Request(bq.univ.members(['SPX Index']), bq.data.id())
+    )[0].df().index.tolist()
+
+    base_ids = bq.execute(
+        bql.Request(
+            bq.univ.filter(
+                bq.univ.equitiesuniv(['active', 'primary']),
+                bq.func.and_(
+                    bq.data.cntry_of_domicile() == 'US',
+                    bq.data.cur_mkt_cap() > 2e10)),
+            bq.data.id())
+    )[0].df().index.tolist()
+
+    neg_ids = [t for t in base_ids if t not in spx_ids]
+    _random.seed(42)
+    neg_sample = _random.sample(neg_ids, k=min(len(neg_ids), len(spx_ids) * 2))
+    universe = spx_ids + neg_sample
+
+    # 2 — ADVT anual
+    advt_series = (
+        bq.data.px_volume(dates=bq.func.range('-365D', '0D')) *
+        bq.data.px_last(dates=bq.func.range('-365D', '0D')))
+    advt_item = bq.func.sum(advt_series)
+
+    # 3 — Coleta em batches
+    records = []
+    batch_size = 50
+    for i in range(0, len(universe), batch_size):
+        u = bq.univ.List(universe[i:i + batch_size])
+        dfb = pd.concat([
+            _fetch(u, bq.data.cur_mkt_cap(), 'CUR_MKT_CAP'),
+            _fetch(u, bq.data.eqy_free_float_pct(), 'FREE_FLOAT_PCT'),
+            _fetch(u, advt_item, 'ADVT'),
+            _fetch(u, bq.data.net_income(fa_period_offset='0'), 'NI_Q0'),
+            _fetch(u, bq.data.net_income(fa_period_offset='1'), 'NI_Q1'),
+            _fetch(u, bq.data.net_income(fa_period_offset='2'), 'NI_Q2'),
+            _fetch(u, bq.data.net_income(fa_period_offset='3'), 'NI_Q3'),
+        ], axis=1, join='inner')
+        records.append(dfb)
+
+    df_ = pd.concat(records)
+
+    # 4 — Feature engineering
+    df_['FMC'] = df_['CUR_MKT_CAP'] * df_['FREE_FLOAT_PCT'] / 100
+    df_['FALR'] = df_['ADVT'] / df_['FMC']
+    df_['NET_INC_TTM'] = df_[['NI_Q0', 'NI_Q1', 'NI_Q2', 'NI_Q3']].sum(axis=1)
+
+    roots_all = df_.index.to_series().str.split().str[0]
+    roots_spx = pd.Series(spx_ids).str.split().str[0]
+    df_['IN_SPX'] = roots_all.isin(set(roots_spx)).astype(int)
+    df_ = df_.dropna()
+
+    # 5 — Modelo LogisticRegression
+    features = ['FMC', 'FALR', 'FREE_FLOAT_PCT', 'NET_INC_TTM']
+    X, y = df_[features], df_['IN_SPX']
+    pipe = SkPipeline([
+        ('scaler', StandardScaler()),
+        ('logit', LogisticRegression(solver='liblinear'))
+    ])
+    pipe.fit(X, y)
+    df_['Prob_In'] = pipe.predict_proba(X)[:, 1]
+
+    # 6 — ExitScore (penalidade por cap, FMC, lucro)
+    cap_thr, fmc_thr = 2.05e10, 1.025e10
+    cap_pen = ((cap_thr - df_['CUR_MKT_CAP']).clip(lower=0)) / cap_thr
+    fmc_pen = ((fmc_thr - df_['FMC']).clip(lower=0)) / fmc_thr
+    earn_pen = ((df_['NET_INC_TTM'] <= 0) | (df_['NI_Q0'] <= 0)).astype(float)
+    df_['ExitScore'] = (cap_pen + fmc_pen + earn_pen) / 3
+
+    # 7 — Rankings
+    allowed = df_.index.str.endswith((' US Equity', ' UW Equity', ' UQ Equity'))
+
+    def _dedup_root(d, col):
+        t = d.copy()
+        t['root'] = t.index.str.split().str[0]
+        return t.loc[t.groupby('root')[col].idxmax()]
+
+    top_in = (df_[(df_['IN_SPX'] == 0) & allowed]
+              .pipe(_dedup_root, 'Prob_In')
+              .sort_values('Prob_In', ascending=False)
+              .head(30))
+
+    top_out = (df_[(df_['IN_SPX'] == 1) & allowed]
+               .pipe(_dedup_root, 'ExitScore')
+               .sort_values('ExitScore', ascending=False)
+               .head(30))
+
+    return top_in, top_out, df_
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -681,6 +887,8 @@ mny_w = wd.FloatRangeSlider(value=[-0.05, 0.05], min=-0.30, max=0.30,
                             layout={'width': '400px'})
 run_btn = wd.Button(description='Gerar Análise Completa',
                     button_style='success', icon='cogs')
+spx_pred_w = wd.Checkbox(value=False, description='Incluir Previsão SPX',
+                         indent=False, layout={'width': '250px'})
 out_main = wd.Output()
 
 
@@ -697,7 +905,7 @@ def run_analysis(_):
 
         try:
             # ── 1. Dados de Mercado ──────────────────────────────────────
-            loading.value = "<h4>1/9: Buscando dados de mercado...</h4>"
+            loading.value = "<h4>1/11: Buscando dados de mercado...</h4>"
             mkt = fetch_market_data(ticker)
             spot = mkt['spot']
             iv_30d = mkt['iv_30d']
@@ -709,17 +917,17 @@ def run_analysis(_):
                 raise ValueError(f"Spot inválido para {ticker}")
 
             # ── 2. Histórico + Modelo de Risco ───────────────────────────
-            loading.value = "<h4>2/9: Modelagem de risco (t-Student)...</h4>"
+            loading.value = "<h4>2/11: Modelagem de risco (t-Student)...</h4>"
             _, log_returns = fetch_historical(ticker)
             risk = fit_risk_model(log_returns)
 
             # ── 3. Cadeia de Opções ──────────────────────────────────────
-            loading.value = "<h4>3/9: Buscando cadeia de opções...</h4>"
+            loading.value = "<h4>3/11: Buscando cadeia de opções...</h4>"
             df, from_strike, to_strike = fetch_options_chain(
                 ticker, spot, min_dte, max_dte, mny_low, mny_high)
 
             # ── 4. Gregas + Exposições ───────────────────────────────────
-            loading.value = f"<h4>4/9: Calculando gregas para {len(df)} opções...</h4>"
+            loading.value = f"<h4>4/11: Calculando gregas para {len(df)} opções...</h4>"
             greeks_now = calculate_all_greeks(
                 spot, df.Strike.values, df.IV.values, df.Tte.values, df.Type.values)
             agg = compute_strike_exposures(df, greeks_now, spot)
@@ -729,7 +937,7 @@ def run_analysis(_):
                 print(f"⚠️ Call Wall = Put Wall = {call_wall:,.0f}")
 
             # ── 5. Curvas Modelo ─────────────────────────────────────────
-            loading.value = "<h4>5/9: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
+            loading.value = "<h4>5/11: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
             levels = np.linspace(from_strike, to_strike, 100)
             model_curves = compute_model_curves(df, levels)
 
@@ -743,24 +951,45 @@ def run_analysis(_):
             gamma_curve = model_curves['Gamma']
 
             # ── 6. Matrizes de Sensibilidade ─────────────────────────────
-            loading.value = "<h4>6/9: Matrizes de sensibilidade (7×5×7)...</h4>"
+            loading.value = "<h4>6/11: Matrizes de sensibilidade (7×5×7)...</h4>"
             sens_matrices = compute_sensitivity_matrices(df, spot)
 
             # ── 7. Monte Carlo ───────────────────────────────────────────
-            loading.value = "<h4>7/9: Simulação Monte Carlo (10k cenários)...</h4>"
+            loading.value = "<h4>7/11: Simulação Monte Carlo (10k cenários)...</h4>"
             mc_pnl, mc_prices = run_monte_carlo(spot, df, risk)
 
             # ── 8. Curvas de P&L ─────────────────────────────────────────
-            loading.value = "<h4>8/9: Curvas de P&L e hedge demand...</h4>"
+            loading.value = "<h4>8/11: Curvas de P&L e hedge demand...</h4>"
             pnl_curves = compute_pnl_curves(greeks_now, df, spot, levels, skew)
 
-            # ── 9. Rebalanceamento ETFs (opcional) ───────────────────────
-            loading.value = "<h4>9/9: Rebalanceamento de ETFs...</h4>"
+            # ── 9. Rebalanceamento ETFs ──────────────────────────────────
+            loading.value = "<h4>9/11: Fluxo de rebalanceamento ETFs passivos...</h4>"
             try:
-                etf_flow, etf_start = compute_etf_rebalancing(ticker)
+                etf_flows, etf_summary, etf_start = compute_full_etf_flows()
                 etf_ok = True
             except Exception:
-                etf_flow, etf_start, etf_ok = None, None, False
+                etf_flows, etf_summary, etf_start, etf_ok = {}, None, None, False
+
+            # ── 10. ETFs Alavancados ─────────────────────────────────────
+            loading.value = "<h4>10/11: Fluxo de ETFs alavancados...</h4>"
+            try:
+                daily_ret = log_returns.iloc[-1] if len(log_returns) > 0 else 0
+                lev_flows, lev_total = compute_leveraged_flows(daily_ret)
+                lev_ok = True
+            except Exception:
+                lev_flows, lev_total, lev_ok = None, 0, False
+                daily_ret = 0
+
+            # ── 11. Previsão SPX (opcional — pesado) ─────────────────────
+            loading.value = "<h4>11/11: Previsão de rebalanceamento SPX...</h4>"
+            spx_pred_ok = False
+            top_in_spx, top_out_spx = None, None
+            if spx_pred_w.value and HAS_SKLEARN:
+                try:
+                    top_in_spx, top_out_spx, _ = build_spx_prediction()
+                    spx_pred_ok = True
+                except Exception as pred_err:
+                    print(f"⚠️ Previsão SPX falhou: {pred_err}")
 
             clear_output(wait=True)
 
@@ -962,22 +1191,95 @@ def run_analysis(_):
                     f"<div style='padding:20px;'>{mc_table}</div>")])
             ])
 
-            # ─── ABA 6: REBALANCEAMENTO ETFs ────────────────────────────
-            if etf_ok and etf_flow is not None and not etf_flow.empty:
-                reb_html = (etf_flow.head(10)[['Flow_$', 'PctADV']]
-                            .style.format({'Flow_$': '${:,.0f}', 'PctADV': '{:.1f}%'})
-                            .background_gradient(cmap='RdYlGn', subset=['PctADV'])
+            # ─── ABA 6: REBALANCEAMENTO ETFs + ALAVANCADOS ─────────────
+            if etf_ok and etf_flows:
+                # Dropdown para selecionar ETF
+                etf_dd = wd.Dropdown(
+                    options=['Combined'] + PASSIVE_ETFS,
+                    value='Combined', description='ETF:',
+                    layout={'width': '300px'})
+                flow_html = wd.HTML()
+                summary_html = wd.HTML()
+
+                def _render_etf(change=None):
+                    key = etf_dd.value
+                    df_f = etf_flows.get(key, pd.DataFrame())
+                    if df_f.empty:
+                        flow_html.value = "<p>Sem dados.</p>"
+                        return
+                    top = df_f.head(30)
+                    flow_html.value = (
+                        top[['Start', 'Now', 'Delta', 'Flow_$', 'PctADV']]
+                        .style.format({
+                            'Start': '{:.4f}', 'Now': '{:.4f}', 'Delta': '{:+.4f}',
+                            'Flow_$': '${:,.0f}', 'PctADV': '{:.1f}%'})
+                        .background_gradient(cmap='RdYlGn', subset=['Flow_$'])
+                        .to_html())
+                etf_dd.observe(_render_etf, names='value')
+                _render_etf()
+
+                if etf_summary is not None:
+                    summary_html.value = (
+                        "<h4>Resumo por ETF</h4>" +
+                        etf_summary.style.format('${:,.0f}')
+                            .background_gradient(cmap='RdYlGn', subset=['Net_$'])
                             .to_html())
+
+                # Seção de ETFs alavancados
+                if lev_ok and lev_flows is not None:
+                    lev_html_str = (
+                        f"<h4>ETFs Alavancados (Retorno diário: {daily_ret*100:+.2f}%)</h4>" +
+                        lev_flows[['Leverage', 'AUM', 'Rebalance_$', 'Direção']]
+                        .style.format({
+                            'AUM': '${:,.0f}', 'Rebalance_$': '${:,.0f}'})
+                        .to_html() +
+                        f"<p><b>Fluxo Direcional Total: ${lev_total:,.0f}</b></p>")
+                else:
+                    lev_html_str = "<p>ETFs alavancados não disponíveis.</p>"
+
                 tab6 = wd.VBox([
-                    wd.HTML(f"<h3>Fluxo de Rebalanceamento desde {etf_start}</h3>"),
-                    wd.HTML(reb_html)
+                    wd.HTML(f"<h3>Rebalanceamento ETFs Passivos desde {etf_start}</h3>"),
+                    etf_dd, flow_html, summary_html,
+                    wd.HTML(lev_html_str)
                 ])
             else:
                 tab6 = wd.VBox([wd.HTML(
                     "<h3>Rebalanceamento ETFs</h3>"
-                    "<p>Dados de rebalanceamento não disponíveis para este ativo.</p>")])
+                    "<p>Dados de rebalanceamento não disponíveis.</p>")])
 
-            # ─── ABA 7: SIMULADOR INTERATIVO ─────────────────────────────
+            # ─── ABA 7: PREVISÃO SPX ────────────────────────────────────
+            if spx_pred_ok and top_in_spx is not None:
+                cols_in = ['Prob_In', 'CUR_MKT_CAP', 'FMC', 'FALR', 'FREE_FLOAT_PCT']
+                cols_out = ['ExitScore', 'CUR_MKT_CAP', 'FMC', 'NET_INC_TTM']
+                in_html = (top_in_spx[[c for c in cols_in if c in top_in_spx.columns]]
+                    .style.format({
+                        'Prob_In': '{:.2%}', 'CUR_MKT_CAP': '${:,.0f}',
+                        'FMC': '${:,.0f}', 'FALR': '{:.4f}',
+                        'FREE_FLOAT_PCT': '{:.1f}%'})
+                    .background_gradient(cmap='Greens', subset=['Prob_In'])
+                    .to_html())
+                out_html = (top_out_spx[[c for c in cols_out if c in top_out_spx.columns]]
+                    .style.format({
+                        'ExitScore': '{:.2%}', 'CUR_MKT_CAP': '${:,.0f}',
+                        'FMC': '${:,.0f}', 'NET_INC_TTM': '${:,.0f}'})
+                    .background_gradient(cmap='Reds', subset=['ExitScore'])
+                    .to_html())
+                tab7 = wd.VBox([
+                    wd.HTML("<h3>Previsão de Rebalanceamento S&P 500</h3>"),
+                    wd.HBox([
+                        wd.VBox([wd.HTML("<h4>Top 30 — Candidatos a Entrar</h4>"),
+                                 wd.HTML(in_html)]),
+                        wd.VBox([wd.HTML("<h4>Top 30 — Candidatos a Sair</h4>"),
+                                 wd.HTML(out_html)])
+                    ])
+                ])
+            else:
+                reason = "Marque 'Incluir Previsão SPX' e rode novamente." if not spx_pred_w.value else (
+                    "sklearn não disponível." if not HAS_SKLEARN else "Erro na execução.")
+                tab7 = wd.VBox([wd.HTML(
+                    f"<h3>Previsão SPX</h3><p>{reason}</p>")])
+
+            # ─── ABA 8: SIMULADOR INTERATIVO ─────────────────────────────
             vol_slider = wd.FloatSlider(
                 value=0, min=-5, max=5, step=0.5,
                 description='Shift Vol (%):', continuous_update=False,
@@ -1038,7 +1340,7 @@ def run_analysis(_):
             dte_slider.observe(_update_simulator, names='value')
             _update_simulator()
 
-            tab7 = wd.VBox([
+            tab8 = wd.VBox([
                 wd.HTML("<h3>Simulador Interativo de Gregas</h3>"
                         "<p>Ajuste vol e tempo para ver como as exposições mudam.</p>"),
                 wd.HBox([vol_slider, dte_slider]),
@@ -1046,7 +1348,7 @@ def run_analysis(_):
                 fig_sim_vega
             ])
 
-            # ─── ABA 8: RELATÓRIO DE RISCO ───────────────────────────────
+            # ─── ABA 9: RELATÓRIO DE RISCO ───────────────────────────────
             oi_100 = df['OI'].values * 100.0
             delta_notional = np.nansum(greeks_now['delta'] * oi_100) * spot
             total_vega = np.nansum(greeks_now['vega'] * oi_100)
@@ -1254,16 +1556,17 @@ def run_analysis(_):
             <p>📊 <b>Mov. Implícito 1D:</b> ±{daily_move:.2f}% (±${spot * daily_move / 100:,.0f})</p>
             </div>"""
 
-            tab8 = wd.VBox([wd.HTML(report_html)])
+            tab9 = wd.VBox([wd.HTML(report_html)])
 
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
-            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8]
+            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
-                'Monte Carlo', 'Rebalanceamento', 'Simulador', 'Relatório'
+                'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
+                'Simulador', 'Relatório'
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
@@ -1284,6 +1587,6 @@ run_btn.on_click(run_analysis)
 display(wd.VBox([
     wd.HBox([ticker_w, dte_w]),
     mny_w,
-    run_btn,
+    wd.HBox([run_btn, spx_pred_w]),
     out_main
 ]))
