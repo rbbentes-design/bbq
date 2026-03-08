@@ -829,9 +829,9 @@ def run_analysis(_):
                 <b>Métricas de Risco Caudal</b><br>
                 VaR 99%: {risk['var_99']:.2%} | CVaR 99%: {risk['cvar_99']:.2%}<br><br>
                 <b>Posicionamento</b><br>
-                Gamma Flip: ~{gamma_flip:,.0f if gamma_flip else 'N/A'} |
-                Call Wall: {call_wall:,.0f if call_wall else 'N/A'} |
-                Put Wall: {put_wall:,.0f if put_wall else 'N/A'}
+                Gamma Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} |
+                Call Wall: {f'{call_wall:,.0f}' if call_wall else 'N/A'} |
+                Put Wall: {f'{put_wall:,.0f}' if put_wall else 'N/A'}
             </div>"""
 
             tab1 = wd.VBox([
@@ -1065,7 +1065,7 @@ def run_analysis(_):
 
             <h4>2. REGIME DE MERCADO (GAMMA)</h4>
             <p>GEX Total: <b>{fmt_value(total_gex_val)}</b> per 1% move</p>
-            <p>Gamma Flip: <b>~{gamma_flip:,.0f if gamma_flip else 'N/A'}</b></p>
+            <p>Gamma Flip: <b>~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'}</b></p>
             <p>Regime atual: <b>{gamma_regime}</b></p>
 
             <h4>3. CENÁRIO: VOL +1%</h4>
