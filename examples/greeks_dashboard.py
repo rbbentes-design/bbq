@@ -570,21 +570,28 @@ def fit_risk_model(log_returns):
             'var_99': var_99, 'cvar_99': cvar_99}
 
 
-def run_monte_carlo(spot, df, risk_params, n_sims=10000):
-    """Simula P&L do livro do market maker para o próximo dia."""
+def run_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5):
+    """Simula P&L acumulado do livro do market maker ao longo de n_days."""
     greeks = calculate_all_greeks(spot, df.Strike.values, df.IV.values,
                                   df.Tte.values, df.Type.values)
-    dex = (greeks['delta'] * df.OI.values * 100).sum()
-    gex_per_pt = (greeks['gamma'] * np.where(df.Type.values == 'Call', 1, -1)
-                  * df.OI.values * 100).sum()
+    oi100 = df.OI.values * 100
+    call_sign = np.where(df.Type.values == 'Call', 1, -1)
+    dex = (greeks['delta'] * oi100).sum()
+    gex_per_pt = (greeks['gamma'] * call_sign * oi100).sum()
+    theta_tot = (greeks['theta'] * oi100).sum()
 
-    sim_returns = student_t.rvs(risk_params['tdf'], loc=risk_params['tloc'],
-                                scale=risk_params['tscale'], size=n_sims)
-    sim_prices = spot * (1 + sim_returns)
-    delta_s = sim_prices - spot
-    # P&L do dealer (posição inversa ao mercado)
-    pnl = -(dex * delta_s + 0.5 * gex_per_pt * delta_s**2)
-    return pnl, sim_prices
+    cum_pnl = np.zeros(n_sims)
+    cur_spot = np.full(n_sims, spot)
+    for _ in range(n_days):
+        day_rets = student_t.rvs(risk_params['tdf'],
+                                 loc=risk_params['tloc'],
+                                 scale=risk_params['tscale'], size=n_sims)
+        new_spot = cur_spot * (1 + day_rets)
+        ds = new_spot - cur_spot
+        daily_pnl = -(dex * ds + 0.5 * gex_per_pt * ds ** 2) + theta_tot
+        cum_pnl += daily_pnl
+        cur_spot = new_spot
+    return cum_pnl, cur_spot
 
 
 def compute_pnl_curves(greeks_now, df, spot, levels, skew):
@@ -944,15 +951,20 @@ def has_cot(ticker):
 def fetch_cot_data(futures_ticker, trader_type='Managed Money',
                    report_type='CFTC Disaggregated', start='-6Y', end='0D',
                    direction='All', commitment='Futures'):
-    """Busca dados COT via BQL nativo (let/for/get)."""
+    """Busca dados COT via BQL nativo (let/for/get). Sempre trader_type=all, filtra depois."""
     _RPT = {'CFTC Disaggregated': 'cftc_disaggregated',
             'CFTC TFF': 'cftc_tff', 'CFTC Legacy': 'cftc_legacy'}
     _CMT = {'Futures': 'futures', 'Futures & Options': 'futures_and_options',
             'All': 'futures'}
-    rpt = _RPT.get(report_type, 'cftc_disaggregated')
+    # Auto-corrigir report baseado no trader selecionado
+    _TRADER_RPT = {
+        'Asset Manager': 'cftc_tff', 'Leveraged Funds': 'cftc_tff',
+        'Dealer Intermediary': 'cftc_tff', 'Other Reportables': 'cftc_tff',
+        'Managed Money': 'cftc_disaggregated', 'Swap Dealers': 'cftc_disaggregated',
+        'Commercial': 'cftc_legacy', 'Non-Commercial': 'cftc_legacy',
+    }
+    rpt = _TRADER_RPT.get(trader_type, _RPT.get(report_type, 'cftc_disaggregated'))
     cmt = _CMT.get(commitment, 'futures')
-    trd = ('all' if trader_type == 'Total'
-           else trader_type.lower().replace(' ', '_').replace('-', '_'))
 
     # Ticker(s) para o for()
     if isinstance(futures_ticker, str):
@@ -963,20 +975,21 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
         tickers = [str(futures_ticker)]
     tkr_q = ','.join(f"'{t}'" for t in tickers)
 
-    # BQL nativo: cot_position + cot_traders com direction=all
+    # BQL nativo: SEMPRE trader_type=all, direction=all — filtrar depois
     q = (
-        f"let(#p=cot_position(report_type={rpt},direction=all,"
-        f"trader_type={trd},commitment_type={cmt});"
+        f"let("
+        f"#p=cot_position(report_type={rpt},direction=all,"
+        f"trader_type=all,commitment_type={cmt});"
         f"#t=cot_traders(report_type={rpt},direction=all,"
-        f"trader_type={trd},commitment_type={cmt});"
+        f"trader_type=all,commitment_type={cmt})"
         f")for({tkr_q})get("
-        f"#p().date,#p().direction,"
+        f"#p().date,#p().trader_type,#p().direction,"
         f"#p().value,#p().change,"
         f"#t().value,#t().change)"
     )
     resp = bq.execute(q)
     dfs = [r.df() for r in resp]
-    names = ['Date', 'Direction', 'Positions', 'Pos_Chg', 'Traders', 'Trd_Chg']
+    names = ['Date', 'TraderType', 'Direction', 'Positions', 'Pos_Chg', 'Traders', 'Trd_Chg']
     frames = []
     for i, df_i in enumerate(dfs):
         if i >= len(names):
@@ -987,6 +1000,12 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
     if 'ID' not in raw.columns:
         raw['ID'] = tickers[0]
     raw['Date'] = pd.to_datetime(raw['Date'])
+
+    # Filtrar por trader_type selecionado (case-insensitive match)
+    if trader_type != 'Total' and 'TraderType' in raw.columns:
+        trd_lower = trader_type.lower().replace(' ', '').replace('_', '')
+        raw['_trd_match'] = raw['TraderType'].astype(str).str.lower().str.replace(' ', '', regex=False).str.replace('_', '', regex=False)
+        raw = raw[raw['_trd_match'] == trd_lower].drop(columns=['_trd_match'])
 
     # Filtrar datas
     def _pdt(s):
@@ -1005,6 +1024,13 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
         raw = raw[raw['Date'] >= dt_s]
     if dt_e is not None:
         raw = raw[raw['Date'] <= dt_e]
+
+    if raw.empty:
+        return pd.DataFrame()
+
+    # Normalizar nomes de direção para Title Case
+    if 'Direction' in raw.columns:
+        raw['Direction'] = raw['Direction'].astype(str).str.strip().str.title()
 
     # Pivotar direções → colunas de posições e traders
     piv_pos = raw.pivot_table(index=['ID', 'Date'], columns='Direction',
@@ -1098,10 +1124,11 @@ def safe_fetch_cot(ticker, **kwargs):
         return None
     try:
         df_r = fetch_cot_data(fut, **kwargs)
-        if df_r.empty:
+        if df_r is None or df_r.empty:
             return None
         return aggregate_cot(df_r)
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ COT fetch error: {e}")
         return None
 
 
@@ -1915,6 +1942,108 @@ cot_type_w.observe(_update_cot_contracts, names='value')
 _update_cot_contracts()
 
 out_main = wd.Output()
+out_cot_reload = wd.Output()
+
+# Botões de recarga parcial
+cot_reload_btn = wd.Button(description='⟳ Recarregar COT',
+                           button_style='info', icon='refresh',
+                           layout={'width': '180px'})
+etf_reload_btn = wd.Button(description='⟳ Recarregar ETFs',
+                           button_style='info', icon='refresh',
+                           layout={'width': '180px'})
+
+
+def _reload_cot(_):
+    """Recarrega apenas dados COT e exibe resultado."""
+    with out_cot_reload:
+        clear_output(wait=True)
+        display(wd.HTML(DASH_CSS + "<div class='mm-dash mm-loading'>⏳ Recarregando COT...</div>"))
+        ticker = ticker_w.value.strip() or 'SPX Index'
+        _cot_start = cot_start_w.value.strftime('%Y%m%d') if cot_start_w.value else '-6Y'
+        _cot_end = cot_end_w.value.strftime('%Y%m%d') if cot_end_w.value else '0D'
+        _cot_kw = dict(
+            trader_type=cot_trader_w.value,
+            report_type=cot_report_w.value,
+            direction=cot_direction_w.value,
+            commitment=cot_commitment_w.value,
+            start=_cot_start, end=_cot_end)
+        try:
+            # COT do ticker principal
+            cot_df = safe_fetch_cot(ticker, **_cot_kw)
+            # COT dos contratos selecionados
+            sel_cots = list(cot_contract_w.value)
+            sel_df = None
+            if sel_cots:
+                try:
+                    raw = fetch_cot_data(
+                        sel_cots[0] if len(sel_cots) == 1 else sel_cots,
+                        **_cot_kw)
+                    if raw is not None and not raw.empty:
+                        sel_df = aggregate_cot(raw)
+                except Exception as e:
+                    print(f"⚠️ COT selected: {e}")
+            clear_output(wait=True)
+            _data_col = cot_datatype_w.value
+            _basket_col = 'Basket Returns' if cot_basket_w.value == 'Basket Returns' else 'Price'
+            children = [wd.HTML(
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<h3>COT — Recarga Rápida</h3>"
+                f"<p><span class='mm-cot-label'>Trader: <b>{cot_trader_w.value}</b></span> "
+                f"<span class='mm-cot-label'>Report: <b>{cot_report_w.value}</b> (auto: baseado no trader)</span> "
+                f"<span class='mm-cot-label'>Commitment: <b>{cot_commitment_w.value}</b></span></p>"
+                f"</div></div>")]
+            ok, fut = has_cot(ticker)
+            if ok and cot_df is not None and not cot_df.empty:
+                stats = cot_summary_stats(cot_df)
+                children.append(wd.HTML(f"<p>Futures: <b>{fut}</b> — {len(cot_df)} registros</p>"))
+                children.append(fp_grid_cot_stats(stats))
+                seas = cot_seasonality(cot_df)
+                children.append(wd.HBox([
+                    fp_plot_positions_basket(cot_df, basket_col=_basket_col, data_col=_data_col),
+                    fp_plot_dispersion(seas, cot_df, col=_data_col)]))
+                children.append(fp_plot_long_short_net(cot_df))
+            elif ok:
+                children.append(wd.HTML(f"<p>COT disponível para {fut}, mas sem dados. "
+                                        f"Verifique trader/report compatíveis.</p>"))
+            if sel_df is not None and not sel_df.empty:
+                sel_label = ', '.join(sel_cots)
+                children.append(wd.HTML(f"<hr><h4>COT: {sel_label} — {len(sel_df)} registros</h4>"))
+                children.append(fp_plot_positions_basket(sel_df, basket_col=_basket_col, data_col=_data_col))
+            display(wd.VBox(children))
+        except Exception as e:
+            clear_output(wait=True)
+            print(f"Erro COT: {e}")
+            import traceback; traceback.print_exc()
+
+
+def _reload_etfs(_):
+    """Recarrega apenas fluxo de ETFs alavancados."""
+    with out_cot_reload:
+        clear_output(wait=True)
+        display(wd.HTML(DASH_CSS + "<div class='mm-dash mm-loading'>⏳ Recarregando ETFs...</div>"))
+        ticker = ticker_w.value.strip() or 'SPX Index'
+        try:
+            prices, lr = fetch_historical(ticker)
+            nz = lr[lr != 0]
+            dr = float(nz.iloc[-1]) if len(nz) > 0 else 0
+            flows, total = compute_leveraged_flows(dr)
+            clear_output(wait=True)
+            html = (
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<h4>ETFs Alavancados (Retorno diário: {dr*100:+.2f}%)</h4>" +
+                flows[['Leverage', 'AUM_$', 'Rebalance_$', 'Direção']]
+                .style.format({'AUM_$': '${:,.0f}', 'Rebalance_$': '${:,.0f}'})
+                .to_html() +
+                f"<p><b>Fluxo Direcional Total: ${total:,.0f}</b></p>"
+                f"</div></div>")
+            display(wd.HTML(html))
+        except Exception as e:
+            clear_output(wait=True)
+            print(f"Erro ETF: {e}")
+
+
+cot_reload_btn.on_click(_reload_cot)
+etf_reload_btn.on_click(_reload_etfs)
 
 
 def run_analysis(_):
@@ -1980,8 +2109,9 @@ def run_analysis(_):
             sens_matrices = compute_sensitivity_matrices(df, spot)
 
             # ── 7. Monte Carlo ───────────────────────────────────────────
-            loading.value = "<h4>7/14: Simulação Monte Carlo (10k cenários)...</h4>"
-            mc_pnl, mc_prices = run_monte_carlo(spot, df, risk)
+            loading.value = "<h4>7/14: Simulação Monte Carlo (10k cenários, 5 dias)...</h4>"
+            mc_n_days = 5
+            mc_pnl, mc_prices = run_monte_carlo(spot, df, risk, n_days=mc_n_days)
 
             # ── 8. Curvas de P&L ─────────────────────────────────────────
             loading.value = "<h4>8/14: Curvas de P&L e hedge demand...</h4>"
@@ -1998,7 +2128,9 @@ def run_analysis(_):
             # ── 10. ETFs Alavancados ─────────────────────────────────────
             loading.value = "<h4>10/14: Fluxo de ETFs alavancados...</h4>"
             try:
-                daily_ret = log_returns.iloc[-1] if len(log_returns) > 0 else 0
+                # Usar último retorno não-zero (evitar 0 de weekend/feriado)
+                nz_rets = log_returns[log_returns != 0]
+                daily_ret = float(nz_rets.iloc[-1]) if len(nz_rets) > 0 else 0
                 lev_flows, lev_total = compute_leveraged_flows(daily_ret)
                 lev_ok = True
             except Exception:
@@ -2145,10 +2277,13 @@ def run_analysis(_):
                                          {'range': [12, 20], 'color': '#3a1a1a'}])
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
                                  -5, 5, _C['orange'], "%")
-            g_skew = create_gauge(skew * 100, "Skew (P25-C25)",
-                                  -5, 10, _C['teal'], "%")
+            _skew_val = skew * 100
+            _skew_hi = max(15, abs(_skew_val) * 1.3)
+            g_skew = create_gauge(_skew_val, "Skew (P25-C25)",
+                                  -_skew_hi, _skew_hi, _C['teal'], "%")
+            _move_hi = max(5, daily_move * 1.3)
             g_move = create_gauge(daily_move, "Mov. Esperado 1D",
-                                  0, 5, _C['green'], "%")
+                                  0, _move_hi, _C['green'], "%")
 
             # GEX curve (Plotly)
             fig_gex = go.FigureWidget()
@@ -2180,9 +2315,12 @@ def run_analysis(_):
             fig_dist.add_vline(x=risk['var_99'], line_dash="dash",
                                line_color=_C['red'],
                                annotation_text=f"VaR 99% ({risk['var_99']:.2%})")
+            _xlo = max(log_returns.quantile(0.005), -0.08)
+            _xhi = min(log_returns.quantile(0.995), 0.08)
             fig_dist.update_layout(title="Distribuição de Retornos",
                                    yaxis_title="Prob.",
                                    xaxis_tickformat=".1%",
+                                   xaxis_range=[_xlo, _xhi],
                                    height=350, template=DASH_TEMPLATE,
                                    margin=dict(t=35, b=25))
 
@@ -2296,10 +2434,13 @@ def run_analysis(_):
             sim_cvar_95 = mc_pnl[mc_pnl <= sim_var_95].mean() if np.any(mc_pnl <= sim_var_95) else sim_var_95
             sim_var_99 = np.percentile(mc_pnl, 1)
             sim_cvar_99 = mc_pnl[mc_pnl <= sim_var_99].mean() if np.any(mc_pnl <= sim_var_99) else sim_var_99
+            mc_p1 = np.percentile(mc_pnl, 1)
+            mc_p99 = np.percentile(mc_pnl, 99)
+            mc_iqr = mc_p99 - mc_p1
 
             fig_mc_hist = go.FigureWidget()
             fig_mc_hist.add_trace(go.Histogram(
-                x=mc_pnl / 1e6, nbinsx=80,
+                x=mc_pnl / 1e6, nbinsx=120,
                 marker_color=_C['accent'], opacity=0.7, name='P&L'))
             fig_mc_hist.add_vline(x=sim_var_95 / 1e6, line_dash='dash',
                                   line_color=_C['orange'],
@@ -2308,27 +2449,38 @@ def run_analysis(_):
                                   line_color=_C['red'],
                                   annotation_text=f'VaR 99% ${sim_var_99/1e6:,.1f}M')
             fig_mc_hist.add_vline(x=0, line_width=0.5, line_color=_C['text_dim'])
+            mc_xlo = (mc_p1 - mc_iqr * 0.15) / 1e6
+            mc_xhi = (mc_p99 + mc_iqr * 0.15) / 1e6
             fig_mc_hist.update_layout(
-                title='Distribuição de P&L do Livro (10k Simulações t-Student, 1 Dia)',
+                title=f'Distribuição de P&L do Livro (10k Sim. t-Student, {mc_n_days} Dias)',
                 xaxis_title='P&L ($ Mi)', yaxis_title='Frequência',
+                xaxis_range=[mc_xlo, mc_xhi],
                 height=420, template=DASH_TEMPLATE)
 
             mc_win_pct = (mc_pnl > 0).mean() * 100
+            mc_max_loss = mc_pnl.min()
+            mc_max_gain = mc_pnl.max()
             mc_table = pd.DataFrame({
                 'Métrica': ['P&L Médio', 'P&L Mediano', '% Cenários Positivos',
                             'VaR 95% (Sim.)', 'CVaR 95% (Sim.)',
-                            'VaR 99% (Sim.)', 'CVaR 99% (Sim.)'],
+                            'VaR 99% (Sim.)', 'CVaR 99% (Sim.)',
+                            'Perda Máxima', 'Ganho Máximo',
+                            f'Horizonte ({mc_n_days}d)'],
                 'Valor': [f'${np.mean(mc_pnl)/1e6:,.2f} Mi',
                           f'${np.median(mc_pnl)/1e6:,.2f} Mi',
                           f'{mc_win_pct:.1f}%',
                           f'${sim_var_95/1e6:,.2f} Mi',
                           f'${sim_cvar_95/1e6:,.2f} Mi',
                           f'${sim_var_99/1e6:,.2f} Mi',
-                          f'${sim_cvar_99/1e6:,.2f} Mi']
+                          f'${sim_cvar_99/1e6:,.2f} Mi',
+                          f'${mc_max_loss/1e6:,.2f} Mi',
+                          f'${mc_max_gain/1e6:,.2f} Mi',
+                          f'{mc_n_days} dias úteis']
             }).to_html(classes='mm-table', index=False, border=0)
 
             tab5 = wd.VBox([
-                wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Simulação Monte Carlo (t-Student)</h3></div></div>"),
+                wd.HTML("<div class='mm-dash'><div class='mm-card'>"
+                        f"<h3>Simulação Monte Carlo (t-Student, {mc_n_days} Dias)</h3></div></div>"),
                 wd.HBox([fig_mc_hist, wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>{mc_table}</div></div>")])
             ])
@@ -2725,13 +2877,15 @@ def run_analysis(_):
                             "<h3>Estimativa de Buyback</h3>"
                             "<p>⚠️ Confiança baixa: não temos % ADV executado"
                             " nem saldo restante.</p></div></div>")]
+                bb_pct_adv = fp_buyback.get('pct_adv_est', 0)
+                bb_pct_str = 'N/A' if (bb_pct_adv is None or pd.isna(bb_pct_adv)) else f'{bb_pct_adv:.2f}%'
                 bb_html = (
                     f"<div class='mm-dash'><div class='mm-card'>"
                     f"<table class='mm-table' style='width:auto;'>"
                     f"<tr><td>Anunciado:</td><td style='text-align:right;'>${fp_buyback.get('announced', 0):,.0f}</td></tr>"
                     f"<tr><td>Estimativa diária:</td><td style='text-align:right;'>${fp_buyback.get('daily_est', 0):,.0f}</td></tr>"
                     f"<tr><td>% ADV estimado:</td><td style='text-align:right;'>"
-                    f"{fp_buyback.get('pct_adv_est', 0):.2f}%</td></tr>"
+                    f"{bb_pct_str}</td></tr>"
                     f"<tr><td>Confiança:</td><td style='text-align:right;'>{fp_buyback.get('confidence', 'N/A')}</td></tr>"
                     f"</table></div></div>")
                 st_c_children.append(wd.HTML(bb_html))
@@ -2880,6 +3034,8 @@ display(wd.VBox([
         wd.HBox([cot_datatype_w, cot_direction_w, cot_commitment_w, cot_obligation_w]),
         wd.HBox([cot_trader_w, cot_report_w]),
         wd.HBox([cot_start_w, cot_end_w, cot_basket_w]),
+        wd.HBox([cot_reload_btn, etf_reload_btn]),
     ], layout=_ctrl_box_layout),
+    out_cot_reload,
     out_main
 ]))
