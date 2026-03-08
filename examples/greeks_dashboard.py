@@ -177,10 +177,10 @@ LEVERAGED_ETFS_EXT = LEVERAGED_ETFS + [
 
 # Mapeamento: ticker → futures com dados COT
 COT_FUTURES_MAP = {
-    'SPX Index': 'ES1 Comdty', 'NDX Index': 'NQ1 Comdty',
-    'RTY Index': 'RA1 Comdty', 'INDU Index': 'DM1 Comdty',
-    'SPXL US Equity': 'ES1 Comdty', 'SPXS US Equity': 'ES1 Comdty',
-    'TQQQ US Equity': 'NQ1 Comdty', 'SQQQ US Equity': 'NQ1 Comdty',
+    'SPX Index': 'ES1 Index', 'NDX Index': 'NQ1 Index',
+    'RTY Index': 'RA1 Index', 'INDU Index': 'DM1 Index',
+    'SPXL US Equity': 'ES1 Index', 'SPXS US Equity': 'ES1 Index',
+    'TQQQ US Equity': 'NQ1 Index', 'SQQQ US Equity': 'NQ1 Index',
     'NG1 Comdty': 'NG1 Comdty', 'CL1 Comdty': 'CL1 Comdty',
     'CO1 Comdty': 'CO1 Comdty', 'GC1 Comdty': 'GC1 Comdty',
     'SI1 Comdty': 'SI1 Comdty', 'HG1 Comdty': 'HG1 Comdty',
@@ -190,9 +190,9 @@ COT_FUTURES_MAP = {
 
 COT_CONTRACTS = {
     'Equity Indices': [
-        ('S&P 500 E-mini', 'ES1 Comdty'),
-        ('Nasdaq 100 E-mini', 'NQ1 Comdty'),
-        ('Russell 2000 E-mini', 'RA1 Comdty'),
+        ('S&P 500 E-mini', 'ES1 Index'),
+        ('Nasdaq 100 E-mini', 'NQ1 Index'),
+        ('Russell 2000 E-mini', 'RA1 Index'),
     ],
     'Energy': [
         ('WTI Crude', 'CL1 Comdty'),
@@ -935,50 +935,118 @@ def has_cot(ticker):
     """Verifica se o ticker possui dados COT. Retorna (True, futures_ticker) ou (False, None)."""
     if ticker in COT_FUTURES_MAP:
         return True, COT_FUTURES_MAP[ticker]
-    if ticker.strip().endswith('Comdty'):
+    t = ticker.strip()
+    if t.endswith('Comdty') or t.endswith('Index'):
         return True, ticker
     return False, None
 
 
 def fetch_cot_data(futures_ticker, trader_type='Managed Money',
                    report_type='CFTC Disaggregated', start='-6Y', end='0D',
-                   direction='All', commitment='All'):
-    """Busca dados COT do BQL para um contrato futuro."""
-    dates = bq.func.range(start, end, frq='d')
-    kwargs = {
-        'report_type': report_type.replace(' ', '_'),
-        'trader_type': trader_type.replace(' ', '_'),
-    }
-    if commitment != 'All':
-        kwargs['commitment'] = commitment.replace(' ', '_')
+                   direction='All', commitment='Futures'):
+    """Busca dados COT via BQL nativo (let/for/get)."""
+    _RPT = {'CFTC Disaggregated': 'cftc_disaggregated',
+            'CFTC TFF': 'cftc_tff', 'CFTC Legacy': 'cftc_legacy'}
+    _CMT = {'Futures': 'futures', 'Futures & Options': 'futures_and_options',
+            'All': 'futures'}
+    rpt = _RPT.get(report_type, 'cftc_disaggregated')
+    cmt = _CMT.get(commitment, 'futures')
+    trd = ('all' if trader_type == 'Total'
+           else trader_type.lower().replace(' ', '_').replace('-', '_'))
 
-    data_items = {
-        'Traders': bq.data.cot_traders(**kwargs),
-        'Positions': bq.data.cot_position(**kwargs),
-        'Price': bq.data.px_last(fill='prev'),
-        'Open Interest': bq.data.fut_aggte_open_int(),
-    }
-    # Buscar Long/Short/Net sempre para gráficos
-    for dir_name in ['Long', 'Short', 'Net']:
-        data_items[f'Positions - {dir_name}'] = (
-            bq.data.cot_position(**kwargs)
-            .with_updated_parameters(direction=dir_name))
-    # Se direção específica, buscar também com filtro
-    if direction not in ('All', 'Net'):
-        data_items[f'Positions_{direction}'] = (
-            bq.data.cot_position(**kwargs)
-            .with_updated_parameters(direction=direction))
-    w_params = {'currency': 'usd', 'dates': dates, 'crop_year': ['NA', 'combined']}
-    df_r = _fp_get_data(futures_ticker, data_items,
-                        with_params=w_params,
-                        preferences={'unitscheck': 'ignore'})
-    date_vals = pd.to_datetime(df_r.index.get_level_values('Date'))
-    iso = date_vals.isocalendar()
-    df_r['week'] = iso.week.values
-    df_r['year'] = iso.year.values
-    if 'Positions - Short' in df_r.columns:
-        df_r['Positions - Short'] = df_r['Positions - Short'] * -1
-    return df_r.dropna(subset=['Traders', 'Positions'])
+    # Ticker(s) para o for()
+    if isinstance(futures_ticker, str):
+        tickers = [futures_ticker]
+    elif hasattr(futures_ticker, '__iter__'):
+        tickers = list(futures_ticker)
+    else:
+        tickers = [str(futures_ticker)]
+    tkr_q = ','.join(f"'{t}'" for t in tickers)
+
+    # BQL nativo: cot_position + cot_traders com direction=all
+    q = (
+        f"let(#p=cot_position(report_type={rpt},direction=all,"
+        f"trader_type={trd},commitment_type={cmt});"
+        f"#t=cot_traders(report_type={rpt},direction=all,"
+        f"trader_type={trd},commitment_type={cmt});"
+        f")for({tkr_q})get("
+        f"#p().date,#p().direction,"
+        f"#p().value,#p().change,"
+        f"#t().value,#t().change)"
+    )
+    resp = bq.execute(q)
+    dfs = [r.df() for r in resp]
+    names = ['Date', 'Direction', 'Positions', 'Pos_Chg', 'Traders', 'Trd_Chg']
+    frames = []
+    for i, df_i in enumerate(dfs):
+        if i >= len(names):
+            break
+        s = df_i.iloc[:, 0].rename(names[i])
+        frames.append(s)
+    raw = pd.concat(frames, axis=1).reset_index()
+    if 'ID' not in raw.columns:
+        raw['ID'] = tickers[0]
+    raw['Date'] = pd.to_datetime(raw['Date'])
+
+    # Filtrar datas
+    def _pdt(s):
+        if not s:
+            return None
+        s = str(s)
+        if s in ('0D', '0d'):
+            return pd.Timestamp.now()
+        if s.startswith('-') and s[-1] in 'Yy':
+            return pd.Timestamp.now() - pd.DateOffset(years=int(s[1:-1]))
+        if s.startswith('-') and s[-1] in 'Dd':
+            return pd.Timestamp.now() - pd.Timedelta(days=int(s[1:-1]))
+        return pd.to_datetime(s)
+    dt_s, dt_e = _pdt(start), _pdt(end)
+    if dt_s is not None:
+        raw = raw[raw['Date'] >= dt_s]
+    if dt_e is not None:
+        raw = raw[raw['Date'] <= dt_e]
+
+    # Pivotar direções → colunas de posições e traders
+    piv_pos = raw.pivot_table(index=['ID', 'Date'], columns='Direction',
+                              values='Positions', aggfunc='first')
+    piv_pos.columns = [f'Positions - {c}' for c in piv_pos.columns]
+    piv_trd = raw.pivot_table(index=['ID', 'Date'], columns='Direction',
+                              values='Traders', aggfunc='first')
+    piv_trd.columns = [f'Traders - {c}' for c in piv_trd.columns]
+    df = piv_pos.join(piv_trd)
+
+    # Colunas principais (direção selecionada ou Net)
+    main_d = direction if direction not in ('All', '') else 'Net'
+    df['Positions'] = df.get(f'Positions - {main_d}',
+                             df.get('Positions - Net'))
+    df['Traders'] = df.get(f'Traders - {main_d}',
+                           df.get('Traders - Net'))
+
+    # Price & Open Interest via BQL convencional
+    try:
+        dates_bql = bq.func.range(start, end, frq='d')
+        px_items = {'Price': bq.data.px_last(fill='prev'),
+                    'Open Interest': bq.data.fut_aggte_open_int()}
+        px_df = _fp_get_data(tickers[0], px_items,
+                             with_params={'currency': 'usd', 'dates': dates_bql})
+        px_sr = px_df.droplevel('ID').sort_index()
+        cot_dates = df.index.get_level_values('Date')
+        px_a = px_sr.reindex(cot_dates, method='ffill')
+        for c in ['Price', 'Open Interest']:
+            if c in px_a.columns:
+                df[c] = px_a[c].values
+    except Exception:
+        df['Price'] = np.nan
+        df['Open Interest'] = np.nan
+
+    # ISO week/year
+    dt_idx = pd.to_datetime(df.index.get_level_values('Date'))
+    iso = dt_idx.isocalendar()
+    df['week'] = iso.week.values
+    df['year'] = iso.year.values
+    if 'Positions - Short' in df.columns:
+        df['Positions - Short'] = df['Positions - Short'] * -1
+    return df.dropna(subset=['Positions'])
 
 
 def aggregate_cot(df_cot):
@@ -1477,7 +1545,7 @@ def fp_bqp_flow_bar_line(flow_df, bar_col='LevETF_Flow', line_col='Return'):
         scale_y2 = bqp.LinearScale()
         mark_line = bqp.Lines(
             x=flow_df.index, y=flow_df[line_col], stroke_width=2,
-            scales={'x': scale_x, 'y': scale_y2}, colors=['#CF7DFF'])
+            scales={'x': scale_x, 'y': scale_y2}, colors=[_C['purple']])
         marks.append(mark_line)
     ax_y = bqp.Axis(scale=scale_y, orientation='vertical', label='Flow ($)')
     ax_x = bqp.Axis(scale=scale_x)
@@ -1500,7 +1568,7 @@ def fp_bqp_scatter(flow_df):
     mark = bqp.Scatter(
         x=flow_df['LevETF_Flow'], y=flow_df['Return'],
         tooltip=tooltip, scales={'x': scale_x, 'y': scale_y},
-        default_size=32, colors=['#FF5A00'])
+        default_size=32, colors=[_C['orange']])
     ax_x = bqp.Axis(scale=scale_x, label='Flow ($)')
     ax_y = bqp.Axis(scale=scale_y, orientation='vertical', label='Return')
     return bqp.Figure(
@@ -1686,7 +1754,7 @@ def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
 
         # ── Gráfico COMBO ──
         plt.figure(figsize=(18, 5))
-        colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in combo_data.values]
+        colors = [_C['green'] if v >= 0 else _C['red'] for v in combo_data.values]
         plt.bar(strikes, combo_data, width=bar_w, color=colors, edgecolor='k', lw=0.3)
         plt.axvline(spot, color='r', ls='--', lw=1.5, label=f'Spot {spot:,.0f}')
         if name == 'Gamma':
@@ -1708,9 +1776,9 @@ def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
         # ── Gráfico ABSOLUTE ──
         put_sign = 1 if combo_op is np.add else -1
         plt.figure(figsize=(18, 5))
-        plt.bar(strikes, call_data / div, width=bar_w, color='#27ae60',
+        plt.bar(strikes, call_data / div, width=bar_w, color=_C['green'],
                 edgecolor='k', lw=0.3, label=f'Call {name}')
-        plt.bar(strikes, put_sign * put_data / div, width=bar_w, color='#c0392b',
+        plt.bar(strikes, put_sign * put_data / div, width=bar_w, color=_C['red'],
                 edgecolor='k', lw=0.3, label=f'Put {name}')
         plt.axvline(spot, color='r', ls='--', lw=1.5, label=f'Spot {spot:,.0f}')
         if name == 'Gamma':
@@ -1732,7 +1800,7 @@ def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
         curve = model_curves[name] / div
         current_val = curve[np.argmin(np.abs(levels - spot))]
         plt.figure(figsize=(18, 5))
-        plt.plot(levels, curve, lw=2, color='#2980b9')
+        plt.plot(levels, curve, lw=2, color=_C['accent'])
         plt.fill_between(levels, 0, curve, where=curve >= 0,
                          alpha=0.15, color='green', interpolate=True)
         plt.fill_between(levels, 0, curve, where=curve <= 0,
@@ -1801,7 +1869,8 @@ cot_contract_w = wd.SelectMultiple(
     description='Contratos:', layout={'min_width': '300px', 'height': '80px'})
 cot_trader_w = wd.Dropdown(
     options=['Managed Money', 'Total', 'Commercial', 'Non-Commercial',
-             'Swap Dealers', 'Leveraged Funds', 'Asset Manager'],
+             'Swap Dealers', 'Leveraged Funds', 'Asset Manager',
+             'Dealer Intermediary', 'Other Reportables'],
     value='Managed Money', description='Trader Type:',
     layout={'width': '280px'})
 cot_report_w = wd.Dropdown(
@@ -1817,8 +1886,8 @@ cot_datatype_w = wd.Dropdown(
     value='Positions', description='Data Type:',
     layout={'width': '220px'})
 cot_commitment_w = wd.Dropdown(
-    options=['All', 'Futures', 'Options'],
-    value='All', description='Commitment:',
+    options=['Futures', 'Futures & Options'],
+    value='Futures', description='Commitment:',
     layout={'width': '220px'})
 cot_obligation_w = wd.Dropdown(
     options=['Reportable', 'Total', 'All'],
@@ -2027,7 +2096,7 @@ def run_analysis(_):
                     try:
                         sel_df = fetch_cot_data(
                             selected_cots[0] if len(selected_cots) == 1
-                            else bq.univ.list(selected_cots),
+                            else selected_cots,
                             **_cot_kw)
                         if not sel_df.empty:
                             fp_selected_cot_df = aggregate_cot(sel_df)
