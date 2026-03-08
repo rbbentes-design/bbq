@@ -146,6 +146,20 @@ DEFAULT_AUM = {
     'TQQQ': 20e9, 'SQQQ': 5e9, 'SOXL': 10e9, 'SOXS': 3e9,
 }
 
+# Mapeamento: trader type → report type correto para COT
+COT_TRADER_REPORT_MAP = {
+    'Managed Money': 'CFTC_Disaggregated',
+    'Swap Dealers': 'CFTC_Disaggregated',
+    'Commercial': 'CFTC_Legacy',
+    'Non-Commercial': 'CFTC_Legacy',
+    'Asset Manager': 'CFTC_TFF',
+    'Leveraged Funds': 'CFTC_TFF',
+    'Total': None,
+}
+
+# Estimativa anual de buyback do SPX (fallback quando BQL não retorna)
+SPX_ANNUAL_BUYBACK_EST = 1.0e12  # ~$1T USD
+
 # Layout padrão Plotly (style escuro para gráficos de flow)
 FLOW_FIG_LAYOUT = {
     'template': 'plotly_dark',
@@ -545,6 +559,23 @@ def compute_pnl_curves(greeks_now, df, spot, levels, skew):
 # SEÇÃO 5 — REBALANCEAMENTO DE ETFs (passivos + alavancados)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _last_spx_rebal_date():
+    """Última data de rebalanceamento trimestral do S&P 500 (3ª sexta de Mar/Jun/Set/Dez)."""
+    today = pd.Timestamp.now().normalize()
+    rebal_months = [3, 6, 9, 12]
+    candidates = []
+    for year in [today.year - 1, today.year]:
+        for month in rebal_months:
+            first = pd.Timestamp(year, month, 1)
+            dow = first.dayofweek  # Monday=0, Friday=4
+            days_to_fri = (4 - dow) % 7
+            first_friday = first + pd.Timedelta(days=days_to_fri)
+            third_friday = first_friday + pd.Timedelta(weeks=2)
+            if third_friday < today:
+                candidates.append(third_friday)
+    return max(candidates) if candidates else today - pd.Timedelta(days=90)
+
+
 def _float_weights(idx, as_of=None):
     """Retorna pesos float-adjusted normalizados."""
     uni = bq.univ.members([idx], dates=[as_of]) if as_of else bq.univ.members([idx])
@@ -577,7 +608,7 @@ def compute_full_etf_flows(index_proxy=INDEX_PROXY):
     Retorna (flows_dict, summary_df, start_date).
     flows_dict: {'Combined': df, 'VOO US Equity': df, ...}
     """
-    start_date = (pd.Timestamp('today') - pd.tseries.offsets.BMonthBegin(1)).strftime('%Y-%m-%d')
+    start_date = _last_spx_rebal_date().strftime('%Y-%m-%d')
 
     w0 = _float_weights(index_proxy, start_date)
     w1 = _float_weights(index_proxy)
@@ -635,6 +666,8 @@ def compute_leveraged_flows(daily_return):
             aum = pd.to_numeric(aum_df.loc[tk].iloc[0], errors='coerce')
         except (KeyError, TypeError, IndexError):
             aum = np.nan
+        if pd.isna(aum):
+            aum = DEFAULT_AUM.get(etf['name'], 1e9)
 
         if pd.notna(aum) and (1 + L * r) != 0:
             rebal = aum * L * (L - 1) * r / (1 + L * r)
@@ -680,13 +713,14 @@ def build_spx_prediction():
         bql.Request(bq.univ.members(['SPX Index']), bq.data.id())
     )[0].df().index.tolist()
 
+    # S&P 500: market cap mínimo ~$18B (regra atualizada)
     base_ids = bq.execute(
         bql.Request(
             bq.univ.filter(
                 bq.univ.equitiesuniv(['active', 'primary']),
                 bq.func.and_(
                     bq.data.cntry_of_domicile() == 'US',
-                    bq.data.cur_mkt_cap() > 2e10)),
+                    bq.data.cur_mkt_cap() > 1.8e10)),
             bq.data.id())
     )[0].df().index.tolist()
 
@@ -729,6 +763,16 @@ def build_spx_prediction():
     df_['IN_SPX'] = roots_all.isin(set(roots_spx)).astype(int)
     df_ = df_.dropna()
 
+    # 4b — Flag de elegibilidade S&P 500
+    # Regras: Free float >= 50%, lucro TTM > 0, último trimestre > 0, FALR >= 0.75
+    df_['ELIGIBLE'] = (
+        (df_['FREE_FLOAT_PCT'] >= 50) &
+        (df_['NET_INC_TTM'] > 0) &
+        (df_['NI_Q0'] > 0) &
+        (df_['FALR'] >= 0.75) &
+        (df_['CUR_MKT_CAP'] >= 1.8e10)
+    ).astype(int)
+
     # 5 — Modelo LogisticRegression
     features = ['FMC', 'FALR', 'FREE_FLOAT_PCT', 'NET_INC_TTM']
     X, y = df_[features], df_['IN_SPX']
@@ -739,12 +783,16 @@ def build_spx_prediction():
     pipe.fit(X, y)
     df_['Prob_In'] = pipe.predict_proba(X)[:, 1]
 
-    # 6 — ExitScore (penalidade por cap, FMC, lucro)
-    cap_thr, fmc_thr = 2.05e10, 1.025e10
+    # 6 — ExitScore (penalidade por cap, FMC, lucro, liquidez)
+    #     Thresholds atualizados conforme metodologia S&P
+    cap_thr = 1.8e10   # mínimo de market cap para permanência
+    fmc_thr = 0.9e10   # mínimo de float-adjusted market cap
     cap_pen = ((cap_thr - df_['CUR_MKT_CAP']).clip(lower=0)) / cap_thr
     fmc_pen = ((fmc_thr - df_['FMC']).clip(lower=0)) / fmc_thr
     earn_pen = ((df_['NET_INC_TTM'] <= 0) | (df_['NI_Q0'] <= 0)).astype(float)
-    df_['ExitScore'] = (cap_pen + fmc_pen + earn_pen) / 3
+    float_pen = ((50 - df_['FREE_FLOAT_PCT']).clip(lower=0)) / 50
+    liq_pen = ((0.75 - df_['FALR']).clip(lower=0)) / 0.75
+    df_['ExitScore'] = (cap_pen + fmc_pen + earn_pen + float_pen + liq_pen) / 5
 
     # 7 — Rankings
     allowed = df_.index.str.endswith((' US Equity', ' UW Equity', ' UQ Equity'))
@@ -754,7 +802,8 @@ def build_spx_prediction():
         t['root'] = t.index.str.split().str[0]
         return t.loc[t.groupby('root')[col].idxmax()]
 
-    top_in = (df_[(df_['IN_SPX'] == 0) & allowed]
+    # Inclusão: somente elegíveis (FREE_FLOAT>=50, lucro positivo, FALR>=0.75)
+    top_in = (df_[(df_['IN_SPX'] == 0) & allowed & (df_['ELIGIBLE'] == 1)]
               .pipe(_dedup_root, 'Prob_In')
               .sort_values('Prob_In', ascending=False)
               .head(30))
@@ -805,8 +854,14 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
                    report_type='CFTC Disaggregated', start='-6Y', end='0D'):
     """Busca dados COT do BQL para um contrato futuro."""
     dates = bq.func.range(start, end, frq='d')
+    # Auto-corrigir report_type com base no trader_type
+    correct_report = COT_TRADER_REPORT_MAP.get(trader_type)
+    if correct_report is not None:
+        report_type_bql = correct_report
+    else:
+        report_type_bql = report_type.replace(' ', '_')
     kwargs = {
-        'report_type': report_type.replace(' ', '_'),
+        'report_type': report_type_bql,
         'trader_type': trader_type.replace(' ', '_'),
     }
     data_items = {
@@ -943,14 +998,14 @@ def estimate_buyback_flow(ticker, horizon_days=252):
 
 
 def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
-    """Estima fluxo de buyback para os maiores membros de um índice."""
+    """Estima fluxo de buyback para os maiores membros de um índice.
+
+    Tenta buscar announced_buyback_amt via BQL. Se não disponível,
+    faz fallback para estimativa baseada em market cap (~2% cap/ano).
+    """
     try:
         uni = bq.univ.members(index_ticker)
-        items = {'ticker': bq.data.id(), 'cap': bq.data.cur_mkt_cap()}
-        try:
-            items['buyback'] = bq.data.announced_buyback_amt()
-        except Exception:
-            pass
+        items = {'cap': bq.data.cur_mkt_cap()}
         try:
             items['adv'] = bq.data.volume_avg_20d()
         except Exception:
@@ -959,41 +1014,67 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
             items['px'] = bq.data.px_last()
         except Exception:
             pass
-        req = bql.Request(uni, items)
+
+        # Tentar múltiplos campos de buyback
+        bb_field_name = None
+        for fname in ['announced_buyback_amt', 'bs_sh_repurchase']:
+            try:
+                fld = getattr(bq.data, fname, None)
+                if fld is not None:
+                    items['buyback_raw'] = fld()
+                    bb_field_name = fname
+                    break
+            except Exception:
+                continue
+
+        req = bql.Request(uni, items, with_params=BQL_PARAMS)
         df_r = bq.execute(req)[0].df()
         if df_r is None or df_r.empty:
             return pd.DataFrame()
+
+        # Renomear colunas robustamente
         rename = {}
         for c in df_r.columns:
             cl = str(c).lower()
-            if 'id' in cl or 'ticker' in cl:
-                rename[c] = 'ticker'
-            elif 'cap' in cl and 'mkt' in cl:
+            if 'mkt' in cl and 'cap' in cl:
                 rename[c] = 'cap'
-            elif 'buyback' in cl:
+            elif 'buyback' in cl or 'repurchase' in cl:
                 rename[c] = 'buyback'
             elif 'volume' in cl or 'adv' in cl:
                 rename[c] = 'adv'
-            elif 'px_last' in cl:
+            elif 'px_last' in cl or cl == 'px':
                 rename[c] = 'px'
         df_r = df_r.rename(columns=rename)
+
+        for col in ['cap', 'adv', 'px']:
+            if col in df_r.columns:
+                df_r[col] = pd.to_numeric(df_r[col], errors='coerce')
         if 'cap' in df_r.columns:
-            df_r['cap'] = pd.to_numeric(df_r['cap'], errors='coerce')
+            df_r = df_r.dropna(subset=['cap'])
             df_r = df_r.nlargest(top_n, 'cap')
-        if 'buyback' not in df_r.columns:
-            df_r['buyback'] = 0
-        df_r['buyback'] = pd.to_numeric(df_r['buyback'], errors='coerce').fillna(0)
+
+        # Verificar se dados de buyback reais estão disponíveis
+        has_bb = ('buyback' in df_r.columns and
+                  pd.to_numeric(df_r['buyback'], errors='coerce').abs().sum() > 0)
+
+        if has_bb:
+            df_r['buyback'] = pd.to_numeric(df_r['buyback'], errors='coerce').fillna(0).abs()
+            df_r['confidence'] = 'low'
+        else:
+            # Fallback: estimar buyback como ~2% do market cap (média large caps US)
+            df_r['buyback'] = df_r['cap'].fillna(0) * 0.02
+            df_r['confidence'] = 'estimated'
+
         df_r['daily_est'] = df_r['buyback'] * 0.80 / TRADING_DAYS
         if 'adv' in df_r.columns and 'px' in df_r.columns:
-            adv_usd = (pd.to_numeric(df_r['adv'], errors='coerce')
-                       * pd.to_numeric(df_r['px'], errors='coerce'))
+            adv_usd = df_r['adv'] * df_r['px']
             df_r['pct_adv_est'] = (df_r['daily_est'] / adv_usd.replace(0, np.nan)) * 100
         else:
             df_r['pct_adv_est'] = np.nan
-        df_r['confidence'] = 'low'
-        if 'ticker' in df_r.columns:
-            df_r = df_r.set_index('ticker')
-        return df_r[['cap', 'buyback', 'daily_est', 'pct_adv_est', 'confidence']]
+
+        out_cols = [c for c in ['cap', 'buyback', 'daily_est', 'pct_adv_est', 'confidence']
+                    if c in df_r.columns]
+        return df_r[out_cols]
     except Exception:
         return pd.DataFrame()
 
@@ -1741,11 +1822,28 @@ def run_analysis(_):
                     fp_today_flow = (compute_leveraged_flow_simple(
                         float(fp_flow_hist['Return'].iloc[-1]))
                         if not fp_flow_hist.empty else 0)
-                    fp_buyback = estimate_buyback_flow(ticker)
-                    fp_buyback_daily = fp_buyback.get('daily_est', 0)
                 except Exception as fp_err:
-                    print(f"⚠️ Flow hist/buyback: {fp_err}")
+                    print(f"⚠️ Flow hist: {fp_err}")
                     fp_today_flow = 0
+
+                # Buyback: para índices, usar agregação por membros
+                try:
+                    if ticker.strip().endswith('Index'):
+                        bb_df = estimate_index_buyback_flow(ticker, top_n=30)
+                        fp_buyback_daily = float(bb_df['daily_est'].sum()) if (
+                            not bb_df.empty and 'daily_est' in bb_df.columns) else 0
+                        fp_buyback = {
+                            'daily_est': fp_buyback_daily,
+                            'pct_adv_est': 0,
+                            'confidence': 'estimated',
+                            'announced': float(bb_df['buyback'].sum()) if (
+                                not bb_df.empty and 'buyback' in bb_df.columns) else 0,
+                        }
+                    else:
+                        fp_buyback = estimate_buyback_flow(ticker)
+                        fp_buyback_daily = fp_buyback.get('daily_est', 0)
+                except Exception as fp_err:
+                    print(f"⚠️ Buyback: {fp_err}")
                     fp_buyback_daily = 0
 
                 # ── 13. Flow Predictor — COT ─────────────────────────────
@@ -2046,9 +2144,32 @@ def run_analysis(_):
                 else:
                     lev_html_str = "<p>ETFs alavancados não disponíveis.</p>"
 
+                # Top 30 que ganham fluxo de compra e top 30 que levam fluxo de venda
+                combo_flow = etf_flows.get('Combined', pd.DataFrame())
+                flow_ranking = wd.HTML()
+                if not combo_flow.empty and 'Flow_$' in combo_flow.columns:
+                    top30_buy = combo_flow.nlargest(30, 'Flow_$')
+                    top30_sell = combo_flow.nsmallest(30, 'Flow_$')
+                    fmt_dict = {'Delta': '{:+.4f}', 'Flow_$': '${:,.0f}', 'PctADV': '{:.1f}%'}
+                    buy_html = (top30_buy[['Delta', 'Flow_$', 'PctADV']]
+                        .style.format(fmt_dict)
+                        .background_gradient(cmap='Greens', subset=['Flow_$'])
+                        .to_html())
+                    sell_html = (top30_sell[['Delta', 'Flow_$', 'PctADV']]
+                        .style.format(fmt_dict)
+                        .background_gradient(cmap='Reds', subset=['Flow_$'])
+                        .to_html())
+                    flow_ranking = wd.HBox([
+                        wd.VBox([wd.HTML("<h4>Top 30 — Recebem Fluxo de Compra</h4>"),
+                                 wd.HTML(buy_html)]),
+                        wd.VBox([wd.HTML("<h4>Top 30 — Recebem Fluxo de Venda</h4>"),
+                                 wd.HTML(sell_html)])
+                    ])
+
                 tab6 = wd.VBox([
                     wd.HTML(f"<h3>Rebalanceamento ETFs Passivos desde {etf_start}</h3>"),
                     etf_dd, flow_html, summary_html,
+                    flow_ranking,
                     wd.HTML(lev_html_str)
                 ])
             else:
@@ -2058,8 +2179,8 @@ def run_analysis(_):
 
             # ─── ABA 7: PREVISÃO SPX ────────────────────────────────────
             if spx_pred_ok and top_in_spx is not None:
-                cols_in = ['Prob_In', 'CUR_MKT_CAP', 'FMC', 'FALR', 'FREE_FLOAT_PCT']
-                cols_out = ['ExitScore', 'CUR_MKT_CAP', 'FMC', 'NET_INC_TTM']
+                cols_in = ['Prob_In', 'CUR_MKT_CAP', 'FMC', 'FALR', 'FREE_FLOAT_PCT', 'NET_INC_TTM']
+                cols_out = ['ExitScore', 'CUR_MKT_CAP', 'FMC', 'FALR', 'FREE_FLOAT_PCT', 'NET_INC_TTM']
                 in_html = (top_in_spx[[c for c in cols_in if c in top_in_spx.columns]]
                     .style.format({
                         'Prob_In': '{:.2%}', 'CUR_MKT_CAP': '${:,.0f}',
@@ -2070,11 +2191,19 @@ def run_analysis(_):
                 out_html = (top_out_spx[[c for c in cols_out if c in top_out_spx.columns]]
                     .style.format({
                         'ExitScore': '{:.2%}', 'CUR_MKT_CAP': '${:,.0f}',
-                        'FMC': '${:,.0f}', 'NET_INC_TTM': '${:,.0f}'})
+                        'FMC': '${:,.0f}', 'FALR': '{:.4f}',
+                        'FREE_FLOAT_PCT': '{:.1f}%', 'NET_INC_TTM': '${:,.0f}'})
                     .background_gradient(cmap='Reds', subset=['ExitScore'])
                     .to_html())
+                spx_rules_html = (
+                    "<div style='padding:10px; font-size:12px; color:#aaa;'>"
+                    "<b>Critérios S&P 500:</b> Market Cap ≥ $18B | "
+                    "Free Float ≥ 50% | FALR ≥ 0.75 | "
+                    "Lucro TTM > 0 e último trimestre > 0"
+                    "</div>")
                 tab7 = wd.VBox([
                     wd.HTML("<h3>Previsão de Rebalanceamento S&P 500</h3>"),
+                    wd.HTML(spx_rules_html),
                     wd.HBox([
                         wd.VBox([wd.HTML("<h4>Top 30 — Candidatos a Entrar</h4>"),
                                  wd.HTML(in_html)]),
