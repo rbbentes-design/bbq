@@ -127,6 +127,19 @@ COT_CONTRACTS = {
         ('Brent Crude', 'CO1 Comdty'),
         ('Natural Gas', 'NG1 Comdty'),
     ],
+    'Oil': [
+        ('Brent', 'CO1 Comdty'),
+        ('Gasoil', 'QS1 Comdty'),
+        ('WTI', 'CL1 Comdty'),
+        ('RBOB', 'XB1 Comdty'),
+        ('ULSD', 'HO1 Comdty'),
+    ],
+    'Power': [
+        ('German Power', 'DEBM1 Comdty'),
+        ('French Power', 'FRBM1 Comdty'),
+        ('Italian Power', 'ITBM1 Comdty'),
+        ('ERCOT', 'ERHN1 Comdty'),
+    ],
     'Metals': [
         ('Gold', 'GC1 Comdty'),
         ('Silver', 'SI1 Comdty'),
@@ -856,21 +869,31 @@ def has_cot(ticker):
 
 
 def fetch_cot_data(futures_ticker, trader_type='Managed Money',
-                   report_type='CFTC Disaggregated', start='-6Y', end='0D'):
+                   report_type='CFTC Disaggregated', start='-6Y', end='0D',
+                   direction='All', commitment='All'):
     """Busca dados COT do BQL para um contrato futuro."""
     dates = bq.func.range(start, end, frq='d')
     kwargs = {
         'report_type': report_type.replace(' ', '_'),
         'trader_type': trader_type.replace(' ', '_'),
     }
+    if commitment != 'All':
+        kwargs['commitment'] = commitment.replace(' ', '_')
+
     data_items = {
         'Traders': bq.data.cot_traders(**kwargs),
         'Positions': bq.data.cot_position(**kwargs),
         'Price': bq.data.px_last(fill='prev'),
         'Open Interest': bq.data.fut_aggte_open_int(),
     }
-    for direction in ['Long', 'Short', 'Net']:
-        data_items[f'Positions - {direction}'] = (
+    # Buscar Long/Short/Net sempre para gráficos
+    for dir_name in ['Long', 'Short', 'Net']:
+        data_items[f'Positions - {dir_name}'] = (
+            bq.data.cot_position(**kwargs)
+            .with_updated_parameters(direction=dir_name))
+    # Se direção específica, buscar também com filtro
+    if direction not in ('All', 'Net'):
+        data_items[f'Positions_{direction}'] = (
             bq.data.cot_position(**kwargs)
             .with_updated_parameters(direction=direction))
     w_params = {'currency': 'usd', 'dates': dates, 'crop_year': ['NA', 'combined']}
@@ -1691,6 +1714,32 @@ cot_report_w = wd.Dropdown(
     options=['CFTC Disaggregated', 'CFTC TFF', 'CFTC Legacy'],
     value='CFTC Disaggregated', description='Report Type:',
     layout={'width': '280px'})
+cot_direction_w = wd.Dropdown(
+    options=['Long', 'Short', 'Net', 'All'],
+    value='Long', description='Direction:',
+    layout={'width': '220px'})
+cot_datatype_w = wd.Dropdown(
+    options=['Positions', 'Traders'],
+    value='Positions', description='Data Type:',
+    layout={'width': '220px'})
+cot_commitment_w = wd.Dropdown(
+    options=['All', 'Futures', 'Options'],
+    value='All', description='Commitment:',
+    layout={'width': '220px'})
+cot_obligation_w = wd.Dropdown(
+    options=['Reportable', 'Total', 'All'],
+    value='Reportable', description='Obligation:',
+    layout={'width': '220px'})
+cot_start_w = wd.DatePicker(
+    value=pd.Timestamp.now().date() - pd.Timedelta(days=5*365),
+    description='COT Start:', layout={'width': '260px'})
+cot_end_w = wd.DatePicker(
+    value=pd.Timestamp.now().date(),
+    description='COT End:', layout={'width': '260px'})
+cot_basket_w = wd.RadioButtons(
+    options=['Basket Prices', 'Basket Returns'],
+    value='Basket Prices', description='Basket:',
+    layout={'width': '280px'})
 
 
 def _update_cot_contracts(change=None):
@@ -1851,12 +1900,23 @@ def run_analysis(_):
                 cot_net_change = 0
                 history_cot = None
 
+                # Parametros COT dos widgets
+                _cot_start = (cot_start_w.value.strftime('%Y%m%d')
+                              if cot_start_w.value else '-6Y')
+                _cot_end = (cot_end_w.value.strftime('%Y%m%d')
+                            if cot_end_w.value else '0D')
+                _cot_kw = dict(
+                    trader_type=cot_trader_w.value,
+                    report_type=cot_report_w.value,
+                    direction=cot_direction_w.value,
+                    commitment=cot_commitment_w.value,
+                    start=_cot_start,
+                    end=_cot_end,
+                )
+
                 if cot_ok_fp:
                     try:
-                        fp_cot_df = safe_fetch_cot(
-                            ticker,
-                            trader_type=cot_trader_w.value,
-                            report_type=cot_report_w.value)
+                        fp_cot_df = safe_fetch_cot(ticker, **_cot_kw)
                         if fp_cot_df is not None and not fp_cot_df.empty:
                             fp_cot_stats = cot_summary_stats(fp_cot_df)
                             if 'Positions - Net' in fp_cot_df.columns:
@@ -1874,8 +1934,7 @@ def run_analysis(_):
                         sel_df = fetch_cot_data(
                             selected_cots[0] if len(selected_cots) == 1
                             else bq.univ.list(selected_cots),
-                            trader_type=cot_trader_w.value,
-                            report_type=cot_report_w.value)
+                            **_cot_kw)
                         if not sel_df.empty:
                             fp_selected_cot_df = aggregate_cot(sel_df)
                     except Exception:
@@ -2546,17 +2605,29 @@ def run_analysis(_):
                 st_c = wd.VBox(st_c_children)
 
                 # Sub-tab D: COT
-                st_d_children = [wd.HTML("<h3>COT — Commitment of Traders</h3>")]
+                _cot_data_col = cot_datatype_w.value  # 'Positions' or 'Traders'
+                _cot_dir = cot_direction_w.value
+                _basket_col = ('Basket Returns' if cot_basket_w.value == 'Basket Returns'
+                               else 'Price')
+                st_d_children = [wd.HTML(
+                    f"<h3>COT — Commitment of Traders</h3>"
+                    f"<p style='color:#aaa;'>Data Type: <b>{_cot_data_col}</b> | "
+                    f"Direction: <b>{_cot_dir}</b> | "
+                    f"Trader: <b>{cot_trader_w.value}</b> | "
+                    f"Report: <b>{cot_report_w.value}</b> | "
+                    f"Commitment: <b>{cot_commitment_w.value}</b> | "
+                    f"Period: <b>{cot_start_w.value} → {cot_end_w.value}</b></p>")]
                 cot_ok_fp2, cot_fut_fp2 = has_cot(ticker)
                 if cot_ok_fp2 and fp_cot_df is not None and not fp_cot_df.empty:
                     st_d_children.append(
-                        wd.HTML(f"<p>Futures: <b>{cot_fut_fp2}</b> | "
-                                f"Trader: {cot_trader_w.value}</p>"))
+                        wd.HTML(f"<p>Futures: <b>{cot_fut_fp2}</b></p>"))
                     st_d_children.append(fp_grid_cot_stats(fp_cot_stats))
                     seas = cot_seasonality(fp_cot_df)
                     st_d_children.append(wd.HBox([
-                        fp_plot_positions_basket(fp_cot_df),
-                        fp_plot_dispersion(seas, fp_cot_df)
+                        fp_plot_positions_basket(fp_cot_df,
+                                                basket_col=_basket_col,
+                                                data_col=_cot_data_col),
+                        fp_plot_dispersion(seas, fp_cot_df, col=_cot_data_col)
                     ]))
                     st_d_children.append(fp_plot_long_short_net(fp_cot_df))
                     st_d_children.append(wd.HBox([
@@ -2646,7 +2717,10 @@ display(wd.VBox([
     wd.HBox([ticker_w, dte_w]),
     mny_w,
     wd.HBox([run_btn, spx_pred_w, flow_pred_w]),
+    wd.HTML("<b>COT Controls:</b>"),
     wd.HBox([cot_type_w, cot_contract_w]),
+    wd.HBox([cot_datatype_w, cot_direction_w, cot_commitment_w, cot_obligation_w]),
     wd.HBox([cot_trader_w, cot_report_w]),
+    wd.HBox([cot_start_w, cot_end_w, cot_basket_w]),
     out_main
 ]))
