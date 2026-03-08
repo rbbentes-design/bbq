@@ -60,9 +60,81 @@ except ImportError:
     HAS_SKLEARN = False
 
 warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8-whitegrid')
+plt.style.use('seaborn-v0_8-darkgrid')
+plt.rcParams.update({
+    'figure.facecolor': '#0d1117',
+    'axes.facecolor': '#161b22',
+    'axes.edgecolor': '#30363d',
+    'axes.labelcolor': '#e6edf3',
+    'text.color': '#e6edf3',
+    'xtick.color': '#8b949e',
+    'ytick.color': '#8b949e',
+    'grid.color': '#21262d',
+    'grid.alpha': 0.5,
+    'font.family': 'sans-serif',
+    'font.size': 11,
+})
 
 bq = bql.Service()
+
+# ── Design System (cores, CSS, template Plotly) ─────────────────────────────
+_C = {
+    'bg': '#0d1117', 'card': '#161b22', 'card2': '#1c2333',
+    'border': '#30363d', 'border_light': '#21262d',
+    'text': '#e6edf3', 'text_muted': '#8b949e', 'text_dim': '#484f58',
+    'accent': '#58a6ff', 'teal': '#00d4aa', 'orange': '#f0883e',
+    'green': '#3fb950', 'red': '#f85149', 'purple': '#bc8cff',
+    'yellow': '#d29922', 'pink': '#f778ba',
+}
+
+DASH_CSS = f"""
+<style>
+.mm-dash {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: {_C['text']}; }}
+.mm-title {{ font-size: 22px; font-weight: 600; color: {_C['text']}; padding: 12px 0 4px; border-bottom: 2px solid {_C['accent']}; margin-bottom: 8px; letter-spacing: -0.3px; }}
+.mm-title small {{ font-size: 13px; color: {_C['text_muted']}; font-weight: 400; margin-left: 12px; }}
+.mm-card {{ background: {_C['card']}; border: 1px solid {_C['border']}; border-radius: 8px; padding: 16px; margin: 6px 0; }}
+.mm-card h3 {{ margin: 0 0 10px; font-size: 15px; font-weight: 600; color: {_C['accent']}; text-transform: uppercase; letter-spacing: 0.5px; }}
+.mm-card h4 {{ margin: 8px 0 6px; font-size: 13px; font-weight: 600; color: {_C['teal']}; }}
+.mm-card p, .mm-card span {{ font-size: 13px; color: {_C['text_muted']}; line-height: 1.6; }}
+.mm-card b {{ color: {_C['text']}; }}
+.mm-badge {{ display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }}
+.mm-badge-green {{ background: rgba(63,185,80,0.15); color: {_C['green']}; }}
+.mm-badge-red {{ background: rgba(248,81,73,0.15); color: {_C['red']}; }}
+.mm-badge-yellow {{ background: rgba(210,153,34,0.15); color: {_C['yellow']}; }}
+.mm-badge-blue {{ background: rgba(88,166,255,0.15); color: {_C['accent']}; }}
+.mm-table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }}
+.mm-table th {{ background: {_C['card2']}; color: {_C['text_muted']}; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; padding: 10px 12px; border-bottom: 2px solid {_C['border']}; text-align: left; }}
+.mm-table td {{ padding: 8px 12px; border-bottom: 1px solid {_C['border_light']}; color: {_C['text']}; }}
+.mm-table tr:hover td {{ background: rgba(88,166,255,0.04); }}
+.mm-metric {{ display: inline-block; margin: 0 16px 8px 0; }}
+.mm-metric .label {{ font-size: 11px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.3px; }}
+.mm-metric .value {{ font-size: 16px; font-weight: 600; color: {_C['text']}; }}
+.mm-section-label {{ font-size: 11px; font-weight: 700; color: {_C['text_dim']}; text-transform: uppercase; letter-spacing: 1px; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid {_C['border_light']}; }}
+.mm-kpi-row {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }}
+.mm-kpi {{ flex: 1; min-width: 140px; background: {_C['card2']}; border: 1px solid {_C['border']}; border-radius: 6px; padding: 10px 14px; text-align: center; }}
+.mm-kpi .kpi-label {{ font-size: 10px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.5px; }}
+.mm-kpi .kpi-value {{ font-size: 20px; font-weight: 700; margin: 4px 0; }}
+.mm-loading {{ color: {_C['accent']}; font-size: 14px; font-weight: 500; padding: 12px; }}
+.mm-loading .step {{ color: {_C['text_muted']}; font-size: 12px; }}
+.mm-cot-label {{ background: {_C['card2']}; padding: 6px 10px; border-radius: 4px; font-size: 12px; display: inline-block; margin: 2px; }}
+</style>
+"""
+
+# Template Plotly unificado (dark, elegante)
+_PLOTLY_DARK = go.layout.Template()
+_PLOTLY_DARK.layout = go.Layout(
+    paper_bgcolor=_C['card'],
+    plot_bgcolor=_C['bg'],
+    font=dict(family='-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica', size=12, color=_C['text']),
+    title=dict(font=dict(size=15, color=_C['text'])),
+    xaxis=dict(gridcolor=_C['border_light'], zerolinecolor=_C['border'], linecolor=_C['border']),
+    yaxis=dict(gridcolor=_C['border_light'], zerolinecolor=_C['border'], linecolor=_C['border']),
+    legend=dict(bgcolor='rgba(0,0,0,0)', font=dict(size=11, color=_C['text_muted'])),
+    colorway=[_C['accent'], _C['teal'], _C['orange'], _C['green'], _C['red'],
+              _C['purple'], _C['yellow'], _C['pink']],
+    hoverlabel=dict(bgcolor=_C['card2'], font_size=12, font_color=_C['text']),
+)
+DASH_TEMPLATE = _PLOTLY_DARK
 BQL_PARAMS = {'fill': 'prev'}
 TRADING_DAYS = 252
 FUTURES_TICKER = 'ES1 Index'
@@ -173,13 +245,13 @@ COT_TRADER_REPORT_MAP = {
 # Estimativa anual de buyback do SPX (fallback quando BQL não retorna)
 SPX_ANNUAL_BUYBACK_EST = 1.0e12  # ~$1T USD
 
-# Layout padrão Plotly (style escuro para gráficos de flow)
+# Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
-    'template': 'plotly_dark',
-    'font': {'family': 'Nunito', 'size': 13},
+    'template': DASH_TEMPLATE,
+    'font': {'family': '-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica', 'size': 12},
     'legend': {'orientation': 'h', 'yanchor': 'bottom', 'y': -0.3,
                'xanchor': 'center', 'x': 0.5},
-    'margin': {'t': 40, 'b': 40, 'l': 10, 'r': 10},
+    'margin': {'t': 40, 'b': 40, 'l': 50, 'r': 20},
 }
 
 
@@ -1195,28 +1267,33 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
 
 def _flow_border(fig_widget):
     return wd.VBox([fig_widget], layout={
-        'border': '1px solid white', 'margin': '10px',
-        'padding': '10px', 'width': '98%'})
+        'border': f'1px solid {_C["border"]}', 'margin': '6px',
+        'padding': '10px', 'width': '98%',
+        'border_radius': '8px'})
 
 
 def fp_plot_score_gauge(score):
     """Gauge chart do score combinado de fluxo."""
     prob = score.get('prob_up', 0.5)
     direction = score.get('direction', 'NEUTRAL')
-    colors = {'BULLISH': 'green', 'BEARISH': 'red', 'NEUTRAL': 'gray'}
+    colors = {'BULLISH': _C['green'], 'BEARISH': _C['red'], 'NEUTRAL': _C['text_muted']}
     fig = go.FigureWidget(go.Indicator(
         mode="gauge+number+delta", value=prob * 100,
-        title={'text': f"Flow Score: {direction}"},
-        delta={'reference': 50, 'increasing': {'color': 'green'},
-               'decreasing': {'color': 'red'}},
+        title={'text': f"Flow Score: {direction}", 'font': {'color': _C['text_muted']}},
+        number={'font': {'color': _C['text']}},
+        delta={'reference': 50, 'increasing': {'color': _C['green']},
+               'decreasing': {'color': _C['red']}},
         gauge={
-            'axis': {'range': [0, 100]},
-            'bar': {'color': colors.get(direction, 'gray')},
+            'axis': {'range': [0, 100], 'tickcolor': _C['text_muted'],
+                     'tickfont': {'color': _C['text_muted']}},
+            'bar': {'color': colors.get(direction, _C['text_muted']), 'thickness': 0.3},
+            'bgcolor': _C['card2'],
+            'borderwidth': 1, 'bordercolor': _C['border'],
             'steps': [
-                {'range': [0, 30], 'color': '#ffcccc'},
-                {'range': [30, 70], 'color': '#ffffcc'},
-                {'range': [70, 100], 'color': '#ccffcc'}],
-            'threshold': {'line': {'color': 'black', 'width': 3},
+                {'range': [0, 30], 'color': '#3a1a1a'},
+                {'range': [30, 70], 'color': '#3a3520'},
+                {'range': [70, 100], 'color': '#1a3a2a'}],
+            'threshold': {'line': {'color': _C['text'], 'width': 3},
                           'thickness': 0.8, 'value': prob * 100}
         }))
     fig.update_layout(height=280, margin=dict(t=50, b=20, l=20, r=20),
@@ -1237,7 +1314,7 @@ def fp_plot_components_bar(score):
     names = list(components.keys())
     values = list(components.values())
     w_vals = [weights.get(k, 0.25) for k in ['leveraged', 'buyback', 'cot', 'spx_rebal']]
-    colors_bar = ['#3498DB' if v >= 0 else '#E74C3C' for v in values]
+    colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
                          name='Z-Score', text=[f'{v:+.2f}' for v in values],
@@ -1246,7 +1323,7 @@ def fp_plot_components_bar(score):
                              yaxis='y2', mode='markers+text',
                              text=[f'{w:.0%}' for w in w_vals],
                              textposition='top center',
-                             marker=dict(size=10, color='white')))
+                             marker=dict(size=10, color=_C['text_muted'])))
     fig.update_layout(title='Componentes do Flow Score',
                       yaxis_title='Z-Score',
                       yaxis2=dict(overlaying='y', side='right',
@@ -1263,10 +1340,10 @@ def fp_plot_flow_history(flow_hist):
         return fig
     fig = make_subplots(specs=[[{'secondary_y': True}]])
     fig.add_trace(go.Scatter(x=flow_hist.index, y=flow_hist['LevETF_Flow'],
-                             name='Lev ETF Flow', line=dict(color='orange', width=1)),
+                             name='Lev ETF Flow', line=dict(color=_C['orange'], width=1.5)),
                   secondary_y=False)
     fig.add_trace(go.Scatter(x=flow_hist.index, y=flow_hist['Return'],
-                             name='Return', line=dict(color='white', width=1)),
+                             name='Return', line=dict(color=_C['accent'], width=1)),
                   secondary_y=True)
     fig.update_layout(title='Fluxo ETFs Alavancados vs Retorno',
                       hovermode='x unified', **FLOW_FIG_LAYOUT)
@@ -1280,11 +1357,11 @@ def fp_plot_positions_basket(df_cot, basket_col='Price', data_col='Positions'):
     fig = make_subplots(specs=[[{'secondary_y': True}]])
     fig.add_trace(go.Scatter(
         x=df_cot.index, y=df_cot[data_col], name=data_col,
-        yaxis='y1', line=dict(width=1), marker_color='orange'))
+        yaxis='y1', line=dict(width=1.5), marker_color=_C['orange']))
     if basket_col in df_cot.columns:
         fig.add_trace(go.Scatter(
             x=df_cot.index, y=df_cot[basket_col], name=basket_col,
-            yaxis='y2', line=dict(width=1), marker_color='white'))
+            yaxis='y2', line=dict(width=1), marker_color=_C['accent']))
     fig.update_yaxes(zeroline=False, showgrid=False)
     fig.layout.yaxis.update(title_text=data_col)
     fig.layout.yaxis2.update(title_text=basket_col)
@@ -1295,14 +1372,14 @@ def fp_plot_positions_basket(df_cot, basket_col='Price', data_col='Positions'):
 def fp_plot_long_short_net(df_cot):
     """Barras Long/Short + linha Net."""
     fig = go.FigureWidget()
-    for name, color in [('Long', 'grey'), ('Short', 'white')]:
+    for name, color in [('Long', _C['teal']), ('Short', _C['text_muted'])]:
         col = f'Positions - {name}'
         if col in df_cot.columns:
             fig.add_trace(go.Bar(x=df_cot.index, y=df_cot[col],
                                  name=name, marker_color=color))
     if 'Positions - Net' in df_cot.columns:
         fig.add_trace(go.Scatter(x=df_cot.index, y=df_cot['Positions - Net'],
-                                 name='Net', marker_color='orange'))
+                                 name='Net', marker_color=_C['orange']))
     fig.update_layout(barmode='relative',
                       title='Long, Short & Net Positions',
                       yaxis_title='Positions', hovermode='x unified',
@@ -1318,7 +1395,7 @@ def fp_plot_correlation(df_cot, window=26):
             .rolling(window).corr().unstack()[('Price', 'Positions - Net')])
     fig = go.FigureWidget(go.Scatter(
         x=corr.index, y=corr.values, name='Corr',
-        line=dict(width=1), marker_color='orange'))
+        line=dict(width=1.5), marker_color=_C['orange']))
     fig.update_yaxes(zeroline=False, showgrid=False)
     fig.layout.yaxis.update(title_text='Correlation')
     fig.update_layout(title='Rolling Correlation: Price Δ vs Net Length Δ',
@@ -1333,7 +1410,7 @@ def fp_plot_long_short_ratio(df_cot):
     ratio = df_cot['Positions - Long'] / df_cot['Positions - Short'] * -1
     fig = go.FigureWidget(go.Scatter(
         x=ratio.index, y=ratio.values, name='L/S Ratio',
-        line=dict(width=1, color='#ff991c')))
+        line=dict(width=1.5, color=_C['orange'])))
     fig.update_yaxes(zeroline=False, showgrid=False)
     fig.layout.yaxis.update(title_text='Ratio')
     fig.update_layout(title='Long/Short Ratio', **FLOW_FIG_LAYOUT)
@@ -1347,7 +1424,7 @@ def fp_plot_multi_year(df_cot):
     pivot = df_cot.pivot(columns='year', index='week', values='Positions')
     pivot = pivot.iloc[:, -6:]
     fig = go.FigureWidget()
-    colors_yr = ['#ffffff', 'lightgrey', 'darkgrey', '#ffd793', 'orange', '#ec8100']
+    colors_yr = [_C['text_dim'], _C['text_muted'], '#8b949e', _C['yellow'], _C['orange'], _C['teal']]
     for col_name, color in zip(pivot.columns, colors_yr):
         fig.add_trace(go.Scatter(
             x=pivot.index, y=pivot[col_name], mode='lines',
@@ -1371,9 +1448,9 @@ def fp_plot_dispersion(seasonality_df, df_cot, col='Positions'):
         if name in seas.columns:
             fig.add_trace(go.Scatter(
                 x=seas.index, y=seas[name], mode='lines', name=name,
-                fill=fill, fillcolor='gray',
-                line=dict(color='gray', width=0), showlegend=False))
-    for name, color in [('Mean', 'orange'), ('Current', 'white')]:
+                fill=fill, fillcolor='rgba(88,166,255,0.08)',
+                line=dict(color=_C['border'], width=0), showlegend=False))
+    for name, color in [('Mean', _C['orange']), ('Current', _C['teal'])]:
         if name in seas.columns:
             fig.add_trace(go.Scatter(
                 x=seas.index, y=seas[name], mode='lines+markers',
@@ -1392,7 +1469,7 @@ def fp_bqp_flow_bar_line(flow_df, bar_col='LevETF_Flow', line_col='Return'):
     scale_y = bqp.LinearScale()
     mark_bar = bqp.Bars(
         x=flow_df.index, y=flow_df[bar_col],
-        scales={'x': scale_x, 'y': scale_y}, colors=['#1B84ED'],
+        scales={'x': scale_x, 'y': scale_y}, colors=[_C['accent']],
         tooltip=bqp.Tooltip(fields=['y', 'x'], show_labels=False,
                             formats=['.0f', '%Y/%m/%d']))
     marks = [mark_bar]
@@ -1452,7 +1529,7 @@ def fp_grid_flow_score(score):
     try:
         linear_scale = bqp.LinearScale(min=-3, max=3)
         color_scale = bqp.ColorScale(min=-3, max=3,
-                                     colors=['#E74C3C', '#FFFFFF', '#2ECC71'])
+                                     colors=[_C['red'], _C['card2'], _C['green']])
         renderers = {
             'Z-Score': BarRenderer(bar_value=linear_scale, format='.2f',
                                    bar_color=color_scale,
@@ -1476,8 +1553,8 @@ def fp_grid_cot_stats(stats):
         renderers = {
             'Value': TextRenderer(
                 background_color=VegaExpr(
-                    "cell.value < -1 ? '#EE0D2D' : "
-                    "cell.value > 1 ? '#20B020' : 'transparent'"),
+                    f"cell.value < -1 ? '{_C['red']}' : "
+                    f"cell.value > 1 ? '{_C['green']}' : 'transparent'"),
                 format='.2f')
         }
     except Exception:
@@ -1496,7 +1573,7 @@ def fp_grid_buyback(buyback_df):
         scale = bqp.LinearScale(min=0, max=buyback_df['daily_est'].max())
         renderers = {
             'daily_est': BarRenderer(bar_value=scale, format='$,.0f',
-                                     bar_color='#2ECC71',
+                                     bar_color=_C['green'],
                                      horizontal_alignment='right'),
         }
     except Exception:
@@ -1557,24 +1634,30 @@ def compute_sensitivity_matrices(df, spot):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def create_gauge(value, title, range_min, range_max, bar_color, suffix,
-                 steps=None, width=220, height=180):
+                 steps=None, width=220, height=190):
     """Cria indicador gauge do Plotly."""
     if pd.isna(value):
         value = 0
     gauge_cfg = {
-        'axis': {'range': [range_min, range_max]},
-        'bar': {'color': bar_color},
+        'axis': {'range': [range_min, range_max],
+                 'tickcolor': _C['text_muted'], 'tickfont': {'color': _C['text_muted'], 'size': 10}},
+        'bar': {'color': bar_color, 'thickness': 0.3},
+        'bgcolor': _C['card2'],
+        'borderwidth': 1,
+        'bordercolor': _C['border'],
     }
     if steps:
         gauge_cfg['steps'] = steps
     return go.FigureWidget(
         go.Indicator(
             mode="gauge+number", value=value,
-            title={'text': title, 'font': {'size': 14}},
-            number={'suffix': suffix, 'font': {'size': 18}, 'valueformat': '.2f'},
+            title={'text': title, 'font': {'size': 13, 'color': _C['text_muted']}},
+            number={'suffix': suffix, 'font': {'size': 20, 'color': _C['text']}, 'valueformat': '.2f'},
             gauge=gauge_cfg),
         layout=go.Layout(width=width, height=height,
-                         margin=dict(l=15, r=15, t=40, b=15)))
+                         paper_bgcolor=_C['card'],
+                         font=dict(color=_C['text']),
+                         margin=dict(l=18, r=18, t=42, b=12)))
 
 
 def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
@@ -1672,7 +1755,18 @@ def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
 def style_sensitivity_matrix(matrix_df, cmap='viridis'):
     """Aplica estilo visual a uma matriz de sensibilidade."""
     styled = matrix_df.style.format(fmt_value)
-    styled = styled.set_properties(**{'width': '110px', 'text-align': 'center'})
+    styled = styled.set_properties(**{
+        'width': '110px', 'text-align': 'center', 'font-size': '12px',
+        'padding': '6px 8px', 'border': f'1px solid {_C["border_light"]}',
+        'color': _C['text'], 'background-color': _C['card'],
+    })
+    styled = styled.set_table_styles([
+        {'selector': 'th', 'props': [
+            ('background-color', _C['card2']), ('color', _C['text_muted']),
+            ('font-size', '11px'), ('text-transform', 'uppercase'),
+            ('letter-spacing', '0.5px'), ('padding', '8px'),
+            ('border', f'1px solid {_C["border"]}')]},
+    ])
     numeric = matrix_df.select_dtypes(include=np.number).dropna(how='all')
     if not numeric.empty and numeric.max().max() != numeric.min().min():
         styled = styled.background_gradient(cmap=cmap, axis=None)
@@ -1758,7 +1852,7 @@ def run_analysis(_):
     """Callback principal: busca dados, calcula tudo, monta dashboard."""
     with out_main:
         clear_output(wait=True)
-        loading = wd.HTML("<h4>Inicializando...</h4>")
+        loading = wd.HTML(DASH_CSS + "<div class='mm-dash mm-loading'>⏳ Inicializando...</div>")
         display(loading)
 
         ticker = ticker_w.value.strip() or 'SPX Index'
@@ -1963,8 +2057,11 @@ def run_analysis(_):
             # ═════════════════════════════════════════════════════════════
 
             title_html = wd.HTML(
-                f"<h2>Market Maker Dashboard: {ticker} @ {spot:,.2f}"
-                f" ({datetime.now().strftime('%Y-%m-%d %H:%M')})</h2>")
+                DASH_CSS +
+                f"<div class='mm-dash'>"
+                f"<div class='mm-title'>Market Maker Dashboard "
+                f"<small>{ticker} @ {spot:,.2f} │ {datetime.now().strftime('%Y-%m-%d %H:%M')}</small>"
+                f"</div></div>")
 
             # ─── ABA 1: VISÃO GERAL ─────────────────────────────────────
             total_gex = gamma_curve[np.argmin(np.abs(levels - spot))]
@@ -1973,69 +2070,80 @@ def run_analysis(_):
             vol_premium = (iv_30d - rv_30d) * 100 if pd.notna(iv_30d) and pd.notna(rv_30d) else 0
 
             g_frag = create_gauge(fragility, "Fragilidade (GEX/Vol)",
-                                  0, 20, "#E74C3C", "%",
-                                  steps=[{'range': [0, 5], 'color': '#c8e6c9'},
-                                         {'range': [5, 12], 'color': '#fff9c4'},
-                                         {'range': [12, 20], 'color': '#ffcdd2'}])
+                                  0, 20, _C['red'], "%",
+                                  steps=[{'range': [0, 5], 'color': '#1a3a2a'},
+                                         {'range': [5, 12], 'color': '#3a3520'},
+                                         {'range': [12, 20], 'color': '#3a1a1a'}])
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
-                                 -5, 5, "#F39C12", "%")
+                                 -5, 5, _C['orange'], "%")
             g_skew = create_gauge(skew * 100, "Skew (P25-C25)",
-                                  -5, 10, "#1ABC9C", "%")
+                                  -5, 10, _C['teal'], "%")
             g_move = create_gauge(daily_move, "Mov. Esperado 1D",
-                                  0, 5, "#2ECC71", "%")
+                                  0, 5, _C['green'], "%")
 
             # GEX curve (Plotly)
             fig_gex = go.FigureWidget()
             fig_gex.add_trace(go.Scatter(
                 x=levels, y=gamma_curve / 1e9, mode='lines',
-                fill='tozeroy', line_color='#636EFA', name='GEX'))
-            fig_gex.add_vline(x=spot, line_dash="dash", line_color="red",
+                fill='tozeroy', line_color=_C['accent'],
+                fillcolor='rgba(88,166,255,0.15)', name='GEX'))
+            fig_gex.add_vline(x=spot, line_dash="dash", line_color=_C['red'],
                               annotation_text=f"Spot {spot:,.0f}")
             if gamma_flip:
-                fig_gex.add_vline(x=gamma_flip, line_color="orange",
+                fig_gex.add_vline(x=gamma_flip, line_color=_C['orange'],
                                   annotation_text=f"G-Flip {gamma_flip:,.0f}")
             fig_gex.update_layout(title="Gamma Exposure (GEX)",
                                   yaxis_title="$ Bi / 1% move",
-                                  height=350, template="plotly_white",
+                                  height=350, template=DASH_TEMPLATE,
                                   margin=dict(t=35, b=25), showlegend=False)
 
             # Return distribution (Plotly)
             fig_dist = go.FigureWidget()
             fig_dist.add_trace(go.Histogram(
                 x=log_returns, histnorm='probability density',
-                name='Reais', marker_color='#636EFA', opacity=0.6,
+                name='Reais', marker_color=_C['accent'], opacity=0.6,
                 xbins=dict(size=log_returns.std() / 4)))
             x_pdf = np.linspace(log_returns.min(), log_returns.max(), 500)
             pdf_vals = student_t.pdf(x_pdf, risk['tdf'], risk['tloc'], risk['tscale'])
             fig_dist.add_trace(go.Scatter(
                 x=x_pdf, y=pdf_vals, mode='lines',
-                name='t-Student', line_color='orange'))
+                name='t-Student', line_color=_C['orange']))
             fig_dist.add_vline(x=risk['var_99'], line_dash="dash",
-                               line_color="darkred",
+                               line_color=_C['red'],
                                annotation_text=f"VaR 99% ({risk['var_99']:.2%})")
             fig_dist.update_layout(title="Distribuição de Retornos",
                                    yaxis_title="Prob.",
                                    xaxis_tickformat=".1%",
-                                   height=350, template="plotly_white",
+                                   height=350, template=DASH_TEMPLATE,
                                    margin=dict(t=35, b=25))
 
             # Sumário de vol e risco
             summary_html = f"""
-            <div style='padding:10px; font-size:13px;'>
-                <b>Condições de Volatilidade</b><br>
-                IV 30d ATM: {iv_30d:.2%} | RV 30d: {rv_30d:.2%} |
-                Prêmio: {vol_premium:+.2f}% | Skew: {skew:+.2%}<br><br>
-                <b>Métricas de Risco Caudal</b><br>
-                VaR 95%: {risk['var_95']:.2%} | CVaR 95%: {risk['cvar_95']:.2%}<br>
-                VaR 99%: {risk['var_99']:.2%} | CVaR 99%: {risk['cvar_99']:.2%}<br><br>
-                <b>Posicionamento</b><br>
-                Gamma Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} |
-                Call Wall: {f'{call_wall:,.0f}' if call_wall else 'N/A'} |
-                Put Wall: {f'{put_wall:,.0f}' if put_wall else 'N/A'}
-            </div>"""
+            <div class='mm-dash'><div class='mm-card'>
+                <div class='mm-kpi-row'>
+                    <div class='mm-kpi'><div class='kpi-label'>IV 30d ATM</div><div class='kpi-value' style='color:{_C["accent"]}'>{iv_30d:.2%}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>RV 30d</div><div class='kpi-value' style='color:{_C["teal"]}'>{rv_30d:.2%}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>Prêmio</div><div class='kpi-value' style='color:{_C["orange"]}'>{vol_premium:+.2f}%</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>Skew</div><div class='kpi-value' style='color:{_C["purple"]}'>{skew:+.2%}</div></div>
+                </div>
+                <div class='mm-section-label'>Risco Caudal</div>
+                <div class='mm-kpi-row'>
+                    <div class='mm-kpi'><div class='kpi-label'>VaR 95%</div><div class='kpi-value' style='color:{_C["yellow"]}'>{risk['var_95']:.2%}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>CVaR 95%</div><div class='kpi-value' style='color:{_C["orange"]}'>{risk['cvar_95']:.2%}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>VaR 99%</div><div class='kpi-value' style='color:{_C["red"]}'>{risk['var_99']:.2%}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>CVaR 99%</div><div class='kpi-value' style='color:{_C["red"]}'>{risk['cvar_99']:.2%}</div></div>
+                </div>
+                <div class='mm-section-label'>Posicionamento</div>
+                <div class='mm-kpi-row'>
+                    <div class='mm-kpi'><div class='kpi-label'>Gamma Flip</div><div class='kpi-value'>~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>Call Wall</div><div class='kpi-value' style='color:{_C["green"]}'>{f'{call_wall:,.0f}' if call_wall else 'N/A'}</div></div>
+                    <div class='mm-kpi'><div class='kpi-label'>Put Wall</div><div class='kpi-value' style='color:{_C["red"]}'>{f'{put_wall:,.0f}' if put_wall else 'N/A'}</div></div>
+                </div>
+            </div></div>"""
 
             tab1 = wd.VBox([
-                wd.HBox([g_frag, g_vol, g_skew, g_move]),
+                wd.HBox([g_frag, g_vol, g_skew, g_move],
+                        layout={'justify_content': 'space-around'}),
                 wd.HBox([fig_gex, fig_dist]),
                 wd.HTML(summary_html)
             ])
@@ -2065,7 +2173,7 @@ def run_analysis(_):
                 styled = style_sensitivity_matrix(sens_matrices[key], cmap_map[key])
                 sens_html_parts.append(f"<h4>{titles_map[key]}</h4>{styled}<br>")
             tab3 = wd.VBox([
-                wd.HTML("<h3>Matrizes de Sensibilidade (Preço × Vol Shift)</h3>"),
+                wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Matrizes de Sensibilidade (Preço × Vol Shift)</h3></div></div>"),
                 wd.HTML("".join(sens_html_parts))
             ])
 
@@ -2075,42 +2183,42 @@ def run_analysis(_):
             fig_pnl.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['simple'] / 1e6,
                 mode='lines', name='Simplificado (Δ+Γ)',
-                line=dict(color='orange', dash='dot')))
+                line=dict(color=_C['orange'], dash='dot')))
             fig_pnl.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['complete'] / 1e6,
                 mode='lines', name='Completo (+Vega+Vanna+Zomma)',
-                line=dict(color='blue'), fill='tonexty',
-                fillcolor='rgba(0,0,255,0.08)'))
-            fig_pnl.add_vline(x=spot, line_dash="dash", line_color="red")
-            fig_pnl.add_hline(y=0, line_width=0.5, line_color="black")
+                line=dict(color=_C['accent']), fill='tonexty',
+                fillcolor='rgba(88,166,255,0.08)'))
+            fig_pnl.add_vline(x=spot, line_dash="dash", line_color=_C['red'])
+            fig_pnl.add_hline(y=0, line_width=0.5, line_color=_C['text_dim'])
             fig_pnl.update_layout(title="P&L Comparativo: Modelo Completo vs. Simplificado",
                                   yaxis_title="P&L ($ Mi)", xaxis_title="Preço do Ativo",
-                                  height=380, template="plotly_white")
+                                  height=380, template=DASH_TEMPLATE)
 
             # Dealer P&L
             fig_dealer = go.FigureWidget()
             fig_dealer.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['dealer'] / 1e6,
-                mode='lines', name='P&L Dealer', line_color='purple',
-                fill='tozeroy', fillcolor='rgba(128,0,128,0.08)'))
-            fig_dealer.add_vline(x=spot, line_dash="dash", line_color="red")
-            fig_dealer.add_hline(y=0, line_width=0.5, line_color="black")
+                mode='lines', name='P&L Dealer', line_color=_C['purple'],
+                fill='tozeroy', fillcolor='rgba(188,140,255,0.08)'))
+            fig_dealer.add_vline(x=spot, line_dash="dash", line_color=_C['red'])
+            fig_dealer.add_hline(y=0, line_width=0.5, line_color=_C['text_dim'])
             fig_dealer.update_layout(title="P&L Estimado do Market Maker",
                                      yaxis_title="P&L ($ Mi)", xaxis_title="Preço do Ativo",
-                                     height=380, template="plotly_white")
+                                     height=380, template=DASH_TEMPLATE)
 
             # Hedge demand
             fig_hedge = go.FigureWidget()
             fig_hedge.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['hedge_demand'],
-                mode='lines', line_color='teal', name='Contratos'))
-            fig_hedge.add_vline(x=spot, line_dash="dash", line_color="red")
-            fig_hedge.add_hline(y=0, line_width=0.5, line_color="black")
+                mode='lines', line_color=_C['teal'], name='Contratos'))
+            fig_hedge.add_vline(x=spot, line_dash="dash", line_color=_C['red'])
+            fig_hedge.add_hline(y=0, line_width=0.5, line_color=_C['text_dim'])
             fig_hedge.update_layout(
                 title=f"Demanda de Hedge em Futuros ({FUTURES_TICKER})",
                 yaxis_title="Número de Contratos",
                 xaxis_title="Preço do Ativo",
-                height=380, template="plotly_white")
+                height=380, template=DASH_TEMPLATE)
 
             tab4 = wd.VBox([fig_pnl, wd.HBox([fig_dealer, fig_hedge])])
 
@@ -2123,18 +2231,18 @@ def run_analysis(_):
             fig_mc_hist = go.FigureWidget()
             fig_mc_hist.add_trace(go.Histogram(
                 x=mc_pnl / 1e6, nbinsx=80,
-                marker_color='#636EFA', opacity=0.7, name='P&L'))
+                marker_color=_C['accent'], opacity=0.7, name='P&L'))
             fig_mc_hist.add_vline(x=sim_var_95 / 1e6, line_dash='dash',
-                                  line_color='orange',
+                                  line_color=_C['orange'],
                                   annotation_text=f'VaR 95% ${sim_var_95/1e6:,.1f}M')
             fig_mc_hist.add_vline(x=sim_var_99 / 1e6, line_dash='dash',
-                                  line_color='darkred',
+                                  line_color=_C['red'],
                                   annotation_text=f'VaR 99% ${sim_var_99/1e6:,.1f}M')
-            fig_mc_hist.add_vline(x=0, line_width=0.5, line_color='black')
+            fig_mc_hist.add_vline(x=0, line_width=0.5, line_color=_C['text_dim'])
             fig_mc_hist.update_layout(
                 title='Distribuição de P&L do Livro (10k Simulações t-Student, 1 Dia)',
                 xaxis_title='P&L ($ Mi)', yaxis_title='Frequência',
-                height=420, template='plotly_white')
+                height=420, template=DASH_TEMPLATE)
 
             mc_win_pct = (mc_pnl > 0).mean() * 100
             mc_table = pd.DataFrame({
@@ -2148,12 +2256,12 @@ def run_analysis(_):
                           f'${sim_cvar_95/1e6:,.2f} Mi',
                           f'${sim_var_99/1e6:,.2f} Mi',
                           f'${sim_cvar_99/1e6:,.2f} Mi']
-            }).to_html(classes='table table-sm', index=False, border=0)
+            }).to_html(classes='mm-table', index=False, border=0)
 
             tab5 = wd.VBox([
-                wd.HTML('<h3>Simulação Monte Carlo (t-Student)</h3>'),
+                wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Simulação Monte Carlo (t-Student)</h3></div></div>"),
                 wd.HBox([fig_mc_hist, wd.HTML(
-                    f"<div style='padding:20px;'>{mc_table}</div>")])
+                    f"<div class='mm-dash'><div class='mm-card'>{mc_table}</div></div>")])
             ])
 
             # ─── ABA 6: REBALANCEAMENTO ETFs + ALAVANCADOS ─────────────
@@ -2218,14 +2326,14 @@ def run_analysis(_):
                         .background_gradient(cmap='Reds', subset=['Flow_$'])
                         .to_html())
                     flow_ranking = wd.HBox([
-                        wd.VBox([wd.HTML("<h4>Top 30 — Recebem Fluxo de Compra</h4>"),
+                        wd.VBox([wd.HTML("<div class='mm-dash'><div class='mm-card'><h4>Top 30 — Fluxo de Compra</h4></div></div>"),
                                  wd.HTML(buy_html)]),
-                        wd.VBox([wd.HTML("<h4>Top 30 — Recebem Fluxo de Venda</h4>"),
+                        wd.VBox([wd.HTML("<div class='mm-dash'><div class='mm-card'><h4>Top 30 — Fluxo de Venda</h4></div></div>"),
                                  wd.HTML(sell_html)])
                     ])
 
                 tab6 = wd.VBox([
-                    wd.HTML(f"<h3>Rebalanceamento ETFs Passivos desde {etf_start}</h3>"),
+                    wd.HTML(f"<div class='mm-dash'><div class='mm-card'><h3>Rebalanceamento ETFs Passivos desde {etf_start}</h3></div></div>"),
                     etf_dd, flow_html, summary_html,
                     flow_ranking,
                     wd.HTML(lev_html_str)
@@ -2254,18 +2362,21 @@ def run_analysis(_):
                     .background_gradient(cmap='Reds', subset=['ExitScore'])
                     .to_html())
                 spx_rules_html = (
-                    "<div style='padding:10px; font-size:12px; color:#aaa;'>"
-                    "<b>Critérios S&P 500:</b> Market Cap ≥ $18B | "
-                    "Free Float ≥ 50% | FALR ≥ 0.75 | "
-                    "Lucro TTM > 0 e último trimestre > 0"
-                    "</div>")
+                    "<div class='mm-dash'><div class='mm-card' style='padding:10px;'>"
+                    "<span class='mm-section-label'>Critérios S&P 500</span> "
+                    f"<span class='mm-cot-label'>Market Cap ≥ $18B</span> "
+                    f"<span class='mm-cot-label'>Free Float ≥ 50%</span> "
+                    f"<span class='mm-cot-label'>FALR ≥ 0.75</span> "
+                    f"<span class='mm-cot-label'>Lucro TTM > 0</span> "
+                    f"<span class='mm-cot-label'>NI Q0 > 0</span>"
+                    "</div></div>")
                 tab7 = wd.VBox([
-                    wd.HTML("<h3>Previsão de Rebalanceamento S&P 500</h3>"),
+                    wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Previsão de Rebalanceamento S&P 500</h3></div></div>"),
                     wd.HTML(spx_rules_html),
                     wd.HBox([
-                        wd.VBox([wd.HTML("<h4>Top 30 — Candidatos a Entrar</h4>"),
+                        wd.VBox([wd.HTML("<div class='mm-dash'><div class='mm-card'><h4>Top 30 — Candidatos a Entrar</h4></div></div>"),
                                  wd.HTML(in_html)]),
-                        wd.VBox([wd.HTML("<h4>Top 30 — Candidatos a Sair</h4>"),
+                        wd.VBox([wd.HTML("<div class='mm-dash'><div class='mm-card'><h4>Top 30 — Candidatos a Sair</h4></div></div>"),
                                  wd.HTML(out_html)])
                     ])
                 ])
@@ -2287,26 +2398,26 @@ def run_analysis(_):
 
             fig_sim_dex = go.FigureWidget()
             fig_sim_dex.add_trace(go.Scatter(x=levels, y=np.zeros(len(levels)),
-                                             mode='lines', line_color='#3498DB',
+                                             mode='lines', line_color=_C['accent'],
                                              name='Delta'))
             fig_sim_dex.update_layout(title="Delta Nocional", yaxis_title="$ Bi",
-                                      height=300, template="plotly_white",
+                                      height=300, template=DASH_TEMPLATE,
                                       margin=dict(t=30, b=20))
 
             fig_sim_gex = go.FigureWidget()
             fig_sim_gex.add_trace(go.Scatter(x=levels, y=np.zeros(len(levels)),
-                                             mode='lines', line_color='#E74C3C',
+                                             mode='lines', line_color=_C['red'],
                                              name='Gamma'))
             fig_sim_gex.update_layout(title="Gamma (GEX)", yaxis_title="$ Bi / 1% move",
-                                      height=300, template="plotly_white",
+                                      height=300, template=DASH_TEMPLATE,
                                       margin=dict(t=30, b=20))
 
             fig_sim_vega = go.FigureWidget()
             fig_sim_vega.add_trace(go.Scatter(x=levels, y=np.zeros(len(levels)),
-                                              mode='lines', line_color='#8E44AD',
+                                              mode='lines', line_color=_C['purple'],
                                               name='Vega'))
             fig_sim_vega.update_layout(title="Vega Nocional", yaxis_title="$ Mi",
-                                       height=300, template="plotly_white",
+                                       height=300, template=DASH_TEMPLATE,
                                        margin=dict(t=30, b=20))
 
             def _update_simulator(change=None):
@@ -2337,8 +2448,10 @@ def run_analysis(_):
             _update_simulator()
 
             tab8 = wd.VBox([
-                wd.HTML("<h3>Simulador Interativo de Gregas</h3>"
-                        "<p>Ajuste vol e tempo para ver como as exposições mudam.</p>"),
+                wd.HTML("<div class='mm-dash'><div class='mm-card'>"
+                        "<h3>Simulador Interativo de Gregas</h3>"
+                        "<p>Ajuste vol e tempo para ver como as exposições mudam.</p>"
+                        "</div></div>"),
                 wd.HBox([vol_slider, dte_slider]),
                 wd.HBox([fig_sim_dex, fig_sim_gex]),
                 fig_sim_vega
@@ -2450,106 +2563,60 @@ def run_analysis(_):
                 urgency = '🟢 BAIXA — Posição confortável'
 
             report_html = f"""
-            <div style='font-family: monospace; font-size: 13px; padding: 15px;
-                        background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;'>
-            <h2 style='color:#2c3e50;'>COCKPIT DO MARKET MAKER</h2>
-            <p>Análise: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Spot: ${spot:,.2f} |
-               {len(df)} opções | Urgência: {urgency}</p>
-            <hr>
+            <div class='mm-dash'>
+            <div class='mm-card'>
+            <h3 style='font-size:18px;'>COCKPIT DO MARKET MAKER</h3>
+            <p>Análise: {datetime.now().strftime('%Y-%m-%d %H:%M')} │ Spot: ${spot:,.2f} │
+               {len(df)} opções │ {urgency}</p>
+            </div>
 
-            <h3 style='color:#e74c3c;'>DECISÕES RECOMENDADAS</h3>
-
-            <table style='border-collapse:collapse; width:100%; font-size:13px;'>
-            <tr style='background:#ecf0f1;'>
-                <th style='text-align:left; padding:8px; width:20%;'>Dimensão</th>
-                <th style='text-align:center; padding:8px; width:20%;'>Sinal</th>
-                <th style='text-align:left; padding:8px; width:60%;'>Ação Recomendada</th></tr>
-            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Delta (Direção)</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{delta_signal}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{delta_rec}</td></tr>
-            <tr style='background:#f9f9f9;'>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Gamma (Regime)</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{gex_signal}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{gex_rec}</td></tr>
-            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Vol Premium</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{vol_signal}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{vol_rec}</td></tr>
-            <tr style='background:#f9f9f9;'>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Skew</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{skew_signal}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{skew_rec}</td></tr>
-            <tr><td style='padding:8px; border-bottom:1px solid #ddd;'><b>Vanna (Vol→Spot)</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>
-                    {'🔴' if vanna_impact > 0 else '🟢'} {vanna_action}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{vanna_rec}</td></tr>
-            <tr style='background:#f9f9f9;'>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'><b>Theta vs Gamma</b></td>
-                <td style='text-align:center; padding:8px; border-bottom:1px solid #ddd;'>{tg_signal}</td>
-                <td style='padding:8px; border-bottom:1px solid #ddd;'>{tg_rec}</td></tr>
+            <div class='mm-card'>
+            <h3>DECISÕES RECOMENDADAS</h3>
+            <table class='mm-table'>
+            <tr><th>Dimensão</th><th>Sinal</th><th>Ação Recomendada</th></tr>
+            <tr><td><b>Delta (Direção)</b></td><td style='text-align:center;'>{delta_signal}</td><td>{delta_rec}</td></tr>
+            <tr><td><b>Gamma (Regime)</b></td><td style='text-align:center;'>{gex_signal}</td><td>{gex_rec}</td></tr>
+            <tr><td><b>Vol Premium</b></td><td style='text-align:center;'>{vol_signal}</td><td>{vol_rec}</td></tr>
+            <tr><td><b>Skew</b></td><td style='text-align:center;'>{skew_signal}</td><td>{skew_rec}</td></tr>
+            <tr><td><b>Vanna (Vol→Spot)</b></td><td style='text-align:center;'>{'🔴' if vanna_impact > 0 else '🟢'} {vanna_action}</td><td>{vanna_rec}</td></tr>
+            <tr><td><b>Theta vs Gamma</b></td><td style='text-align:center;'>{tg_signal}</td><td>{tg_rec}</td></tr>
             </table>
+            </div>
 
-            <hr>
-            <h3 style='color:#2c3e50;'>POSIÇÃO ATUAL</h3>
-
-            <table style='border-collapse: collapse; width: 100%;'>
-            <tr><th style='text-align:left; padding:5px; border-bottom:1px solid #ccc;'>
-                Exposição</th>
-                <th style='text-align:right; padding:5px; border-bottom:1px solid #ccc;'>
-                Valor</th>
-                <th style='text-align:left; padding:5px; border-bottom:1px solid #ccc;'>
-                Interpretação</th></tr>
-            <tr><td style='padding:5px'>Delta Nocional</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(delta_notional)}</td>
-                <td style='padding:5px'>Hedge: {hedge_action} {abs(hedge_contracts):,.0f} {FUTURES_TICKER}</td></tr>
-            <tr><td style='padding:5px'>GEX Total</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(total_gex_val)}</td>
-                <td style='padding:5px'>Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} | {gamma_regime}</td></tr>
-            <tr><td style='padding:5px'>Vega</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(total_vega)}</td>
-                <td style='padding:5px'>P&L por 1% de aumento na vol</td></tr>
-            <tr><td style='padding:5px'>Vanna</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(vanna_impact)}</td>
-                <td style='padding:5px'>Fluxo de rebalanceamento se vol mudar</td></tr>
-            <tr><td style='padding:5px'>Zomma</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(total_zomma)}</td>
-                <td style='padding:5px'>Regime ficaria {zomma_action} com vol</td></tr>
-            <tr><td style='padding:5px'>Speed</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(total_speed)}</td>
-                <td style='padding:5px'>Aceleração do gamma por $1 no spot</td></tr>
-            <tr><td style='padding:5px'>Charm (diário)</td>
-                <td style='text-align:right; padding:5px'>{fmt_value(total_charm)}</td>
-                <td style='padding:5px'>Decaimento do delta overnight</td></tr>
+            <div class='mm-card'>
+            <h3>POSIÇÃO ATUAL</h3>
+            <table class='mm-table'>
+            <tr><th>Exposição</th><th style='text-align:right;'>Valor</th><th>Interpretação</th></tr>
+            <tr><td>Delta Nocional</td><td style='text-align:right;'>{fmt_value(delta_notional)}</td><td>Hedge: {hedge_action} {abs(hedge_contracts):,.0f} {FUTURES_TICKER}</td></tr>
+            <tr><td>GEX Total</td><td style='text-align:right;'>{fmt_value(total_gex_val)}</td><td>Flip: ~{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} │ {gamma_regime}</td></tr>
+            <tr><td>Vega</td><td style='text-align:right;'>{fmt_value(total_vega)}</td><td>P&L por 1% de aumento na vol</td></tr>
+            <tr><td>Vanna</td><td style='text-align:right;'>{fmt_value(vanna_impact)}</td><td>Fluxo de rebalanceamento se vol mudar</td></tr>
+            <tr><td>Zomma</td><td style='text-align:right;'>{fmt_value(total_zomma)}</td><td>Regime ficaria {zomma_action} com vol</td></tr>
+            <tr><td>Speed</td><td style='text-align:right;'>{fmt_value(total_speed)}</td><td>Aceleração do gamma por $1 no spot</td></tr>
+            <tr><td>Charm (diário)</td><td style='text-align:right;'>{fmt_value(total_charm)}</td><td>Decaimento do delta overnight</td></tr>
             </table>
+            </div>
 
-            <hr>
-            <h3 style='color:#2c3e50;'>RISCO CAUDAL</h3>
-            <table style='border-collapse:collapse; width:60%;'>
-            <tr style='background:#ecf0f1;'>
-                <th style='padding:6px;'>Métrica</th>
-                <th style='padding:6px;'>Paramétrico</th>
-                <th style='padding:6px;'>Monte Carlo</th></tr>
-            <tr><td style='padding:6px;'>VaR 95%</td>
-                <td style='padding:6px;'>{risk['var_95']:.2%}</td>
-                <td style='padding:6px;'>${sim_var_95/1e6:,.2f} Mi</td></tr>
-            <tr style='background:#f9f9f9;'>
-                <td style='padding:6px;'>CVaR 95%</td>
-                <td style='padding:6px;'>{risk['cvar_95']:.2%}</td>
-                <td style='padding:6px;'>${sim_cvar_95/1e6:,.2f} Mi</td></tr>
-            <tr><td style='padding:6px;'>VaR 99%</td>
-                <td style='padding:6px;'>{risk['var_99']:.2%}</td>
-                <td style='padding:6px;'>${sim_var_99/1e6:,.2f} Mi</td></tr>
-            <tr style='background:#f9f9f9;'>
-                <td style='padding:6px;'>CVaR 99%</td>
-                <td style='padding:6px;'>{risk['cvar_99']:.2%}</td>
-                <td style='padding:6px;'>${sim_cvar_99/1e6:,.2f} Mi</td></tr>
+            <div class='mm-card'>
+            <h3>RISCO CAUDAL</h3>
+            <table class='mm-table' style='width:70%;'>
+            <tr><th>Métrica</th><th>Paramétrico</th><th>Monte Carlo</th></tr>
+            <tr><td>VaR 95%</td><td style='color:{_C['yellow']}'>{risk['var_95']:.2%}</td><td style='color:{_C['yellow']}'>${sim_var_95/1e6:,.2f} Mi</td></tr>
+            <tr><td>CVaR 95%</td><td style='color:{_C['orange']}'>{risk['cvar_95']:.2%}</td><td style='color:{_C['orange']}'>${sim_cvar_95/1e6:,.2f} Mi</td></tr>
+            <tr><td>VaR 99%</td><td style='color:{_C['red']}'>{risk['var_99']:.2%}</td><td style='color:{_C['red']}'>${sim_var_99/1e6:,.2f} Mi</td></tr>
+            <tr><td>CVaR 99%</td><td style='color:{_C['red']}'>{risk['cvar_99']:.2%}</td><td style='color:{_C['red']}'>${sim_cvar_99/1e6:,.2f} Mi</td></tr>
             </table>
+            </div>
 
-            <hr>
-            <h3 style='color:#2c3e50;'>NÍVEIS-CHAVE</h3>
-            <p>🔵 <b>Call Wall:</b> {f'{call_wall:,.0f}' if call_wall else 'N/A'} — Resistência forte. MM vende acima deste nível.</p>
-            <p>🔴 <b>Put Wall:</b> {f'{put_wall:,.0f}' if put_wall else 'N/A'} — Suporte forte. MM compra abaixo deste nível.</p>
-            <p>🟡 <b>Gamma Flip:</b> {f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'} — Acima = estabilidade, Abaixo = aceleração.</p>
-            <p>📊 <b>Mov. Implícito 1D:</b> ±{daily_move:.2f}% (±${spot * daily_move / 100:,.0f})</p>
+            <div class='mm-card'>
+            <h3>NÍVEIS-CHAVE</h3>
+            <div class='mm-kpi-row'>
+                <div class='mm-kpi'><div class='kpi-label'>Call Wall</div><div class='kpi-value' style='color:{_C['green']}'>{f'{call_wall:,.0f}' if call_wall else 'N/A'}</div><div style='font-size:11px;color:{_C['text_muted']}'>Resistência forte</div></div>
+                <div class='mm-kpi'><div class='kpi-label'>Put Wall</div><div class='kpi-value' style='color:{_C['red']}'>{f'{put_wall:,.0f}' if put_wall else 'N/A'}</div><div style='font-size:11px;color:{_C['text_muted']}'>Suporte forte</div></div>
+                <div class='mm-kpi'><div class='kpi-label'>Gamma Flip</div><div class='kpi-value' style='color:{_C['yellow']}'>{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'}</div><div style='font-size:11px;color:{_C['text_muted']}'>Acima = estabilidade</div></div>
+                <div class='mm-kpi'><div class='kpi-label'>Mov. Implícito 1D</div><div class='kpi-value' style='color:{_C['accent']}'>±{daily_move:.2f}%</div><div style='font-size:11px;color:{_C['text_muted']}'>±${spot * daily_move / 100:,.0f}</div></div>
+            </div>
+            </div>
             </div>"""
 
             tab9 = wd.VBox([wd.HTML(report_html)])
@@ -2558,12 +2625,14 @@ def run_analysis(_):
             if fp_ok and fp_score is not None:
                 # Score summary header
                 fp_title = wd.HTML(
-                    f"<h2>Flow Predictor — {ticker}</h2>"
+                    f"<div class='mm-dash'><div class='mm-card'>"
+                    f"<h3 style='font-size:18px;'>Flow Predictor — {ticker}</h3>"
                     f"<p>Direction: <b style='color:"
-                    f"{'green' if fp_score['direction'] == 'BULLISH' else 'red' if fp_score['direction'] == 'BEARISH' else 'gray'}'>"
-                    f"{fp_score['direction']}</b> | "
-                    f"P(Up): {fp_score['prob_up']:.1%} | "
-                    f"Score: {fp_score['combined_score']:+.2f}</p>")
+                    f"{_C['green'] if fp_score['direction'] == 'BULLISH' else _C['red'] if fp_score['direction'] == 'BEARISH' else _C['text_muted']}'>"
+                    f"{fp_score['direction']}</b> │ "
+                    f"P(Up): {fp_score['prob_up']:.1%} │ "
+                    f"Score: {fp_score['combined_score']:+.2f}</p>"
+                    f"</div></div>")
 
                 # Sub-tab A: Score
                 st_a = wd.VBox([
@@ -2574,7 +2643,7 @@ def run_analysis(_):
                 ])
 
                 # Sub-tab B: Histórico
-                st_b_children = [wd.HTML("<h3>Histórico de Fluxo — ETFs Alavancados</h3>")]
+                st_b_children = [wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Histórico de Fluxo — ETFs Alavancados</h3></div></div>")]
                 if not fp_flow_hist.empty:
                     st_b_children.append(fp_plot_flow_history(fp_flow_hist))
                     st_b_children.append(fp_bqp_flow_bar_line(fp_flow_hist.tail(60)))
@@ -2583,17 +2652,19 @@ def run_analysis(_):
 
                 # Sub-tab C: Buyback
                 st_c_children = [
-                    wd.HTML("<h3>Estimativa de Buyback</h3>"
-                            "<p><i>⚠️ Confiança baixa: não temos % ADV executado"
-                            " nem saldo restante.</i></p>")]
+                    wd.HTML("<div class='mm-dash'><div class='mm-card'>"
+                            "<h3>Estimativa de Buyback</h3>"
+                            "<p>⚠️ Confiança baixa: não temos % ADV executado"
+                            " nem saldo restante.</p></div></div>")]
                 bb_html = (
-                    f"<table style='font-size:14px'>"
-                    f"<tr><td>Anunciado:</td><td>${fp_buyback.get('announced', 0):,.0f}</td></tr>"
-                    f"<tr><td>Estimativa diária:</td><td>${fp_buyback.get('daily_est', 0):,.0f}</td></tr>"
-                    f"<tr><td>% ADV estimado:</td><td>"
+                    f"<div class='mm-dash'><div class='mm-card'>"
+                    f"<table class='mm-table' style='width:auto;'>"
+                    f"<tr><td>Anunciado:</td><td style='text-align:right;'>${fp_buyback.get('announced', 0):,.0f}</td></tr>"
+                    f"<tr><td>Estimativa diária:</td><td style='text-align:right;'>${fp_buyback.get('daily_est', 0):,.0f}</td></tr>"
+                    f"<tr><td>% ADV estimado:</td><td style='text-align:right;'>"
                     f"{fp_buyback.get('pct_adv_est', 0):.2f}%</td></tr>"
-                    f"<tr><td>Confiança:</td><td>{fp_buyback.get('confidence', 'N/A')}</td></tr>"
-                    f"</table>")
+                    f"<tr><td>Confiança:</td><td style='text-align:right;'>{fp_buyback.get('confidence', 'N/A')}</td></tr>"
+                    f"</table></div></div>")
                 st_c_children.append(wd.HTML(bb_html))
                 try:
                     bb_df = estimate_index_buyback_flow(ticker, top_n=30)
@@ -2610,13 +2681,15 @@ def run_analysis(_):
                 _basket_col = ('Basket Returns' if cot_basket_w.value == 'Basket Returns'
                                else 'Price')
                 st_d_children = [wd.HTML(
+                    f"<div class='mm-dash'><div class='mm-card'>"
                     f"<h3>COT — Commitment of Traders</h3>"
-                    f"<p style='color:#aaa;'>Data Type: <b>{_cot_data_col}</b> | "
-                    f"Direction: <b>{_cot_dir}</b> | "
-                    f"Trader: <b>{cot_trader_w.value}</b> | "
-                    f"Report: <b>{cot_report_w.value}</b> | "
-                    f"Commitment: <b>{cot_commitment_w.value}</b> | "
-                    f"Period: <b>{cot_start_w.value} → {cot_end_w.value}</b></p>")]
+                    f"<p><span class='mm-cot-label'>Data: <b>{_cot_data_col}</b></span> "
+                    f"<span class='mm-cot-label'>Direction: <b>{_cot_dir}</b></span> "
+                    f"<span class='mm-cot-label'>Trader: <b>{cot_trader_w.value}</b></span> "
+                    f"<span class='mm-cot-label'>Report: <b>{cot_report_w.value}</b></span> "
+                    f"<span class='mm-cot-label'>Commitment: <b>{cot_commitment_w.value}</b></span> "
+                    f"<span class='mm-cot-label'>Period: <b>{cot_start_w.value} → {cot_end_w.value}</b></span></p>"
+                    f"</div></div>")]
                 cot_ok_fp2, cot_fut_fp2 = has_cot(ticker)
                 if cot_ok_fp2 and fp_cot_df is not None and not fp_cot_df.empty:
                     st_d_children.append(
@@ -2651,17 +2724,20 @@ def run_analysis(_):
                     st_d_children.append(fp_grid_cot_stats(sel_stats))
                     sel_seas = cot_seasonality(fp_selected_cot_df)
                     st_d_children.append(wd.HBox([
-                        fp_plot_positions_basket(fp_selected_cot_df),
+                        fp_plot_positions_basket(fp_selected_cot_df,
+                                                basket_col=_basket_col,
+                                                data_col=_cot_data_col),
                         fp_plot_long_short_net(fp_selected_cot_df)
                     ]))
                     st_d_children.append(wd.HBox([
-                        fp_plot_dispersion(sel_seas, fp_selected_cot_df),
+                        fp_plot_dispersion(sel_seas, fp_selected_cot_df,
+                                          col=_cot_data_col),
                         fp_plot_multi_year(fp_selected_cot_df)
                     ]))
                 st_d = wd.VBox(st_d_children)
 
                 # Sub-tab E: Correlação
-                st_e_children = [wd.HTML("<h3>Análise de Correlação</h3>")]
+                st_e_children = [wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Análise de Correlação</h3></div></div>")]
                 if not fp_flow_hist.empty:
                     df_test = fp_flow_hist.copy()
                     df_test['flow_signal'] = np.sign(df_test['LevETF_Flow'])
@@ -2713,14 +2789,28 @@ def run_analysis(_):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 run_btn.on_click(run_analysis)
+
+_ctrl_box_layout = wd.Layout(
+    border=f'1px solid {_C["border"]}',
+    border_radius='8px',
+    padding='12px',
+    margin='4px 0',
+)
+
+display(wd.HTML(DASH_CSS))
 display(wd.VBox([
-    wd.HBox([ticker_w, dte_w]),
-    mny_w,
-    wd.HBox([run_btn, spx_pred_w, flow_pred_w]),
-    wd.HTML("<b>COT Controls:</b>"),
-    wd.HBox([cot_type_w, cot_contract_w]),
-    wd.HBox([cot_datatype_w, cot_direction_w, cot_commitment_w, cot_obligation_w]),
-    wd.HBox([cot_trader_w, cot_report_w]),
-    wd.HBox([cot_start_w, cot_end_w, cot_basket_w]),
+    wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>Parâmetros da Análise</div></div>"),
+    wd.VBox([
+        wd.HBox([ticker_w, dte_w]),
+        mny_w,
+        wd.HBox([run_btn, spx_pred_w, flow_pred_w]),
+    ], layout=_ctrl_box_layout),
+    wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
+    wd.VBox([
+        wd.HBox([cot_type_w, cot_contract_w]),
+        wd.HBox([cot_datatype_w, cot_direction_w, cot_commitment_w, cot_obligation_w]),
+        wd.HBox([cot_trader_w, cot_report_w]),
+        wd.HBox([cot_start_w, cot_end_w, cot_basket_w]),
+    ], layout=_ctrl_box_layout),
     out_main
 ]))
