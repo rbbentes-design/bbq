@@ -2038,9 +2038,9 @@ def run_analysis(_):
                 if lev_ok and lev_flows is not None:
                     lev_html_str = (
                         f"<h4>ETFs Alavancados (Retorno diário: {daily_ret*100:+.2f}%)</h4>" +
-                        lev_flows[['Leverage', 'AUM', 'Rebalance_$', 'Direção']]
+                        lev_flows[['Leverage', 'AUM_$', 'Rebalance_$', 'Direção']]
                         .style.format({
-                            'AUM': '${:,.0f}', 'Rebalance_$': '${:,.0f}'})
+                            'AUM_$': '${:,.0f}', 'Rebalance_$': '${:,.0f}'})
                         .to_html() +
                         f"<p><b>Fluxo Direcional Total: ${lev_total:,.0f}</b></p>")
                 else:
