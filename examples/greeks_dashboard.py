@@ -26,6 +26,8 @@ from IPython.display import display, clear_output, HTML
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from functools import lru_cache
+from typing import Optional, Dict, List, Tuple
 import math
 import traceback
 from scipy.stats import norm, t as student_t
@@ -38,9 +40,16 @@ import warnings
 
 try:
     import ipydatagrid as ipd
+    from ipydatagrid import DataGrid, BarRenderer, TextRenderer
     HAS_DATAGRID = True
 except ImportError:
     HAS_DATAGRID = False
+
+try:
+    import bqplot as bqp
+    HAS_BQPLOT = True
+except ImportError:
+    HAS_BQPLOT = False
 
 try:
     from sklearn.preprocessing import StandardScaler
@@ -85,6 +94,66 @@ LEVERAGED_ETFS = [
     {'ticker': 'SPXS US Equity', 'name': 'SPXS', 'leverage': -3},
     {'ticker': 'SPXU US Equity', 'name': 'SPXU', 'leverage': -3},
 ]
+
+# ETFs alavancados estendidos (para flow predictor — inclui NDX e SOX)
+LEVERAGED_ETFS_EXT = LEVERAGED_ETFS + [
+    {'ticker': 'TQQQ US Equity', 'name': 'TQQQ', 'leverage': 3, 'under': 'NDX Index'},
+    {'ticker': 'SQQQ US Equity', 'name': 'SQQQ', 'leverage': -3, 'under': 'NDX Index'},
+    {'ticker': 'SOXL US Equity', 'name': 'SOXL', 'leverage': 3, 'under': 'SOX Index'},
+    {'ticker': 'SOXS US Equity', 'name': 'SOXS', 'leverage': -3, 'under': 'SOX Index'},
+]
+
+# Mapeamento: ticker → futures com dados COT
+COT_FUTURES_MAP = {
+    'SPX Index': 'ES1 Comdty', 'NDX Index': 'NQ1 Comdty',
+    'RTY Index': 'RA1 Comdty', 'INDU Index': 'DM1 Comdty',
+    'SPXL US Equity': 'ES1 Comdty', 'SPXS US Equity': 'ES1 Comdty',
+    'TQQQ US Equity': 'NQ1 Comdty', 'SQQQ US Equity': 'NQ1 Comdty',
+    'NG1 Comdty': 'NG1 Comdty', 'CL1 Comdty': 'CL1 Comdty',
+    'CO1 Comdty': 'CO1 Comdty', 'GC1 Comdty': 'GC1 Comdty',
+    'SI1 Comdty': 'SI1 Comdty', 'HG1 Comdty': 'HG1 Comdty',
+    'W 1 Comdty': 'W 1 Comdty', 'S 1 Comdty': 'S 1 Comdty',
+    'C 1 Comdty': 'C 1 Comdty',
+}
+
+COT_CONTRACTS = {
+    'Equity Indices': [
+        ('S&P 500 E-mini', 'ES1 Comdty'),
+        ('Nasdaq 100 E-mini', 'NQ1 Comdty'),
+        ('Russell 2000 E-mini', 'RA1 Comdty'),
+    ],
+    'Energy': [
+        ('WTI Crude', 'CL1 Comdty'),
+        ('Brent Crude', 'CO1 Comdty'),
+        ('Natural Gas', 'NG1 Comdty'),
+    ],
+    'Metals': [
+        ('Gold', 'GC1 Comdty'),
+        ('Silver', 'SI1 Comdty'),
+        ('Copper', 'HG1 Comdty'),
+    ],
+    'Agriculture': [
+        ('Wheat', 'W 1 Comdty'),
+        ('Soybeans', 'S 1 Comdty'),
+        ('Corn', 'C 1 Comdty'),
+    ],
+}
+
+# Estimativas padrão de AUM ($ USD) para cálculo rápido de fluxo
+DEFAULT_AUM = {
+    'SPXL': 5e9, 'UPRO': 3e9, 'SSO': 4e9,
+    'SH': 2e9, 'SDS': 0.8e9, 'SPXS': 1e9, 'SPXU': 0.8e9,
+    'TQQQ': 20e9, 'SQQQ': 5e9, 'SOXL': 10e9, 'SOXS': 3e9,
+}
+
+# Layout padrão Plotly (style escuro para gráficos de flow)
+FLOW_FIG_LAYOUT = {
+    'template': 'plotly_dark',
+    'font': {'family': 'Nunito', 'size': 13},
+    'legend': {'orientation': 'h', 'yanchor': 'bottom', 'y': -0.3,
+               'xanchor': 'center', 'x': 0.5},
+    'margin': {'t': 40, 'b': 40, 'l': 10, 'r': 10},
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -699,6 +768,642 @@ def build_spx_prediction():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5C — COT ENGINE (Commitment of Traders)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fp_last_numeric_col(df_in):
+    for c in df_in.columns[::-1]:
+        if pd.api.types.is_numeric_dtype(df_in[c]):
+            return c
+    return None
+
+
+def _fp_get_data(universe, data_items, with_params=None, preferences=None):
+    """Executa BQL Request e retorna DataFrame com multi-index [ID, Date]."""
+    req = bql.Request(universe, data_items,
+                      with_params=with_params, preferences=preferences)
+    response = bq.execute(req)
+    df_r = pd.concat([di.df() for di in response], axis=1)
+    df_r = df_r.loc[:, ~df_r.columns.duplicated()]
+    if 'DATE' in df_r.columns:
+        df_r = df_r.set_index('DATE', append=True)
+    df_r = df_r.loc[:, data_items.keys()]
+    df_r.index.names = ['ID', 'Date']
+    return df_r
+
+
+def has_cot(ticker):
+    """Verifica se o ticker possui dados COT. Retorna (True, futures_ticker) ou (False, None)."""
+    if ticker in COT_FUTURES_MAP:
+        return True, COT_FUTURES_MAP[ticker]
+    if ticker.strip().endswith('Comdty'):
+        return True, ticker
+    return False, None
+
+
+def fetch_cot_data(futures_ticker, trader_type='Managed Money',
+                   report_type='CFTC Disaggregated', start='-6Y', end='0D'):
+    """Busca dados COT do BQL para um contrato futuro."""
+    dates = bq.func.range(start, end, frq='d')
+    kwargs = {
+        'report_type': report_type.replace(' ', '_'),
+        'trader_type': trader_type.replace(' ', '_'),
+    }
+    data_items = {
+        'Traders': bq.data.cot_traders(**kwargs),
+        'Positions': bq.data.cot_position(**kwargs),
+        'Price': bq.data.px_last(fill='prev'),
+        'Open Interest': bq.data.fut_aggte_open_int(),
+    }
+    for direction in ['Long', 'Short', 'Net']:
+        data_items[f'Positions - {direction}'] = (
+            bq.data.cot_position(**kwargs)
+            .with_updated_parameters(direction=direction))
+    w_params = {'currency': 'usd', 'dates': dates, 'crop_year': ['NA', 'combined']}
+    df_r = _fp_get_data(futures_ticker, data_items,
+                        with_params=w_params,
+                        preferences={'unitscheck': 'ignore'})
+    date_vals = pd.to_datetime(df_r.index.get_level_values('Date'))
+    iso = date_vals.isocalendar()
+    df_r['week'] = iso.week.values
+    df_r['year'] = iso.year.values
+    if 'Positions - Short' in df_r.columns:
+        df_r['Positions - Short'] = df_r['Positions - Short'] * -1
+    return df_r.dropna(subset=['Traders', 'Positions'])
+
+
+def aggregate_cot(df_cot):
+    """Agrega COT por data (caso de múltiplos contratos)."""
+    cols_skip = ['year', 'week', 'Price']
+    aggs = {c: 'sum' for c in df_cot.columns if c not in cols_skip}
+    out = df_cot.groupby('Date').agg(
+        **{**{c: (c, agg) for c, agg in aggs.items()},
+           'week': ('week', 'first'),
+           'year': ('year', 'first'),
+           'Price': ('Price', 'mean')})
+    out['Basket Returns'] = (1 + out['Price'].pct_change()).cumprod() - 1
+    return out
+
+
+def cot_seasonality(df_cot):
+    """Estatísticas semanais de sazonalidade COT."""
+    cols = ['Traders', 'Positions', 'Open Interest', 'week']
+    avail = [c for c in cols if c in df_cot.columns]
+    return (df_cot[avail].groupby('week')
+            .agg(['mean', 'max', 'sum', 'min'])
+            .rename(columns=lambda x: x.title()))
+
+
+def cot_summary_stats(df_cot):
+    """Estatísticas resumo: último valor, WoW change, percentil 5Y, mediana, z-score."""
+    summary = pd.Series(dtype=float)
+    for col in ['Positions', 'Traders']:
+        if col not in df_cot.columns:
+            continue
+        s = df_cot[col].dropna()
+        if len(s) < 3:
+            continue
+        stats = pd.Series({
+            col: s.iloc[-1],
+            f'{col} Change': s.iloc[-1] - s.iloc[-2] if len(s) >= 2 else np.nan,
+            f'{col} 5Y Percentile': pd.cut(s, 100, labels=False).iloc[-1],
+            f'{col} 5Y Median': s.median(),
+            f'{col} 5Y Z-Score': (s.iloc[-1] - s.mean()) / max(s.std(), 1e-9),
+        })
+        summary = pd.concat([summary, stats])
+    return summary
+
+
+def safe_fetch_cot(ticker, **kwargs):
+    """Tenta buscar COT. Retorna None se não disponível."""
+    ok, fut = has_cot(ticker)
+    if not ok:
+        return None
+    try:
+        df_r = fetch_cot_data(fut, **kwargs)
+        if df_r.empty:
+            return None
+        return aggregate_cot(df_r)
+    except Exception:
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5D — ESTIMATIVA DE BUYBACK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=128)
+def fetch_buyback_data(ticker):
+    """Busca dados de buyback via BQL. Retorna dict com campos disponíveis."""
+    fields_try = {
+        'announced': 'ANNOUNCED_BUYBACK_AMT',
+        'mkt_cap': 'CUR_MKT_CAP',
+        'sh_out': 'EQY_SH_OUT',
+        'px': 'PX_LAST',
+        'adv20': 'VOLUME_AVG_20D',
+    }
+    result = {}
+    for key, field_name in fields_try.items():
+        try:
+            fld = getattr(bq.data, field_name.lower(), None)
+            if fld is None:
+                continue
+            req = bql.Request([ticker], fld())
+            df_r = bq.execute(req)[0].df()
+            if df_r is not None and not df_r.empty:
+                vcol = _fp_last_numeric_col(df_r)
+                if vcol:
+                    val = pd.to_numeric(df_r[vcol], errors='coerce').dropna()
+                    if len(val) > 0:
+                        result[key] = float(val.iloc[-1])
+        except Exception:
+            continue
+    return result
+
+
+def estimate_buyback_flow(ticker, horizon_days=252):
+    """
+    Estima fluxo diário de buyback.
+    Confiança baixa: não temos % ADV executado nem saldo restante.
+    """
+    data = fetch_buyback_data(ticker)
+    announced = data.get('announced', 0)
+    if not announced or announced <= 0:
+        return {'daily_est': 0, 'pct_adv_est': 0,
+                'confidence': 'none', 'announced': 0}
+    execution_rate = 0.80
+    daily_est = (announced * execution_rate) / max(horizon_days, 1)
+    adv = data.get('adv20', 0)
+    px = data.get('px', 0)
+    adv_usd = adv * px if (adv and px) else 0
+    pct_adv = (daily_est / adv_usd * 100) if adv_usd > 0 else np.nan
+    return {'daily_est': daily_est, 'pct_adv_est': pct_adv,
+            'confidence': 'low', 'announced': announced,
+            'mkt_cap': data.get('mkt_cap', np.nan)}
+
+
+def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
+    """Estima fluxo de buyback para os maiores membros de um índice."""
+    try:
+        uni = bq.univ.members(index_ticker)
+        items = {'ticker': bq.data.id(), 'cap': bq.data.cur_mkt_cap()}
+        try:
+            items['buyback'] = bq.data.announced_buyback_amt()
+        except Exception:
+            pass
+        try:
+            items['adv'] = bq.data.volume_avg_20d()
+        except Exception:
+            pass
+        try:
+            items['px'] = bq.data.px_last()
+        except Exception:
+            pass
+        req = bql.Request(uni, items)
+        df_r = bq.execute(req)[0].df()
+        if df_r is None or df_r.empty:
+            return pd.DataFrame()
+        rename = {}
+        for c in df_r.columns:
+            cl = str(c).lower()
+            if 'id' in cl or 'ticker' in cl:
+                rename[c] = 'ticker'
+            elif 'cap' in cl and 'mkt' in cl:
+                rename[c] = 'cap'
+            elif 'buyback' in cl:
+                rename[c] = 'buyback'
+            elif 'volume' in cl or 'adv' in cl:
+                rename[c] = 'adv'
+            elif 'px_last' in cl:
+                rename[c] = 'px'
+        df_r = df_r.rename(columns=rename)
+        if 'cap' in df_r.columns:
+            df_r['cap'] = pd.to_numeric(df_r['cap'], errors='coerce')
+            df_r = df_r.nlargest(top_n, 'cap')
+        if 'buyback' not in df_r.columns:
+            df_r['buyback'] = 0
+        df_r['buyback'] = pd.to_numeric(df_r['buyback'], errors='coerce').fillna(0)
+        df_r['daily_est'] = df_r['buyback'] * 0.80 / TRADING_DAYS
+        if 'adv' in df_r.columns and 'px' in df_r.columns:
+            adv_usd = (pd.to_numeric(df_r['adv'], errors='coerce')
+                       * pd.to_numeric(df_r['px'], errors='coerce'))
+            df_r['pct_adv_est'] = (df_r['daily_est'] / adv_usd.replace(0, np.nan)) * 100
+        else:
+            df_r['pct_adv_est'] = np.nan
+        df_r['confidence'] = 'low'
+        if 'ticker' in df_r.columns:
+            df_r = df_r.set_index('ticker')
+        return df_r[['cap', 'buyback', 'daily_est', 'pct_adv_est', 'confidence']]
+    except Exception:
+        return pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5E — FLOW SCORING & AGREGAÇÃO PREDITIVA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def flow_zscore(current, history):
+    """Z-score do valor atual relativo ao histórico."""
+    if history is None or len(history) < 5:
+        return np.nan
+    mu = history.mean()
+    sigma = history.std()
+    if sigma < 1e-12:
+        return 0.0
+    return (current - mu) / sigma
+
+
+def compute_leveraged_flow_simple(daily_return, aum_estimates=None):
+    """Calcula fluxo total de rebalanceamento sem BQL call."""
+    if aum_estimates is None:
+        aum_estimates = DEFAULT_AUM
+    total = 0
+    for etf in LEVERAGED_ETFS_EXT:
+        L = etf['leverage']
+        r = daily_return
+        aum = aum_estimates.get(etf['name'], 1e9)
+        denom = 1 + L * r
+        if abs(denom) > 1e-12:
+            total += aum * L * (L - 1) * r / denom
+    return total
+
+
+def build_flow_history(ticker='SPX Index', lookback=252):
+    """Constrói série histórica de fluxo de rebalanceamento de ETFs alavancados."""
+    item = bq.data.px_last(dates=bq.func.range(f'-{lookback + 10}D', '0D'), fill='PREV')
+    try:
+        df_r = bq.execute(bql.Request([ticker], item))[0].df()
+        if df_r is None or df_r.empty:
+            return pd.DataFrame()
+        dcol = next((c for c in df_r.columns if 'date' in str(c).lower()), None)
+        vcol = _fp_last_numeric_col(df_r)
+        if dcol is None or vcol is None:
+            return pd.DataFrame()
+        px = df_r.set_index(dcol)[vcol].astype(float).sort_index()
+        px.index = pd.to_datetime(px.index)
+    except Exception:
+        return pd.DataFrame()
+    rets = px.pct_change().dropna()
+    flows = rets.apply(compute_leveraged_flow_simple)
+    flows.name = 'LevETF_Flow'
+    return pd.DataFrame({'Return': rets, 'LevETF_Flow': flows})
+
+
+def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
+                       spx_rebal_prob=0.5, history_leveraged=None,
+                       history_cot=None):
+    """
+    Computa score combinado de fluxo contratado.
+    Pesos: ETFs alav. 40%, Buyback 20%, COT 20%, SPX rebal 20%.
+    """
+    z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else 0
+    z_cot = flow_zscore(cot_net_change, history_cot) if history_cot is not None else 0
+    z_buyback = np.clip(buyback_daily / 1e8, -3, 3) if buyback_daily else 0
+    z_spx = (spx_rebal_prob - 0.5) * 4
+
+    w_lev, w_buy, w_cot, w_spx = 0.40, 0.20, 0.20, 0.20
+    if history_cot is None or len(history_cot) < 5:
+        w_lev, w_buy, w_spx = 0.50, 0.25, 0.25
+        w_cot = 0.0
+
+    combined = w_lev * z_lev + w_buy * z_buyback + w_cot * z_cot + w_spx * z_spx
+
+    if combined > 0.5:
+        direction = "BULLISH"
+    elif combined < -0.5:
+        direction = "BEARISH"
+    else:
+        direction = "NEUTRAL"
+
+    prob_up = 1.0 / (1.0 + math.exp(-combined))
+    return {
+        'z_leveraged': z_lev, 'z_buyback': z_buyback,
+        'z_cot': z_cot, 'z_spx_rebal': z_spx,
+        'combined_score': combined, 'direction': direction,
+        'prob_up': prob_up, 'prob_down': 1.0 - prob_up,
+        'weights': {'leveraged': w_lev, 'buyback': w_buy,
+                    'cot': w_cot, 'spx_rebal': w_spx},
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5F — VISUALIZAÇÕES DO FLOW PREDICTOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _flow_border(fig_widget):
+    return wd.VBox([fig_widget], layout={
+        'border': '1px solid white', 'margin': '10px',
+        'padding': '10px', 'width': '98%'})
+
+
+def fp_plot_score_gauge(score):
+    """Gauge chart do score combinado de fluxo."""
+    prob = score.get('prob_up', 0.5)
+    direction = score.get('direction', 'NEUTRAL')
+    colors = {'BULLISH': 'green', 'BEARISH': 'red', 'NEUTRAL': 'gray'}
+    fig = go.FigureWidget(go.Indicator(
+        mode="gauge+number+delta", value=prob * 100,
+        title={'text': f"Flow Score: {direction}"},
+        delta={'reference': 50, 'increasing': {'color': 'green'},
+               'decreasing': {'color': 'red'}},
+        gauge={
+            'axis': {'range': [0, 100]},
+            'bar': {'color': colors.get(direction, 'gray')},
+            'steps': [
+                {'range': [0, 30], 'color': '#ffcccc'},
+                {'range': [30, 70], 'color': '#ffffcc'},
+                {'range': [70, 100], 'color': '#ccffcc'}],
+            'threshold': {'line': {'color': 'black', 'width': 3},
+                          'thickness': 0.8, 'value': prob * 100}
+        }))
+    fig.update_layout(height=280, margin=dict(t=50, b=20, l=20, r=20),
+                      **{k: v for k, v in FLOW_FIG_LAYOUT.items()
+                         if k != 'margin'})
+    return fig
+
+
+def fp_plot_components_bar(score):
+    """Barras dos componentes do flow score."""
+    components = {
+        'ETFs Alav.': score.get('z_leveraged', 0),
+        'Buyback': score.get('z_buyback', 0),
+        'COT': score.get('z_cot', 0),
+        'SPX Rebal': score.get('z_spx_rebal', 0),
+    }
+    weights = score.get('weights', {})
+    names = list(components.keys())
+    values = list(components.values())
+    w_vals = [weights.get(k, 0.25) for k in ['leveraged', 'buyback', 'cot', 'spx_rebal']]
+    colors_bar = ['#3498DB' if v >= 0 else '#E74C3C' for v in values]
+    fig = go.FigureWidget()
+    fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
+                         name='Z-Score', text=[f'{v:+.2f}' for v in values],
+                         textposition='outside'))
+    fig.add_trace(go.Scatter(x=names, y=w_vals, name='Peso',
+                             yaxis='y2', mode='markers+text',
+                             text=[f'{w:.0%}' for w in w_vals],
+                             textposition='top center',
+                             marker=dict(size=10, color='white')))
+    fig.update_layout(title='Componentes do Flow Score',
+                      yaxis_title='Z-Score',
+                      yaxis2=dict(overlaying='y', side='right',
+                                  title='Peso', range=[0, 1]),
+                      **FLOW_FIG_LAYOUT)
+    return fig
+
+
+def fp_plot_flow_history(flow_hist):
+    """Série histórica de fluxo vs retorno."""
+    if flow_hist.empty:
+        fig = go.FigureWidget()
+        fig.update_layout(title="Sem histórico de fluxo")
+        return fig
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.add_trace(go.Scatter(x=flow_hist.index, y=flow_hist['LevETF_Flow'],
+                             name='Lev ETF Flow', line=dict(color='orange', width=1)),
+                  secondary_y=False)
+    fig.add_trace(go.Scatter(x=flow_hist.index, y=flow_hist['Return'],
+                             name='Return', line=dict(color='white', width=1)),
+                  secondary_y=True)
+    fig.update_layout(title='Fluxo ETFs Alavancados vs Retorno',
+                      hovermode='x unified', **FLOW_FIG_LAYOUT)
+    fig.update_yaxes(title_text='Flow ($)', secondary_y=False)
+    fig.update_yaxes(title_text='Return', secondary_y=True)
+    return go.FigureWidget(fig)
+
+
+def fp_plot_positions_basket(df_cot, basket_col='Price', data_col='Positions'):
+    """Dual-axis: positions + preço."""
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.add_trace(go.Scatter(
+        x=df_cot.index, y=df_cot[data_col], name=data_col,
+        yaxis='y1', line=dict(width=1), marker_color='orange'))
+    if basket_col in df_cot.columns:
+        fig.add_trace(go.Scatter(
+            x=df_cot.index, y=df_cot[basket_col], name=basket_col,
+            yaxis='y2', line=dict(width=1), marker_color='white'))
+    fig.update_yaxes(zeroline=False, showgrid=False)
+    fig.layout.yaxis.update(title_text=data_col)
+    fig.layout.yaxis2.update(title_text=basket_col)
+    fig.update_layout(title='Positions & Basket Price', **FLOW_FIG_LAYOUT)
+    return _flow_border(go.FigureWidget(fig))
+
+
+def fp_plot_long_short_net(df_cot):
+    """Barras Long/Short + linha Net."""
+    fig = go.FigureWidget()
+    for name, color in [('Long', 'grey'), ('Short', 'white')]:
+        col = f'Positions - {name}'
+        if col in df_cot.columns:
+            fig.add_trace(go.Bar(x=df_cot.index, y=df_cot[col],
+                                 name=name, marker_color=color))
+    if 'Positions - Net' in df_cot.columns:
+        fig.add_trace(go.Scatter(x=df_cot.index, y=df_cot['Positions - Net'],
+                                 name='Net', marker_color='orange'))
+    fig.update_layout(barmode='relative',
+                      title='Long, Short & Net Positions',
+                      yaxis_title='Positions', hovermode='x unified',
+                      **FLOW_FIG_LAYOUT)
+    return _flow_border(fig)
+
+
+def fp_plot_correlation(df_cot, window=26):
+    """Rolling correlation entre preço e net positions."""
+    if 'Price' not in df_cot.columns or 'Positions - Net' not in df_cot.columns:
+        return wd.VBox([wd.HTML("<p>Sem dados para correlação.</p>")])
+    corr = (df_cot[['Price', 'Positions - Net']].pct_change()
+            .rolling(window).corr().unstack()[('Price', 'Positions - Net')])
+    fig = go.FigureWidget(go.Scatter(
+        x=corr.index, y=corr.values, name='Corr',
+        line=dict(width=1), marker_color='orange'))
+    fig.update_yaxes(zeroline=False, showgrid=False)
+    fig.layout.yaxis.update(title_text='Correlation')
+    fig.update_layout(title='Rolling Correlation: Price Δ vs Net Length Δ',
+                      **FLOW_FIG_LAYOUT)
+    return _flow_border(fig)
+
+
+def fp_plot_long_short_ratio(df_cot):
+    """Long/Short ratio."""
+    if 'Positions - Long' not in df_cot.columns or 'Positions - Short' not in df_cot.columns:
+        return wd.VBox([wd.HTML("<p>Sem dados L/S.</p>")])
+    ratio = df_cot['Positions - Long'] / df_cot['Positions - Short'] * -1
+    fig = go.FigureWidget(go.Scatter(
+        x=ratio.index, y=ratio.values, name='L/S Ratio',
+        line=dict(width=1, color='#ff991c')))
+    fig.update_yaxes(zeroline=False, showgrid=False)
+    fig.layout.yaxis.update(title_text='Ratio')
+    fig.update_layout(title='Long/Short Ratio', **FLOW_FIG_LAYOUT)
+    return _flow_border(fig)
+
+
+def fp_plot_multi_year(df_cot):
+    """Gráfico sazonal multi-ano."""
+    if 'week' not in df_cot.columns or 'year' not in df_cot.columns:
+        return wd.VBox([wd.HTML("<p>Sem dados semanais.</p>")])
+    pivot = df_cot.pivot(columns='year', index='week', values='Positions')
+    pivot = pivot.iloc[:, -6:]
+    fig = go.FigureWidget()
+    colors_yr = ['#ffffff', 'lightgrey', 'darkgrey', '#ffd793', 'orange', '#ec8100']
+    for col_name, color in zip(pivot.columns, colors_yr):
+        fig.add_trace(go.Scatter(
+            x=pivot.index, y=pivot[col_name], mode='lines',
+            line=dict(color=color), name=str(col_name)))
+    fig.update_layout(hovermode='x unified', yaxis_title='Positions',
+                      title='Seasonal Analysis', **FLOW_FIG_LAYOUT)
+    return _flow_border(fig)
+
+
+def fp_plot_dispersion(seasonality_df, df_cot, col='Positions'):
+    """Dispersion chart: min/max band + mean + current year."""
+    seas = seasonality_df[col].copy() if col in seasonality_df.columns else pd.DataFrame()
+    if seas.empty:
+        return wd.VBox([wd.HTML("<p>Sem dados de sazonalidade.</p>")])
+    current_year = pd.Timestamp.now().year
+    yr_data = df_cot[df_cot.index.year == current_year] if hasattr(df_cot.index, 'year') else pd.DataFrame()
+    if not yr_data.empty and 'week' in yr_data.columns and col in yr_data.columns:
+        seas['Current'] = yr_data.set_index('week')[col]
+    fig = go.FigureWidget()
+    for name, fill in [('Max', None), ('Min', 'tonexty')]:
+        if name in seas.columns:
+            fig.add_trace(go.Scatter(
+                x=seas.index, y=seas[name], mode='lines', name=name,
+                fill=fill, fillcolor='gray',
+                line=dict(color='gray', width=0), showlegend=False))
+    for name, color in [('Mean', 'orange'), ('Current', 'white')]:
+        if name in seas.columns:
+            fig.add_trace(go.Scatter(
+                x=seas.index, y=seas[name], mode='lines+markers',
+                name=name, line=dict(color=color)))
+    fig.update_layout(title='5Y Dispersion', xaxis_title='Weeks',
+                      yaxis_title=col, hovermode='x unified',
+                      xaxis=dict(range=[1, 53]), **FLOW_FIG_LAYOUT)
+    return _flow_border(fig)
+
+
+def fp_bqp_flow_bar_line(flow_df, bar_col='LevETF_Flow', line_col='Return'):
+    """Bar + line overlay usando bqplot."""
+    if not HAS_BQPLOT or flow_df.empty:
+        return wd.HTML("<p>bqplot não disponível ou sem dados.</p>")
+    scale_x = bqp.DateScale()
+    scale_y = bqp.LinearScale()
+    mark_bar = bqp.Bars(
+        x=flow_df.index, y=flow_df[bar_col],
+        scales={'x': scale_x, 'y': scale_y}, colors=['#1B84ED'],
+        tooltip=bqp.Tooltip(fields=['y', 'x'], show_labels=False,
+                            formats=['.0f', '%Y/%m/%d']))
+    marks = [mark_bar]
+    if line_col in flow_df.columns:
+        scale_y2 = bqp.LinearScale()
+        mark_line = bqp.Lines(
+            x=flow_df.index, y=flow_df[line_col], stroke_width=2,
+            scales={'x': scale_x, 'y': scale_y2}, colors=['#CF7DFF'])
+        marks.append(mark_line)
+    ax_y = bqp.Axis(scale=scale_y, orientation='vertical', label='Flow ($)')
+    ax_x = bqp.Axis(scale=scale_x)
+    return bqp.Figure(
+        marks=marks, axes=[ax_x, ax_y],
+        title='Fluxo de ETFs Alavancados',
+        title_style={'font-size': '18px'}, padding_y=0,
+        fig_margin={'top': 50, 'bottom': 50, 'left': 60, 'right': 50},
+        layout={'width': 'auto', 'height': '400px'})
+
+
+def fp_bqp_scatter(flow_df):
+    """Scatter plot: flow vs return (bqplot)."""
+    if not HAS_BQPLOT or flow_df.empty:
+        return wd.HTML("<p>bqplot não disponível ou sem dados.</p>")
+    scale_x = bqp.LinearScale()
+    scale_y = bqp.LinearScale()
+    tooltip = bqp.Tooltip(fields=['x', 'y'], labels=['Flow', 'Return'],
+                          formats=['.0f', '.4f'])
+    mark = bqp.Scatter(
+        x=flow_df['LevETF_Flow'], y=flow_df['Return'],
+        tooltip=tooltip, scales={'x': scale_x, 'y': scale_y},
+        default_size=32, colors=['#FF5A00'])
+    ax_x = bqp.Axis(scale=scale_x, label='Flow ($)')
+    ax_y = bqp.Axis(scale=scale_y, orientation='vertical', label='Return')
+    return bqp.Figure(
+        marks=[mark], axes=[ax_x, ax_y],
+        title='Flow vs Return', title_style={'font-size': '18px'},
+        padding_x=0.05, padding_y=0.05,
+        layout={'width': '100%', 'height': '400px'})
+
+
+def fp_grid_flow_score(score):
+    """Tabela interativa do flow score."""
+    if not HAS_DATAGRID:
+        rows_html = [f"<tr><td>{k}</td><td>{v:.3f}</td></tr>"
+                     for k, v in score.items() if isinstance(v, (int, float))]
+        return wd.HTML(f"<table>{''.join(rows_html)}</table>")
+    data = {
+        'Componente': ['ETFs Alavancados', 'Buyback', 'COT', 'SPX Rebal',
+                        'Score Combinado'],
+        'Z-Score': [score.get('z_leveraged', 0), score.get('z_buyback', 0),
+                    score.get('z_cot', 0), score.get('z_spx_rebal', 0),
+                    score.get('combined_score', 0)],
+        'Prob Up (%)': [np.nan, np.nan, np.nan, np.nan,
+                        score.get('prob_up', 0.5) * 100],
+    }
+    df_s = pd.DataFrame(data).set_index('Componente')
+    try:
+        linear_scale = bqp.LinearScale(min=-3, max=3)
+        color_scale = bqp.ColorScale(min=-3, max=3,
+                                     colors=['#E74C3C', '#FFFFFF', '#2ECC71'])
+        renderers = {
+            'Z-Score': BarRenderer(bar_value=linear_scale, format='.2f',
+                                   bar_color=color_scale,
+                                   horizontal_alignment='center'),
+        }
+    except Exception:
+        renderers = {}
+    return DataGrid(df_s, renderers=renderers, base_column_size=150,
+                    layout={'height': '200px'})
+
+
+def fp_grid_cot_stats(stats):
+    """Tabela de estatísticas COT."""
+    if stats.empty:
+        return wd.HTML("<p>Sem dados COT.</p>")
+    df_s = stats.to_frame('Value')
+    if not HAS_DATAGRID:
+        return wd.HTML(df_s.to_html())
+    try:
+        from ipydatagrid import VegaExpr
+        renderers = {
+            'Value': TextRenderer(
+                background_color=VegaExpr(
+                    "cell.value < -1 ? '#EE0D2D' : "
+                    "cell.value > 1 ? '#20B020' : 'transparent'"),
+                format='.2f')
+        }
+    except Exception:
+        renderers = {}
+    return DataGrid(df_s, renderers=renderers, base_column_size=150,
+                    base_row_header_size=200, layout={'height': '300px'})
+
+
+def fp_grid_buyback(buyback_df):
+    """Tabela de buyback por empresa."""
+    if buyback_df.empty:
+        return wd.HTML("<p>Sem dados de buyback.</p>")
+    if not HAS_DATAGRID:
+        return wd.HTML(buyback_df.head(20).to_html())
+    try:
+        scale = bqp.LinearScale(min=0, max=buyback_df['daily_est'].max())
+        renderers = {
+            'daily_est': BarRenderer(bar_value=scale, format='$,.0f',
+                                     bar_color='#2ECC71',
+                                     horizontal_alignment='right'),
+        }
+    except Exception:
+        renderers = {}
+    return DataGrid(buyback_df.head(30), renderers=renderers,
+                    base_column_size=120, base_row_header_size=140,
+                    layout={'height': '400px'})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 6 — MATRIZES DE SENSIBILIDADE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -889,6 +1594,34 @@ run_btn = wd.Button(description='Gerar Análise Completa',
                     button_style='success', icon='cogs')
 spx_pred_w = wd.Checkbox(value=False, description='Incluir Previsão SPX',
                          indent=False, layout={'width': '250px'})
+flow_pred_w = wd.Checkbox(value=True, description='Incluir Flow Predictor',
+                          indent=False, layout={'width': '250px'})
+cot_type_w = wd.Dropdown(
+    options=list(COT_CONTRACTS.keys()),
+    value='Equity Indices', description='COT Categoria:',
+    layout={'width': '280px'})
+cot_contract_w = wd.SelectMultiple(
+    description='Contratos:', layout={'min_width': '300px', 'height': '80px'})
+cot_trader_w = wd.Dropdown(
+    options=['Managed Money', 'Total', 'Commercial', 'Non-Commercial',
+             'Swap Dealers', 'Leveraged Funds', 'Asset Manager'],
+    value='Managed Money', description='Trader Type:',
+    layout={'width': '280px'})
+cot_report_w = wd.Dropdown(
+    options=['CFTC Disaggregated', 'CFTC TFF', 'CFTC Legacy'],
+    value='CFTC Disaggregated', description='Report Type:',
+    layout={'width': '280px'})
+
+
+def _update_cot_contracts(change=None):
+    opts = COT_CONTRACTS.get(cot_type_w.value, [])
+    cot_contract_w.options = opts
+    if opts:
+        cot_contract_w.value = (opts[0][1],)
+
+cot_type_w.observe(_update_cot_contracts, names='value')
+_update_cot_contracts()
+
 out_main = wd.Output()
 
 
@@ -905,7 +1638,7 @@ def run_analysis(_):
 
         try:
             # ── 1. Dados de Mercado ──────────────────────────────────────
-            loading.value = "<h4>1/11: Buscando dados de mercado...</h4>"
+            loading.value = "<h4>1/14: Buscando dados de mercado...</h4>"
             mkt = fetch_market_data(ticker)
             spot = mkt['spot']
             iv_30d = mkt['iv_30d']
@@ -917,17 +1650,17 @@ def run_analysis(_):
                 raise ValueError(f"Spot inválido para {ticker}")
 
             # ── 2. Histórico + Modelo de Risco ───────────────────────────
-            loading.value = "<h4>2/11: Modelagem de risco (t-Student)...</h4>"
+            loading.value = "<h4>2/14: Modelagem de risco (t-Student)...</h4>"
             _, log_returns = fetch_historical(ticker)
             risk = fit_risk_model(log_returns)
 
             # ── 3. Cadeia de Opções ──────────────────────────────────────
-            loading.value = "<h4>3/11: Buscando cadeia de opções...</h4>"
+            loading.value = "<h4>3/14: Buscando cadeia de opções...</h4>"
             df, from_strike, to_strike = fetch_options_chain(
                 ticker, spot, min_dte, max_dte, mny_low, mny_high)
 
             # ── 4. Gregas + Exposições ───────────────────────────────────
-            loading.value = f"<h4>4/11: Calculando gregas para {len(df)} opções...</h4>"
+            loading.value = f"<h4>4/14: Calculando gregas para {len(df)} opções...</h4>"
             greeks_now = calculate_all_greeks(
                 spot, df.Strike.values, df.IV.values, df.Tte.values, df.Type.values)
             agg = compute_strike_exposures(df, greeks_now, spot)
@@ -937,7 +1670,7 @@ def run_analysis(_):
                 print(f"⚠️ Call Wall = Put Wall = {call_wall:,.0f}")
 
             # ── 5. Curvas Modelo ─────────────────────────────────────────
-            loading.value = "<h4>5/11: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
+            loading.value = "<h4>5/14: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
             levels = np.linspace(from_strike, to_strike, 100)
             model_curves = compute_model_curves(df, levels)
 
@@ -951,19 +1684,19 @@ def run_analysis(_):
             gamma_curve = model_curves['Gamma']
 
             # ── 6. Matrizes de Sensibilidade ─────────────────────────────
-            loading.value = "<h4>6/11: Matrizes de sensibilidade (7×5×7)...</h4>"
+            loading.value = "<h4>6/14: Matrizes de sensibilidade (7×5×7)...</h4>"
             sens_matrices = compute_sensitivity_matrices(df, spot)
 
             # ── 7. Monte Carlo ───────────────────────────────────────────
-            loading.value = "<h4>7/11: Simulação Monte Carlo (10k cenários)...</h4>"
+            loading.value = "<h4>7/14: Simulação Monte Carlo (10k cenários)...</h4>"
             mc_pnl, mc_prices = run_monte_carlo(spot, df, risk)
 
             # ── 8. Curvas de P&L ─────────────────────────────────────────
-            loading.value = "<h4>8/11: Curvas de P&L e hedge demand...</h4>"
+            loading.value = "<h4>8/14: Curvas de P&L e hedge demand...</h4>"
             pnl_curves = compute_pnl_curves(greeks_now, df, spot, levels, skew)
 
             # ── 9. Rebalanceamento ETFs ──────────────────────────────────
-            loading.value = "<h4>9/11: Fluxo de rebalanceamento ETFs passivos...</h4>"
+            loading.value = "<h4>9/14: Fluxo de rebalanceamento ETFs passivos...</h4>"
             try:
                 etf_flows, etf_summary, etf_start = compute_full_etf_flows()
                 etf_ok = True
@@ -971,7 +1704,7 @@ def run_analysis(_):
                 etf_flows, etf_summary, etf_start, etf_ok = {}, None, None, False
 
             # ── 10. ETFs Alavancados ─────────────────────────────────────
-            loading.value = "<h4>10/11: Fluxo de ETFs alavancados...</h4>"
+            loading.value = "<h4>10/14: Fluxo de ETFs alavancados...</h4>"
             try:
                 daily_ret = log_returns.iloc[-1] if len(log_returns) > 0 else 0
                 lev_flows, lev_total = compute_leveraged_flows(daily_ret)
@@ -981,7 +1714,7 @@ def run_analysis(_):
                 daily_ret = 0
 
             # ── 11. Previsão SPX (opcional — pesado) ─────────────────────
-            loading.value = "<h4>11/11: Previsão de rebalanceamento SPX...</h4>"
+            loading.value = "<h4>11/14: Previsão de rebalanceamento SPX...</h4>"
             spx_pred_ok = False
             top_in_spx, top_out_spx = None, None
             if spx_pred_w.value and HAS_SKLEARN:
@@ -990,6 +1723,82 @@ def run_analysis(_):
                     spx_pred_ok = True
                 except Exception as pred_err:
                     print(f"⚠️ Previsão SPX falhou: {pred_err}")
+
+            # ── 12. Flow Predictor — Histórico + Buyback ─────────────────
+            fp_ok = False
+            fp_flow_hist = pd.DataFrame()
+            fp_buyback = {'daily_est': 0, 'pct_adv_est': 0,
+                          'confidence': 'none', 'announced': 0}
+            fp_score = None
+            fp_cot_df = None
+            fp_cot_stats = pd.Series(dtype=float)
+            fp_selected_cot_df = None
+
+            if flow_pred_w.value:
+                loading.value = "<h4>12/14: Flow Predictor — histórico + buyback...</h4>"
+                try:
+                    fp_flow_hist = build_flow_history(ticker, lookback=252)
+                    fp_today_flow = (compute_leveraged_flow_simple(
+                        float(fp_flow_hist['Return'].iloc[-1]))
+                        if not fp_flow_hist.empty else 0)
+                    fp_buyback = estimate_buyback_flow(ticker)
+                    fp_buyback_daily = fp_buyback.get('daily_est', 0)
+                except Exception as fp_err:
+                    print(f"⚠️ Flow hist/buyback: {fp_err}")
+                    fp_today_flow = 0
+                    fp_buyback_daily = 0
+
+                # ── 13. Flow Predictor — COT ─────────────────────────────
+                loading.value = "<h4>13/14: Flow Predictor — COT...</h4>"
+                cot_ok_fp, cot_fut_fp = has_cot(ticker)
+                cot_net_change = 0
+                history_cot = None
+
+                if cot_ok_fp:
+                    try:
+                        fp_cot_df = safe_fetch_cot(
+                            ticker,
+                            trader_type=cot_trader_w.value,
+                            report_type=cot_report_w.value)
+                        if fp_cot_df is not None and not fp_cot_df.empty:
+                            fp_cot_stats = cot_summary_stats(fp_cot_df)
+                            if 'Positions - Net' in fp_cot_df.columns:
+                                net = fp_cot_df['Positions - Net'].dropna()
+                                if len(net) >= 2:
+                                    cot_net_change = float(net.iloc[-1] - net.iloc[-2])
+                                    history_cot = net.diff().dropna()
+                    except Exception:
+                        pass
+
+                # COT de contratos selecionados
+                selected_cots = list(cot_contract_w.value)
+                if selected_cots:
+                    try:
+                        sel_df = fetch_cot_data(
+                            selected_cots[0] if len(selected_cots) == 1
+                            else bq.univ.list(selected_cots),
+                            trader_type=cot_trader_w.value,
+                            report_type=cot_report_w.value)
+                        if not sel_df.empty:
+                            fp_selected_cot_df = aggregate_cot(sel_df)
+                    except Exception:
+                        pass
+
+                # ── 14. Flow Score Combinado ─────────────────────────────
+                loading.value = "<h4>14/14: Calculando flow score...</h4>"
+                try:
+                    lev_history = (fp_flow_hist['LevETF_Flow']
+                                   if not fp_flow_hist.empty else None)
+                    fp_score = compute_flow_score(
+                        leveraged_flow=fp_today_flow,
+                        buyback_daily=fp_buyback_daily,
+                        cot_net_change=cot_net_change,
+                        spx_rebal_prob=0.5,
+                        history_leveraged=lev_history,
+                        history_cot=history_cot)
+                    fp_ok = True
+                except Exception as fp_err:
+                    print(f"⚠️ Flow score: {fp_err}")
 
             clear_output(wait=True)
 
@@ -1558,15 +2367,136 @@ def run_analysis(_):
 
             tab9 = wd.VBox([wd.HTML(report_html)])
 
+            # ─── ABA 10: FLOW PREDICTOR ──────────────────────────────────
+            if fp_ok and fp_score is not None:
+                # Score summary header
+                fp_title = wd.HTML(
+                    f"<h2>Flow Predictor — {ticker}</h2>"
+                    f"<p>Direction: <b style='color:"
+                    f"{'green' if fp_score['direction'] == 'BULLISH' else 'red' if fp_score['direction'] == 'BEARISH' else 'gray'}'>"
+                    f"{fp_score['direction']}</b> | "
+                    f"P(Up): {fp_score['prob_up']:.1%} | "
+                    f"Score: {fp_score['combined_score']:+.2f}</p>")
+
+                # Sub-tab A: Score
+                st_a = wd.VBox([
+                    fp_title,
+                    wd.HBox([fp_plot_score_gauge(fp_score),
+                             fp_plot_components_bar(fp_score)]),
+                    fp_grid_flow_score(fp_score)
+                ])
+
+                # Sub-tab B: Histórico
+                st_b_children = [wd.HTML("<h3>Histórico de Fluxo — ETFs Alavancados</h3>")]
+                if not fp_flow_hist.empty:
+                    st_b_children.append(fp_plot_flow_history(fp_flow_hist))
+                    st_b_children.append(fp_bqp_flow_bar_line(fp_flow_hist.tail(60)))
+                    st_b_children.append(fp_bqp_scatter(fp_flow_hist))
+                st_b = wd.VBox(st_b_children)
+
+                # Sub-tab C: Buyback
+                st_c_children = [
+                    wd.HTML("<h3>Estimativa de Buyback</h3>"
+                            "<p><i>⚠️ Confiança baixa: não temos % ADV executado"
+                            " nem saldo restante.</i></p>")]
+                bb_html = (
+                    f"<table style='font-size:14px'>"
+                    f"<tr><td>Anunciado:</td><td>${fp_buyback.get('announced', 0):,.0f}</td></tr>"
+                    f"<tr><td>Estimativa diária:</td><td>${fp_buyback.get('daily_est', 0):,.0f}</td></tr>"
+                    f"<tr><td>% ADV estimado:</td><td>"
+                    f"{fp_buyback.get('pct_adv_est', 0):.2f}%</td></tr>"
+                    f"<tr><td>Confiança:</td><td>{fp_buyback.get('confidence', 'N/A')}</td></tr>"
+                    f"</table>")
+                st_c_children.append(wd.HTML(bb_html))
+                try:
+                    bb_df = estimate_index_buyback_flow(ticker, top_n=30)
+                    if not bb_df.empty:
+                        st_c_children.append(wd.HTML("<h4>Top Buybacks do Índice</h4>"))
+                        st_c_children.append(fp_grid_buyback(bb_df))
+                except Exception:
+                    pass
+                st_c = wd.VBox(st_c_children)
+
+                # Sub-tab D: COT
+                st_d_children = [wd.HTML("<h3>COT — Commitment of Traders</h3>")]
+                cot_ok_fp2, cot_fut_fp2 = has_cot(ticker)
+                if cot_ok_fp2 and fp_cot_df is not None and not fp_cot_df.empty:
+                    st_d_children.append(
+                        wd.HTML(f"<p>Futures: <b>{cot_fut_fp2}</b> | "
+                                f"Trader: {cot_trader_w.value}</p>"))
+                    st_d_children.append(fp_grid_cot_stats(fp_cot_stats))
+                    seas = cot_seasonality(fp_cot_df)
+                    st_d_children.append(wd.HBox([
+                        fp_plot_positions_basket(fp_cot_df),
+                        fp_plot_dispersion(seas, fp_cot_df)
+                    ]))
+                    st_d_children.append(fp_plot_long_short_net(fp_cot_df))
+                    st_d_children.append(wd.HBox([
+                        fp_plot_long_short_ratio(fp_cot_df),
+                        fp_plot_correlation(fp_cot_df)
+                    ]))
+                    st_d_children.append(fp_plot_multi_year(fp_cot_df))
+                elif cot_ok_fp2:
+                    st_d_children.append(
+                        wd.HTML(f"<p>COT disponível para {cot_fut_fp2}, "
+                                "mas sem dados retornados.</p>"))
+                else:
+                    st_d_children.append(
+                        wd.HTML(f"<p>{ticker} não possui dados COT vinculados. "
+                                "Use os contratos selecionados abaixo.</p>"))
+
+                if fp_selected_cot_df is not None and not fp_selected_cot_df.empty:
+                    sel_label = ', '.join(selected_cots)
+                    st_d_children.append(wd.HTML(f"<hr><h4>COT: {sel_label}</h4>"))
+                    sel_stats = cot_summary_stats(fp_selected_cot_df)
+                    st_d_children.append(fp_grid_cot_stats(sel_stats))
+                    sel_seas = cot_seasonality(fp_selected_cot_df)
+                    st_d_children.append(wd.HBox([
+                        fp_plot_positions_basket(fp_selected_cot_df),
+                        fp_plot_long_short_net(fp_selected_cot_df)
+                    ]))
+                    st_d_children.append(wd.HBox([
+                        fp_plot_dispersion(sel_seas, fp_selected_cot_df),
+                        fp_plot_multi_year(fp_selected_cot_df)
+                    ]))
+                st_d = wd.VBox(st_d_children)
+
+                # Sub-tab E: Correlação
+                st_e_children = [wd.HTML("<h3>Análise de Correlação</h3>")]
+                if not fp_flow_hist.empty:
+                    df_test = fp_flow_hist.copy()
+                    df_test['flow_signal'] = np.sign(df_test['LevETF_Flow'])
+                    df_test['next_ret'] = df_test['Return'].shift(-1)
+                    df_test['hit'] = (np.sign(df_test['flow_signal'])
+                                      == np.sign(df_test['next_ret']))
+                    hit_rate = df_test['hit'].mean()
+                    st_e_children.append(wd.HTML(
+                        f"<p><b>Hit Rate (flow signal vs next-day return):"
+                        f"</b> {hit_rate:.1%} ({len(df_test)} obs)</p>"
+                        f"<p><i>Nota: fluxo de rebalanceamento é contra-tendência"
+                        f" (mean-reverting). Hit rate &lt; 50% é esperado.</i></p>"))
+                st_e = wd.VBox(st_e_children)
+
+                fp_tabs = wd.Tab()
+                fp_tabs.children = [st_a, st_b, st_c, st_d, st_e]
+                for idx_t, nm in enumerate(['Score', 'Histórico', 'Buyback', 'COT', 'Correlação']):
+                    fp_tabs.set_title(idx_t, nm)
+                tab10 = fp_tabs
+            else:
+                reason = ("Marque 'Incluir Flow Predictor' e rode novamente."
+                          if not flow_pred_w.value else "Erro na execução.")
+                tab10 = wd.VBox([wd.HTML(
+                    f"<h3>Flow Predictor</h3><p>{reason}</p>")])
+
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
-            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9]
+            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
-                'Simulador', 'Relatório'
+                'Simulador', 'Relatório', 'Flow Predictor'
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
@@ -1587,6 +2517,8 @@ run_btn.on_click(run_analysis)
 display(wd.VBox([
     wd.HBox([ticker_w, dte_w]),
     mny_w,
-    wd.HBox([run_btn, spx_pred_w]),
+    wd.HBox([run_btn, spx_pred_w, flow_pred_w]),
+    wd.HBox([cot_type_w, cot_contract_w]),
+    wd.HBox([cot_trader_w, cot_report_w]),
     out_main
 ]))
