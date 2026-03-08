@@ -958,20 +958,16 @@ def has_cot(ticker):
 def fetch_cot_data(futures_ticker, trader_type='Managed Money',
                    report_type='CFTC Disaggregated', start='-6Y', end='0D',
                    direction='All', commitment='Futures'):
-    """Busca dados COT via BQL nativo — formato idêntico ao Bloomberg Terminal."""
-    _CMT = {'Futures': 'futures', 'Futures & Options': 'futures_and_options',
-            'All': 'futures'}
-    # Auto-corrigir report baseado no trader selecionado
+    """Busca dados COT via BQL nativo — formato EXATO do Bloomberg Terminal."""
+    _RPT = {'CFTC Disaggregated': 'cftc_disaggregated',
+            'CFTC TFF': 'cftc_tff', 'CFTC Legacy': 'cftc_legacy'}
     _TRADER_RPT = {
         'Asset Manager': 'cftc_tff', 'Leveraged Funds': 'cftc_tff',
         'Dealer Intermediary': 'cftc_tff', 'Other Reportables': 'cftc_tff',
         'Managed Money': 'cftc_disaggregated', 'Swap Dealers': 'cftc_disaggregated',
         'Commercial': 'cftc_legacy', 'Non-Commercial': 'cftc_legacy',
     }
-    _RPT = {'CFTC Disaggregated': 'cftc_disaggregated',
-            'CFTC TFF': 'cftc_tff', 'CFTC Legacy': 'cftc_legacy'}
     rpt = _TRADER_RPT.get(trader_type, _RPT.get(report_type, 'cftc_disaggregated'))
-    cmt = _CMT.get(commitment, 'futures')
 
     # Ticker(s)
     if isinstance(futures_ticker, str):
@@ -982,71 +978,122 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
         tickers = [str(futures_ticker)]
     tkr_q = ','.join(f"'{t}'" for t in tickers)
 
-    # Query BQL — formato idêntico ao código que funciona no Terminal
+    # Query BQL — formato EXATO do código que funciona no Terminal Bloomberg
+    # 4 variáveis: futures_position, futures_traders, fo_position, fo_traders
+    # 12 campos no get(), incluindo reporting_obligation
     q = f"""
     let(
-        #pos = cot_position(
-            report_type={rpt},
-            direction=all,
-            trader_type=all,
-            commitment_type={cmt}
-        );
-        #trd = cot_traders(
-            report_type={rpt},
-            direction=all,
-            trader_type=all,
-            commitment_type={cmt}
-        );
-    )
-    for({tkr_q}) get(
-        #pos().date,
-        #pos().trader_type,
-        #pos().direction,
-        #pos().value,
-        #pos().change,
-        #trd().value,
-        #trd().change
-    )
+    #futures_position = cot_position(
+        report_type={rpt},
+        direction=all,
+        trader_type=all,
+        commitment_type=futures
+    );
+
+    #futures_traders = cot_traders(
+        report_type={rpt},
+        direction=all,
+        trader_type=all,
+        commitment_type=futures
+    );
+
+    #fo_position = cot_position(
+        report_type={rpt},
+        direction=all,
+        trader_type=all,
+        commitment_type=futures_and_options
+    );
+
+    #fo_traders = cot_traders(
+        report_type={rpt},
+        direction=all,
+        trader_type=all,
+        commitment_type=futures_and_options
+    );
+)
+
+for({tkr_q}) get(
+    #futures_position().date,
+    #futures_position().reporting_obligation,
+    #futures_position().trader_type,
+    #futures_position().direction,
+    #futures_position().value,
+    #futures_position().change,
+    #futures_traders().value,
+    #futures_traders().change,
+    #fo_position().value,
+    #fo_position().change,
+    #fo_traders().value,
+    #fo_traders().change
+)
     """
-    print(f"[COT] Query ticker={tkr_q}, report={rpt}, commitment={cmt}")
+    print(f"[COT] Query ticker={tkr_q}, report={rpt}")
     resp = bq.execute(q)
-    print(f"[COT] Response: {len(resp)} items, shapes: {[r.df().shape for r in resp]}")
+    print(f"[COT] Response: {len(resp)} items")
 
-    # Concatenar todos os DataFrameItems lado a lado
-    raw = pd.concat([r.df() for r in resp], axis=1)
-    raw = raw.loc[:, ~raw.columns.duplicated(keep='first')]
+    # response[0].df() — exatamente como no código que funciona
+    raw = resp[0].df()
     print(f"[COT] Raw cols: {list(raw.columns)}")
-    print(f"[COT] Raw shape: {raw.shape}, head:\n{raw.head(3)}")
+    print(f"[COT] Raw shape: {raw.shape}")
+    if not raw.empty:
+        print(f"[COT] Head:\n{raw.head(3)}")
 
-    # Normalizar nomes de colunas para nossos nomes padrão
-    col_map = {}
+    if raw.empty:
+        print("[COT] Empty response from BQL")
+        return pd.DataFrame()
+
+    # Mapear colunas BQL para nomes amigáveis
+    col_rename = {}
     for c in raw.columns:
-        cl = str(c).lower().strip()
-        if 'date' in cl and 'Date' not in col_map.values():
-            col_map[c] = 'Date'
-        elif 'trader' in cl and 'type' in cl and 'TraderType' not in col_map.values():
-            col_map[c] = 'TraderType'
-        elif 'direction' in cl and 'Direction' not in col_map.values():
-            col_map[c] = 'Direction'
-        elif 'value' in cl and 'Positions' not in col_map.values():
-            col_map[c] = 'Positions'
-        elif 'change' in cl and 'Pos_Chg' not in col_map.values():
-            col_map[c] = 'Pos_Chg'
-        elif 'value' in cl and 'Traders' not in col_map.values():
-            col_map[c] = 'Traders'
-        elif 'change' in cl and 'Trd_Chg' not in col_map.values():
-            col_map[c] = 'Trd_Chg'
-    # Fallback: mapear por posição se nomes não batem
-    expected = ['Date', 'TraderType', 'Direction', 'Positions', 'Pos_Chg', 'Traders', 'Trd_Chg']
-    if len(col_map) < 4:
-        cols = list(raw.columns)
-        col_map = {cols[i]: expected[i] for i in range(min(len(cols), len(expected)))}
-    raw = raw.rename(columns=col_map)
+        cl = str(c).lower()
+        if 'futures_position' in cl:
+            if 'date' in cl:
+                col_rename[c] = 'Date'
+            elif 'reporting_obligation' in cl:
+                col_rename[c] = 'ReportingObligation'
+            elif 'trader_type' in cl:
+                col_rename[c] = 'TraderType'
+            elif 'direction' in cl:
+                col_rename[c] = 'Direction'
+            elif 'value' in cl:
+                col_rename[c] = 'Fut_Positions'
+            elif 'change' in cl:
+                col_rename[c] = 'Fut_Pos_Chg'
+        elif 'futures_traders' in cl:
+            if 'value' in cl:
+                col_rename[c] = 'Fut_Traders'
+            elif 'change' in cl:
+                col_rename[c] = 'Fut_Trd_Chg'
+        elif 'fo_position' in cl:
+            if 'value' in cl:
+                col_rename[c] = 'FO_Positions'
+            elif 'change' in cl:
+                col_rename[c] = 'FO_Pos_Chg'
+        elif 'fo_traders' in cl:
+            if 'value' in cl:
+                col_rename[c] = 'FO_Traders'
+            elif 'change' in cl:
+                col_rename[c] = 'FO_Trd_Chg'
+
+    raw = raw.rename(columns=col_rename)
     raw = raw.reset_index()
     if 'ID' not in raw.columns:
         raw['ID'] = tickers[0]
     if 'Date' in raw.columns:
         raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
+    print(f"[COT] Renamed cols: {list(raw.columns)}")
+
+    # Selecionar colunas de posição/traders baseado no commitment
+    if commitment == 'Futures & Options' and 'FO_Positions' in raw.columns:
+        raw['Positions'] = pd.to_numeric(raw['FO_Positions'], errors='coerce')
+        raw['Pos_Chg'] = pd.to_numeric(raw.get('FO_Pos_Chg'), errors='coerce')
+        raw['Traders'] = pd.to_numeric(raw.get('FO_Traders'), errors='coerce')
+        raw['Trd_Chg'] = pd.to_numeric(raw.get('FO_Trd_Chg'), errors='coerce')
+    else:
+        raw['Positions'] = pd.to_numeric(raw.get('Fut_Positions'), errors='coerce')
+        raw['Pos_Chg'] = pd.to_numeric(raw.get('Fut_Pos_Chg'), errors='coerce')
+        raw['Traders'] = pd.to_numeric(raw.get('Fut_Traders'), errors='coerce')
+        raw['Trd_Chg'] = pd.to_numeric(raw.get('Fut_Trd_Chg'), errors='coerce')
 
     # Filtrar por trader_type selecionado
     if trader_type != 'Total' and 'TraderType' in raw.columns:
@@ -1058,7 +1105,8 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
         if not matched.empty:
             raw = matched
         else:
-            print(f"[COT] Trader '{trader_type}' not found. Available: {raw['TraderType'].unique()}")
+            print(f"[COT] Trader '{trader_type}' not found.")
+            print(f"[COT] Available: {raw['TraderType'].unique()}")
             raw = raw.drop(columns=['_m'])
 
     # Filtrar datas
@@ -1138,7 +1186,6 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
     if 'Positions - Short' in df.columns:
         df['Positions - Short'] = df['Positions - Short'] * -1
     print(f"[COT] Final shape: {df.shape}, cols: {list(df.columns)}")
-    return df.dropna(subset=['Positions'])
     return df.dropna(subset=['Positions'])
 
 
@@ -1263,7 +1310,8 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
         uni = bq.univ.members(index_ticker)
         items = {'cap': bq.data.cur_mkt_cap()}
         try:
-            items['adv'] = bq.data.volume_avg_20d()
+            items['vol5d'] = bq.data.px_volume(
+                dates=bq.func.range('-5D', '0D'), fill='prev')
         except Exception:
             pass
         try:
@@ -1302,9 +1350,36 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
                 rename[c] = 'px'
         df_r = df_r.rename(columns=rename)
 
-        for col in ['cap', 'adv', 'px']:
+        # Renomear colunas robustamente
+        rename = {}
+        for c in df_r.columns:
+            cl = str(c).lower()
+            if 'mkt' in cl and 'cap' in cl:
+                rename[c] = 'cap'
+            elif 'buyback' in cl or 'repurchase' in cl:
+                rename[c] = 'buyback'
+            elif 'volume' in cl or 'px_volume' in cl:
+                rename[c] = 'vol5d'
+            elif 'px_last' in cl or cl == 'px':
+                rename[c] = 'px'
+        df_r = df_r.rename(columns=rename)
+
+        for col in ['cap', 'px']:
             if col in df_r.columns:
                 df_r[col] = pd.to_numeric(df_r[col], errors='coerce')
+        # Calcular média de volume 5 dias por nome
+        if 'vol5d' in df_r.columns:
+            vol_raw = pd.to_numeric(df_r['vol5d'], errors='coerce')
+            if hasattr(df_r.index, 'get_level_values'):
+                try:
+                    ids = df_r.index.get_level_values('ID')
+                    avg_vol = vol_raw.groupby(ids).mean()
+                    df_r = df_r.loc[~df_r.index.duplicated(keep='first')]
+                    df_r['adv5d'] = avg_vol
+                except Exception:
+                    df_r['adv5d'] = vol_raw
+            else:
+                df_r['adv5d'] = vol_raw
         if 'cap' in df_r.columns:
             df_r = df_r.dropna(subset=['cap'])
             df_r = df_r.nlargest(top_n, 'cap')
@@ -1322,8 +1397,9 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
             df_r['confidence'] = 'estimated'
 
         df_r['daily_est'] = df_r['buyback'] * 0.80 / TRADING_DAYS
-        if 'adv' in df_r.columns and 'px' in df_r.columns:
-            adv_usd = df_r['adv'] * df_r['px']
+        # % ADV usando média de volume dos últimos 5 dias
+        if 'adv5d' in df_r.columns and 'px' in df_r.columns:
+            adv_usd = pd.to_numeric(df_r['adv5d'], errors='coerce') * df_r['px']
             df_r['pct_adv_est'] = (df_r['daily_est'] / adv_usd.replace(0, np.nan)) * 100
         else:
             df_r['pct_adv_est'] = np.nan
@@ -1389,10 +1465,12 @@ def build_flow_history(ticker='SPX Index', lookback=252):
 def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
                        spx_rebal_prob=0.5, history_leveraged=None,
                        history_cot=None, dealer_flow=0, volctrl_flow=0,
+                       cta_flow=0,
                        history_dealer=None, history_volctrl=None):
     """
-    Computa score combinado de fluxo contratado.
-    Pesos: ETFs 25%, Buyback 15%, COT 15%, SPX Rebal 10%, Dealer 20%, VolCtrl 15%.
+    Computa score combinado de fluxo contratado — 7 componentes.
+    Pesos: ETFs 15%, Buyback 10%, COT 10%, SPX Rebal 5%,
+           Dealer 20%, VolCtrl 15%, CTA 25%.
     """
     z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else 0
     z_cot = flow_zscore(cot_net_change, history_cot) if history_cot is not None else 0
@@ -1400,14 +1478,18 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
     z_spx = (spx_rebal_prob - 0.5) * 4
     z_dealer = np.clip(dealer_flow / 1e9, -3, 3) if dealer_flow else 0
     z_volctrl = np.clip(volctrl_flow / 1e9, -3, 3) if volctrl_flow else 0
+    z_cta = np.clip(cta_flow / 1e9, -3, 3) if cta_flow else 0
 
-    w_lev, w_buy, w_cot, w_spx, w_deal, w_vc = 0.25, 0.15, 0.15, 0.10, 0.20, 0.15
+    w_lev, w_buy, w_cot, w_spx = 0.15, 0.10, 0.10, 0.05
+    w_deal, w_vc, w_cta = 0.20, 0.15, 0.25
     if history_cot is None or len(history_cot) < 5:
         w_cot = 0.0
-        w_lev, w_buy, w_spx, w_deal, w_vc = 0.30, 0.15, 0.10, 0.25, 0.20
+        w_cta, w_deal, w_lev = 0.30, 0.22, 0.18
+        w_buy, w_spx, w_vc = 0.10, 0.05, 0.15
 
     combined = (w_lev * z_lev + w_buy * z_buyback + w_cot * z_cot
-                + w_spx * z_spx + w_deal * z_dealer + w_vc * z_volctrl)
+                + w_spx * z_spx + w_deal * z_dealer + w_vc * z_volctrl
+                + w_cta * z_cta)
 
     if combined > 0.5:
         direction = "BULLISH"
@@ -1421,11 +1503,13 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
         'z_leveraged': z_lev, 'z_buyback': z_buyback,
         'z_cot': z_cot, 'z_spx_rebal': z_spx,
         'z_dealer': z_dealer, 'z_volctrl': z_volctrl,
+        'z_cta': z_cta,
         'combined_score': combined, 'direction': direction,
         'prob_up': prob_up, 'prob_down': 1.0 - prob_up,
         'weights': {'leveraged': w_lev, 'buyback': w_buy,
                     'cot': w_cot, 'spx_rebal': w_spx,
-                    'dealer': w_deal, 'volctrl': w_vc},
+                    'dealer': w_deal, 'volctrl': w_vc,
+                    'cta': w_cta},
     }
 
 
@@ -1453,11 +1537,8 @@ VOL_CTRL_MAX_LEV = 2.0  # Maximum leverage cap
 def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
     """
     Estima fluxo dos fundos de controle de volatilidade.
-    Para cada target vol (5%, 10%, 15%):
-      exposure_new = min(target_vol / rv_current, max_lev)
-      exposure_old = min(target_vol / rv_prev, max_lev)
-      flow = AUM × (exposure_new - exposure_old)
-    Retorna dict com fluxo por target e total.
+    rv_current e rv_prev devem ser vol anualizada (ex: 0.15 = 15%).
+    Quando vol sobe → exposure cai → fundos vendem (flow negativo).
     """
     if target_vols is None:
         target_vols = [5, 10, 15]
@@ -1468,16 +1549,81 @@ def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
     total = 0
     for tv in target_vols:
         tv_dec = tv / 100.0
-        rv_c_ann = rv_current if rv_current > 0.5 else rv_current * np.sqrt(252)
-        rv_p_ann = rv_prev if rv_prev > 0.5 else rv_prev * np.sqrt(252)
-        exp_new = min(tv_dec / rv_c_ann, VOL_CTRL_MAX_LEV) if rv_c_ann > 1e-6 else VOL_CTRL_MAX_LEV
-        exp_old = min(tv_dec / rv_p_ann, VOL_CTRL_MAX_LEV) if rv_p_ann > 1e-6 else VOL_CTRL_MAX_LEV
+        exp_new = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV) if rv_current > 1e-6 else VOL_CTRL_MAX_LEV
+        exp_old = min(tv_dec / rv_prev, VOL_CTRL_MAX_LEV) if rv_prev > 1e-6 else VOL_CTRL_MAX_LEV
         aum = VOL_CTRL_AUM.get(tv, 100e9)
         flow = aum * (exp_new - exp_old)
         detail[f'{tv}%'] = {'exposure_new': exp_new, 'exposure_old': exp_old,
                             'flow': flow, 'aum': aum}
         total += flow
     return {'total': total, 'detail': detail}
+
+
+# ── CTA Trend Following Model ─────────────────────────────────────
+# Baseado em BofA Systematic Flows Monitor:
+# - Trend strength via coleção de cruzamentos de médias móveis (near vs far)
+# - Position sizing: trend_strength / volatility (trend/vol ratio)
+# - AUM ~$340B (BarclayHedge 2024-Q4), ~25% alocação em equities
+# - CTAs ajustam diariamente, são os mais rápidos a responder
+CTA_AUM = 340e9
+CTA_EQUITY_ALLOC = 0.25  # ~25% da carteira em equities
+CTA_MA_PAIRS = [(5, 20), (5, 60), (10, 60), (20, 120), (20, 200)]
+
+
+def compute_cta_trend_strength(prices, ma_pairs=None):
+    """
+    Calcula trend strength usando cruzamentos de médias móveis.
+    Para cada par (curta, longa): +1 se MA curta > MA longa, -1 caso contrário.
+    Média ponderada pela volatilidade relativa → score contínuo em [-1, +1].
+    Ref: BofA "Trends aren't going out of fashion" (2017).
+    """
+    if ma_pairs is None:
+        ma_pairs = CTA_MA_PAIRS
+    if len(prices) < max(p[1] for p in ma_pairs):
+        return 0
+    scores = []
+    for short_w, long_w in ma_pairs:
+        ma_short = prices.rolling(short_w).mean().iloc[-1]
+        ma_long = prices.rolling(long_w).mean().iloc[-1]
+        if pd.isna(ma_short) or pd.isna(ma_long) or ma_long == 0:
+            continue
+        # Prorate pelo spread relativo (torna mais contínuo)
+        spread = (ma_short - ma_long) / ma_long
+        scores.append(np.clip(spread * 100, -1, 1))
+    if not scores:
+        return 0
+    return float(np.mean(scores))
+
+
+def compute_cta_flow(prices, rv_current, target_vol=0.10):
+    """
+    Estima fluxo de CTA trend followers para equities.
+    Position = trend_strength × (target_vol / realized_vol), capped em [-2, +2].
+    Flow = AUM × equity_alloc × Δposition.
+    """
+    if len(prices) < 201 or rv_current < 1e-6:
+        return {'flow': 0, 'trend_today': 0, 'trend_prev': 0,
+                'pos_today': 0, 'pos_prev': 0}
+
+    trend_today = compute_cta_trend_strength(prices)
+    trend_prev = compute_cta_trend_strength(prices.iloc[:-1])
+
+    pos_today = np.clip(trend_today * (target_vol / rv_current), -2, 2)
+
+    # RV do dia anterior (rolling 63d para capturar ~3M de vol)
+    rets_prev = prices.iloc[:-1].pct_change().dropna()
+    rv_prev = rets_prev.iloc[-63:].std() * np.sqrt(252) if len(rets_prev) >= 63 else rv_current
+    pos_prev = np.clip(trend_prev * (target_vol / max(rv_prev, 1e-6)), -2, 2)
+
+    flow = CTA_AUM * CTA_EQUITY_ALLOC * (pos_today - pos_prev)
+
+    return {
+        'flow': flow,
+        'trend_today': trend_today,
+        'trend_prev': trend_prev,
+        'pos_today': pos_today,
+        'pos_prev': pos_prev,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1524,17 +1670,18 @@ def fp_plot_score_gauge(score):
 def fp_plot_components_bar(score):
     """Barras dos componentes do flow score."""
     components = {
+        'CTA': score.get('z_cta', 0),
+        'Dealer/MM': score.get('z_dealer', 0),
+        'Vol Ctrl': score.get('z_volctrl', 0),
         'ETFs Alav.': score.get('z_leveraged', 0),
         'Buyback': score.get('z_buyback', 0),
         'COT': score.get('z_cot', 0),
         'SPX Rebal': score.get('z_spx_rebal', 0),
-        'Dealer/MM': score.get('z_dealer', 0),
-        'Vol Ctrl': score.get('z_volctrl', 0),
     }
     weights = score.get('weights', {})
     names = list(components.keys())
     values = list(components.values())
-    w_vals = [weights.get(k, 0) for k in ['leveraged', 'buyback', 'cot', 'spx_rebal', 'dealer', 'volctrl']]
+    w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'leveraged', 'buyback', 'cot', 'spx_rebal']]
     colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
@@ -1738,14 +1885,22 @@ def fp_grid_flow_score(score):
                      for k, v in score.items() if isinstance(v, (int, float))]
         return wd.HTML(f"<table>{''.join(rows_html)}</table>")
     data = {
-        'Componente': ['ETFs Alavancados', 'Buyback', 'COT', 'SPX Rebal',
-                        'Dealer/MM', 'Vol Control', 'Score Combinado'],
-        'Z-Score': [score.get('z_leveraged', 0), score.get('z_buyback', 0),
-                    score.get('z_cot', 0), score.get('z_spx_rebal', 0),
+        'Componente': ['CTA Trend', 'Dealer/MM', 'Vol Control',
+                        'ETFs Alavancados', 'Buyback', 'COT', 'SPX Rebal',
+                        'Score Combinado'],
+        'Z-Score': [score.get('z_cta', 0),
                     score.get('z_dealer', 0), score.get('z_volctrl', 0),
+                    score.get('z_leveraged', 0), score.get('z_buyback', 0),
+                    score.get('z_cot', 0), score.get('z_spx_rebal', 0),
                     score.get('combined_score', 0)],
-        'Prob Up (%)': [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan,
-                        score.get('prob_up', 0.5) * 100],
+        'Peso (%)': [score.get('weights', {}).get('cta', 0) * 100,
+                     score.get('weights', {}).get('dealer', 0) * 100,
+                     score.get('weights', {}).get('volctrl', 0) * 100,
+                     score.get('weights', {}).get('leveraged', 0) * 100,
+                     score.get('weights', {}).get('buyback', 0) * 100,
+                     score.get('weights', {}).get('cot', 0) * 100,
+                     score.get('weights', {}).get('spx_rebal', 0) * 100,
+                     100],
     }
     df_s = pd.DataFrame(data).set_index('Componente')
     try:
@@ -2199,7 +2354,7 @@ def run_analysis(_):
 
         try:
             # ── 1. Dados de Mercado ──────────────────────────────────────
-            loading.value = "<h4>1/14: Buscando dados de mercado...</h4>"
+            loading.value = "<h4>1/16: Buscando dados de mercado...</h4>"
             mkt = fetch_market_data(ticker)
             spot = mkt['spot']
             iv_30d = mkt['iv_30d']
@@ -2211,17 +2366,17 @@ def run_analysis(_):
                 raise ValueError(f"Spot inválido para {ticker}")
 
             # ── 2. Histórico + Modelo de Risco ───────────────────────────
-            loading.value = "<h4>2/14: Modelagem de risco (t-Student)...</h4>"
+            loading.value = "<h4>2/16: Modelagem de risco (t-Student)...</h4>"
             _, log_returns = fetch_historical(ticker)
             risk = fit_risk_model(log_returns)
 
             # ── 3. Cadeia de Opções ──────────────────────────────────────
-            loading.value = "<h4>3/14: Buscando cadeia de opções...</h4>"
+            loading.value = "<h4>3/16: Buscando cadeia de opções...</h4>"
             df, from_strike, to_strike = fetch_options_chain(
                 ticker, spot, min_dte, max_dte, mny_low, mny_high)
 
             # ── 4. Gregas + Exposições ───────────────────────────────────
-            loading.value = f"<h4>4/14: Calculando gregas para {len(df)} opções...</h4>"
+            loading.value = f"<h4>4/16: Calculando gregas para {len(df)} opções...</h4>"
             greeks_now = calculate_all_greeks(
                 spot, df.Strike.values, df.IV.values, df.Tte.values, df.Type.values)
             agg = compute_strike_exposures(df, greeks_now, spot)
@@ -2231,7 +2386,7 @@ def run_analysis(_):
                 print(f"⚠️ Call Wall = Put Wall = {call_wall:,.0f}")
 
             # ── 5. Curvas Modelo ─────────────────────────────────────────
-            loading.value = "<h4>5/14: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
+            loading.value = "<h4>5/16: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
             levels = np.linspace(from_strike, to_strike, 100)
             model_curves = compute_model_curves(df, levels)
 
@@ -2245,20 +2400,20 @@ def run_analysis(_):
             gamma_curve = model_curves['Gamma']
 
             # ── 6. Matrizes de Sensibilidade ─────────────────────────────
-            loading.value = "<h4>6/14: Matrizes de sensibilidade (7×5×7)...</h4>"
+            loading.value = "<h4>6/16: Matrizes de sensibilidade (7×5×7)...</h4>"
             sens_matrices = compute_sensitivity_matrices(df, spot)
 
             # ── 7. Monte Carlo ───────────────────────────────────────────
-            loading.value = "<h4>7/14: Simulação Monte Carlo (10k cenários, 5 dias)...</h4>"
+            loading.value = "<h4>7/16: Simulação Monte Carlo (10k cenários, 5 dias)...</h4>"
             mc_n_days = 5
             mc_pnl, mc_prices = run_monte_carlo(spot, df, risk, n_days=mc_n_days)
 
             # ── 8. Curvas de P&L ─────────────────────────────────────────
-            loading.value = "<h4>8/14: Curvas de P&L e hedge demand...</h4>"
+            loading.value = "<h4>8/16: Curvas de P&L e hedge demand...</h4>"
             pnl_curves = compute_pnl_curves(greeks_now, df, spot, levels, skew)
 
             # ── 9. Rebalanceamento ETFs ──────────────────────────────────
-            loading.value = "<h4>9/14: Fluxo de rebalanceamento ETFs passivos...</h4>"
+            loading.value = "<h4>9/16: Fluxo de rebalanceamento ETFs passivos...</h4>"
             try:
                 etf_flows, etf_summary, etf_start = compute_full_etf_flows()
                 etf_ok = True
@@ -2266,7 +2421,7 @@ def run_analysis(_):
                 etf_flows, etf_summary, etf_start, etf_ok = {}, None, None, False
 
             # ── 10. ETFs Alavancados ─────────────────────────────────────
-            loading.value = "<h4>10/14: Fluxo de ETFs alavancados...</h4>"
+            loading.value = "<h4>10/16: Fluxo de ETFs alavancados...</h4>"
             try:
                 # Usar último retorno não-zero (evitar 0 de weekend/feriado)
                 nz_rets = log_returns[log_returns != 0]
@@ -2278,7 +2433,7 @@ def run_analysis(_):
                 daily_ret = 0
 
             # ── 11. Previsão SPX (opcional — pesado) ─────────────────────
-            loading.value = "<h4>11/14: Previsão de rebalanceamento SPX...</h4>"
+            loading.value = "<h4>11/16: Previsão de rebalanceamento SPX...</h4>"
             spx_pred_ok = False
             top_in_spx, top_out_spx = None, None
             if spx_pred_w.value and HAS_SKLEARN:
@@ -2299,7 +2454,7 @@ def run_analysis(_):
             fp_selected_cot_df = None
 
             if flow_pred_w.value:
-                loading.value = "<h4>12/14: Flow Predictor — histórico + buyback...</h4>"
+                loading.value = "<h4>12/16: Flow Predictor — histórico + buyback...</h4>"
                 try:
                     fp_flow_hist = build_flow_history(ticker, lookback=252)
                     fp_today_flow = (compute_leveraged_flow_simple(
@@ -2330,7 +2485,7 @@ def run_analysis(_):
                     fp_buyback_daily = 0
 
                 # ── 13. Flow Predictor — COT ─────────────────────────────
-                loading.value = "<h4>13/14: Flow Predictor — COT...</h4>"
+                loading.value = "<h4>13/16: Flow Predictor — COT...</h4>"
                 cot_ok_fp, cot_fut_fp = has_cot(ticker)
                 cot_net_change = 0
                 history_cot = None
@@ -2405,6 +2560,20 @@ def run_analysis(_):
                 except Exception as e:
                     print(f"⚠️ Vol ctrl: {e}")
 
+                # CTA trend following flow
+                fp_cta = {'flow': 0, 'trend_today': 0, 'pos_today': 0, 'pos_prev': 0}
+                try:
+                    # Reconstruir preços a partir de log returns
+                    _px_series = np.exp(np.cumsum(log_returns))
+                    _px_series = _px_series * (spot / _px_series.iloc[-1])
+                    _cta_rv = log_returns.iloc[-63:].std() * np.sqrt(252) if len(log_returns) >= 63 else rv_30d
+                    fp_cta = compute_cta_flow(_px_series, _cta_rv)
+                    print(f"[FLOW] CTA: ${fp_cta['flow']:,.0f} "
+                          f"(trend={fp_cta['trend_today']:+.3f}, "
+                          f"pos={fp_cta['pos_today']:+.3f}→{fp_cta['pos_prev']:+.3f})")
+                except Exception as e:
+                    print(f"⚠️ CTA flow: {e}")
+
                 try:
                     lev_history = (fp_flow_hist['LevETF_Flow']
                                    if not fp_flow_hist.empty else None)
@@ -2416,7 +2585,8 @@ def run_analysis(_):
                         history_leveraged=lev_history,
                         history_cot=history_cot,
                         dealer_flow=fp_dealer_flow,
-                        volctrl_flow=fp_volctrl['total'])
+                        volctrl_flow=fp_volctrl['total'],
+                        cta_flow=fp_cta['flow'])
                     fp_ok = True
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
@@ -3148,22 +3318,50 @@ def run_analysis(_):
                         f" (mean-reverting). Hit rate &lt; 50% é esperado.</i></p>"))
                 st_e = wd.VBox(st_e_children)
 
-                # Sub-tab F: Dealer/MM & Vol Control
+                # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control)
                 st_f_children = [wd.HTML(
                     "<div class='mm-dash'><div class='mm-card'>"
-                    "<h3>Dealer/MM Hedging & Fundos de Vol Control</h3>"
+                    "<h3>Fluxos Sistemáticos — CTA, Dealer/MM, Vol Control</h3>"
+                    "<p><small>Ref: BofA Systematic Flows Monitor methodology</small></p>"
                     "</div></div>")]
+
+                # CTA Trend Following
+                _cta_flow = fp_cta.get('flow', 0)
+                _cta_trend = fp_cta.get('trend_today', 0)
+                _cta_pos = fp_cta.get('pos_today', 0)
+                _cta_pos_prev = fp_cta.get('pos_prev', 0)
+                _cta_color = _C['green'] if _cta_flow > 0 else _C['red'] if _cta_flow < 0 else _C['text_muted']
+                _cta_dir = 'COMPRA' if _cta_flow > 0 else 'VENDA' if _cta_flow < 0 else 'FLAT'
+                _trend_bar = '█' * max(1, int(abs(_cta_trend) * 10))
+                _trend_color = _C['green'] if _cta_trend > 0 else _C['red'] if _cta_trend < 0 else _C['text_muted']
+                st_f_children.append(wd.HTML(
+                    f"<div class='mm-dash'><div class='mm-card'>"
+                    f"<h4>CTA / Trend Following (AUM: ~$340B, ~25% equity)</h4>"
+                    f"<table class='mm-table' style='width:auto;'>"
+                    f"<tr><td>Trend Strength:</td>"
+                    f"<td style='color:{_trend_color}'><b>{_cta_trend:+.3f}</b> "
+                    f"<span style='font-size:10px;'>{_trend_bar}</span></td></tr>"
+                    f"<tr><td>Posição CTA:</td>"
+                    f"<td>{_cta_pos_prev:+.3f}x → <b>{_cta_pos:+.3f}x</b></td></tr>"
+                    f"<tr><td>Fluxo Estimado:</td>"
+                    f"<td style='color:{_cta_color}'><b>${_cta_flow/1e9:,.2f}B</b> ({_cta_dir})</td></tr>"
+                    f"</table>"
+                    f"<p><small>Trend = média de MA crosses (5/20, 5/60, 10/60, 20/120, 20/200). "
+                    f"Sizing = trend/vol. CTAs ajustam diariamente.</small></p>"
+                    f"</div></div>"))
+
                 # Dealer flow
                 _dl_color = _C['green'] if fp_dealer_flow > 0 else _C['red'] if fp_dealer_flow < 0 else _C['text_muted']
                 _dl_dir = 'COMPRA' if fp_dealer_flow > 0 else 'VENDA' if fp_dealer_flow < 0 else 'NEUTRO'
                 st_f_children.append(wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
-                    f"<h4>Fluxo de Hedging Dealer/Market Maker</h4>"
+                    f"<h4>Dealer/Market Maker Delta Hedging</h4>"
                     f"<p>GEX-implied flow: <b style='color:{_dl_color}'>"
                     f"${fp_dealer_flow:,.0f}</b> ({_dl_dir})</p>"
-                    f"<p><small>Baseado em GEX × ΔS. Quando dealers estão short gamma, "
-                    f"o hedging amplifica movimentos (pro-cíclico).</small></p>"
+                    f"<p><small>Baseado em GEX × ΔS. Dados de gamma derivados de "
+                    f"signed volume (firms + MMs + flex). Short gamma → pro-cíclico.</small></p>"
                     f"</div></div>"))
+
                 # Vol control
                 vc_total = fp_volctrl.get('total', 0)
                 _vc_color = _C['green'] if vc_total > 0 else _C['red'] if vc_total < 0 else _C['text_muted']
@@ -3179,22 +3377,22 @@ def run_analysis(_):
                         f"<td style='text-align:right;color:{tv_c}'>${tv_flow/1e9:,.2f}B</td></tr>")
                 st_f_children.append(wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
-                    f"<h4>Fundos de Controle de Volatilidade</h4>"
+                    f"<h4>Equity Vol Control (AUM: ~$300B)</h4>"
                     f"<p>Fluxo total estimado: <b style='color:{_vc_color}'>"
                     f"${vc_total/1e9:,.2f}B</b></p>"
                     f"<table class='mm-table'>"
                     f"<tr><th>Target Vol</th><th>AUM Est.</th>"
                     f"<th>Exp. Anterior</th><th>Exp. Atual</th><th>Fluxo</th></tr>"
                     f"{vc_rows}</table>"
-                    f"<p><small>Estimativa baseada em vol realizada 21d. "
-                    f"Quando vol sobe → fundos vendem para reduzir exposição.</small></p>"
+                    f"<p><small>Leverage = target_vol / realized_vol (21d). "
+                    f"Vol sobe → exposure cai → vendem. Ajuste em 1-2 dias.</small></p>"
                     f"</div></div>"))
                 st_f = wd.VBox(st_f_children)
 
                 fp_tabs = wd.Tab()
                 fp_tabs.children = [st_a, st_b, st_c, st_d, st_e, st_f]
                 for idx_t, nm in enumerate(['Score', 'Histórico', 'Buyback',
-                                            'COT', 'Correlação', 'Dealer/VolCtrl']):
+                                            'COT', 'Correlação', 'Sistemáticos']):
                     fp_tabs.set_title(idx_t, nm)
                 tab10 = fp_tabs
             else:
