@@ -829,6 +829,8 @@ def _fp_last_numeric_col(df_in):
 
 def _fp_get_data(universe, data_items, with_params=None, preferences=None):
     """Executa BQL Request e retorna DataFrame com multi-index [ID, Date]."""
+    if isinstance(universe, str):
+        universe = [universe]
     req = bql.Request(universe, data_items,
                       with_params=with_params, preferences=preferences)
     response = bq.execute(req)
@@ -836,7 +838,10 @@ def _fp_get_data(universe, data_items, with_params=None, preferences=None):
     df_r = df_r.loc[:, ~df_r.columns.duplicated()]
     if 'DATE' in df_r.columns:
         df_r = df_r.set_index('DATE', append=True)
-    df_r = df_r.loc[:, data_items.keys()]
+    # Selecionar colunas disponíveis (ignorar as não retornadas)
+    avail = [k for k in data_items.keys() if k in df_r.columns]
+    if avail:
+        df_r = df_r[avail]
     df_r.index.names = ['ID', 'Date']
     return df_r
 
@@ -854,14 +859,8 @@ def fetch_cot_data(futures_ticker, trader_type='Managed Money',
                    report_type='CFTC Disaggregated', start='-6Y', end='0D'):
     """Busca dados COT do BQL para um contrato futuro."""
     dates = bq.func.range(start, end, frq='d')
-    # Auto-corrigir report_type com base no trader_type
-    correct_report = COT_TRADER_REPORT_MAP.get(trader_type)
-    if correct_report is not None:
-        report_type_bql = correct_report
-    else:
-        report_type_bql = report_type.replace(' ', '_')
     kwargs = {
-        'report_type': report_type_bql,
+        'report_type': report_type.replace(' ', '_'),
         'trader_type': trader_type.replace(' ', '_'),
     }
     data_items = {
