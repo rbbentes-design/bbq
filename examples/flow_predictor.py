@@ -881,11 +881,17 @@ def bqp_box_plot_flows(monthly_flows: pd.DataFrame) -> object:
     """Box plot de fluxos mensais (bqplot)."""
     if not HAS_BQPLOT or monthly_flows.empty:
         return wd.HTML("<p>bqplot não disponível ou sem dados.</p>")
+    # Pad columns to equal length so numpy gets a homogeneous 2D array
+    max_len = max(monthly_flows[c].dropna().shape[0] for c in monthly_flows.columns)
+    y_data = np.full((len(monthly_flows.columns), max_len), np.nan)
+    for i, c in enumerate(monthly_flows.columns):
+        vals = monthly_flows[c].dropna().values
+        y_data[i, :len(vals)] = vals
     scale_x = bqp.OrdinalScale()
     scale_y = bqp.LinearScale()
     mark = bqp.Boxplot(
-        x=monthly_flows.columns,
-        y=[monthly_flows[c].dropna() for c in monthly_flows.columns],
+        x=list(monthly_flows.columns),
+        y=y_data,
         colors=['#1B84ED'], scales={'x': scale_x, 'y': scale_y},
         stroke='white', outlier_fill_color='red')
     ax_x = bqp.Axis(scale=scale_x)
