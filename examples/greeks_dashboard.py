@@ -1006,14 +1006,34 @@ def resolve_specific_contract(generic_ticker):
     return candidates
 
 
+def _to_bql_date(s):
+    """Converte data YYYYMMDD (do widget) para formato BQL relativo."""
+    if not s or not isinstance(s, str):
+        return s
+    if s in ('0D', '0d') or (s.startswith('-') and s[-1] in 'YyDd'):
+        return s
+    try:
+        dt = pd.to_datetime(s)
+        days = (pd.Timestamp.now() - dt).days
+        if days <= 0:
+            return '0D'
+        years = days / 365.25
+        if years >= 1:
+            return f'-{int(years) + 1}Y'
+        return f'-{days}D'
+    except Exception:
+        return s
+
+
 def _try_cot_query(ticker, rpt, start, end, with_dates=True):
     """Tenta uma query COT. Retorna DataFrame ou None."""
     try:
+        bql_s, bql_e = _to_bql_date(start), _to_bql_date(end)
         if with_dates:
             q = f"""
 let(#p = cot_position(report_type={rpt}, direction=all,
                       trader_type=all, commitment_type=futures,
-                      dates=range({start},{end}));)
+                      dates=range({bql_s},{bql_e}));)
 for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
                     #p().value, #p().change)
 """
@@ -1184,7 +1204,7 @@ def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
     # ── Price & Open Interest (usa genérico para preço) ──
     price_ticker = futures_ticker if isinstance(futures_ticker, str) else futures_ticker[0]
     try:
-        dates_bql = bq.func.range(start, end, frq='d')
+        dates_bql = bq.func.range(_to_bql_date(start), _to_bql_date(end), frq='d')
         px_items = {'Price': bq.data.px_last(fill='prev'),
                     'Open Interest': bq.data.fut_aggte_open_int()}
         px_df = _fp_get_data(price_ticker, px_items,
