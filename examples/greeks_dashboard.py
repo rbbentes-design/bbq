@@ -140,6 +140,9 @@ TRADING_DAYS = 252
 FUTURES_TICKER = 'ES1 Index'
 FUTURES_MULTIPLIER = 50
 
+# ── Snapshot state (usado pelo botão de export) ────────────────────────────
+_snapshot = {'sections': [], 'ticker': '', 'spot': 0, 'ts': ''}
+
 # Configuração dos 7 greeks para gráficos de exposição.
 # Cada entrada define: nome, chave no dict de gregas, unidade de exibição,
 # função de escala (converte greek*OI*100 → dólares), divisor de exibição,
@@ -2328,6 +2331,91 @@ def style_sensitivity_matrix(matrix_df, cmap='viridis'):
     return styled.to_html()
 
 
+def _export_dashboard_html():
+    """Gera HTML standalone com todo o conteúdo do dashboard (Plotly + HTML)."""
+    import io, base64
+    if not _snapshot['sections']:
+        return None
+    plotly_js = '<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>'
+    body_css = (
+        f"<style>"
+        f"body {{ background:{_C['bg']}; color:{_C['text']}; margin:20px; "
+        f"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; }}"
+        f"h2.tab-title {{ color:{_C['accent']}; border-bottom:2px solid {_C['border']}; "
+        f"padding-bottom:8px; margin-top:40px; font-size:18px; }}"
+        f".page-break {{ page-break-after:always; }}"
+        f"@media print {{ body {{ margin:10px; }} .no-print {{ display:none; }} }}"
+        f"</style>")
+
+    parts = [
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+        f"<title>Dashboard {_snapshot['ticker']} — {_snapshot['ts']}</title>",
+        plotly_js, DASH_CSS, body_css,
+        "</head><body>",
+        f"<div class='mm-dash'><div class='mm-title'>Market Maker Dashboard "
+        f"<small>{_snapshot['ticker']} @ {_snapshot['spot']:,.2f} │ {_snapshot['ts']}</small>"
+        f"</div></div>",
+    ]
+
+    for sec in _snapshot['sections']:
+        parts.append(f"<h2 class='tab-title'>{sec['name']}</h2>")
+        for item in sec['content']:
+            if item['type'] == 'plotly':
+                parts.append(item['data'].to_html(
+                    full_html=False, include_plotlyjs=False,
+                    config={'displaylogo': False, 'staticPlot': True}))
+            elif item['type'] == 'html':
+                parts.append(f"<div class='mm-dash'>{item['data']}</div>")
+            elif item['type'] == 'matplotlib':
+                parts.append(f"<img src='data:image/png;base64,{item['data']}' "
+                             f"style='max-width:100%;'>")
+
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def _collect_widget_content(widget):
+    """Recursivamente extrai conteúdo (Plotly figs + HTML) de um widget tree."""
+    items = []
+    if isinstance(widget, go.FigureWidget):
+        items.append({'type': 'plotly', 'data': go.Figure(widget)})
+    elif isinstance(widget, wd.HTML):
+        val = widget.value.strip()
+        if val:
+            items.append({'type': 'html', 'data': val})
+    elif isinstance(widget, wd.Output):
+        # Output widgets contem matplotlib — não é fácil capturar retroativamente
+        items.append({'type': 'html', 'data': '<p><i>[Conteúdo de Output widget — ver aba Exposições no dashboard]</i></p>'})
+    elif hasattr(widget, 'children'):
+        for child in widget.children:
+            items.extend(_collect_widget_content(child))
+    return items
+
+
+def _capture_matplotlib_figures(func, *args, **kwargs):
+    """Executa func que gera plt.show() e captura todas as figuras como base64 PNGs."""
+    import io, base64
+    plt.close('all')
+    _orig_show = plt.show
+    _figs_collected = []
+
+    def _capture_show(*a, **kw):
+        fig = plt.gcf()
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=120, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+        buf.seek(0)
+        _figs_collected.append(base64.b64encode(buf.read()).decode())
+        plt.close(fig)
+
+    plt.show = _capture_show
+    try:
+        func(*args, **kwargs)
+    finally:
+        plt.show = _orig_show
+    return [{'type': 'matplotlib', 'data': b64} for b64 in _figs_collected]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 8 — CALLBACK PRINCIPAL E MONTAGEM DO DASHBOARD
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3681,6 +3769,33 @@ def run_analysis(_):
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
 
+            # ── Snapshot: captura conteúdo de todas as abas ──
+            _snapshot['ticker'] = ticker
+            _snapshot['spot'] = spot
+            _snapshot['ts'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+            _snapshot['sections'] = []
+
+            # Tab 2 (Exposições) usa matplotlib — captura separadamente
+            try:
+                mpl_items = _capture_matplotlib_figures(
+                    plot_exposure_charts, agg, df, spot, from_strike,
+                    to_strike, levels, model_curves, flip_points,
+                    call_wall, put_wall)
+                _snapshot['sections'].append({'name': 'Exposições', 'content': mpl_items})
+            except Exception:
+                pass
+
+            # Todas as outras abas (recursivo via widget tree)
+            for idx, (tab_w, tname) in enumerate(zip(dashboard.children, tab_names)):
+                if tname == 'Exposições':
+                    continue  # já capturado acima (matplotlib)
+                try:
+                    items = _collect_widget_content(tab_w)
+                    if items:
+                        _snapshot['sections'].append({'name': tname, 'content': items})
+                except Exception:
+                    pass
+
             display(title_html, dashboard)
 
         except Exception as e:
@@ -3695,6 +3810,40 @@ def run_analysis(_):
 
 run_btn.on_click(run_analysis)
 
+# Botão de export / screenshot
+export_btn = wd.Button(description='📸 Exportar HTML',
+                       button_style='warning', icon='camera',
+                       layout={'width': '180px'})
+out_export = wd.Output()
+
+
+def _on_export(_):
+    with out_export:
+        clear_output(wait=True)
+        if not _snapshot['sections']:
+            print("⚠️ Rode a análise primeiro antes de exportar.")
+            return
+        try:
+            html_content = _export_dashboard_html()
+            if not html_content:
+                print("⚠️ Nenhum conteúdo para exportar.")
+                return
+            fname = f"dashboard_{_snapshot['ticker'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            size_mb = len(html_content) / (1024 * 1024)
+            n_sections = len(_snapshot['sections'])
+            n_items = sum(len(s['content']) for s in _snapshot['sections'])
+            display(wd.HTML(
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<p>✅ Exportado: <b>{fname}</b> ({size_mb:.1f} MB)</p>"
+                f"<p><small>{n_sections} abas │ {n_items} itens (gráficos + tabelas)</small></p>"
+                f"</div></div>"))
+        except Exception as e:
+            print(f"❌ Erro ao exportar: {e}")
+
+export_btn.on_click(_on_export)
+
 _ctrl_box_layout = wd.Layout(
     border=f'1px solid {_C["border"]}',
     border_radius='8px',
@@ -3708,7 +3857,7 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([ticker_w, dte_w]),
         mny_w,
-        wd.HBox([run_btn, spx_pred_w, flow_pred_w]),
+        wd.HBox([run_btn, spx_pred_w, flow_pred_w, export_btn]),
     ], layout=_ctrl_box_layout),
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
     wd.VBox([
@@ -3718,5 +3867,6 @@ display(wd.VBox([
         wd.HBox([cot_reload_btn, etf_reload_btn]),
     ], layout=_ctrl_box_layout),
     out_cot_reload,
+    out_export,
     out_main
 ]))
