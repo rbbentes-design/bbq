@@ -1537,6 +1537,15 @@ def compute_dealer_hedging_flow(gex_per_pt, daily_price_change, spot):
 # Typical global AUM: ~$350B-$500B across pension and systematic funds.
 VOL_CTRL_AUM = {5: 100e9, 10: 150e9, 15: 100e9}  # target_vol% → AUM estimate
 VOL_CTRL_MAX_LEV = 2.0  # Maximum leverage cap
+VOL_CTRL_MIN_EXP = 0.20  # Piso mínimo de exposição (fundos não vão a 0%)
+VOL_CTRL_DAILY_ADJ = 0.25  # Ajuste máximo por dia (~25% do delta)
+
+
+def _vc_exposure(target_dec, rv):
+    """Calcula exposure com piso e teto."""
+    if rv < 1e-6:
+        return VOL_CTRL_MAX_LEV
+    return max(min(target_dec / rv, VOL_CTRL_MAX_LEV), VOL_CTRL_MIN_EXP)
 
 
 def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
@@ -1544,6 +1553,7 @@ def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
     Estima fluxo dos fundos de controle de volatilidade.
     rv_current e rv_prev devem ser vol anualizada (ex: 0.15 = 15%).
     Quando vol sobe → exposure cai → fundos vendem (flow negativo).
+    Inclui piso de exposição (20%) e ajuste gradual (25%/dia).
     """
     if target_vols is None:
         target_vols = [5, 10, 15]
@@ -1554,26 +1564,28 @@ def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
     total = 0
     for tv in target_vols:
         tv_dec = tv / 100.0
-        exp_new = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV) if rv_current > 1e-6 else VOL_CTRL_MAX_LEV
-        exp_old = min(tv_dec / rv_prev, VOL_CTRL_MAX_LEV) if rv_prev > 1e-6 else VOL_CTRL_MAX_LEV
+        exp_new = _vc_exposure(tv_dec, rv_current)
+        exp_old = _vc_exposure(tv_dec, rv_prev)
         aum = VOL_CTRL_AUM.get(tv, 100e9)
-        flow = aum * (exp_new - exp_old)
+        # Fluxo total necessário vs fluxo diário (ajuste gradual)
+        full_flow = aum * (exp_new - exp_old)
+        daily_flow = full_flow * VOL_CTRL_DAILY_ADJ
         detail[f'{tv}%'] = {'exposure_new': exp_new, 'exposure_old': exp_old,
-                            'flow': flow, 'aum': aum}
-        total += flow
-    return {'total': total, 'detail': detail}
+                            'flow': full_flow, 'daily_flow': daily_flow, 'aum': aum}
+        total += full_flow
+    daily_total = total * VOL_CTRL_DAILY_ADJ
+    return {'total': total, 'daily_total': daily_total, 'detail': detail}
 
 
 def compute_vol_control_scenarios(rv_current, target_vols=None):
     """
-    Cenários de stress: quanto vendem se vol sobe X% a partir do nível atual.
-    Retorna dict com scenarios (rv_shock → flow estimado).
+    Cenários de stress: quanto vendem se vol sobe.
+    Retorna lista com total flow e daily flow (ajuste gradual).
     """
     if target_vols is None:
         target_vols = [5, 10, 15]
     if pd.isna(rv_current) or rv_current < 1e-6:
         return []
-    # Cenários: vol sobe para 15%, 20%, 25%, 30%, 40%
     shock_vols = [0.15, 0.20, 0.25, 0.30, 0.40]
     scenarios = []
     for sv in shock_vols:
@@ -1582,25 +1594,25 @@ def compute_vol_control_scenarios(rv_current, target_vols=None):
         total = 0
         for tv in target_vols:
             tv_dec = tv / 100.0
-            exp_cur = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV)
-            exp_shock = min(tv_dec / sv, VOL_CTRL_MAX_LEV)
+            exp_cur = _vc_exposure(tv_dec, rv_current)
+            exp_shock = _vc_exposure(tv_dec, sv)
             aum = VOL_CTRL_AUM.get(tv, 100e9)
             total += aum * (exp_shock - exp_cur)
-        scenarios.append({'rv_shock': sv, 'flow': total})
+        scenarios.append({'rv_shock': sv, 'flow': total,
+                          'daily_flow': total * VOL_CTRL_DAILY_ADJ})
     return scenarios
 
 
-def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0, spot=0):
+def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0,
+                                    spot=0, vanna_notional=0, vega_notional=0):
     """
     Cenários combinados: para cada nível de vol shock, estima fluxo de
-    Vol Control + Risk Parity + CTA + Dealer. Retorna lista de dicts.
-    Cenários:
-      - Vol spike: SPX cai X%, realized vol sobe para Y%
-      - Impacto em todos os componentes vol-sensitivos
+    Vol Control + Risk Parity + CTA + Dealer + Vanna.
+    vanna_notional = sum(vanna * OI * 100) * spot  ($ de delta por 1% vol)
+    vega_notional = sum(vega * OI * 100)           ($ por 1% vol)
     """
     if pd.isna(rv_current) or rv_current < 1e-6:
         return []
-    # Cenários: (nome, spx_move%, vol_shock)
     scenarios = [
         ('Leve (-3%, vol 18%)', -0.03, 0.18),
         ('Moderado (-5%, vol 22%)', -0.05, 0.22),
@@ -1612,23 +1624,22 @@ def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0, spot=
     for name, spx_move, rv_shock in scenarios:
         if rv_shock <= rv_current * 1.05:
             continue
-        # Vol Control
+        # Vol Control (com piso)
         vc = 0
         for tv in [5, 10, 15]:
             tv_dec = tv / 100.0
-            exp_cur = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV)
-            exp_shock = min(tv_dec / rv_shock, VOL_CTRL_MAX_LEV)
+            exp_cur = _vc_exposure(tv_dec, rv_current)
+            exp_shock = _vc_exposure(tv_dec, rv_shock)
             vc += VOL_CTRL_AUM.get(tv, 100e9) * (exp_shock - exp_cur)
 
         # Risk Parity
         rp_result = compute_risk_parity_flow(rv_shock, rv_current)
         rp = rp_result['total']
 
-        # CTA (trend reversal — rough estimate: se queda forte, trend flips)
+        # CTA (trend reversal)
         cta = 0
         if prices is not None and len(prices) > 200:
             trend_now = compute_cta_trend_strength(prices)
-            # Simular queda: últimos 5 dias caem spx_move
             shocked = prices.copy()
             for i in range(1, 6):
                 shocked.iloc[-i] = shocked.iloc[-i] * (1 + spx_move / 5)
@@ -1644,11 +1655,17 @@ def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0, spot=
             daily_chg = spot * spx_move
             dealer = -gex_per_pt * daily_chg
 
-        total = vc + rp + cta + dealer
+        # Vanna flow: quando vol sobe + spot cai, dealers com vanna positivo
+        # precisam vender delta. Flow ≈ -vanna_notional × Δvol_pts
+        # vanna_notional já é em $ de delta por 1% vol
+        vol_chg_pts = (rv_shock - rv_current) * 100  # em pontos de vol
+        vanna = -vanna_notional * vol_chg_pts if vanna_notional != 0 else 0
+
+        total = vc + rp + cta + dealer + vanna
         results.append({
             'name': name, 'spx_move': spx_move, 'rv_shock': rv_shock,
             'vol_ctrl': vc, 'risk_parity': rp, 'cta': cta,
-            'dealer': dealer, 'total': total,
+            'dealer': dealer, 'vanna': vanna, 'total': total,
         })
     return results
 
@@ -2706,8 +2723,12 @@ def run_analysis(_):
                 try:
                     _px_s = _px_series if '_px_series' in dir() else None
                     _gex = _gex_per_pt if '_gex_per_pt' in dir() else 0
+                    _oi_100 = df['OI'].values * 100.0
+                    _vanna_not = np.nansum(greeks_now['vanna'] * _oi_100) * spot
+                    _vega_not = np.nansum(greeks_now['vega'] * _oi_100)
                     fp_combined_scenarios = compute_combined_flow_scenarios(
-                        _rv_cur, prices=_px_s, gex_per_pt=_gex, spot=spot)
+                        _rv_cur, prices=_px_s, gex_per_pt=_gex, spot=spot,
+                        vanna_notional=_vanna_not, vega_notional=_vega_not)
                 except Exception as e:
                     print(f"⚠️ Combined scenarios: {e}")
 
@@ -3512,23 +3533,29 @@ def run_analysis(_):
                 for tv_k, tv_v in fp_volctrl.get('detail', {}).items():
                     tv_flow = tv_v.get('flow', 0)
                     tv_c = _C['green'] if tv_flow > 0 else _C['red'] if tv_flow < 0 else _C['text_muted']
+                    _tv_daily = tv_v.get('daily_flow', 0)
+                    _tv_dc = _C['green'] if _tv_daily > 0 else _C['red'] if _tv_daily < 0 else _C['text_muted']
                     vc_rows += (
                         f"<tr><td>Target {tv_k}</td>"
                         f"<td style='text-align:right;'>${tv_v.get('aum', 0)/1e9:,.0f}B</td>"
                         f"<td style='text-align:right;'>{tv_v.get('exposure_old', 0):.2f}x</td>"
                         f"<td style='text-align:right;'>{tv_v.get('exposure_new', 0):.2f}x</td>"
-                        f"<td style='text-align:right;color:{tv_c}'>${tv_flow/1e9:,.2f}B</td></tr>")
+                        f"<td style='text-align:right;color:{tv_c}'>${tv_flow/1e9:,.2f}B</td>"
+                        f"<td style='text-align:right;color:{_tv_dc}'>${_tv_daily/1e9:,.2f}B</td></tr>")
+                _vc_daily_total = fp_volctrl.get('daily_total', 0)
+                _vc_dtc = _C['green'] if _vc_daily_total > 0 else _C['red'] if _vc_daily_total < 0 else _C['text_muted']
                 st_f_children.append(wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
                     f"<h4>Equity Vol Control (AUM: ~$300B)</h4>"
                     f"<p>Fluxo total estimado: <b style='color:{_vc_color}'>"
-                    f"${vc_total/1e9:,.2f}B</b></p>"
+                    f"${vc_total/1e9:,.2f}B</b> | Fluxo/dia: <b style='color:{_vc_dtc}'>"
+                    f"${_vc_daily_total/1e9:,.2f}B</b></p>"
                     f"<table class='mm-table'>"
                     f"<tr><th>Target Vol</th><th>AUM Est.</th>"
-                    f"<th>Exp. Anterior</th><th>Exp. Atual</th><th>Fluxo</th></tr>"
+                    f"<th>Exp. Anterior</th><th>Exp. Atual</th><th>Fluxo Total</th><th>Fluxo/Dia</th></tr>"
                     f"{vc_rows}</table>"
-                    f"<p><small>Leverage = target_vol / realized_vol (21d). "
-                    f"Vol sobe → exposure cai → vendem. Ajuste em 1-2 dias.</small></p>"
+                    f"<p><small>Leverage = target_vol / realized_vol (21d). Piso mínimo 20% exposição. "
+                    f"Vol sobe → exposure cai → vendem. Ajuste ~25%/dia (~4 dias para completar).</small></p>"
                     f"</div></div>"))
 
                 # Vol control stress scenarios
@@ -3536,20 +3563,24 @@ def run_analysis(_):
                     sc_rows = ""
                     for sc in fp_vc_scenarios:
                         sc_c = _C['red'] if sc['flow'] < 0 else _C['green']
+                        _sc_df = sc.get('daily_flow', 0)
+                        _sc_dc = _C['red'] if _sc_df < 0 else _C['green']
                         sc_rows += (
                             f"<tr><td style='text-align:center;'>{sc['rv_shock']:.0%}</td>"
                             f"<td style='text-align:right;color:{sc_c}'>"
-                            f"${sc['flow']/1e9:,.1f}B</td></tr>")
+                            f"${sc['flow']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_sc_dc}'>"
+                            f"${_sc_df/1e9:,.1f}B</td></tr>")
                     st_f_children.append(wd.HTML(
                         f"<div class='mm-dash'><div class='mm-card'>"
                         f"<h4>⚡ Vol Spike Scenarios — Venda Forçada</h4>"
                         f"<p><small>Se realized vol subir para esses níveis, "
                         f"quanto os fundos vol-control precisam vender:</small></p>"
                         f"<table class='mm-table'>"
-                        f"<tr><th>RV Spike Para</th><th>Fluxo Estimado</th></tr>"
+                        f"<tr><th>RV Spike Para</th><th>Fluxo Total</th><th>Fluxo/Dia</th></tr>"
                         f"{sc_rows}</table>"
-                        f"<p><small>Cenário instantâneo vs exposição atual. "
-                        f"Venda ocorre em 1-2 dias após spike.</small></p>"
+                        f"<p><small>Piso mínimo 20% exposição. "
+                        f"Ajuste gradual ~25%/dia (~4 dias para completar).</small></p>"
                         f"</div></div>"))
 
                 # Risk Parity
@@ -3588,6 +3619,7 @@ def run_analysis(_):
                     cs_rows = ""
                     for cs in fp_combined_scenarios:
                         _cs_color = _C['red'] if cs['total'] < 0 else _C['green']
+                        _cs_vanna = cs.get('vanna', 0)
                         cs_rows += (
                             f"<tr>"
                             f"<td>{cs['name']}</td>"
@@ -3601,6 +3633,8 @@ def run_analysis(_):
                             f"${cs['cta']/1e9:,.1f}B</td>"
                             f"<td style='text-align:right;color:{_C['red'] if cs['dealer'] < 0 else _C['text_muted']}'>"
                             f"${cs['dealer']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if _cs_vanna < 0 else _C['text_muted']}'>"
+                            f"${_cs_vanna/1e9:,.1f}B</td>"
                             f"<td style='text-align:right;color:{_cs_color};font-weight:bold'>"
                             f"${cs['total']/1e9:,.1f}B</td>"
                             f"</tr>")
@@ -3608,15 +3642,16 @@ def run_analysis(_):
                         f"<div class='mm-dash'><div class='mm-card'>"
                         f"<h4>⚡ Cenários de Stress — Fluxo Combinado por Componente</h4>"
                         f"<p><small>Estimativa de venda forçada se SPX cair e vol subir. "
-                        f"Mostra fluxo de cada estratégia sistemática:</small></p>"
+                        f"Mostra fluxo de cada estratégia sistemática + vanna de opções:</small></p>"
                         f"<table class='mm-table'>"
                         f"<tr><th>Cenário</th><th>SPX</th><th>RV</th>"
                         f"<th>Vol Ctrl</th><th>Risk Parity</th>"
-                        f"<th>CTA</th><th>Dealer</th>"
+                        f"<th>CTA</th><th>Dealer</th><th>Vanna</th>"
                         f"<th>TOTAL</th></tr>"
                         f"{cs_rows}</table>"
-                        f"<p><small>Vol Ctrl/RP: vendem em 1-2 dias. CTA: ajustam diariamente. "
-                        f"Dealer: instantâneo (delta hedge). Valores estimados, não garantidos.</small></p>"
+                        f"<p><small>Vol Ctrl/RP: ajuste ~25%/dia (~4d). CTA: ajustam diariamente. "
+                        f"Dealer: instantâneo (delta hedge). Vanna: -vanna_notional × ΔVol. "
+                        f"Valores estimados, não garantidos.</small></p>"
                         f"</div></div>"))
 
                 st_f = wd.VBox(st_f_children)
