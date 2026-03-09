@@ -1590,6 +1590,69 @@ def compute_vol_control_scenarios(rv_current, target_vols=None):
     return scenarios
 
 
+def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0, spot=0):
+    """
+    Cenários combinados: para cada nível de vol shock, estima fluxo de
+    Vol Control + Risk Parity + CTA + Dealer. Retorna lista de dicts.
+    Cenários:
+      - Vol spike: SPX cai X%, realized vol sobe para Y%
+      - Impacto em todos os componentes vol-sensitivos
+    """
+    if pd.isna(rv_current) or rv_current < 1e-6:
+        return []
+    # Cenários: (nome, spx_move%, vol_shock)
+    scenarios = [
+        ('Leve (-3%, vol 18%)', -0.03, 0.18),
+        ('Moderado (-5%, vol 22%)', -0.05, 0.22),
+        ('Forte (-8%, vol 28%)', -0.08, 0.28),
+        ('Crash (-12%, vol 35%)', -0.12, 0.35),
+        ('Pânico (-20%, vol 50%)', -0.20, 0.50),
+    ]
+    results = []
+    for name, spx_move, rv_shock in scenarios:
+        if rv_shock <= rv_current * 1.05:
+            continue
+        # Vol Control
+        vc = 0
+        for tv in [5, 10, 15]:
+            tv_dec = tv / 100.0
+            exp_cur = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV)
+            exp_shock = min(tv_dec / rv_shock, VOL_CTRL_MAX_LEV)
+            vc += VOL_CTRL_AUM.get(tv, 100e9) * (exp_shock - exp_cur)
+
+        # Risk Parity
+        rp_result = compute_risk_parity_flow(rv_shock, rv_current)
+        rp = rp_result['total']
+
+        # CTA (trend reversal — rough estimate: se queda forte, trend flips)
+        cta = 0
+        if prices is not None and len(prices) > 200:
+            trend_now = compute_cta_trend_strength(prices)
+            # Simular queda: últimos 5 dias caem spx_move
+            shocked = prices.copy()
+            for i in range(1, 6):
+                shocked.iloc[-i] = shocked.iloc[-i] * (1 + spx_move / 5)
+            trend_shock = compute_cta_trend_strength(shocked)
+            cta_rv = max(rv_shock, rv_current)
+            pos_now = np.clip(trend_now * (0.10 / rv_current), -2, 2)
+            pos_shock = np.clip(trend_shock * (0.10 / cta_rv), -2, 2)
+            cta = CTA_AUM * CTA_EQUITY_ALLOC * (pos_shock - pos_now)
+
+        # Dealer (short gamma amplifica sell-off)
+        dealer = 0
+        if gex_per_pt != 0 and spot > 0:
+            daily_chg = spot * spx_move
+            dealer = -gex_per_pt * daily_chg
+
+        total = vc + rp + cta + dealer
+        results.append({
+            'name': name, 'spx_move': spx_move, 'rv_shock': rv_shock,
+            'vol_ctrl': vc, 'risk_parity': rp, 'cta': cta,
+            'dealer': dealer, 'total': total,
+        })
+    return results
+
+
 # ── Risk Parity Model ──────────────────────────────────────────────
 # Baseado em BofA Systematic Flows Monitor:
 # - 3 asset classes: Equities (SPX), Bonds (10Y UST), Commodities (GSCI)
@@ -2599,6 +2662,7 @@ def run_analysis(_):
                 # Vol control fund flows (5%, 10%, 15%)
                 fp_volctrl = {'total': 0, 'detail': {}}
                 fp_vc_scenarios = []
+                fp_combined_scenarios = []
                 try:
                     _rv_window = 21
                     _rets = log_returns.iloc[-_rv_window * 2:]
@@ -2637,6 +2701,15 @@ def run_analysis(_):
                           f"(eq_alloc={fp_rp['eq_alloc_new']:.1%}→{fp_rp['eq_alloc_old']:.1%})")
                 except Exception as e:
                     print(f"⚠️ Risk Parity: {e}")
+
+                # Combined flow scenarios (vol spike → all components)
+                try:
+                    _px_s = _px_series if '_px_series' in dir() else None
+                    _gex = _gex_per_pt if '_gex_per_pt' in dir() else 0
+                    fp_combined_scenarios = compute_combined_flow_scenarios(
+                        _rv_cur, prices=_px_s, gex_per_pt=_gex, spot=spot)
+                except Exception as e:
+                    print(f"⚠️ Combined scenarios: {e}")
 
                 # Passive ETF flow — net rebalancing from VOO/SPY/IVV
                 fp_passive_etf_flow = 0
@@ -3509,6 +3582,43 @@ def run_analysis(_):
                     f"<p><small>Alocação ∝ 1/vol por asset class (equities, bonds, commodities). "
                     f"Rebalanceamento mensal. Vol↑ → equity alloc↓ → vendem.</small></p>"
                     f"</div></div>"))
+
+                # Combined flow scenarios table
+                if fp_combined_scenarios:
+                    cs_rows = ""
+                    for cs in fp_combined_scenarios:
+                        _cs_color = _C['red'] if cs['total'] < 0 else _C['green']
+                        cs_rows += (
+                            f"<tr>"
+                            f"<td>{cs['name']}</td>"
+                            f"<td style='text-align:center;'>{cs['spx_move']:+.0%}</td>"
+                            f"<td style='text-align:center;'>{cs['rv_shock']:.0%}</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if cs['vol_ctrl'] < 0 else _C['text_muted']}'>"
+                            f"${cs['vol_ctrl']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if cs['risk_parity'] < 0 else _C['text_muted']}'>"
+                            f"${cs['risk_parity']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if cs['cta'] < 0 else _C['text_muted']}'>"
+                            f"${cs['cta']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if cs['dealer'] < 0 else _C['text_muted']}'>"
+                            f"${cs['dealer']/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_cs_color};font-weight:bold'>"
+                            f"${cs['total']/1e9:,.1f}B</td>"
+                            f"</tr>")
+                    st_f_children.append(wd.HTML(
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h4>⚡ Cenários de Stress — Fluxo Combinado por Componente</h4>"
+                        f"<p><small>Estimativa de venda forçada se SPX cair e vol subir. "
+                        f"Mostra fluxo de cada estratégia sistemática:</small></p>"
+                        f"<table class='mm-table'>"
+                        f"<tr><th>Cenário</th><th>SPX</th><th>RV</th>"
+                        f"<th>Vol Ctrl</th><th>Risk Parity</th>"
+                        f"<th>CTA</th><th>Dealer</th>"
+                        f"<th>TOTAL</th></tr>"
+                        f"{cs_rows}</table>"
+                        f"<p><small>Vol Ctrl/RP: vendem em 1-2 dias. CTA: ajustam diariamente. "
+                        f"Dealer: instantâneo (delta hedge). Valores estimados, não garantidos.</small></p>"
+                        f"</div></div>"))
+
                 st_f = wd.VBox(st_f_children)
 
                 fp_tabs = wd.Tab()
