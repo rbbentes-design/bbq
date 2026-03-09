@@ -945,6 +945,100 @@ def _fp_get_data(universe, data_items, with_params=None, preferences=None):
     return df_r
 
 
+# ── Helpers COT v4 ──
+QUARTERLY_MONTHS = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+SPEC_TRADER_TYPES = {
+    'cftc_disaggregated': ['MANAGED_MONEY'],
+    'cftc_tff': ['ASSET_MANAGER', 'LEVERAGED_FUNDS'],
+    'cftc_legacy': ['NON_COMMERCIAL'],
+}
+
+
+def _concat_bql_response(resp):
+    """Concat DataItems de um BQL response, usando integer index."""
+    dfs = [di.df().reset_index() for di in resp]
+    raw = pd.concat([d.reset_index(drop=True) for d in dfs], axis=1)
+    return raw.loc[:, ~raw.columns.duplicated()]
+
+
+def _has_positions_data(df):
+    """Verifica se o BQL result tem dados reais de posição."""
+    if df is None or df.empty:
+        return False
+    for c in df.columns:
+        cl = str(c).lower()
+        if 'value' in cl or 'position' in cl:
+            vals = pd.to_numeric(df[c], errors='coerce')
+            if vals.notna().any() and (vals != 0).any():
+                return True
+    return False
+
+
+def resolve_specific_contract(generic_ticker):
+    """ES1 Index → ['ESH6 Index', 'ESM6 Index'] baseado na data atual."""
+    parts = generic_ticker.split()
+    if len(parts) < 2:
+        return []
+    root_num = parts[0]
+    suffix = ' '.join(parts[1:])
+    root = root_num.rstrip('0123456789')
+    if not root:
+        return []
+    now = pd.Timestamp.now()
+    month, year = now.month, now.year
+    sorted_qm = sorted(QUARTERLY_MONTHS.keys())
+    candidates = []
+    for qm in sorted_qm:
+        if month <= qm:
+            code = QUARTERLY_MONTHS[qm]
+            candidates.append(f"{root}{code}{year % 10} {suffix}")
+            if len(candidates) >= 2:
+                break
+    if len(candidates) < 2:
+        next_year = (year + 1) % 10
+        for qm in sorted_qm:
+            code = QUARTERLY_MONTHS[qm]
+            candidates.append(f"{root}{code}{next_year} {suffix}")
+            if len(candidates) >= 2:
+                break
+    print(f"[resolve] {generic_ticker} → candidatos: {candidates}")
+    return candidates
+
+
+def _try_cot_query(ticker, rpt, start, end, with_dates=True):
+    """Tenta uma query COT. Retorna DataFrame ou None."""
+    try:
+        if with_dates:
+            q = f"""
+let(#p = cot_position(report_type={rpt}, direction=all,
+                      trader_type=all, commitment_type=futures,
+                      dates=range({start},{end}));)
+for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
+                    #p().value, #p().change)
+"""
+        else:
+            q = f"""
+let(#p = cot_position(report_type={rpt}, direction=all,
+                      trader_type=all, commitment_type=futures);)
+for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
+                    #p().value, #p().change)
+"""
+        label = f"{rpt} + {ticker}" + (" + dates" if with_dates else "")
+        print(f"[COT] Tentando {label}…")
+        resp = bq.execute(q)
+        raw = _concat_bql_response(resp)
+        print(f"[COT]   shape={raw.shape}")
+        if not _has_positions_data(raw):
+            print(f"[COT]   → sem dados de posição reais")
+            return None
+        print(f"[COT]   ✓ has real data")
+        return raw
+    except Exception as e:
+        print(f"[COT]   ✗ {e}")
+        return None
+
+
 def has_cot(ticker):
     """Verifica se o ticker possui dados COT. Retorna (True, futures_ticker) ou (False, None)."""
     if ticker in COT_FUTURES_MAP:
@@ -956,39 +1050,33 @@ def has_cot(ticker):
 
 
 def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
-    """Busca COT: tenta cada report type, sem opções — agrega tudo por data."""
+    """Busca COT histórico: tenta genérico + específico, filtra spec traders."""
     tickers = [futures_ticker] if isinstance(futures_ticker, str) else list(futures_ticker)
-    tkr_q = ','.join(f"'{t}'" for t in tickers)
 
-    raw = pd.DataFrame()
+    # Build lista de tickers para tentar: genérico + contratos específicos
+    tickers_to_try = list(tickers)
+    for t in tickers:
+        specific = resolve_specific_contract(t)
+        tickers_to_try.extend(specific)
+
+    raw = None
     used_rpt = ''
-    for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
-        try:
-            q = f"""
-let(
-  #cot_pos = cot_position(report_type={rpt}, direction=all,
-                          trader_type=all, commitment_type=futures);
-  #cot_trd = cot_traders(report_type={rpt}, direction=all,
-                         trader_type=all, commitment_type=futures);
-)
-for({tkr_q}) get(
-  #cot_pos().date, #cot_pos().trader_type, #cot_pos().direction,
-  #cot_pos().value, #cot_pos().change,
-  #cot_trd().value, #cot_trd().change
-)
-"""
-            print(f"[COT] Tentando {rpt}…")
-            resp = bq.execute(q)
-            raw = pd.concat([di.df() for di in resp], axis=1)
-            raw = raw.loc[:, ~raw.columns.duplicated()]
-            if not raw.empty:
-                used_rpt = rpt
-                print(f"[COT] ✓ {rpt}: shape={raw.shape}")
-                break
-        except Exception as e:
-            print(f"[COT] ✗ {rpt}: {e}")
+    used_ticker = ''
 
-    if raw.empty:
+    for t in tickers_to_try:
+        for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
+            result = _try_cot_query(t, rpt, start, end, with_dates=True)
+            if result is None:
+                result = _try_cot_query(t, rpt, start, end, with_dates=False)
+            if result is not None:
+                raw = result
+                used_rpt = rpt
+                used_ticker = t
+                break
+        if raw is not None:
+            break
+
+    if raw is None:
         print("[COT] Nenhum dado retornado")
         return pd.DataFrame()
 
@@ -996,31 +1084,50 @@ for({tkr_q}) get(
     col_map = {}
     for c in raw.columns:
         cl = str(c).lower()
-        if 'cot_pos' in cl or ('position' in cl and 'cot_trd' not in cl):
-            if 'date' in cl:
-                col_map[c] = 'Date'
-            elif 'trader_type' in cl:
-                col_map[c] = 'TraderType'
-            elif 'direction' in cl:
-                col_map[c] = 'Direction'
-            elif 'change' in cl:
-                col_map[c] = 'Pos_Chg'
-            elif 'value' in cl:
-                col_map[c] = 'Positions'
-        elif 'cot_trd' in cl or 'traders' in cl:
-            if 'change' in cl:
-                col_map[c] = 'Trd_Chg'
-            elif 'value' in cl:
-                col_map[c] = 'Traders'
-    raw = raw.rename(columns=col_map).reset_index()
+        if 'date' in cl:
+            col_map[c] = 'Date'
+        elif 'trader_type' in cl:
+            col_map[c] = 'TraderType'
+        elif 'direction' in cl:
+            col_map[c] = 'Direction'
+        elif 'change' in cl:
+            col_map[c] = 'Pos_Chg'
+        elif 'value' in cl:
+            col_map[c] = 'Positions'
+    raw = raw.rename(columns=col_map)
     if 'ID' not in raw.columns:
-        raw['ID'] = tickers[0]
+        raw['ID'] = used_ticker
     if 'Date' in raw.columns:
         raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
-    for nc in ('Positions', 'Traders', 'Pos_Chg', 'Trd_Chg'):
+    for nc in ('Positions', 'Pos_Chg'):
         if nc in raw.columns:
             raw[nc] = pd.to_numeric(raw[nc], errors='coerce')
-    print(f"[COT] Colunas: {list(raw.columns)}, report={used_rpt}")
+
+    if 'Direction' in raw.columns:
+        raw['Direction'] = raw['Direction'].astype(str).str.strip().str.upper()
+    if 'TraderType' in raw.columns:
+        raw['TraderType'] = raw['TraderType'].astype(str).str.strip().str.upper()
+
+    print(f"[COT] Rename: cols={list(raw.columns)}, report={used_rpt}, ticker={used_ticker}")
+
+    # ── Filtrar trader types especulativos ──
+    spec_types = SPEC_TRADER_TYPES.get(used_rpt, [])
+    if 'TraderType' in raw.columns and spec_types:
+        n_before = len(raw)
+        raw = raw[raw['TraderType'].isin(spec_types)]
+        print(f"[COT] Filtro spec ({spec_types}): {n_before} → {len(raw)} rows")
+    if raw.empty:
+        print("[COT] Vazio após filtro de trader types")
+        return pd.DataFrame()
+
+    # ── Drop rows com Positions NaN/zero (dias sem report) ──
+    if 'Positions' in raw.columns:
+        raw = raw.dropna(subset=['Positions'])
+        raw = raw[raw['Positions'] != 0]
+        print(f"[COT] Após drop zeros/NaN: {len(raw)} rows")
+    if raw.empty:
+        print("[COT] Vazio após drop zeros")
+        return pd.DataFrame()
 
     # ── Filtrar datas ──
     def _pdt(s):
@@ -1040,60 +1147,47 @@ for({tkr_q}) get(
             raw = raw[raw['Date'] >= dt_s]
         if dt_e is not None:
             raw = raw[raw['Date'] <= dt_e]
-
     if raw.empty:
         print("[COT] Vazio após filtro de datas")
         return pd.DataFrame()
 
-    # ── Normalizar Direction ──
-    if 'Direction' in raw.columns:
-        raw['Direction'] = raw['Direction'].astype(str).str.strip().str.title()
-
-    # ── Agregar: soma TODAS trader types por Date × Direction ──
+    # ── Pivot: spec traders por Date × Direction ──
     idx_cols = [c for c in ['ID', 'Date'] if c in raw.columns]
     if not idx_cols or 'Positions' not in raw.columns:
         print(f"[COT] Colunas insuficientes: {list(raw.columns)}")
         return pd.DataFrame()
 
     if 'Direction' in raw.columns:
-        agg_cols = {c: 'sum' for c in ['Positions', 'Traders']
-                    if c in raw.columns}
-        grouped = raw.groupby(idx_cols + ['Direction']).agg(agg_cols).reset_index()
-
-        piv_pos = grouped.pivot_table(index=idx_cols, columns='Direction',
-                                      values='Positions', aggfunc='sum')
-        piv_pos.columns = [f'Positions - {c}' for c in piv_pos.columns]
-        df = piv_pos
-        if 'Traders' in grouped.columns:
-            piv_trd = grouped.pivot_table(index=idx_cols, columns='Direction',
-                                          values='Traders', aggfunc='sum')
-            piv_trd.columns = [f'Traders - {c}' for c in piv_trd.columns]
-            df = piv_pos.join(piv_trd)
+        grouped = raw.groupby(idx_cols + ['Direction'])['Positions'].sum().reset_index()
+        piv = grouped.pivot_table(index=idx_cols, columns='Direction',
+                                  values='Positions', aggfunc='sum')
+        piv.columns = [f'Positions - {c.title()}' for c in piv.columns]
+        df = piv
     else:
         df = raw.groupby(idx_cols)['Positions'].sum().to_frame()
 
-    # ── Net se não existir ──
-    if 'Positions - Net' not in df.columns:
-        if ('Positions - Long' in df.columns
-                and 'Positions - Short' in df.columns):
-            df['Positions - Net'] = (df['Positions - Long']
-                                     + df['Positions - Short'])
+    # ── Compute Net = Long + Short ──
+    if 'Positions - Net' in df.columns:
+        df['Positions'] = df['Positions - Net']
+    elif 'Positions - Long' in df.columns and 'Positions - Short' in df.columns:
+        df['Positions'] = df['Positions - Long'] + df['Positions - Short']
+    elif 'Positions - Long' in df.columns:
+        df['Positions'] = df['Positions - Long']
+    else:
+        df['Positions'] = df.iloc[:, 0]
 
-    # ── Colunas principais (sempre Net) ──
-    df['Positions'] = df.get('Positions - Net',
-                             df.get('Positions - Long',
-                                    df.iloc[:, 0] if len(df.columns) else np.nan))
-    if 'Traders - Net' in df.columns:
-        df['Traders'] = df['Traders - Net']
-    elif 'Traders - Long' in df.columns:
-        df['Traders'] = df['Traders - Long']
+    df = df[df['Positions'] != 0]
+    if df.empty:
+        print("[COT] Vazio após drop net == 0")
+        return pd.DataFrame()
 
-    # ── Price & Open Interest ──
+    # ── Price & Open Interest (usa genérico para preço) ──
+    price_ticker = futures_ticker if isinstance(futures_ticker, str) else futures_ticker[0]
     try:
         dates_bql = bq.func.range(start, end, frq='d')
         px_items = {'Price': bq.data.px_last(fill='prev'),
                     'Open Interest': bq.data.fut_aggte_open_int()}
-        px_df = _fp_get_data(tickers[0], px_items,
+        px_df = _fp_get_data(price_ticker, px_items,
                              with_params={'currency': 'usd', 'dates': dates_bql})
         px_sr = px_df.droplevel('ID').sort_index()
         cot_dates = df.index.get_level_values('Date')
@@ -1131,7 +1225,7 @@ def aggregate_cot(df_cot):
 
 def cot_seasonality(df_cot):
     """Estatísticas semanais de sazonalidade COT."""
-    cols = ['Traders', 'Positions', 'Open Interest', 'week']
+    cols = ['Positions', 'Open Interest', 'week']
     avail = [c for c in cols if c in df_cot.columns]
     return (df_cot[avail].groupby('week')
             .agg(['mean', 'max', 'sum', 'min'])
@@ -1139,9 +1233,9 @@ def cot_seasonality(df_cot):
 
 
 def cot_summary_stats(df_cot):
-    """Estatísticas resumo: último valor, WoW change, percentil 5Y, mediana, z-score."""
+    """Estatísticas resumo: último valor, WoW change, percentil, mediana, z-score."""
     summary = pd.Series(dtype=float)
-    for col in ['Positions', 'Traders']:
+    for col in ['Positions']:
         if col not in df_cot.columns:
             continue
         s = df_cot[col].dropna()
@@ -1149,10 +1243,10 @@ def cot_summary_stats(df_cot):
             continue
         stats = pd.Series({
             col: s.iloc[-1],
-            f'{col} Change': s.iloc[-1] - s.iloc[-2] if len(s) >= 2 else np.nan,
-            f'{col} 5Y Percentile': pd.cut(s, 100, labels=False).iloc[-1],
-            f'{col} 5Y Median': s.median(),
-            f'{col} 5Y Z-Score': (s.iloc[-1] - s.mean()) / max(s.std(), 1e-9),
+            f'{col} WoW Change': s.iloc[-1] - s.iloc[-2] if len(s) >= 2 else np.nan,
+            f'{col} Percentile': (s.rank(pct=True).iloc[-1] * 100),
+            f'{col} Median': s.median(),
+            f'{col} Z-Score': (s.iloc[-1] - s.mean()) / max(s.std(), 1e-9),
         })
         summary = pd.concat([summary, stats])
     return summary
