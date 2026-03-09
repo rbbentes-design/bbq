@@ -955,161 +955,73 @@ def has_cot(ticker):
     return False, None
 
 
-def fetch_cot_data(futures_ticker, trader_type='Managed Money',
-                   report_type='CFTC Disaggregated', start='-6Y', end='0D',
-                   direction='All', commitment='Futures'):
-    """Busca dados COT via BQL nativo — formato EXATO do Bloomberg Terminal."""
-    _RPT = {'CFTC Disaggregated': 'cftc_disaggregated',
-            'CFTC TFF': 'cftc_tff', 'CFTC Legacy': 'cftc_legacy'}
-    _TRADER_RPT = {
-        'Asset Manager': 'cftc_tff', 'Leveraged Funds': 'cftc_tff',
-        'Dealer Intermediary': 'cftc_tff', 'Other Reportables': 'cftc_tff',
-        'Managed Money': 'cftc_disaggregated', 'Swap Dealers': 'cftc_disaggregated',
-        'Commercial': 'cftc_legacy', 'Non-Commercial': 'cftc_legacy',
-    }
-    rpt = _TRADER_RPT.get(trader_type, _RPT.get(report_type, 'cftc_disaggregated'))
-
-    # Ticker(s)
-    if isinstance(futures_ticker, str):
-        tickers = [futures_ticker]
-    elif hasattr(futures_ticker, '__iter__'):
-        tickers = list(futures_ticker)
-    else:
-        tickers = [str(futures_ticker)]
+def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
+    """Busca COT: tenta cada report type, sem opções — agrega tudo por data."""
+    tickers = [futures_ticker] if isinstance(futures_ticker, str) else list(futures_ticker)
     tkr_q = ','.join(f"'{t}'" for t in tickers)
 
-    # Query BQL — formato EXATO do código que funciona no Terminal Bloomberg
-    # 4 variáveis: futures_position, futures_traders, fo_position, fo_traders
-    # 12 campos no get(), incluindo reporting_obligation
-    q = f"""
-    let(
-    #futures_position = cot_position(
-        report_type={rpt},
-        direction=all,
-        trader_type=all,
-        commitment_type=futures
-    );
-
-    #futures_traders = cot_traders(
-        report_type={rpt},
-        direction=all,
-        trader_type=all,
-        commitment_type=futures
-    );
-
-    #fo_position = cot_position(
-        report_type={rpt},
-        direction=all,
-        trader_type=all,
-        commitment_type=futures_and_options
-    );
-
-    #fo_traders = cot_traders(
-        report_type={rpt},
-        direction=all,
-        trader_type=all,
-        commitment_type=futures_and_options
-    );
+    raw = pd.DataFrame()
+    used_rpt = ''
+    for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
+        try:
+            q = f"""
+let(
+  #cot_pos = cot_position(report_type={rpt}, direction=all,
+                          trader_type=all, commitment_type=futures);
+  #cot_trd = cot_traders(report_type={rpt}, direction=all,
+                         trader_type=all, commitment_type=futures);
 )
-
 for({tkr_q}) get(
-    #futures_position().date,
-    #futures_position().reporting_obligation,
-    #futures_position().trader_type,
-    #futures_position().direction,
-    #futures_position().value,
-    #futures_position().change,
-    #futures_traders().value,
-    #futures_traders().change,
-    #fo_position().value,
-    #fo_position().change,
-    #fo_traders().value,
-    #fo_traders().change
+  #cot_pos().date, #cot_pos().trader_type, #cot_pos().direction,
+  #cot_pos().value, #cot_pos().change,
+  #cot_trd().value, #cot_trd().change
 )
-    """
-    print(f"[COT] Query ticker={tkr_q}, report={rpt}")
-    resp = bq.execute(q)
-    print(f"[COT] Response: {len(resp)} items")
-
-    # response[0].df() — exatamente como no código que funciona
-    raw = resp[0].df()
-    print(f"[COT] Raw cols: {list(raw.columns)}")
-    print(f"[COT] Raw shape: {raw.shape}")
-    if not raw.empty:
-        print(f"[COT] Head:\n{raw.head(3)}")
+"""
+            print(f"[COT] Tentando {rpt}…")
+            resp = bq.execute(q)
+            raw = resp[0].df()
+            if not raw.empty:
+                used_rpt = rpt
+                print(f"[COT] ✓ {rpt}: shape={raw.shape}")
+                break
+        except Exception as e:
+            print(f"[COT] ✗ {rpt}: {e}")
 
     if raw.empty:
-        print("[COT] Empty response from BQL")
+        print("[COT] Nenhum dado retornado")
         return pd.DataFrame()
 
-    # Mapear colunas BQL para nomes amigáveis
-    col_rename = {}
+    # ── Renomear colunas ──
+    col_map = {}
     for c in raw.columns:
         cl = str(c).lower()
-        if 'futures_position' in cl:
+        if 'cot_pos' in cl or ('position' in cl and 'cot_trd' not in cl):
             if 'date' in cl:
-                col_rename[c] = 'Date'
-            elif 'reporting_obligation' in cl:
-                col_rename[c] = 'ReportingObligation'
+                col_map[c] = 'Date'
             elif 'trader_type' in cl:
-                col_rename[c] = 'TraderType'
+                col_map[c] = 'TraderType'
             elif 'direction' in cl:
-                col_rename[c] = 'Direction'
+                col_map[c] = 'Direction'
+            elif 'change' in cl:
+                col_map[c] = 'Pos_Chg'
             elif 'value' in cl:
-                col_rename[c] = 'Fut_Positions'
-            elif 'change' in cl:
-                col_rename[c] = 'Fut_Pos_Chg'
-        elif 'futures_traders' in cl:
-            if 'value' in cl:
-                col_rename[c] = 'Fut_Traders'
-            elif 'change' in cl:
-                col_rename[c] = 'Fut_Trd_Chg'
-        elif 'fo_position' in cl:
-            if 'value' in cl:
-                col_rename[c] = 'FO_Positions'
-            elif 'change' in cl:
-                col_rename[c] = 'FO_Pos_Chg'
-        elif 'fo_traders' in cl:
-            if 'value' in cl:
-                col_rename[c] = 'FO_Traders'
-            elif 'change' in cl:
-                col_rename[c] = 'FO_Trd_Chg'
-
-    raw = raw.rename(columns=col_rename)
-    raw = raw.reset_index()
+                col_map[c] = 'Positions'
+        elif 'cot_trd' in cl or 'traders' in cl:
+            if 'change' in cl:
+                col_map[c] = 'Trd_Chg'
+            elif 'value' in cl:
+                col_map[c] = 'Traders'
+    raw = raw.rename(columns=col_map).reset_index()
     if 'ID' not in raw.columns:
         raw['ID'] = tickers[0]
     if 'Date' in raw.columns:
         raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
-    print(f"[COT] Renamed cols: {list(raw.columns)}")
+    for nc in ('Positions', 'Traders', 'Pos_Chg', 'Trd_Chg'):
+        if nc in raw.columns:
+            raw[nc] = pd.to_numeric(raw[nc], errors='coerce')
+    print(f"[COT] Colunas: {list(raw.columns)}, report={used_rpt}")
 
-    # Selecionar colunas de posição/traders baseado no commitment
-    if commitment == 'Futures & Options' and 'FO_Positions' in raw.columns:
-        raw['Positions'] = pd.to_numeric(raw['FO_Positions'], errors='coerce')
-        raw['Pos_Chg'] = pd.to_numeric(raw.get('FO_Pos_Chg'), errors='coerce')
-        raw['Traders'] = pd.to_numeric(raw.get('FO_Traders'), errors='coerce')
-        raw['Trd_Chg'] = pd.to_numeric(raw.get('FO_Trd_Chg'), errors='coerce')
-    else:
-        raw['Positions'] = pd.to_numeric(raw.get('Fut_Positions'), errors='coerce')
-        raw['Pos_Chg'] = pd.to_numeric(raw.get('Fut_Pos_Chg'), errors='coerce')
-        raw['Traders'] = pd.to_numeric(raw.get('Fut_Traders'), errors='coerce')
-        raw['Trd_Chg'] = pd.to_numeric(raw.get('Fut_Trd_Chg'), errors='coerce')
-
-    # Filtrar por trader_type selecionado
-    if trader_type != 'Total' and 'TraderType' in raw.columns:
-        trd_lower = trader_type.lower().replace(' ', '').replace('_', '')
-        raw['_m'] = (raw['TraderType'].astype(str).str.lower()
-                     .str.replace(' ', '', regex=False)
-                     .str.replace('_', '', regex=False))
-        matched = raw[raw['_m'] == trd_lower].drop(columns=['_m'])
-        if not matched.empty:
-            raw = matched
-        else:
-            print(f"[COT] Trader '{trader_type}' not found.")
-            print(f"[COT] Available: {raw['TraderType'].unique()}")
-            raw = raw.drop(columns=['_m'])
-
-    # Filtrar datas
+    # ── Filtrar datas ──
     def _pdt(s):
         if not s:
             return None
@@ -1129,39 +1041,53 @@ for({tkr_q}) get(
             raw = raw[raw['Date'] <= dt_e]
 
     if raw.empty:
-        print("[COT] Empty after filtering")
+        print("[COT] Vazio após filtro de datas")
         return pd.DataFrame()
 
-    # Normalizar Direction para Title Case
+    # ── Normalizar Direction ──
     if 'Direction' in raw.columns:
         raw['Direction'] = raw['Direction'].astype(str).str.strip().str.title()
 
-    # Pivotar direções → colunas
+    # ── Agregar: soma TODAS trader types por Date × Direction ──
     idx_cols = [c for c in ['ID', 'Date'] if c in raw.columns]
-    if not idx_cols or 'Direction' not in raw.columns or 'Positions' not in raw.columns:
-        print(f"[COT] Missing required cols. Have: {list(raw.columns)}")
+    if not idx_cols or 'Positions' not in raw.columns:
+        print(f"[COT] Colunas insuficientes: {list(raw.columns)}")
         return pd.DataFrame()
 
-    piv_pos = raw.pivot_table(index=idx_cols, columns='Direction',
-                              values='Positions', aggfunc='first')
-    piv_pos.columns = [f'Positions - {c}' for c in piv_pos.columns]
-    df = piv_pos
-    if 'Traders' in raw.columns:
-        piv_trd = raw.pivot_table(index=idx_cols, columns='Direction',
-                                  values='Traders', aggfunc='first')
-        piv_trd.columns = [f'Traders - {c}' for c in piv_trd.columns]
-        df = piv_pos.join(piv_trd)
+    if 'Direction' in raw.columns:
+        agg_cols = {c: 'sum' for c in ['Positions', 'Traders']
+                    if c in raw.columns}
+        grouped = raw.groupby(idx_cols + ['Direction']).agg(agg_cols).reset_index()
 
-    # Colunas principais
-    main_d = direction if direction not in ('All', '') else 'Net'
-    df['Positions'] = df.get(f'Positions - {main_d}',
-                             df.get('Positions - Net',
-                                    df.get('Positions - Long')))
-    df['Traders'] = df.get(f'Traders - {main_d}',
-                           df.get('Traders - Net',
-                                  df.get('Traders - Long')))
+        piv_pos = grouped.pivot_table(index=idx_cols, columns='Direction',
+                                      values='Positions', aggfunc='sum')
+        piv_pos.columns = [f'Positions - {c}' for c in piv_pos.columns]
+        df = piv_pos
+        if 'Traders' in grouped.columns:
+            piv_trd = grouped.pivot_table(index=idx_cols, columns='Direction',
+                                          values='Traders', aggfunc='sum')
+            piv_trd.columns = [f'Traders - {c}' for c in piv_trd.columns]
+            df = piv_pos.join(piv_trd)
+    else:
+        df = raw.groupby(idx_cols)['Positions'].sum().to_frame()
 
-    # Price & Open Interest
+    # ── Net se não existir ──
+    if 'Positions - Net' not in df.columns:
+        if ('Positions - Long' in df.columns
+                and 'Positions - Short' in df.columns):
+            df['Positions - Net'] = (df['Positions - Long']
+                                     + df['Positions - Short'])
+
+    # ── Colunas principais (sempre Net) ──
+    df['Positions'] = df.get('Positions - Net',
+                             df.get('Positions - Long',
+                                    df.iloc[:, 0] if len(df.columns) else np.nan))
+    if 'Traders - Net' in df.columns:
+        df['Traders'] = df['Traders - Net']
+    elif 'Traders - Long' in df.columns:
+        df['Traders'] = df['Traders - Long']
+
+    # ── Price & Open Interest ──
     try:
         dates_bql = bq.func.range(start, end, frq='d')
         px_items = {'Price': bq.data.px_last(fill='prev'),
@@ -1178,14 +1104,14 @@ for({tkr_q}) get(
         df['Price'] = np.nan
         df['Open Interest'] = np.nan
 
-    # ISO week/year
+    # ── week/year ──
     dt_idx = pd.to_datetime(df.index.get_level_values('Date'))
     iso = dt_idx.isocalendar()
     df['week'] = iso.week.values
     df['year'] = iso.year.values
     if 'Positions - Short' in df.columns:
         df['Positions - Short'] = df['Positions - Short'] * -1
-    print(f"[COT] Final shape: {df.shape}, cols: {list(df.columns)}")
+    print(f"[COT] Final: {df.shape}, cols: {list(df.columns)}")
     return df.dropna(subset=['Positions'])
 
 
@@ -1231,13 +1157,13 @@ def cot_summary_stats(df_cot):
     return summary
 
 
-def safe_fetch_cot(ticker, **kwargs):
+def safe_fetch_cot(ticker, start='-2Y', end='0D'):
     """Tenta buscar COT. Retorna None se não disponível."""
     ok, fut = has_cot(ticker)
     if not ok:
         return None
     try:
-        df_r = fetch_cot_data(fut, **kwargs)
+        df_r = fetch_cot_data(fut, start=start, end=end)
         if df_r is None or df_r.empty:
             return None
         return aggregate_cot(df_r)
@@ -1335,20 +1261,6 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
         df_r = bq.execute(req)[0].df()
         if df_r is None or df_r.empty:
             return pd.DataFrame()
-
-        # Renomear colunas robustamente
-        rename = {}
-        for c in df_r.columns:
-            cl = str(c).lower()
-            if 'mkt' in cl and 'cap' in cl:
-                rename[c] = 'cap'
-            elif 'buyback' in cl or 'repurchase' in cl:
-                rename[c] = 'buyback'
-            elif 'volume' in cl or 'adv' in cl:
-                rename[c] = 'adv'
-            elif 'px_last' in cl or cl == 'px':
-                rename[c] = 'px'
-        df_r = df_r.rename(columns=rename)
 
         # Renomear colunas robustamente
         rename = {}
@@ -2177,41 +2089,17 @@ cot_type_w = wd.Dropdown(
 cot_contract_w = wd.SelectMultiple(
     description='Contratos:', layout={'min_width': '300px', 'height': '80px'})
 cot_trader_w = wd.Dropdown(
-    options=['Managed Money', 'Total', 'Commercial', 'Non-Commercial',
+    options=['Total', 'Managed Money', 'Commercial', 'Non-Commercial',
              'Swap Dealers', 'Leveraged Funds', 'Asset Manager',
              'Dealer Intermediary', 'Other Reportables'],
-    value='Managed Money', description='Trader Type:',
+    value='Total', description='Trader Type:',
     layout={'width': '280px'})
-cot_report_w = wd.Dropdown(
-    options=['CFTC Disaggregated', 'CFTC TFF', 'CFTC Legacy'],
-    value='CFTC Disaggregated', description='Report Type:',
-    layout={'width': '280px'})
-cot_direction_w = wd.Dropdown(
-    options=['Long', 'Short', 'Net', 'All'],
-    value='Long', description='Direction:',
-    layout={'width': '220px'})
-cot_datatype_w = wd.Dropdown(
-    options=['Positions', 'Traders'],
-    value='Positions', description='Data Type:',
-    layout={'width': '220px'})
-cot_commitment_w = wd.Dropdown(
-    options=['Futures', 'Futures & Options'],
-    value='Futures', description='Commitment:',
-    layout={'width': '220px'})
-cot_obligation_w = wd.Dropdown(
-    options=['Reportable', 'Total', 'All'],
-    value='Reportable', description='Obligation:',
-    layout={'width': '220px'})
 cot_start_w = wd.DatePicker(
-    value=pd.Timestamp.now().date() - pd.Timedelta(days=5*365),
+    value=pd.Timestamp.now().date() - pd.Timedelta(days=2*365),
     description='COT Start:', layout={'width': '260px'})
 cot_end_w = wd.DatePicker(
     value=pd.Timestamp.now().date(),
     description='COT End:', layout={'width': '260px'})
-cot_basket_w = wd.RadioButtons(
-    options=['Basket Prices', 'Basket Returns'],
-    value='Basket Prices', description='Basket:',
-    layout={'width': '280px'})
 
 
 def _update_cot_contracts(change=None):
@@ -2220,20 +2108,7 @@ def _update_cot_contracts(change=None):
     if opts:
         cot_contract_w.value = (opts[0][1],)
 
-def _update_cot_report(change=None):
-    """Auto-corrigir report type quando trader type muda."""
-    _tr = {
-        'Asset Manager': 'CFTC TFF', 'Leveraged Funds': 'CFTC TFF',
-        'Dealer Intermediary': 'CFTC TFF', 'Other Reportables': 'CFTC TFF',
-        'Managed Money': 'CFTC Disaggregated', 'Swap Dealers': 'CFTC Disaggregated',
-        'Commercial': 'CFTC Legacy', 'Non-Commercial': 'CFTC Legacy',
-    }
-    rpt = _tr.get(cot_trader_w.value)
-    if rpt and rpt in cot_report_w.options:
-        cot_report_w.value = rpt
-
 cot_type_w.observe(_update_cot_contracts, names='value')
-cot_trader_w.observe(_update_cot_report, names='value')
 _update_cot_contracts()
 
 out_main = wd.Output()
@@ -2254,38 +2129,27 @@ def _reload_cot(_):
         clear_output(wait=True)
         display(wd.HTML(DASH_CSS + "<div class='mm-dash mm-loading'>⏳ Recarregando COT...</div>"))
         ticker = ticker_w.value.strip() or 'SPX Index'
-        _cot_start = cot_start_w.value.strftime('%Y%m%d') if cot_start_w.value else '-6Y'
+        _cot_start = cot_start_w.value.strftime('%Y%m%d') if cot_start_w.value else '-2Y'
         _cot_end = cot_end_w.value.strftime('%Y%m%d') if cot_end_w.value else '0D'
-        _cot_kw = dict(
-            trader_type=cot_trader_w.value,
-            report_type=cot_report_w.value,
-            direction=cot_direction_w.value,
-            commitment=cot_commitment_w.value,
-            start=_cot_start, end=_cot_end)
         try:
-            # COT do ticker principal
-            cot_df = safe_fetch_cot(ticker, **_cot_kw)
-            # COT dos contratos selecionados
+            cot_df = safe_fetch_cot(ticker, start=_cot_start, end=_cot_end)
             sel_cots = list(cot_contract_w.value)
             sel_df = None
             if sel_cots:
                 try:
                     raw = fetch_cot_data(
                         sel_cots[0] if len(sel_cots) == 1 else sel_cots,
-                        **_cot_kw)
+                        start=_cot_start, end=_cot_end)
                     if raw is not None and not raw.empty:
                         sel_df = aggregate_cot(raw)
                 except Exception as e:
                     print(f"⚠️ COT selected: {e}")
             clear_output(wait=True)
-            _data_col = cot_datatype_w.value
-            _basket_col = 'Basket Returns' if cot_basket_w.value == 'Basket Returns' else 'Price'
             children = [wd.HTML(
                 f"<div class='mm-dash'><div class='mm-card'>"
                 f"<h3>COT — Recarga Rápida</h3>"
-                f"<p><span class='mm-cot-label'>Trader: <b>{cot_trader_w.value}</b></span> "
-                f"<span class='mm-cot-label'>Report: <b>{cot_report_w.value}</b> (auto: baseado no trader)</span> "
-                f"<span class='mm-cot-label'>Commitment: <b>{cot_commitment_w.value}</b></span></p>"
+                f"<p>Dados agregados (todas trader types somadas). "
+                f"Report type: auto (tenta disaggregated → tff → legacy)</p>"
                 f"</div></div>")]
             ok, fut = has_cot(ticker)
             if ok and cot_df is not None and not cot_df.empty:
@@ -2294,16 +2158,15 @@ def _reload_cot(_):
                 children.append(fp_grid_cot_stats(stats))
                 seas = cot_seasonality(cot_df)
                 children.append(wd.HBox([
-                    fp_plot_positions_basket(cot_df, basket_col=_basket_col, data_col=_data_col),
-                    fp_plot_dispersion(seas, cot_df, col=_data_col)]))
+                    fp_plot_positions_basket(cot_df),
+                    fp_plot_dispersion(seas, cot_df)]))
                 children.append(fp_plot_long_short_net(cot_df))
             elif ok:
-                children.append(wd.HTML(f"<p>COT disponível para {fut}, mas sem dados. "
-                                        f"Verifique trader/report compatíveis.</p>"))
+                children.append(wd.HTML(f"<p>COT disponível para {fut}, mas sem dados.</p>"))
             if sel_df is not None and not sel_df.empty:
                 sel_label = ', '.join(sel_cots)
                 children.append(wd.HTML(f"<hr><h4>COT: {sel_label} — {len(sel_df)} registros</h4>"))
-                children.append(fp_plot_positions_basket(sel_df, basket_col=_basket_col, data_col=_data_col))
+                children.append(fp_plot_positions_basket(sel_df))
             display(wd.VBox(children))
         except Exception as e:
             clear_output(wait=True)
@@ -2490,29 +2353,29 @@ def run_analysis(_):
                 cot_net_change = 0
                 history_cot = None
 
-                # Parametros COT dos widgets
                 _cot_start = (cot_start_w.value.strftime('%Y%m%d')
-                              if cot_start_w.value else '-6Y')
+                              if cot_start_w.value else '-2Y')
                 _cot_end = (cot_end_w.value.strftime('%Y%m%d')
                             if cot_end_w.value else '0D')
-                _cot_kw = dict(
-                    trader_type=cot_trader_w.value,
-                    report_type=cot_report_w.value,
-                    direction=cot_direction_w.value,
-                    commitment=cot_commitment_w.value,
-                    start=_cot_start,
-                    end=_cot_end,
-                )
 
                 if cot_ok_fp:
                     try:
-                        fp_cot_df = safe_fetch_cot(ticker, **_cot_kw)
+                        fp_cot_df = safe_fetch_cot(ticker,
+                                                   start=_cot_start,
+                                                   end=_cot_end)
                         if fp_cot_df is not None and not fp_cot_df.empty:
                             fp_cot_stats = cot_summary_stats(fp_cot_df)
-                            if 'Positions - Net' in fp_cot_df.columns:
-                                net = fp_cot_df['Positions - Net'].dropna()
+                            # Pega net change de qualquer coluna disponível
+                            _net_col = None
+                            for _nc in ('Positions - Net', 'Positions'):
+                                if _nc in fp_cot_df.columns:
+                                    _net_col = _nc
+                                    break
+                            if _net_col:
+                                net = fp_cot_df[_net_col].dropna()
                                 if len(net) >= 2:
-                                    cot_net_change = float(net.iloc[-1] - net.iloc[-2])
+                                    cot_net_change = float(
+                                        net.iloc[-1] - net.iloc[-2])
                                     history_cot = net.diff().dropna()
                     except Exception:
                         pass
@@ -2524,7 +2387,7 @@ def run_analysis(_):
                         sel_df = fetch_cot_data(
                             selected_cots[0] if len(selected_cots) == 1
                             else selected_cots,
-                            **_cot_kw)
+                            start=_cot_start, end=_cot_end)
                         if not sel_df.empty:
                             fp_selected_cot_df = aggregate_cot(sel_df)
                     except Exception:
@@ -3242,31 +3105,24 @@ def run_analysis(_):
                 st_c = wd.VBox(st_c_children)
 
                 # Sub-tab D: COT
-                _cot_data_col = cot_datatype_w.value  # 'Positions' or 'Traders'
-                _cot_dir = cot_direction_w.value
-                _basket_col = ('Basket Returns' if cot_basket_w.value == 'Basket Returns'
-                               else 'Price')
                 st_d_children = [wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
                     f"<h3>COT — Commitment of Traders</h3>"
-                    f"<p><span class='mm-cot-label'>Data: <b>{_cot_data_col}</b></span> "
-                    f"<span class='mm-cot-label'>Direction: <b>{_cot_dir}</b></span> "
-                    f"<span class='mm-cot-label'>Trader: <b>{cot_trader_w.value}</b></span> "
-                    f"<span class='mm-cot-label'>Report: <b>{cot_report_w.value}</b></span> "
-                    f"<span class='mm-cot-label'>Commitment: <b>{cot_commitment_w.value}</b></span> "
+                    f"<p>Dados agregados (soma de todas trader types). "
+                    f"Report type: auto. "
                     f"<span class='mm-cot-label'>Period: <b>{cot_start_w.value} → {cot_end_w.value}</b></span></p>"
                     f"</div></div>")]
                 cot_ok_fp2, cot_fut_fp2 = has_cot(ticker)
                 if cot_ok_fp2 and fp_cot_df is not None and not fp_cot_df.empty:
                     st_d_children.append(
-                        wd.HTML(f"<p>Futures: <b>{cot_fut_fp2}</b></p>"))
+                        wd.HTML(f"<p>Futures: <b>{cot_fut_fp2}</b> — "
+                                f"<b>{len(fp_cot_df)}</b> registros — "
+                                f"WoW Δ Net: <b>{cot_net_change:+,.0f}</b></p>"))
                     st_d_children.append(fp_grid_cot_stats(fp_cot_stats))
                     seas = cot_seasonality(fp_cot_df)
                     st_d_children.append(wd.HBox([
-                        fp_plot_positions_basket(fp_cot_df,
-                                                basket_col=_basket_col,
-                                                data_col=_cot_data_col),
-                        fp_plot_dispersion(seas, fp_cot_df, col=_cot_data_col)
+                        fp_plot_positions_basket(fp_cot_df),
+                        fp_plot_dispersion(seas, fp_cot_df)
                     ]))
                     st_d_children.append(fp_plot_long_short_net(fp_cot_df))
                     st_d_children.append(wd.HBox([
@@ -3290,14 +3146,11 @@ def run_analysis(_):
                     st_d_children.append(fp_grid_cot_stats(sel_stats))
                     sel_seas = cot_seasonality(fp_selected_cot_df)
                     st_d_children.append(wd.HBox([
-                        fp_plot_positions_basket(fp_selected_cot_df,
-                                                basket_col=_basket_col,
-                                                data_col=_cot_data_col),
+                        fp_plot_positions_basket(fp_selected_cot_df),
                         fp_plot_long_short_net(fp_selected_cot_df)
                     ]))
                     st_d_children.append(wd.HBox([
-                        fp_plot_dispersion(sel_seas, fp_selected_cot_df,
-                                          col=_cot_data_col),
+                        fp_plot_dispersion(sel_seas, fp_selected_cot_df),
                         fp_plot_multi_year(fp_selected_cot_df)
                     ]))
                 st_d = wd.VBox(st_d_children)
@@ -3446,9 +3299,8 @@ display(wd.VBox([
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
     wd.VBox([
         wd.HBox([cot_type_w, cot_contract_w]),
-        wd.HBox([cot_datatype_w, cot_direction_w, cot_commitment_w, cot_obligation_w]),
-        wd.HBox([cot_trader_w, cot_report_w]),
-        wd.HBox([cot_start_w, cot_end_w, cot_basket_w]),
+        wd.HBox([cot_trader_w]),
+        wd.HBox([cot_start_w, cot_end_w]),
         wd.HBox([cot_reload_btn, etf_reload_btn]),
     ], layout=_ctrl_box_layout),
     out_cot_reload,
