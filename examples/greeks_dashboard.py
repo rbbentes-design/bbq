@@ -3828,15 +3828,24 @@ def _on_export(_):
             if not html_content:
                 print("⚠️ Nenhum conteúdo para exportar.")
                 return
+            import base64
             fname = f"dashboard_{_snapshot['ticker'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
-            with open(fname, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+            b64 = base64.b64encode(html_content.encode('utf-8')).decode('ascii')
             size_mb = len(html_content) / (1024 * 1024)
             n_sections = len(_snapshot['sections'])
             n_items = sum(len(s['content']) for s in _snapshot['sections'])
+            # Trigger browser download via JavaScript
+            js_code = (
+                f"var a = document.createElement('a');"
+                f"a.href = 'data:text/html;base64,{b64}';"
+                f"a.download = '{fname}';"
+                f"document.body.appendChild(a);"
+                f"a.click();"
+                f"document.body.removeChild(a);")
+            display(HTML(f"<script>{js_code}</script>"))
             display(wd.HTML(
                 f"<div class='mm-dash'><div class='mm-card'>"
-                f"<p>✅ Exportado: <b>{fname}</b> ({size_mb:.1f} MB)</p>"
+                f"<p>✅ Download iniciado: <b>{fname}</b> ({size_mb:.1f} MB)</p>"
                 f"<p><small>{n_sections} abas │ {n_items} itens (gráficos + tabelas)</small></p>"
                 f"</div></div>"))
         except Exception as e:
