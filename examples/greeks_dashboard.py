@@ -1208,7 +1208,7 @@ def fetch_buyback_data(ticker):
 def estimate_buyback_flow(ticker, horizon_days=252):
     """
     Estima fluxo diário de buyback.
-    Confiança baixa: não temos % ADV executado nem saldo restante.
+    Usa _adv5_usd para % ADV (mesma lógica do rebalanceamento).
     """
     data = fetch_buyback_data(ticker)
     announced = data.get('announced', 0)
@@ -1217,10 +1217,12 @@ def estimate_buyback_flow(ticker, horizon_days=252):
                 'confidence': 'none', 'announced': 0}
     execution_rate = 0.80
     daily_est = (announced * execution_rate) / max(horizon_days, 1)
-    adv = data.get('adv20', 0)
-    px = data.get('px', 0)
-    adv_usd = adv * px if (adv and px) else 0
-    pct_adv = (daily_est / adv_usd * 100) if adv_usd > 0 else np.nan
+    try:
+        adv5 = _adv5_usd([ticker])
+        adv_usd = float(adv5.iloc[0]) if len(adv5) > 0 else 0
+    except Exception:
+        adv_usd = 0
+    pct_adv = (announced / adv_usd * 100) if adv_usd > 0 else np.nan
     return {'daily_est': daily_est, 'pct_adv_est': pct_adv,
             'confidence': 'low', 'announced': announced,
             'mkt_cap': data.get('mkt_cap', np.nan)}
@@ -1231,19 +1233,11 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
 
     Tenta buscar announced_buyback_amt via BQL. Se não disponível,
     faz fallback para estimativa baseada em market cap (~2% cap/ano).
+    Usa _adv5_usd (mesmo ADV do rebalanceamento) para calcular % ADV.
     """
     try:
         uni = bq.univ.members(index_ticker)
         items = {'cap': bq.data.cur_mkt_cap()}
-        try:
-            items['vol5d'] = bq.data.px_volume(
-                dates=bq.func.range('-5D', '0D'), fill='prev')
-        except Exception:
-            pass
-        try:
-            items['px'] = bq.data.px_last()
-        except Exception:
-            pass
 
         # Tentar múltiplos campos de buyback
         bb_field_name = None
@@ -1270,29 +1264,10 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
                 rename[c] = 'cap'
             elif 'buyback' in cl or 'repurchase' in cl:
                 rename[c] = 'buyback'
-            elif 'volume' in cl or 'px_volume' in cl:
-                rename[c] = 'vol5d'
-            elif 'px_last' in cl or cl == 'px':
-                rename[c] = 'px'
         df_r = df_r.rename(columns=rename)
 
-        for col in ['cap', 'px']:
-            if col in df_r.columns:
-                df_r[col] = pd.to_numeric(df_r[col], errors='coerce')
-        # Calcular média de volume 5 dias por nome
-        if 'vol5d' in df_r.columns:
-            vol_raw = pd.to_numeric(df_r['vol5d'], errors='coerce')
-            if hasattr(df_r.index, 'get_level_values'):
-                try:
-                    ids = df_r.index.get_level_values('ID')
-                    avg_vol = vol_raw.groupby(ids).mean()
-                    df_r = df_r.loc[~df_r.index.duplicated(keep='first')]
-                    df_r['adv5d'] = avg_vol
-                except Exception:
-                    df_r['adv5d'] = vol_raw
-            else:
-                df_r['adv5d'] = vol_raw
         if 'cap' in df_r.columns:
+            df_r['cap'] = pd.to_numeric(df_r['cap'], errors='coerce')
             df_r = df_r.dropna(subset=['cap'])
             df_r = df_r.nlargest(top_n, 'cap')
 
@@ -1304,16 +1279,18 @@ def estimate_index_buyback_flow(index_ticker='SPX Index', top_n=50):
             df_r['buyback'] = pd.to_numeric(df_r['buyback'], errors='coerce').fillna(0).abs()
             df_r['confidence'] = 'low'
         else:
-            # Fallback: estimar buyback como ~2% do market cap (média large caps US)
             df_r['buyback'] = df_r['cap'].fillna(0) * 0.02
             df_r['confidence'] = 'estimated'
 
         df_r['daily_est'] = df_r['buyback'] * 0.80 / TRADING_DAYS
-        # % ADV usando média de volume dos últimos 5 dias
-        if 'adv5d' in df_r.columns and 'px' in df_r.columns:
-            adv_usd = pd.to_numeric(df_r['adv5d'], errors='coerce') * df_r['px']
-            df_r['pct_adv_est'] = (df_r['daily_est'] / adv_usd.replace(0, np.nan)) * 100
-        else:
+
+        # % ADV usando _adv5_usd (mesma lógica do rebalanceamento)
+        try:
+            tickers_list = df_r.index.get_level_values('ID').unique().tolist()
+            adv5 = _adv5_usd(tickers_list)
+            df_r['pct_adv_est'] = (df_r['buyback']
+                                   / adv5.reindex(df_r.index).replace(0, np.nan)) * 100
+        except Exception:
             df_r['pct_adv_est'] = np.nan
 
         out_cols = [c for c in ['cap', 'buyback', 'daily_est', 'pct_adv_est', 'confidence']
@@ -3300,8 +3277,7 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([cot_type_w, cot_contract_w]),
         wd.HBox([cot_trader_w]),
-        wd.HBox([cot_start_w, cot_end_w]),
-        wd.HBox([cot_reload_btn, etf_reload_btn]),
+        wd.HBox([cot_start_w, cot_end
     ], layout=_ctrl_box_layout),
     out_cot_reload,
     out_main
