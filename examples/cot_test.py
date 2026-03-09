@@ -1,6 +1,6 @@
 """
 COT (Commitment of Traders) — Script standalone para testes no BQuant.
-v2: resolve contrato ativo, split position/trader queries, evita concat error.
+v4: contrato específico (ESH6), drop zero-days, _has_positions_data fix.
 """
 
 import pandas as pd
@@ -69,6 +69,10 @@ COT_CONTRACTS = {
 # FUNÇÕES AUXILIARES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Meses trimestrais para futures de equity index
+QUARTERLY_MONTHS = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+
 def _fp_get_data(universe, data_items, with_params=None, preferences=None):
     """Executa BQL Request e retorna DataFrame com multi-index [ID, Date]."""
     if isinstance(universe, str):
@@ -95,15 +99,58 @@ def _concat_bql_response(resp):
     return raw.loc[:, ~raw.columns.duplicated()]
 
 
-def _has_real_data(df):
-    """Verifica se o DataFrame tem dados reais (não só NaN/NaT/None)."""
+def _has_positions_data(df):
+    """Verifica se o BQL result tem dados reais de posição (não só metadata)."""
     if df is None or df.empty:
         return False
-    non_id = df.drop(columns=['ID'], errors='ignore')
-    return not non_id.isna().all().all()
+    for c in df.columns:
+        cl = str(c).lower()
+        if 'value' in cl or 'position' in cl:
+            vals = pd.to_numeric(df[c], errors='coerce')
+            if vals.notna().any() and (vals != 0).any():
+                return True
+    return False
 
 
-# Trader types especulativos por report type (sinal útil para fluxo)
+def resolve_specific_contract(generic_ticker):
+    """ES1 Index → ESH6 Index baseado na data atual.
+    Retorna lista de tickers para tentar (2 próximos trimestrais)."""
+    parts = generic_ticker.split()
+    if len(parts) < 2:
+        return []
+    root_num = parts[0]  # 'ES1'
+    suffix = ' '.join(parts[1:])  # 'Index'
+    root = root_num.rstrip('0123456789')  # 'ES'
+    if not root:
+        return []
+
+    now = pd.Timestamp.now()
+    month = now.month
+    year = now.year
+
+    # Gerar os 2 próximos contratos trimestrais
+    sorted_qm = sorted(QUARTERLY_MONTHS.keys())
+    candidates = []
+    for qm in sorted_qm:
+        if month <= qm:
+            code = QUARTERLY_MONTHS[qm]
+            candidates.append(f"{root}{code}{year % 10} {suffix}")
+            if len(candidates) >= 2:
+                break
+    # Se não encontrou 2, pegar do próximo ano
+    if len(candidates) < 2:
+        next_year = (year + 1) % 10
+        for qm in sorted_qm:
+            code = QUARTERLY_MONTHS[qm]
+            candidates.append(f"{root}{code}{next_year} {suffix}")
+            if len(candidates) >= 2:
+                break
+
+    print(f"[resolve] {generic_ticker} → candidatos: {candidates}")
+    return candidates
+
+
+# Trader types especulativos por report type
 SPEC_TRADER_TYPES = {
     'cftc_disaggregated': ['MANAGED_MONEY'],
     'cftc_tff': ['ASSET_MANAGER', 'LEVERAGED_FUNDS'],
@@ -125,66 +172,71 @@ def has_cot(ticker):
     return False, None
 
 
-def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
-    """Busca COT histórico: filtra trader types especulativos, retorna série semanal."""
-    tickers = [futures_ticker] if isinstance(futures_ticker, str) else list(futures_ticker)
-
-    raw = pd.DataFrame()
-    used_rpt = ''
-    used_ticker = ''
-
-    for t in tickers:
-        for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
-            try:
-                # Query com dates=range para histórico completo
-                q = f"""
+def _try_cot_query(ticker, rpt, start, end, with_dates=True):
+    """Tenta uma query COT. Retorna (DataFrame, rpt, ticker) ou None."""
+    try:
+        if with_dates:
+            q = f"""
 let(#p = cot_position(report_type={rpt}, direction=all,
                       trader_type=all, commitment_type=futures,
                       dates=range({start},{end}));)
-for('{t}') get(#p().date, #p().trader_type, #p().direction,
-               #p().value, #p().change)
+for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
+                    #p().value, #p().change)
 """
-                print(f"[COT] Tentando {rpt} com {t} + dates=range({start},{end})…")
-                resp = bq.execute(q)
-                pos_raw = _concat_bql_response(resp)
-                print(f"[COT]   shape={pos_raw.shape}, cols={list(pos_raw.columns)}")
+        else:
+            q = f"""
+let(#p = cot_position(report_type={rpt}, direction=all,
+                      trader_type=all, commitment_type=futures);)
+for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
+                    #p().value, #p().change)
+"""
+        label = f"{rpt} + {ticker}" + (" + dates" if with_dates else "")
+        print(f"[COT] Tentando {label}…")
+        resp = bq.execute(q)
+        raw = _concat_bql_response(resp)
+        print(f"[COT]   shape={raw.shape}")
 
-                if not _has_real_data(pos_raw):
-                    print(f"[COT]   → sem dados reais")
-                    continue
+        if not _has_positions_data(raw):
+            print(f"[COT]   → sem dados de posição reais")
+            return None
 
-                print(f"[COT]   ✓ head:\n{pos_raw.head(3)}")
-                raw = pos_raw
+        print(f"[COT]   ✓ has real data, head:\n{raw.head(2)}")
+        return raw
+    except Exception as e:
+        print(f"[COT]   ✗ {e}")
+        return None
+
+
+def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
+    """Busca COT histórico: tenta genérico + específico, filtra spec traders."""
+    tickers = [futures_ticker] if isinstance(futures_ticker, str) else list(futures_ticker)
+
+    # Build lista de tickers para tentar: genérico + contratos específicos
+    tickers_to_try = list(tickers)
+    for t in tickers:
+        specific = resolve_specific_contract(t)
+        tickers_to_try.extend(specific)
+
+    raw = None
+    used_rpt = ''
+    used_ticker = ''
+
+    for t in tickers_to_try:
+        for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
+            # Tenta com dates=range primeiro (histórico completo)
+            result = _try_cot_query(t, rpt, start, end, with_dates=True)
+            if result is None:
+                # Fallback sem dates (só últimos dados)
+                result = _try_cot_query(t, rpt, start, end, with_dates=False)
+            if result is not None:
+                raw = result
                 used_rpt = rpt
                 used_ticker = t
                 break
-            except Exception as e:
-                # Fallback: sem dates=range (retorna só últimos dados)
-                print(f"[COT]   ✗ com dates: {e}")
-                try:
-                    q2 = f"""
-let(#p = cot_position(report_type={rpt}, direction=all,
-                      trader_type=all, commitment_type=futures);)
-for('{t}') get(#p().date, #p().trader_type, #p().direction,
-               #p().value, #p().change)
-"""
-                    print(f"[COT]   Fallback {rpt} sem dates…")
-                    resp2 = bq.execute(q2)
-                    pos_raw2 = _concat_bql_response(resp2)
-                    if _has_real_data(pos_raw2):
-                        print(f"[COT]   ✓ fallback: shape={pos_raw2.shape}")
-                        print(f"[COT]   head:\n{pos_raw2.head(3)}")
-                        raw = pos_raw2
-                        used_rpt = rpt
-                        used_ticker = t
-                        break
-                except Exception as e2:
-                    print(f"[COT]   ✗ fallback: {e2}")
-
-        if not raw.empty:
+        if raw is not None:
             break
 
-    if raw.empty:
+    if raw is None:
         print("[COT] Nenhum dado retornado")
         return pd.DataFrame()
 
@@ -211,15 +263,14 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
         if nc in raw.columns:
             raw[nc] = pd.to_numeric(raw[nc], errors='coerce')
 
-    # ── Normalizar Direction ──
+    # ── Normalizar ──
     if 'Direction' in raw.columns:
         raw['Direction'] = raw['Direction'].astype(str).str.strip().str.upper()
     if 'TraderType' in raw.columns:
         raw['TraderType'] = raw['TraderType'].astype(str).str.strip().str.upper()
 
-    print(f"[COT] Rename: cols={list(raw.columns)}, report={used_rpt}")
+    print(f"[COT] Rename: cols={list(raw.columns)}, report={used_rpt}, ticker={used_ticker}")
     print(f"[COT] TraderTypes: {raw['TraderType'].unique().tolist() if 'TraderType' in raw.columns else 'N/A'}")
-    print(f"[COT] Directions: {raw['Direction'].unique().tolist() if 'Direction' in raw.columns else 'N/A'}")
     print(f"[COT] Dates: {raw['Date'].nunique() if 'Date' in raw.columns else 'N/A'} únicas")
 
     # ── Filtrar trader types especulativos ──
@@ -231,6 +282,15 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
         print(f"[COT] Filtro spec ({spec_types}): {n_before} → {len(raw)} rows")
     if raw.empty:
         print("[COT] Vazio após filtro de trader types")
+        return pd.DataFrame()
+
+    # ── Drop rows com Positions NaN (dias sem report) ──
+    if 'Positions' in raw.columns:
+        raw = raw.dropna(subset=['Positions'])
+        raw = raw[raw['Positions'] != 0]
+        print(f"[COT] Após drop zeros/NaN: {len(raw)} rows")
+    if raw.empty:
+        print("[COT] Vazio após drop zeros")
         return pd.DataFrame()
 
     # ── Filtrar datas ──
@@ -255,7 +315,7 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
         print("[COT] Vazio após filtro de datas")
         return pd.DataFrame()
 
-    # ── Pivot: agregar spec traders por Date × Direction ──
+    # ── Pivot: spec traders por Date × Direction ──
     idx_cols = [c for c in ['ID', 'Date'] if c in raw.columns]
     if not idx_cols or 'Positions' not in raw.columns:
         print(f"[COT] Colunas insuficientes: {list(raw.columns)}")
@@ -270,7 +330,7 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
     else:
         df = raw.groupby(idx_cols)['Positions'].sum().to_frame()
 
-    # ── Compute Net = Long - Short (se ambos existem) ──
+    # ── Compute Net = Long + Short (Short já é negativo) ──
     if 'Positions - Net' in df.columns:
         df['Positions'] = df['Positions - Net']
     elif 'Positions - Long' in df.columns and 'Positions - Short' in df.columns:
@@ -280,12 +340,19 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
     else:
         df['Positions'] = df.iloc[:, 0]
 
-    # ── Price & Open Interest ──
+    # ── Drop zero Positions (dias sem report) ──
+    df = df[df['Positions'] != 0]
+    if df.empty:
+        print("[COT] Vazio após drop net == 0")
+        return pd.DataFrame()
+
+    # ── Price & Open Interest (usa genérico para preço) ──
+    price_ticker = futures_ticker if isinstance(futures_ticker, str) else futures_ticker[0]
     try:
         dates_bql = bq.func.range(start, end, frq='d')
         px_items = {'Price': bq.data.px_last(fill='prev'),
                     'Open Interest': bq.data.fut_aggte_open_int()}
-        px_df = _fp_get_data(used_ticker, px_items,
+        px_df = _fp_get_data(price_ticker, px_items,
                              with_params={'currency': 'usd', 'dates': dates_bql})
         px_sr = px_df.droplevel('ID').sort_index()
         cot_dates = df.index.get_level_values('Date')
@@ -293,7 +360,8 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
         for c in ['Price', 'Open Interest']:
             if c in px_a.columns:
                 df[c] = px_a[c].values
-    except Exception:
+    except Exception as e:
+        print(f"[COT] Price fetch error: {e}")
         df['Price'] = np.nan
         df['Open Interest'] = np.nan
 
@@ -306,8 +374,9 @@ for('{t}') get(#p().date, #p().trader_type, #p().direction,
         df['Positions - Short'] = df['Positions - Short'] * -1
 
     print(f"[COT] Final: {df.shape}, cols: {list(df.columns)}")
-    print(f"[COT] Dates range: {dt_idx.min()} → {dt_idx.max()}")
-    print(f"[COT] Positions (last): {df['Positions'].iloc[-1]:,.0f}")
+    print(f"[COT] Dates range: {dt_idx.min()} → {dt_idx.max()}, {len(df)} semanas")
+    print(f"[COT] Positions: last={df['Positions'].iloc[-1]:,.0f}, "
+          f"min={df['Positions'].min():,.0f}, max={df['Positions'].max():,.0f}")
     return df.dropna(subset=['Positions'])
 
 
@@ -344,8 +413,8 @@ def cot_summary_stats(df_cot):
             continue
         stats = pd.Series({
             col: s.iloc[-1],
-            f'{col} Change': s.iloc[-1] - s.iloc[-2] if len(s) >= 2 else np.nan,
-            f'{col} Percentile': pd.cut(s, 100, labels=False).iloc[-1],
+            f'{col} WoW Change': s.iloc[-1] - s.iloc[-2] if len(s) >= 2 else np.nan,
+            f'{col} Percentile': (s.rank(pct=True).iloc[-1] * 100),
             f'{col} Median': s.median(),
             f'{col} Z-Score': (s.iloc[-1] - s.mean()) / max(s.std(), 1e-9),
         })
@@ -393,24 +462,19 @@ if __name__ == '__main__':
             print(f'⚠️  Sem dados para {ticker}')
             continue
 
-        print(f'\nfetch_cot_data → shape={df.shape}')
-        print(f'colunas: {list(df.columns)}')
-        print(f'index names: {df.index.names}')
-        print(f'dtypes:\n{df.dtypes}')
-        print(f'\nhead(5):\n{df.head(5)}')
-        print(f'\ntail(3):\n{df.tail(3)}')
+        print(f'\nRESULTADO fetch_cot_data:')
+        print(f'  shape={df.shape}')
+        print(f'  colunas: {list(df.columns)}')
+        print(f'  dtypes:\n{df.dtypes}')
+        print(f'\n  head(5):\n{df.head(5)}')
+        print(f'\n  tail(3):\n{df.tail(3)}')
 
         agg = aggregate_cot(df)
         print(f'\naggregate_cot → shape={agg.shape}')
-        print(f'colunas: {list(agg.columns)}')
-        print(f'tail(3):\n{agg.tail(3)}')
+        print(f'  tail(5):\n{agg.tail(5)}')
 
         stats = cot_summary_stats(agg)
         print(f'\ncot_summary_stats:\n{stats}')
-
-        seas = cot_seasonality(agg)
-        print(f'\ncot_seasonality → shape={seas.shape}')
-        print(f'head(5):\n{seas.head(5)}')
 
     # ── Teste via safe_fetch_cot ──
     print('\n' + '=' * 70)
@@ -420,6 +484,6 @@ if __name__ == '__main__':
     if result is not None:
         print(f'shape={result.shape}')
         print(f'colunas: {list(result.columns)}')
-        print(f'tail(3):\n{result.tail(3)}')
+        print(f'tail(5):\n{result.tail(5)}')
     else:
         print('⚠️  safe_fetch_cot retornou None')
