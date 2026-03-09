@@ -1352,33 +1352,33 @@ def build_flow_history(ticker='SPX Index', lookback=252):
 
 
 def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
-                       spx_rebal_prob=0.5, history_leveraged=None,
+                       passive_etf_flow=0, history_leveraged=None,
                        history_cot=None, dealer_flow=0, volctrl_flow=0,
                        cta_flow=0, rp_flow=0,
                        history_dealer=None, history_volctrl=None):
     """
     Computa score combinado de fluxo contratado — 8 componentes.
     Pesos: CTA 22%, Dealer 18%, VolCtrl 12%, Risk Parity 12%,
-           ETFs 12%, Buyback 8%, COT 10%, SPX Rebal 6%.
+           ETFs Alav 12%, Buyback 8%, COT 10%, ETFs Passivos 6%.
     """
     z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else 0
     z_cot = flow_zscore(cot_net_change, history_cot) if history_cot is not None else 0
     z_buyback = np.clip(buyback_daily / 1e8, -3, 3) if buyback_daily else 0
-    z_spx = (spx_rebal_prob - 0.5) * 4
+    z_passive = np.clip(passive_etf_flow / 1e9, -3, 3) if passive_etf_flow else 0
     z_dealer = np.clip(dealer_flow / 1e9, -3, 3) if dealer_flow else 0
     z_volctrl = np.clip(volctrl_flow / 1e9, -3, 3) if volctrl_flow else 0
     z_cta = np.clip(cta_flow / 1e9, -3, 3) if cta_flow else 0
     z_rp = np.clip(rp_flow / 1e9, -3, 3) if rp_flow else 0
 
     w_cta, w_deal, w_vc, w_rp = 0.22, 0.18, 0.12, 0.12
-    w_lev, w_buy, w_cot, w_spx = 0.12, 0.08, 0.10, 0.06
+    w_lev, w_buy, w_cot, w_passive = 0.12, 0.08, 0.10, 0.06
     if history_cot is None or len(history_cot) < 5:
         w_cot = 0.0
         w_cta, w_deal, w_rp = 0.26, 0.20, 0.14
-        w_vc, w_lev, w_buy, w_spx = 0.14, 0.14, 0.08, 0.04
+        w_vc, w_lev, w_buy, w_passive = 0.14, 0.14, 0.08, 0.04
 
     combined = (w_lev * z_lev + w_buy * z_buyback + w_cot * z_cot
-                + w_spx * z_spx + w_deal * z_dealer + w_vc * z_volctrl
+                + w_passive * z_passive + w_deal * z_dealer + w_vc * z_volctrl
                 + w_cta * z_cta + w_rp * z_rp)
 
     if combined > 0.5:
@@ -1391,13 +1391,13 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
     prob_up = 1.0 / (1.0 + math.exp(-combined))
     return {
         'z_leveraged': z_lev, 'z_buyback': z_buyback,
-        'z_cot': z_cot, 'z_spx_rebal': z_spx,
+        'z_cot': z_cot, 'z_passive_etf': z_passive,
         'z_dealer': z_dealer, 'z_volctrl': z_volctrl,
         'z_cta': z_cta, 'z_rp': z_rp,
         'combined_score': combined, 'direction': direction,
         'prob_up': prob_up, 'prob_down': 1.0 - prob_up,
         'weights': {'leveraged': w_lev, 'buyback': w_buy,
-                    'cot': w_cot, 'spx_rebal': w_spx,
+                    'cot': w_cot, 'passive_etf': w_passive,
                     'dealer': w_deal, 'volctrl': w_vc,
                     'cta': w_cta, 'rp': w_rp},
     }
@@ -1628,14 +1628,14 @@ def fp_plot_components_bar(score):
         'Vol Ctrl': score.get('z_volctrl', 0),
         'Risk Parity': score.get('z_rp', 0),
         'ETFs Alav.': score.get('z_leveraged', 0),
+        'ETFs Passivos': score.get('z_passive_etf', 0),
         'Buyback': score.get('z_buyback', 0),
         'COT': score.get('z_cot', 0),
-        'SPX Rebal': score.get('z_spx_rebal', 0),
     }
     weights = score.get('weights', {})
     names = list(components.keys())
     values = list(components.values())
-    w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'rp', 'leveraged', 'buyback', 'cot', 'spx_rebal']]
+    w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'rp', 'leveraged', 'passive_etf', 'buyback', 'cot']]
     colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
@@ -1840,22 +1840,23 @@ def fp_grid_flow_score(score):
         return wd.HTML(f"<table>{''.join(rows_html)}</table>")
     data = {
         'Componente': ['CTA Trend', 'Dealer/MM', 'Vol Control',
-                        'Risk Parity', 'ETFs Alavancados', 'Buyback',
-                        'COT', 'SPX Rebal', 'Score Combinado'],
+                        'Risk Parity', 'ETFs Alavancados', 'ETFs Passivos',
+                        'Buyback', 'COT', 'Score Combinado'],
         'Z-Score': [score.get('z_cta', 0),
                     score.get('z_dealer', 0), score.get('z_volctrl', 0),
                     score.get('z_rp', 0),
-                    score.get('z_leveraged', 0), score.get('z_buyback', 0),
-                    score.get('z_cot', 0), score.get('z_spx_rebal', 0),
+                    score.get('z_leveraged', 0), score.get('z_passive_etf', 0),
+                    score.get('z_buyback', 0),
+                    score.get('z_cot', 0),
                     score.get('combined_score', 0)],
         'Peso (%)': [score.get('weights', {}).get('cta', 0) * 100,
                      score.get('weights', {}).get('dealer', 0) * 100,
                      score.get('weights', {}).get('volctrl', 0) * 100,
                      score.get('weights', {}).get('rp', 0) * 100,
                      score.get('weights', {}).get('leveraged', 0) * 100,
+                     score.get('weights', {}).get('passive_etf', 0) * 100,
                      score.get('weights', {}).get('buyback', 0) * 100,
                      score.get('weights', {}).get('cot', 0) * 100,
-                     score.get('weights', {}).get('spx_rebal', 0) * 100,
                      100],
     }
     df_s = pd.DataFrame(data).set_index('Componente')
@@ -2494,6 +2495,19 @@ def run_analysis(_):
                 except Exception as e:
                     print(f"⚠️ Risk Parity: {e}")
 
+                # Passive ETF flow — net rebalancing from VOO/SPY/IVV
+                fp_passive_etf_flow = 0
+                try:
+                    if etf_ok and etf_flows:
+                        combo = etf_flows.get('Combined', pd.DataFrame())
+                        if not combo.empty and 'Flow_$' in combo.columns:
+                            fp_passive_etf_flow = float(combo['Flow_$'].sum())
+                            print(f"[FLOW] ETFs Passivos: ${fp_passive_etf_flow:,.0f} "
+                                  f"(buy={combo.loc[combo['Flow_$']>0, 'Flow_$'].sum():,.0f}, "
+                                  f"sell={combo.loc[combo['Flow_$']<0, 'Flow_$'].sum():,.0f})")
+                except Exception as e:
+                    print(f"⚠️ ETFs Passivos: {e}")
+
                 try:
                     lev_history = (fp_flow_hist['LevETF_Flow']
                                    if not fp_flow_hist.empty else None)
@@ -2501,7 +2515,7 @@ def run_analysis(_):
                         leveraged_flow=fp_today_flow,
                         buyback_daily=fp_buyback_daily,
                         cot_net_change=cot_net_change,
-                        spx_rebal_prob=0.5,
+                        passive_etf_flow=fp_passive_etf_flow,
                         history_leveraged=lev_history,
                         history_cot=history_cot,
                         dealer_flow=fp_dealer_flow,
