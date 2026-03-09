@@ -3277,7 +3277,8 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([cot_type_w, cot_contract_w]),
         wd.HBox([cot_trader_w]),
-        wd.HBox([cot_start_w, cot_end
+        wd.HBox([cot_start_w, cot_end_w]),
+        wd.HBox([cot_reload_btn, etf_reload_btn]),
     ], layout=_ctrl_box_layout),
     out_cot_reload,
     out_main
