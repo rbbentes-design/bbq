@@ -1,7 +1,6 @@
 """
 COT (Commitment of Traders) — Script standalone para testes no BQuant.
-Extrai e testa todas as funções COT do greeks_dashboard.py isoladamente.
-Rode no BQuant para diagnosticar problemas de fetch/parsing dos dados CFTC.
+v2: resolve contrato ativo, split position/trader queries, evita concat error.
 """
 
 import pandas as pd
@@ -88,6 +87,41 @@ def _fp_get_data(universe, data_items, with_params=None, preferences=None):
     return df_r
 
 
+def resolve_active_contract(generic_ticker):
+    """Resolve ticker genérico (ES1 Index) → contrato ativo (ESH6 Index).
+    Tenta fut_cur_gen_ticker. Se falhar, retorna o ticker original."""
+    try:
+        req = bql.Request(generic_ticker, {'val': bq.data.fut_cur_gen_ticker()})
+        resp = bq.execute(req)
+        val = str(resp[0].df().iloc[0, 0]).strip()
+        if val and val not in ('None', 'nan', 'NaT', ''):
+            # Adiciona sufixo se BQL retornar só o root (ex: 'ESH6' → 'ESH6 Index')
+            if ' ' not in val:
+                suffix = generic_ticker.split()[-1]
+                val = f"{val} {suffix}"
+            print(f"[resolve] ✓ {generic_ticker} → {val}")
+            return val
+    except Exception as e:
+        print(f"[resolve] ✗ {generic_ticker}: {e}")
+    return generic_ticker
+
+
+def _concat_bql_response(resp):
+    """Concat DataItems de um BQL response, usando integer index para evitar
+    erro de 'Reindexing only valid with uniquely valued Index objects'."""
+    dfs = [di.df().reset_index() for di in resp]
+    raw = pd.concat([d.reset_index(drop=True) for d in dfs], axis=1)
+    return raw.loc[:, ~raw.columns.duplicated()]
+
+
+def _has_real_data(df):
+    """Verifica se o DataFrame tem dados reais (não só NaN/NaT/None)."""
+    if df is None or df.empty:
+        return False
+    non_id = df.drop(columns=['ID'], errors='ignore')
+    return not non_id.isna().all().all()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES COT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,80 +136,135 @@ def has_cot(ticker):
     return False, None
 
 
+def _fetch_cot_positions(ticker, rpt, commitment='futures'):
+    """Query BQL positions only (5 DataItems, mesmo shape → safe concat)."""
+    q = f"""
+let(#p = cot_position(report_type={rpt}, direction=all,
+                      trader_type=all, commitment_type={commitment});)
+for('{ticker}') get(#p().date, #p().trader_type, #p().direction,
+                    #p().value, #p().change)
+"""
+    resp = bq.execute(q)
+    raw = _concat_bql_response(resp)
+    return raw
+
+
+def _fetch_cot_traders(ticker, rpt, commitment='futures'):
+    """Query BQL traders only (com date/type/dir para poder fazer merge)."""
+    q = f"""
+let(#t = cot_traders(report_type={rpt}, direction=all,
+                     trader_type=all, commitment_type={commitment});)
+for('{ticker}') get(#t().date, #t().trader_type, #t().direction,
+                    #t().value, #t().change)
+"""
+    resp = bq.execute(q)
+    raw = _concat_bql_response(resp)
+    return raw
+
+
 def fetch_cot_data(futures_ticker, start='-2Y', end='0D'):
-    """Busca COT: tenta cada report type, sem opções — agrega tudo por data."""
+    """Busca COT: resolve contrato ativo, split positions/traders, tenta 3 report types."""
     tickers = [futures_ticker] if isinstance(futures_ticker, str) else list(futures_ticker)
-    tkr_q = ','.join(f"'{t}'" for t in tickers)
+
+    # Resolve → contrato ativo (ex: ES1 Index → ESH6 Index)
+    resolved = [resolve_active_contract(t) for t in tickers]
+
+    # Tenta resolved primeiro, depois genérico (se diferente)
+    attempts = [resolved]
+    if resolved != tickers:
+        attempts.append(tickers)
 
     raw = pd.DataFrame()
     used_rpt = ''
-    for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
-        try:
-            q = f"""
-let(
-  #cot_pos = cot_position(report_type={rpt}, direction=all,
-                          trader_type=all, commitment_type=futures);
-  #cot_trd = cot_traders(report_type={rpt}, direction=all,
-                         trader_type=all, commitment_type=futures);
-)
-for({tkr_q}) get(
-  #cot_pos().date, #cot_pos().trader_type, #cot_pos().direction,
-  #cot_pos().value, #cot_pos().change,
-  #cot_trd().value, #cot_trd().change
-)
-"""
-            print(f"[COT] Tentando {rpt}…")
-            resp = bq.execute(q)
-            print(f"[COT]   DataItems retornados: {len(resp)}")
-            for i, di in enumerate(resp):
-                dfi = di.df()
-                print(f"[COT]   DataItem[{i}]: cols={list(dfi.columns)}, shape={dfi.shape}")
-            raw = pd.concat([di.df() for di in resp], axis=1)
-            raw = raw.loc[:, ~raw.columns.duplicated()]
+    used_ticker = ''
+
+    for attempt in attempts:
+        for rpt in ('cftc_disaggregated', 'cftc_tff', 'cftc_legacy'):
+            for t in attempt:
+                try:
+                    print(f"[COT] Tentando {rpt} com {t}…")
+                    pos_raw = _fetch_cot_positions(t, rpt)
+                    print(f"[COT]   positions: shape={pos_raw.shape}, cols={list(pos_raw.columns)}")
+
+                    if not _has_real_data(pos_raw):
+                        print(f"[COT]   → sem dados reais")
+                        continue
+
+                    print(f"[COT]   head:\n{pos_raw.head(3)}")
+
+                    # Traders (opcional — shape pode diferir, query separada)
+                    trd_raw = pd.DataFrame()
+                    try:
+                        trd_raw = _fetch_cot_traders(t, rpt)
+                        print(f"[COT]   traders: shape={trd_raw.shape}")
+                    except Exception as e:
+                        print(f"[COT]   traders query failed: {e}")
+
+                    raw = pos_raw
+                    used_rpt = rpt
+                    used_ticker = t
+                    break
+                except Exception as e:
+                    print(f"[COT] ✗ {rpt} com {t}: {e}")
+
             if not raw.empty:
-                used_rpt = rpt
-                print(f"[COT] ✓ {rpt}: shape={raw.shape}")
-                print(f"[COT]   colunas brutas: {list(raw.columns)}")
-                print(f"[COT]   index names: {raw.index.names}")
-                print(f"[COT]   head:\n{raw.head(3)}")
                 break
-        except Exception as e:
-            print(f"[COT] ✗ {rpt}: {e}")
+        if not raw.empty:
+            break
 
     if raw.empty:
-        print("[COT] Nenhum dado retornado")
+        print("[COT] Nenhum dado retornado em nenhuma tentativa")
         return pd.DataFrame()
 
     # ── Renomear colunas ──
     col_map = {}
     for c in raw.columns:
         cl = str(c).lower()
-        if 'cot_pos' in cl or ('position' in cl and 'cot_trd' not in cl):
-            if 'date' in cl:
-                col_map[c] = 'Date'
-            elif 'trader_type' in cl:
-                col_map[c] = 'TraderType'
-            elif 'direction' in cl:
-                col_map[c] = 'Direction'
-            elif 'change' in cl:
-                col_map[c] = 'Pos_Chg'
-            elif 'value' in cl:
-                col_map[c] = 'Positions'
-        elif 'cot_trd' in cl or 'traders' in cl:
-            if 'change' in cl:
-                col_map[c] = 'Trd_Chg'
-            elif 'value' in cl:
-                col_map[c] = 'Traders'
-    raw = raw.rename(columns=col_map).reset_index()
+        if 'date' in cl:
+            col_map[c] = 'Date'
+        elif 'trader_type' in cl:
+            col_map[c] = 'TraderType'
+        elif 'direction' in cl:
+            col_map[c] = 'Direction'
+        elif 'change' in cl:
+            col_map[c] = 'Pos_Chg'
+        elif 'value' in cl:
+            col_map[c] = 'Positions'
+    raw = raw.rename(columns=col_map)
     if 'ID' not in raw.columns:
-        raw['ID'] = tickers[0]
+        raw['ID'] = used_ticker
     if 'Date' in raw.columns:
         raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
-    for nc in ('Positions', 'Traders', 'Pos_Chg', 'Trd_Chg'):
+    for nc in ('Positions', 'Pos_Chg'):
         if nc in raw.columns:
             raw[nc] = pd.to_numeric(raw[nc], errors='coerce')
     print(f"[COT] Colunas após rename: {list(raw.columns)}, report={used_rpt}")
     print(f"[COT] head após rename:\n{raw.head(5)}")
+
+    # ── Merge traders se disponíveis ──
+    if not trd_raw.empty and _has_real_data(trd_raw):
+        trd_map = {}
+        for c in trd_raw.columns:
+            cl = str(c).lower()
+            if 'date' in cl:
+                trd_map[c] = 'Date'
+            elif 'trader_type' in cl:
+                trd_map[c] = 'TraderType'
+            elif 'direction' in cl:
+                trd_map[c] = 'Direction'
+            elif 'change' in cl:
+                trd_map[c] = 'Trd_Chg'
+            elif 'value' in cl:
+                trd_map[c] = 'Traders'
+        trd_raw = trd_raw.rename(columns=trd_map)
+        merge_keys = [c for c in ['Date', 'TraderType', 'Direction'] if c in raw.columns and c in trd_raw.columns]
+        if merge_keys:
+            for nc in ('Traders', 'Trd_Chg'):
+                if nc in trd_raw.columns:
+                    trd_raw[nc] = pd.to_numeric(trd_raw[nc], errors='coerce')
+            raw = raw.merge(trd_raw[merge_keys + [c for c in ['Traders', 'Trd_Chg'] if c in trd_raw.columns]],
+                            on=merge_keys, how='left')
+            print(f"[COT] Após merge traders: {list(raw.columns)}")
 
     # ── Filtrar datas ──
     def _pdt(s):
@@ -248,7 +337,7 @@ for({tkr_q}) get(
         dates_bql = bq.func.range(start, end, frq='d')
         px_items = {'Price': bq.data.px_last(fill='prev'),
                     'Open Interest': bq.data.fut_aggte_open_int()}
-        px_df = _fp_get_data(tickers[0], px_items,
+        px_df = _fp_get_data(used_ticker, px_items,
                              with_params={'currency': 'usd', 'dates': dates_bql})
         px_sr = px_df.droplevel('ID').sort_index()
         cot_dates = df.index.get_level_values('Date')
@@ -333,6 +422,16 @@ def safe_fetch_cot(ticker, start='-2Y', end='0D'):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+
+    # ── Teste 0: Resolução de contrato ativo ──
+    print('=' * 70)
+    print('TESTE 0: Resolução de contratos ativos')
+    print('=' * 70)
+    for t in ['ES1 Index', 'NQ1 Index', 'GC1 Comdty', 'CL1 Comdty']:
+        resolved = resolve_active_contract(t)
+        print(f"  {t} → {resolved}")
+
+    # ── Testes principais ──
     test_tickers = [
         ('ES1 Index', 'S&P 500 E-mini'),
         ('GC1 Comdty', 'Gold'),
@@ -344,11 +443,9 @@ if __name__ == '__main__':
         print(f'TESTE: {name} ({ticker})')
         print('=' * 70)
 
-        # 1) has_cot
         ok, fut = has_cot(ticker)
         print(f'has_cot → ok={ok}, fut={fut}')
 
-        # 2) fetch_cot_data
         df = fetch_cot_data(ticker, start='-1Y', end='0D')
         if df is None or df.empty:
             print(f'⚠️  Sem dados para {ticker}')
@@ -361,24 +458,21 @@ if __name__ == '__main__':
         print(f'\nhead(5):\n{df.head(5)}')
         print(f'\ntail(3):\n{df.tail(3)}')
 
-        # 3) aggregate_cot
         agg = aggregate_cot(df)
         print(f'\naggregate_cot → shape={agg.shape}')
         print(f'colunas: {list(agg.columns)}')
         print(f'tail(3):\n{agg.tail(3)}')
 
-        # 4) cot_summary_stats
         stats = cot_summary_stats(agg)
         print(f'\ncot_summary_stats:\n{stats}')
 
-        # 5) cot_seasonality
         seas = cot_seasonality(agg)
         print(f'\ncot_seasonality → shape={seas.shape}')
         print(f'head(5):\n{seas.head(5)}')
 
-    # ── Teste via safe_fetch_cot (caminho do dashboard) ──
+    # ── Teste via safe_fetch_cot ──
     print('\n' + '=' * 70)
-    print('TESTE safe_fetch_cot com SPX Index (mapeia → ES1)')
+    print('TESTE safe_fetch_cot com SPX Index (mapeia → ES1 → resolve)')
     print('=' * 70)
     result = safe_fetch_cot('SPX Index', start='-1Y', end='0D')
     if result is not None:
