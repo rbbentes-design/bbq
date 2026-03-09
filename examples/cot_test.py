@@ -126,7 +126,12 @@ for({tkr_q}) get(
 """
             print(f"[COT] Tentando {rpt}…")
             resp = bq.execute(q)
-            raw = resp[0].df()
+            print(f"[COT]   DataItems retornados: {len(resp)}")
+            for i, di in enumerate(resp):
+                dfi = di.df()
+                print(f"[COT]   DataItem[{i}]: cols={list(dfi.columns)}, shape={dfi.shape}")
+            raw = pd.concat([di.df() for di in resp], axis=1)
+            raw = raw.loc[:, ~raw.columns.duplicated()]
             if not raw.empty:
                 used_rpt = rpt
                 print(f"[COT] ✓ {rpt}: shape={raw.shape}")
