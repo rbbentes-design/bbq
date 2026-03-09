@@ -1354,12 +1354,12 @@ def build_flow_history(ticker='SPX Index', lookback=252):
 def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
                        spx_rebal_prob=0.5, history_leveraged=None,
                        history_cot=None, dealer_flow=0, volctrl_flow=0,
-                       cta_flow=0,
+                       cta_flow=0, rp_flow=0,
                        history_dealer=None, history_volctrl=None):
     """
-    Computa score combinado de fluxo contratado — 7 componentes.
-    Pesos: ETFs 15%, Buyback 10%, COT 10%, SPX Rebal 5%,
-           Dealer 20%, VolCtrl 15%, CTA 25%.
+    Computa score combinado de fluxo contratado — 8 componentes.
+    Pesos: CTA 22%, Dealer 18%, VolCtrl 12%, Risk Parity 12%,
+           ETFs 12%, Buyback 8%, COT 10%, SPX Rebal 6%.
     """
     z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else 0
     z_cot = flow_zscore(cot_net_change, history_cot) if history_cot is not None else 0
@@ -1368,17 +1368,18 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
     z_dealer = np.clip(dealer_flow / 1e9, -3, 3) if dealer_flow else 0
     z_volctrl = np.clip(volctrl_flow / 1e9, -3, 3) if volctrl_flow else 0
     z_cta = np.clip(cta_flow / 1e9, -3, 3) if cta_flow else 0
+    z_rp = np.clip(rp_flow / 1e9, -3, 3) if rp_flow else 0
 
-    w_lev, w_buy, w_cot, w_spx = 0.15, 0.10, 0.10, 0.05
-    w_deal, w_vc, w_cta = 0.20, 0.15, 0.25
+    w_cta, w_deal, w_vc, w_rp = 0.22, 0.18, 0.12, 0.12
+    w_lev, w_buy, w_cot, w_spx = 0.12, 0.08, 0.10, 0.06
     if history_cot is None or len(history_cot) < 5:
         w_cot = 0.0
-        w_cta, w_deal, w_lev = 0.30, 0.22, 0.18
-        w_buy, w_spx, w_vc = 0.10, 0.05, 0.15
+        w_cta, w_deal, w_rp = 0.26, 0.20, 0.14
+        w_vc, w_lev, w_buy, w_spx = 0.14, 0.14, 0.08, 0.04
 
     combined = (w_lev * z_lev + w_buy * z_buyback + w_cot * z_cot
                 + w_spx * z_spx + w_deal * z_dealer + w_vc * z_volctrl
-                + w_cta * z_cta)
+                + w_cta * z_cta + w_rp * z_rp)
 
     if combined > 0.5:
         direction = "BULLISH"
@@ -1392,13 +1393,13 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
         'z_leveraged': z_lev, 'z_buyback': z_buyback,
         'z_cot': z_cot, 'z_spx_rebal': z_spx,
         'z_dealer': z_dealer, 'z_volctrl': z_volctrl,
-        'z_cta': z_cta,
+        'z_cta': z_cta, 'z_rp': z_rp,
         'combined_score': combined, 'direction': direction,
         'prob_up': prob_up, 'prob_down': 1.0 - prob_up,
         'weights': {'leveraged': w_lev, 'buyback': w_buy,
                     'cot': w_cot, 'spx_rebal': w_spx,
                     'dealer': w_deal, 'volctrl': w_vc,
-                    'cta': w_cta},
+                    'cta': w_cta, 'rp': w_rp},
     }
 
 
@@ -1446,6 +1447,69 @@ def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
                             'flow': flow, 'aum': aum}
         total += flow
     return {'total': total, 'detail': detail}
+
+
+# ── Risk Parity Model ──────────────────────────────────────────────
+# Baseado em BofA Systematic Flows Monitor:
+# - 3 asset classes: Equities (SPX), Bonds (10Y UST), Commodities (GSCI)
+# - Alocação inversamente proporcional à volatilidade (↓vol → ↑alocação)
+# - Rebalanceamento mensal usando 3M de dados para vol e correlação
+# - AUM estimado: $200B–$750B (BofA usa $200B nos exhibits)
+# - Risk targets: 10%, 12%, 15% vol; max leverage 1.5x/1.5x/3.0x
+RISK_PARITY_AUM = 200e9  # $200B total (BofA Exhibit 3)
+RISK_PARITY_TARGETS = {
+    10: {'aum_share': 0.33, 'max_lev': 1.5},
+    12: {'aum_share': 0.34, 'max_lev': 1.5},
+    15: {'aum_share': 0.33, 'max_lev': 3.0},
+}
+
+
+def compute_risk_parity_flow(rv_equity, rv_equity_prev,
+                             rv_bonds=None, rv_bonds_prev=None,
+                             rv_commod=None, rv_commod_prev=None):
+    """
+    Estima fluxo de risk parity para equities.
+    Alocação equity ∝ 1/vol_equity. Quando vol equity sobe,
+    alocação cai → vendem equities.
+    Se vol de bonds/commodities disponível, usa pesos relativos;
+    caso contrário, usa só equity vol como proxy.
+    """
+    if pd.isna(rv_equity) or pd.isna(rv_equity_prev) or rv_equity < 1e-6:
+        return {'total': 0, 'detail': {}, 'eq_alloc_new': 0, 'eq_alloc_old': 0}
+
+    def _eq_weight(rv_eq, rv_bd, rv_cm):
+        """Peso equity = (1/vol_eq) / sum(1/vol_i)."""
+        inv_eq = 1.0 / max(rv_eq, 0.01)
+        inv_bd = 1.0 / max(rv_bd, 0.01) if rv_bd and rv_bd > 1e-6 else inv_eq * 2.5
+        inv_cm = 1.0 / max(rv_cm, 0.01) if rv_cm and rv_cm > 1e-6 else inv_eq * 0.8
+        total_inv = inv_eq + inv_bd + inv_cm
+        return inv_eq / total_inv if total_inv > 0 else 0.33
+
+    eq_w_new = _eq_weight(rv_equity, rv_bonds, rv_commod)
+    eq_w_old = _eq_weight(rv_equity_prev, rv_bonds_prev, rv_commod_prev)
+
+    detail = {}
+    total = 0
+    for tv, params in RISK_PARITY_TARGETS.items():
+        aum = RISK_PARITY_AUM * params['aum_share']
+        tv_dec = tv / 100.0
+        # Portfolio vol ≈ weighted avg of component vols (simplificação)
+        port_vol_new = rv_equity * eq_w_new + 0.05 * (1 - eq_w_new)
+        port_vol_old = rv_equity_prev * eq_w_old + 0.05 * (1 - eq_w_old)
+        lev_new = min(tv_dec / max(port_vol_new, 0.01), params['max_lev'])
+        lev_old = min(tv_dec / max(port_vol_old, 0.01), params['max_lev'])
+        eq_exp_new = lev_new * eq_w_new
+        eq_exp_old = lev_old * eq_w_old
+        flow = aum * (eq_exp_new - eq_exp_old)
+        detail[f'{tv}%'] = {
+            'aum': aum, 'leverage_new': lev_new, 'leverage_old': lev_old,
+            'eq_alloc_new': eq_w_new, 'eq_alloc_old': eq_w_old,
+            'eq_exposure_new': eq_exp_new, 'eq_exposure_old': eq_exp_old,
+            'flow': flow}
+        total += flow
+
+    return {'total': total, 'detail': detail,
+            'eq_alloc_new': eq_w_new, 'eq_alloc_old': eq_w_old}
 
 
 # ── CTA Trend Following Model ─────────────────────────────────────
@@ -1562,6 +1626,7 @@ def fp_plot_components_bar(score):
         'CTA': score.get('z_cta', 0),
         'Dealer/MM': score.get('z_dealer', 0),
         'Vol Ctrl': score.get('z_volctrl', 0),
+        'Risk Parity': score.get('z_rp', 0),
         'ETFs Alav.': score.get('z_leveraged', 0),
         'Buyback': score.get('z_buyback', 0),
         'COT': score.get('z_cot', 0),
@@ -1570,7 +1635,7 @@ def fp_plot_components_bar(score):
     weights = score.get('weights', {})
     names = list(components.keys())
     values = list(components.values())
-    w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'leveraged', 'buyback', 'cot', 'spx_rebal']]
+    w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'rp', 'leveraged', 'buyback', 'cot', 'spx_rebal']]
     colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
@@ -1775,16 +1840,18 @@ def fp_grid_flow_score(score):
         return wd.HTML(f"<table>{''.join(rows_html)}</table>")
     data = {
         'Componente': ['CTA Trend', 'Dealer/MM', 'Vol Control',
-                        'ETFs Alavancados', 'Buyback', 'COT', 'SPX Rebal',
-                        'Score Combinado'],
+                        'Risk Parity', 'ETFs Alavancados', 'Buyback',
+                        'COT', 'SPX Rebal', 'Score Combinado'],
         'Z-Score': [score.get('z_cta', 0),
                     score.get('z_dealer', 0), score.get('z_volctrl', 0),
+                    score.get('z_rp', 0),
                     score.get('z_leveraged', 0), score.get('z_buyback', 0),
                     score.get('z_cot', 0), score.get('z_spx_rebal', 0),
                     score.get('combined_score', 0)],
         'Peso (%)': [score.get('weights', {}).get('cta', 0) * 100,
                      score.get('weights', {}).get('dealer', 0) * 100,
                      score.get('weights', {}).get('volctrl', 0) * 100,
+                     score.get('weights', {}).get('rp', 0) * 100,
                      score.get('weights', {}).get('leveraged', 0) * 100,
                      score.get('weights', {}).get('buyback', 0) * 100,
                      score.get('weights', {}).get('cot', 0) * 100,
@@ -2414,6 +2481,19 @@ def run_analysis(_):
                 except Exception as e:
                     print(f"⚠️ CTA flow: {e}")
 
+                # Risk Parity flow
+                fp_rp = {'total': 0, 'detail': {}, 'eq_alloc_new': 0, 'eq_alloc_old': 0}
+                try:
+                    _rv_window = 21
+                    _rets_rp = log_returns.iloc[-_rv_window * 2:]
+                    _rv_eq_cur = _rets_rp.iloc[-_rv_window:].std() * np.sqrt(252)
+                    _rv_eq_prev = _rets_rp.iloc[-_rv_window * 2:-_rv_window].std() * np.sqrt(252)
+                    fp_rp = compute_risk_parity_flow(_rv_eq_cur, _rv_eq_prev)
+                    print(f"[FLOW] Risk Parity: ${fp_rp['total']:,.0f} "
+                          f"(eq_alloc={fp_rp['eq_alloc_new']:.1%}→{fp_rp['eq_alloc_old']:.1%})")
+                except Exception as e:
+                    print(f"⚠️ Risk Parity: {e}")
+
                 try:
                     lev_history = (fp_flow_hist['LevETF_Flow']
                                    if not fp_flow_hist.empty else None)
@@ -2426,7 +2506,8 @@ def run_analysis(_):
                         history_cot=history_cot,
                         dealer_flow=fp_dealer_flow,
                         volctrl_flow=fp_volctrl['total'],
-                        cta_flow=fp_cta['flow'])
+                        cta_flow=fp_cta['flow'],
+                        rp_flow=fp_rp['total'])
                     fp_ok = True
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
@@ -3150,10 +3231,10 @@ def run_analysis(_):
                         f" (mean-reverting). Hit rate &lt; 50% é esperado.</i></p>"))
                 st_e = wd.VBox(st_e_children)
 
-                # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control)
+                # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control + Risk Parity)
                 st_f_children = [wd.HTML(
                     "<div class='mm-dash'><div class='mm-card'>"
-                    "<h3>Fluxos Sistemáticos — CTA, Dealer/MM, Vol Control</h3>"
+                    "<h3>Fluxos Sistemáticos — CTA, Dealer/MM, Vol Control, Risk Parity</h3>"
                     "<p><small>Ref: BofA Systematic Flows Monitor methodology</small></p>"
                     "</div></div>")]
 
@@ -3218,6 +3299,37 @@ def run_analysis(_):
                     f"{vc_rows}</table>"
                     f"<p><small>Leverage = target_vol / realized_vol (21d). "
                     f"Vol sobe → exposure cai → vendem. Ajuste em 1-2 dias.</small></p>"
+                    f"</div></div>"))
+
+                # Risk Parity
+                rp_total = fp_rp.get('total', 0)
+                _rp_color = _C['green'] if rp_total > 0 else _C['red'] if rp_total < 0 else _C['text_muted']
+                rp_eq_new = fp_rp.get('eq_alloc_new', 0)
+                rp_eq_old = fp_rp.get('eq_alloc_old', 0)
+                rp_rows = ""
+                for rp_k, rp_v in fp_rp.get('detail', {}).items():
+                    rp_f = rp_v.get('flow', 0)
+                    rp_c = _C['green'] if rp_f > 0 else _C['red'] if rp_f < 0 else _C['text_muted']
+                    rp_rows += (
+                        f"<tr><td>Target {rp_k}</td>"
+                        f"<td style='text-align:right;'>${rp_v.get('aum', 0)/1e9:,.0f}B</td>"
+                        f"<td style='text-align:right;'>{rp_v.get('leverage_old', 0):.2f}x</td>"
+                        f"<td style='text-align:right;'>{rp_v.get('leverage_new', 0):.2f}x</td>"
+                        f"<td style='text-align:right;'>{rp_v.get('eq_alloc_old', 0):.1%}</td>"
+                        f"<td style='text-align:right;'>{rp_v.get('eq_alloc_new', 0):.1%}</td>"
+                        f"<td style='text-align:right;color:{rp_c}'>${rp_f/1e9:,.2f}B</td></tr>")
+                st_f_children.append(wd.HTML(
+                    f"<div class='mm-dash'><div class='mm-card'>"
+                    f"<h4>Risk Parity (AUM: ~$200B, equity alloc: {rp_eq_old:.1%} → {rp_eq_new:.1%})</h4>"
+                    f"<p>Fluxo equity estimado: <b style='color:{_rp_color}'>"
+                    f"${rp_total/1e9:,.2f}B</b></p>"
+                    f"<table class='mm-table'>"
+                    f"<tr><th>Target Vol</th><th>AUM Est.</th>"
+                    f"<th>Lev. Ant.</th><th>Lev. Atual</th>"
+                    f"<th>Eq% Ant.</th><th>Eq% Atual</th><th>Fluxo</th></tr>"
+                    f"{rp_rows}</table>"
+                    f"<p><small>Alocação ∝ 1/vol por asset class (equities, bonds, commodities). "
+                    f"Rebalanceamento mensal. Vol↑ → equity alloc↓ → vendem.</small></p>"
                     f"</div></div>"))
                 st_f = wd.VBox(st_f_children)
 
