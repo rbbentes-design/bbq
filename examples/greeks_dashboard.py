@@ -2625,12 +2625,14 @@ def run_analysis(_):
             fig_mc_hist.add_trace(go.Histogram(
                 x=mc_pnl / 1e6, nbinsx=120,
                 marker_color=_C['accent'], opacity=0.7, name='P&L'))
-            fig_mc_hist.add_vline(x=sim_var_95 / 1e6, line_dash='dash',
-                                  line_color=_C['orange'],
-                                  annotation_text=f'VaR 95% ${sim_var_95/1e6:,.1f}M')
             fig_mc_hist.add_vline(x=sim_var_99 / 1e6, line_dash='dash',
                                   line_color=_C['red'],
-                                  annotation_text=f'VaR 99% ${sim_var_99/1e6:,.1f}M')
+                                  annotation_text=f'VaR 99% ${sim_var_99/1e6:,.1f}M',
+                                  annotation_position='top left')
+            fig_mc_hist.add_vline(x=sim_var_95 / 1e6, line_dash='dash',
+                                  line_color=_C['orange'],
+                                  annotation_text=f'VaR 95% ${sim_var_95/1e6:,.1f}M',
+                                  annotation_position='bottom left')
             fig_mc_hist.add_vline(x=0, line_width=0.5, line_color=_C['text_dim'])
             mc_xlo = (mc_p1 - mc_iqr * 0.15) / 1e6
             mc_xhi = (mc_p99 + mc_iqr * 0.15) / 1e6
