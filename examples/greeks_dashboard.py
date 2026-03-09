@@ -1564,6 +1564,32 @@ def compute_vol_control_flow(rv_current, rv_prev, target_vols=None):
     return {'total': total, 'detail': detail}
 
 
+def compute_vol_control_scenarios(rv_current, target_vols=None):
+    """
+    Cenários de stress: quanto vendem se vol sobe X% a partir do nível atual.
+    Retorna dict com scenarios (rv_shock → flow estimado).
+    """
+    if target_vols is None:
+        target_vols = [5, 10, 15]
+    if pd.isna(rv_current) or rv_current < 1e-6:
+        return []
+    # Cenários: vol sobe para 15%, 20%, 25%, 30%, 40%
+    shock_vols = [0.15, 0.20, 0.25, 0.30, 0.40]
+    scenarios = []
+    for sv in shock_vols:
+        if sv <= rv_current * 1.05:
+            continue
+        total = 0
+        for tv in target_vols:
+            tv_dec = tv / 100.0
+            exp_cur = min(tv_dec / rv_current, VOL_CTRL_MAX_LEV)
+            exp_shock = min(tv_dec / sv, VOL_CTRL_MAX_LEV)
+            aum = VOL_CTRL_AUM.get(tv, 100e9)
+            total += aum * (exp_shock - exp_cur)
+        scenarios.append({'rv_shock': sv, 'flow': total})
+    return scenarios
+
+
 # ── Risk Parity Model ──────────────────────────────────────────────
 # Baseado em BofA Systematic Flows Monitor:
 # - 3 asset classes: Equities (SPX), Bonds (10Y UST), Commodities (GSCI)
@@ -2572,12 +2598,14 @@ def run_analysis(_):
 
                 # Vol control fund flows (5%, 10%, 15%)
                 fp_volctrl = {'total': 0, 'detail': {}}
+                fp_vc_scenarios = []
                 try:
                     _rv_window = 21
                     _rets = log_returns.iloc[-_rv_window * 2:]
                     _rv_cur = _rets.iloc[-_rv_window:].std() * np.sqrt(252)
                     _rv_prev = _rets.iloc[-_rv_window * 2:-_rv_window].std() * np.sqrt(252)
                     fp_volctrl = compute_vol_control_flow(_rv_cur, _rv_prev)
+                    fp_vc_scenarios = compute_vol_control_scenarios(_rv_cur)
                     print(f"[FLOW] Vol ctrl: ${fp_volctrl['total']:,.0f} "
                           f"(RV cur={_rv_cur:.2%}, prev={_rv_prev:.2%})")
                 except Exception as e:
@@ -3429,6 +3457,27 @@ def run_analysis(_):
                     f"<p><small>Leverage = target_vol / realized_vol (21d). "
                     f"Vol sobe → exposure cai → vendem. Ajuste em 1-2 dias.</small></p>"
                     f"</div></div>"))
+
+                # Vol control stress scenarios
+                if fp_vc_scenarios:
+                    sc_rows = ""
+                    for sc in fp_vc_scenarios:
+                        sc_c = _C['red'] if sc['flow'] < 0 else _C['green']
+                        sc_rows += (
+                            f"<tr><td style='text-align:center;'>{sc['rv_shock']:.0%}</td>"
+                            f"<td style='text-align:right;color:{sc_c}'>"
+                            f"${sc['flow']/1e9:,.1f}B</td></tr>")
+                    st_f_children.append(wd.HTML(
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h4>⚡ Vol Spike Scenarios — Venda Forçada</h4>"
+                        f"<p><small>Se realized vol subir para esses níveis, "
+                        f"quanto os fundos vol-control precisam vender:</small></p>"
+                        f"<table class='mm-table'>"
+                        f"<tr><th>RV Spike Para</th><th>Fluxo Estimado</th></tr>"
+                        f"{sc_rows}</table>"
+                        f"<p><small>Cenário instantâneo vs exposição atual. "
+                        f"Venda ocorre em 1-2 dias após spike.</small></p>"
+                        f"</div></div>"))
 
                 # Risk Parity
                 rp_total = fp_rp.get('total', 0)
