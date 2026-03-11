@@ -4422,10 +4422,10 @@ def predict_dispersion(model, prices_df, iv_df=None):
 
 def build_kde_distribution_chart(prices_df, weights=None):
     """
-    Chart KDE de distribuição de retornos dos constituintes — estilo matplotlib original.
-    Dual display: distribuição individual (equi-weighted) + ponderada por peso no índice.
-    Inclui: top-10 labels, médias up/down annotadas, interpretação de pesos,
-    análise de mean-reversion para heavy stocks.
+    Chart KDE de distribuição de retornos dos constituintes — estilo Tier1 Alpha.
+    Dual display: distribuição individual (equi-weighted, red/green fill) +
+    ponderada por peso no índice (yellow line on twin axis).
+    Top-10 labels posicionados por peso (y = weight_adj * scale) no eixo secundário.
     Retorna (FigureWidget, HTML_interpretacao).
     """
     from scipy.stats import gaussian_kde
@@ -4442,35 +4442,40 @@ def build_kde_distribution_chart(prices_df, weights=None):
     avg_up = rets[rets >= 0].mean() if (rets >= 0).any() else 0
     avg_dn = rets[rets < 0].mean() if (rets < 0).any() else 0
 
+    # ── Equi-weighted KDE ──
     kde = gaussian_kde(rets)
-    x = np.linspace(rets.min() - 1.5, rets.max() + 1.5, 500)
+    x = np.linspace(rets.min() - 2, rets.max() + 2, 1000)
     y = kde(x)
 
     from plotly.subplots import make_subplots
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # ── Fill areas: red (negative) / green (positive) ──
-    # Split at zero for clean fill
+    # ── Fill areas: red (neg) / green (pos) — equi-weighted on primary y ──
     neg_mask = x <= 0
     pos_mask = x >= 0
 
+    # Outline (grey, thin)
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='lines',
+        line=dict(color='rgba(150,150,150,0.5)', width=1),
+        showlegend=False), secondary_y=False)
+
     fig.add_trace(go.Scatter(
         x=x[neg_mask], y=y[neg_mask],
-        fill='tozeroy', fillcolor='rgba(220,38,38,0.25)',
-        line=dict(color='rgba(220,38,38,0.7)', width=1.5),
-        name=f'📉 Down: {n_down} stocks',
-        showlegend=True), secondary_y=False)
+        fill='tozeroy', fillcolor='rgba(220,38,38,0.50)',
+        line=dict(width=0),
+        name=f'Down: {n_down} stocks',
+        showlegend=False), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=x[pos_mask], y=y[pos_mask],
-        fill='tozeroy', fillcolor='rgba(34,197,94,0.25)',
-        line=dict(color='rgba(34,197,94,0.7)', width=1.5),
-        name=f'📈 Up: {n_up} stocks',
-        showlegend=True), secondary_y=False)
+        fill='tozeroy', fillcolor='rgba(34,197,94,0.50)',
+        line=dict(width=0),
+        name=f'Up: {n_up} stocks',
+        showlegend=False), secondary_y=False)
 
-    # ── Weighted KDE (secondary y-axis or overlayed) ──
+    # ── Weighted KDE (yellow line on secondary y) ──
     has_weighted = False
-    kde_w = None
     if weights:
         w_arr = np.array([weights.get(t, 0) for t in rets.index])
         w_arr = w_arr / w_arr.sum() if w_arr.sum() > 0 else w_arr
@@ -4481,55 +4486,56 @@ def build_kde_distribution_chart(prices_df, weights=None):
             fig.add_trace(go.Scatter(
                 x=x, y=y_w,
                 line=dict(color='#fbbf24', width=2.5),
-                name='Weighted (Index Wgt)',
-                opacity=0.9), secondary_y=True)
+                name='Weighted distribution',
+                opacity=0.95), secondary_y=True)
             has_weighted = True
 
-    # ── Average lines with labels ──
+    # ── Average lines ──
     fig.add_vline(x=0, line=dict(color='#6b7280', dash='solid', width=1))
-
     fig.add_vline(x=avg_all, line=dict(color='white', dash='dash', width=1.5))
-    fig.add_annotation(x=avg_all, y=max(y) * 0.95, text=f'Avg: {avg_all:+.2f}%',
-                       showarrow=False, font=dict(size=11, color='white'),
-                       bgcolor='rgba(0,0,0,0.6)', borderpad=3)
+    fig.add_vline(x=avg_up, line=dict(color='#22c55e', dash='dash', width=2))
+    fig.add_vline(x=avg_dn, line=dict(color='#dc2626', dash='dash', width=2))
 
-    fig.add_vline(x=avg_up, line=dict(color='#22c55e', dash='dot', width=1.5))
-    fig.add_annotation(x=avg_up, y=max(y) * 0.82, text=f'Avg Up: +{avg_up:.2f}%',
-                       showarrow=False, font=dict(size=10, color='#22c55e'),
-                       bgcolor='rgba(0,0,0,0.5)', borderpad=2)
-
-    fig.add_vline(x=avg_dn, line=dict(color='#dc2626', dash='dot', width=1.5))
-    fig.add_annotation(x=avg_dn, y=max(y) * 0.82, text=f'Avg Down: {avg_dn:.2f}%',
-                       showarrow=False, font=dict(size=10, color='#dc2626'),
-                       bgcolor='rgba(0,0,0,0.5)', borderpad=2)
-
-    # ── Top 10 by weight: scatter points with labels (staggered to avoid overlap) ──
+    # ── Top-10 by weight: scatter on SECONDARY y using weight as y-position ──
+    # This naturally separates labels vertically (heavier stocks = higher y)
     interp_heavy = []
     if weights:
         w_series = pd.Series(weights)
         top10 = w_series.nlargest(10)
-        _label_positions = ['top center', 'bottom center', 'top right', 'bottom left',
-                            'top left', 'bottom right', 'middle right', 'middle left',
-                            'top center', 'bottom center']
-        for _ti, (tk, w) in enumerate(top10.items()):
+        # Compute weight-adjusted position like the reference: w_adj * scale_factor
+        # w_adj = (price * w) / sum(price * w) for proper positioning
+        top10_data = []
+        for tk, w in top10.items():
             if tk in rets.index:
-                ret_val = rets[tk]
-                kde_val = kde(np.array([ret_val]))[0]
-                short = tk.split(' ')[0]
-                marker_color = '#22c55e' if ret_val >= 0 else '#dc2626'
-                fig.add_trace(go.Scatter(
-                    x=[ret_val], y=[kde_val],
-                    mode='markers+text',
-                    marker=dict(color=marker_color, size=9,
-                                line=dict(width=1, color='white')),
-                    text=[f'{short} ({ret_val:+.1f}%)'],
-                    textposition=_label_positions[_ti % len(_label_positions)],
-                    textfont=dict(size=9, color='white'),
-                    showlegend=False), secondary_y=False)
+                top10_data.append((tk, w, rets[tk]))
+        if top10_data:
+            # Scale y: map weight to secondary-axis range for visibility
+            max_y_secondary = max(y) * 1.1 if not has_weighted else 0
+            if has_weighted:
+                max_y_secondary = max(kde_w(x)) if 'kde_w' in dir() else max(y)
+            scale = max_y_secondary * 3.5  # scale factor like reference code
 
-                # Mean-reversion analysis for heavy stocks
+            for tk, w, ret_val in top10_data:
+                short_name = tk.split(' ')[0]
+                # Remove common suffixes
+                for sfx in ['UW', 'UQ', 'UN', 'US']:
+                    short_name = short_name.replace(sfx, '')
+                y_pos = w * scale
+                fig.add_trace(go.Scatter(
+                    x=[ret_val], y=[y_pos],
+                    mode='markers+text',
+                    marker=dict(color='#7dd3fc', size=7,
+                                line=dict(width=0.5, color='white')),
+                    text=[short_name],
+                    textposition='top center',
+                    textfont=dict(size=12, color='white'),
+                    showlegend=False,
+                    hovertemplate=f'<b>{short_name}</b><br>Ret: {ret_val:+.1f}%<br>'
+                                  f'Peso: {w*100:.1f}%<extra></extra>',
+                ), secondary_y=True)
+
+                # Mean-reversion analysis
                 w_pct = w * 100
-                # Get 21d rolling mean return for mean reversion check
                 if tk in prices_df.columns and len(prices_df) > 21:
                     recent = (prices_df[tk].iloc[-21:] / prices_df[tk].iloc[-22:-1].values - 1) * 100
                     r_mean = recent.mean()
@@ -4538,26 +4544,60 @@ def build_kde_distribution_chart(prices_df, weights=None):
                     if abs(z) > 1.5:
                         direction = 'ABAIXO da média 21d' if z < -1.5 else 'ACIMA da média 21d'
                         interp_heavy.append(
-                            f"<b>{short}</b> (peso {w_pct:.1f}%): ret 1D = {ret_val:+.1f}%, "
+                            f"<b>{short_name}</b> (peso {w_pct:.1f}%): ret 1D = {ret_val:+.1f}%, "
                             f"Z-score 21d = {z:.1f} → {direction} — "
                             f"<b style='color:#fbbf24;'>possível reversão à média</b>")
 
-    # ── Title with summary ──
-    title_text = (f'Distribuição de Retornos 1D — SPX Constituintes '
-                  f'(↓{n_down} | ↑{n_up} | avg {avg_all:+.2f}%)')
+    # ── Legend entries for stats ──
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode='lines',
+        line=dict(color='white', dash='dash', width=1.5),
+        name=f'Avg. Daily Return: {avg_all:+.1f}%'), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode='lines',
+        line=dict(color='#22c55e', dash='dash', width=2),
+        name=f'Avg. Gain: {avg_up:+.1f}%'), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode='lines',
+        line=dict(color='#dc2626', dash='dash', width=2),
+        name=f'Avg. Decline: {avg_dn:+.1f}%'), secondary_y=False)
+
+    # ── Stats text (upper left) ──
+    fig.add_annotation(
+        x=0.01, y=0.98, xref='paper', yref='paper',
+        text=(f"Stocks Up: {n_up}<br>Stocks Down: {n_down}"),
+        showarrow=False, font=dict(size=14, color='white'),
+        bgcolor='rgba(0,0,0,0.0)', align='left',
+        xanchor='left', yanchor='top')
+
+    # ── Date annotation (bottom center) ──
+    _date_str = pd.Timestamp.now().strftime('%Y/%m/%d')
+    fig.add_annotation(
+        x=0.5, y=-0.08, xref='paper', yref='paper',
+        text=f'Date: {_date_str}',
+        showarrow=False, font=dict(size=12, color='white'),
+        xanchor='center', yanchor='top')
+
+    title_text = ('1D% Return Distribution For SPX, Individual Constituents')
 
     fig.update_layout(
-        title=title_text,
+        title=dict(text=title_text, font=dict(size=16, color='white')),
         template=DASH_TEMPLATE,
-        height=440,
-        margin=dict(l=50, r=50, t=50, b=50),
-        xaxis_title='Retorno Individual (%)',
-        yaxis_title='Densidade (Equi-Weighted)',
-        yaxis2_title='Densidade (Index-Weighted)' if has_weighted else '',
-        legend=dict(orientation='h', yanchor='bottom', y=-0.22,
-                    xanchor='center', x=0.5),
-        yaxis=dict(showgrid=False),
-        yaxis2=dict(showgrid=False) if has_weighted else {},
+        height=550,
+        margin=dict(l=50, r=50, t=50, b=60),
+        xaxis=dict(
+            title='', zeroline=False,
+            tickformat='.1f', ticksuffix='%',
+            gridcolor='rgba(128,128,128,0.2)', gridwidth=0.5,
+        ),
+        yaxis=dict(showgrid=False, title='', showticklabels=True),
+        yaxis2=dict(showgrid=False, title='', showticklabels=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1,
+                    font=dict(size=11, color='white'),
+                    bgcolor='rgba(0,0,0,0)'),
+        paper_bgcolor='#000000',
+        plot_bgcolor='#000000',
     )
 
     chart_widget = go.FigureWidget(fig)
@@ -4819,10 +4859,39 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         result['dispersion_pairs'] = pd.DataFrame()
 
     # ── Straddle pricing (Mag8 + SPX) ──
-    straddle_tickers = [t for t in MAG8 if t in prices_df.columns] + [index_ticker]
+    # Always include all MAG8 + index — do NOT filter by prices_df.columns
+    straddle_tickers = list(MAG8) + [index_ticker]
     try:
         result['straddle_data'] = fetch_straddle_prices(straddle_tickers)
         print(f"[DISP] Straddle prices for {len(result['straddle_data'])} tickers")
+        # Fallback: for any MAG8 ticker missing, try BQL implied_volatility directly
+        _bq_sd = bql.Service()
+        for _mag_tk in MAG8:
+            if _mag_tk not in result['straddle_data']:
+                try:
+                    _iv_req = bql.Request(_mag_tk, {
+                        'atm_iv': _bq_sd.data.implied_volatility(
+                            expiry='30D', pct_moneyness='100'),
+                        'px': _bq_sd.data.px_last(),
+                    })
+                    _iv_resp = _bq_sd.execute(_iv_req)
+                    _iv_df = pd.concat([r.df() for r in _iv_resp], axis=1).reset_index()
+                    _atm = float(_iv_df.iloc[0]['atm_iv'])
+                    _px = float(_iv_df.iloc[0]['px'])
+                    if not np.isnan(_atm) and not np.isnan(_px):
+                        result['straddle_data'][_mag_tk] = {
+                            'spot': _px, 'strike': _px, 'expiry': '30D',
+                            'call_iv': _atm, 'put_iv': _atm,
+                            'straddle_iv': _atm,
+                            'call_mid': 0, 'put_mid': 0,
+                            'straddle_px': 0, 'straddle_pct': 0,
+                            'c25_iv': np.nan, 'p25_iv': np.nan,
+                            'strangle_iv': np.nan, 'strangle_px': 0,
+                            'strangle_pct': 0,
+                        }
+                        print(f"[DISP] Fallback IV for {_mag_tk}: {_atm:.4f}")
+                except Exception:
+                    pass
     except Exception as _strd_err:
         print(f"⚠️ Straddle prices: {_strd_err}")
         result['straddle_data'] = {}
@@ -5261,12 +5330,8 @@ def build_buyback_blackout_chart(blackout_curve, earnings_df=None, buyback_annua
             marker=dict(size=8, color='#dc2626'),
         ), secondary_y=False)
 
-    q = (_today.month - 1) // 3 + 1
-    q_prev = q - 1 if q > 1 else 4
-    q_year = _today.year if q > 1 else _today.year - 1
-
     fig.update_layout(
-        title=f"S&P 500 Q{q_prev} {q_year} Buyback Blackout vs. Earnings + Flow Estimado",
+        title=f"S&P 500 — Buyback Blackout Window (12M) vs. Earnings + Flow Estimado",
         template=DASH_TEMPLATE,
         height=420,
         margin=dict(l=50, r=60, t=45, b=40),
