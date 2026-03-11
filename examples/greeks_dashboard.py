@@ -3767,8 +3767,8 @@ def run_analysis(_):
             tab9 = wd.VBox([wd.HTML(report_html)])
 
             # ─── ABA 10: FLOW PREDICTOR ──────────────────────────────────
-            if fp_ok and fp_score is not None:
-              try:
+            try:
+              if fp_ok and fp_score is not None:
                 # Score summary header
                 fp_title = wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
@@ -3983,126 +3983,126 @@ def run_analysis(_):
                     _trend_bar = '█' * max(1, int(abs(_cta_trend) * 10))
                     _trend_color = _C['green'] if _cta_trend > 0 else _C['red'] if _cta_trend < 0 else _C['text_muted']
 
-                # ── 1. Current status summary ──
-                _cta_html = (
-                    f"<div class='mm-dash'><div class='mm-card'>"
-                    f"<h4>CTA / Trend Following (AUM: ~$340B, ~25% equity = ~$85B)</h4>"
-                    f"<table class='mm-table' style='width:auto;'>"
-                    f"<tr><td>Trend Strength:</td>"
-                    f"<td style='color:{_trend_color}'><b>{_cta_trend:+.3f}</b> "
-                    f"<span style='font-size:10px;'>{_trend_bar}</span></td></tr>"
-                    f"<tr><td>Posição CTA:</td>"
-                    f"<td>{_cta_pos_prev:+.3f}x → <b>{_cta_pos:+.3f}x</b></td></tr>"
-                    f"<tr><td>Fluxo Estimado (hoje):</td>"
-                    f"<td style='color:{_cta_color}'><b>${_cta_flow/1e9:,.2f}B</b> ({_cta_dir})</td></tr>"
-                    f"</table>")
+                    # ── 1. Current status summary ──
+                    _cta_html = (
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h4>CTA / Trend Following (AUM: ~$340B, ~25% equity = ~$85B)</h4>"
+                        f"<table class='mm-table' style='width:auto;'>"
+                        f"<tr><td>Trend Strength:</td>"
+                        f"<td style='color:{_trend_color}'><b>{_cta_trend:+.3f}</b> "
+                        f"<span style='font-size:10px;'>{_trend_bar}</span></td></tr>"
+                        f"<tr><td>Posição CTA:</td>"
+                        f"<td>{_cta_pos_prev:+.3f}x → <b>{_cta_pos:+.3f}x</b></td></tr>"
+                        f"<tr><td>Fluxo Estimado (hoje):</td>"
+                        f"<td style='color:{_cta_color}'><b>${_cta_flow/1e9:,.2f}B</b> ({_cta_dir})</td></tr>"
+                        f"</table>")
 
-                # ── 2. Scenario table (1W + 1M) ──
-                if fp_cta_scenarios_1w and fp_cta_scenarios_1m:
-                    _card2 = _C['card2']
-                    _border = _C['border']
-                    _cta_html += (
-                        f"<h4 style='margin-top:16px;'>📊 CTA Estimated Flows by Scenario</h4>"
-                        f"<table class='mm-table' style='width:100%;font-size:12px;'>"
-                        f"<tr style='background:{_card2};'>"
-                        f"<th rowspan='2'>Cenário</th>"
-                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Week</th>"
-                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Month</th></tr>"
-                        f"<tr style='background:{_card2};'>"
-                        f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th>"
-                        f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th></tr>")
-                    for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
-                        _f1w = s1w['flow_total']
-                        _f1m = s1m['flow_total']
-                        _fc1w = _C['green'] if _f1w > 0 else _C['red'] if _f1w < 0 else _C['text_muted']
-                        _fc1m = _C['green'] if _f1m > 0 else _C['red'] if _f1m < 0 else _C['text_muted']
-                        _row_bg = ''
-                        if 'Down' in s1w['name']:
-                            _row_bg = f" style='background:rgba(255,77,77,0.08);'"
-                        elif 'Up' in s1w['name']:
-                            _row_bg = f" style='background:rgba(0,200,100,0.08);'"
+                    # ── 2. Scenario table (1W + 1M) ──
+                    if fp_cta_scenarios_1w and fp_cta_scenarios_1m:
+                        _card2 = _C['card2']
+                        _border = _C['border']
                         _cta_html += (
-                            f"<tr{_row_bg}>"
-                            f"<td><b>{s1w['name']}</b></td>"
-                            f"<td>{s1w['spx_end']:,.0f} ({s1w['pct_move']:+.1%})</td>"
-                            f"<td style='color:{_fc1w}'><b>${_f1w/1e9:,.1f}B</b></td>"
-                            f"<td>{s1w['pos_end']:+.2f}x</td>"
-                            f"<td>{s1m['spx_end']:,.0f} ({s1m['pct_move']:+.1%})</td>"
-                            f"<td style='color:{_fc1m}'><b>${_f1m/1e9:,.1f}B</b></td>"
-                            f"<td>{s1m['pos_end']:+.2f}x</td>"
-                            f"</tr>")
-                    _cta_html += f"</table>"
+                            f"<h4 style='margin-top:16px;'>📊 CTA Estimated Flows by Scenario</h4>"
+                            f"<table class='mm-table' style='width:100%;font-size:12px;'>"
+                            f"<tr style='background:{_card2};'>"
+                            f"<th rowspan='2'>Cenário</th>"
+                            f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Week</th>"
+                            f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Month</th></tr>"
+                            f"<tr style='background:{_card2};'>"
+                            f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th>"
+                            f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th></tr>")
+                        for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
+                            _f1w = s1w['flow_total']
+                            _f1m = s1m['flow_total']
+                            _fc1w = _C['green'] if _f1w > 0 else _C['red'] if _f1w < 0 else _C['text_muted']
+                            _fc1m = _C['green'] if _f1m > 0 else _C['red'] if _f1m < 0 else _C['text_muted']
+                            _row_bg = ''
+                            if 'Down' in s1w['name']:
+                                _row_bg = f" style='background:rgba(255,77,77,0.08);'"
+                            elif 'Up' in s1w['name']:
+                                _row_bg = f" style='background:rgba(0,200,100,0.08);'"
+                            _cta_html += (
+                                f"<tr{_row_bg}>"
+                                f"<td><b>{s1w['name']}</b></td>"
+                                f"<td>{s1w['spx_end']:,.0f} ({s1w['pct_move']:+.1%})</td>"
+                                f"<td style='color:{_fc1w}'><b>${_f1w/1e9:,.1f}B</b></td>"
+                                f"<td>{s1w['pos_end']:+.2f}x</td>"
+                                f"<td>{s1m['spx_end']:,.0f} ({s1m['pct_move']:+.1%})</td>"
+                                f"<td style='color:{_fc1m}'><b>${_f1m/1e9:,.1f}B</b></td>"
+                                f"<td>{s1m['pos_end']:+.2f}x</td>"
+                                f"</tr>")
+                        _cta_html += f"</table>"
 
-                # ── 3. Pivot levels ──
-                if fp_cta_pivots:
-                    _card2 = _C['card2']
-                    _cta_html += (
-                        f"<h4 style='margin-top:16px;'>🎯 CTA Pivot Levels — Trigger Thresholds</h4>"
-                        f"<table class='mm-table' style='width:auto;font-size:12px;'>"
-                        f"<tr style='background:{_card2};'>"
-                        f"<th>Horizonte</th><th>MA Pair</th><th>Nível</th>"
-                        f"<th>Tipo</th><th>Distância</th></tr>")
-                    for pv in fp_cta_pivots:
-                        _pv_color = _C['red'] if 'SELL' in pv['type'] else _C['green']
-                        _pv_icon = '🔻' if 'SELL' in pv['type'] else '🔺'
+                    # ── 3. Pivot levels ──
+                    if fp_cta_pivots:
+                        _card2 = _C['card2']
                         _cta_html += (
-                            f"<tr>"
-                            f"<td><b>{pv['label']}</b></td>"
-                            f"<td>{pv['ma_pair']}</td>"
-                            f"<td><b>{pv['level']:,.0f}</b></td>"
-                            f"<td style='color:{_pv_color}'>{_pv_icon} {pv['type']}</td>"
-                            f"<td>{pv['distance_pct']:+.1%}</td>"
-                            f"</tr>")
+                            f"<h4 style='margin-top:16px;'>🎯 CTA Pivot Levels — Trigger Thresholds</h4>"
+                            f"<table class='mm-table' style='width:auto;font-size:12px;'>"
+                            f"<tr style='background:{_card2};'>"
+                            f"<th>Horizonte</th><th>MA Pair</th><th>Nível</th>"
+                            f"<th>Tipo</th><th>Distância</th></tr>")
+                        for pv in fp_cta_pivots:
+                            _pv_color = _C['red'] if 'SELL' in pv['type'] else _C['green']
+                            _pv_icon = '🔻' if 'SELL' in pv['type'] else '🔺'
+                            _cta_html += (
+                                f"<tr>"
+                                f"<td><b>{pv['label']}</b></td>"
+                                f"<td>{pv['ma_pair']}</td>"
+                                f"<td><b>{pv['level']:,.0f}</b></td>"
+                                f"<td style='color:{_pv_color}'>{_pv_icon} {pv['type']}</td>"
+                                f"<td>{pv['distance_pct']:+.1%}</td>"
+                                f"</tr>")
+                        _cta_html += (
+                            f"</table>"
+                            f"<p><small>Nível de preço que causaria flip do sinal de MA cross. "
+                            f"Mais próximo do spot = maior risco de trigger.</small></p>")
+
                     _cta_html += (
-                        f"</table>"
-                        f"<p><small>Nível de preço que causaria flip do sinal de MA cross. "
-                        f"Mais próximo do spot = maior risco de trigger.</small></p>")
+                        f"<p><small>Trend = média de MA crosses (5/20, 5/60, 10/60, 20/120, 20/200). "
+                        f"Sizing = trend/vol. CTAs ajustam diariamente. "
+                        f"Vol spike em cenários Down: RV_end = RV × (1 + |move| × 3).</small></p>"
+                        f"</div></div>")
+                    st_f_children.append(wd.HTML(_cta_html))
 
-                _cta_html += (
-                    f"<p><small>Trend = média de MA crosses (5/20, 5/60, 10/60, 20/120, 20/200). "
-                    f"Sizing = trend/vol. CTAs ajustam diariamente. "
-                    f"Vol spike em cenários Down: RV_end = RV × (1 + |move| × 3).</small></p>"
-                    f"</div></div>")
-                st_f_children.append(wd.HTML(_cta_html))
-
-                # ── 4. CTA historical chart (Plotly) ──
-                if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
-                    _hfig = make_subplots(specs=[[{'secondary_y': True}]])
-                    _hfig.add_trace(go.Scatter(
-                        x=fp_cta_hist['date'], y=fp_cta_hist['position'],
-                        name='CTA Position (x)',
-                        fill='tozeroy',
-                        fillcolor='rgba(0,150,255,0.15)',
-                        line=dict(color='rgba(0,150,255,0.8)', width=2)),
-                        secondary_y=False)
-                    _hfig.add_trace(go.Scatter(
-                        x=fp_cta_hist['date'],
-                        y=fp_cta_hist['notional'] / 1e9,
-                        name='CTA Notional ($B)',
-                        line=dict(color=_C['yellow'], width=2, dash='dot')),
-                        secondary_y=True)
-                    _hfig.add_hline(y=0, line_dash='dash',
-                        line_color=_C['text_muted'], opacity=0.5)
-                    _hfig.update_layout(
-                        title=dict(text='CTA Position & Notional — Last 6 Months',
-                                   font=dict(color=_C['text'], size=14)),
-                        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
-                        font=dict(color=_C['text'], size=11),
-                        legend=dict(orientation='h', y=-0.15,
-                                    font=dict(color=_C['text_muted'])),
-                        height=320, margin=dict(l=50, r=50, t=40, b=50))
-                    _hfig.update_yaxes(
-                        title_text='Position (x)', secondary_y=False,
-                        gridcolor=_C['border'], zerolinecolor=_C['border'],
-                        tickfont=dict(color=_C['text_muted']))
-                    _hfig.update_yaxes(
-                        title_text='Notional ($B)', secondary_y=True,
-                        gridcolor=_C['border'],
-                        tickfont=dict(color=_C['text_muted']))
-                    _hfig.update_xaxes(
-                        gridcolor=_C['border'],
-                        tickfont=dict(color=_C['text_muted']))
-                    st_f_children.append(_flow_border(go.FigureWidget(_hfig)))
+                    # ── 4. CTA historical chart (Plotly) ──
+                    if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
+                        _hfig = make_subplots(specs=[[{'secondary_y': True}]])
+                        _hfig.add_trace(go.Scatter(
+                            x=fp_cta_hist['date'], y=fp_cta_hist['position'],
+                            name='CTA Position (x)',
+                            fill='tozeroy',
+                            fillcolor='rgba(0,150,255,0.15)',
+                            line=dict(color='rgba(0,150,255,0.8)', width=2)),
+                            secondary_y=False)
+                        _hfig.add_trace(go.Scatter(
+                            x=fp_cta_hist['date'],
+                            y=fp_cta_hist['notional'] / 1e9,
+                            name='CTA Notional ($B)',
+                            line=dict(color=_C['yellow'], width=2, dash='dot')),
+                            secondary_y=True)
+                        _hfig.add_hline(y=0, line_dash='dash',
+                            line_color=_C['text_muted'], opacity=0.5)
+                        _hfig.update_layout(
+                            title=dict(text='CTA Position & Notional — Last 6 Months',
+                                       font=dict(color=_C['text'], size=14)),
+                            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+                            font=dict(color=_C['text'], size=11),
+                            legend=dict(orientation='h', y=-0.15,
+                                        font=dict(color=_C['text_muted'])),
+                            height=320, margin=dict(l=50, r=50, t=40, b=50))
+                        _hfig.update_yaxes(
+                            title_text='Position (x)', secondary_y=False,
+                            gridcolor=_C['border'], zerolinecolor=_C['border'],
+                            tickfont=dict(color=_C['text_muted']))
+                        _hfig.update_yaxes(
+                            title_text='Notional ($B)', secondary_y=True,
+                            gridcolor=_C['border'],
+                            tickfont=dict(color=_C['text_muted']))
+                        _hfig.update_xaxes(
+                            gridcolor=_C['border'],
+                            tickfont=dict(color=_C['text_muted']))
+                        st_f_children.append(_flow_border(go.FigureWidget(_hfig)))
                 except Exception as _cta_err:
                     import traceback
                     _tb = traceback.format_exc()
@@ -4110,7 +4110,7 @@ def run_analysis(_):
                     st_f_children.append(wd.HTML(
                         f"<div class='mm-dash'><div class='mm-card'>"
                         f"<h4>CTA / Trend Following</h4>"
-                        f"<p style='color:{_C['red']}'>Erro ao renderizar CTA: {_cta_err}</p>"
+                        f"<p style='color:red'>Erro ao renderizar CTA: {_cta_err}</p>"
                         f"</div></div>"))
 
                 # Dealer flow
@@ -4261,19 +4261,19 @@ def run_analysis(_):
                                             'COT', 'Correlação', 'Sistemáticos']):
                     fp_tabs.set_title(idx_t, nm)
                 tab10 = fp_tabs
-              except Exception as _fp_ui_err:
+              else:
+                reason = ("Marque 'Incluir Flow Predictor' e rode novamente."
+                          if not flow_pred_w.value else "Erro na execução.")
+                tab10 = wd.VBox([wd.HTML(
+                    f"<h3>Flow Predictor</h3><p>{reason}</p>")])
+            except Exception as _fp_ui_err:
                 import traceback
                 _fp_tb = traceback.format_exc()
                 print(f"⚠️ Flow Predictor UI: {_fp_ui_err}\n{_fp_tb}")
                 tab10 = wd.VBox([wd.HTML(
                     f"<h3>Flow Predictor</h3>"
                     f"<p style='color:red;'>Erro ao montar UI: {_fp_ui_err}</p>"
-                    f"<pre style='font-size:10px;color:#aaa;'>{_fp_tb}</pre>")])
-            else:
-                reason = ("Marque 'Incluir Flow Predictor' e rode novamente."
-                          if not flow_pred_w.value else "Erro na execução.")
-                tab10 = wd.VBox([wd.HTML(
-                    f"<h3>Flow Predictor</h3><p>{reason}</p>")])
+                    f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>{_fp_tb}</pre>")])
 
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
