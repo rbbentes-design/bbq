@@ -2703,11 +2703,20 @@ def _bql_fetch_member_data(index_ticker='SPX Index', lookback_days=252):
     resp_px = bq.execute(req_px)
     resp_iv = bq.execute(req_iv)
 
-    prices_df = resp_px[0].df().pivot(columns='ID', values='px')
-    iv_df = resp_iv[0].df().pivot(columns='ID', values='iv')
+    df_px = resp_px[0].df()
+    if 'ID' not in df_px.columns:
+        df_px = df_px.reset_index()
+    prices_df = df_px.pivot(columns='ID', values='px')
+
+    df_iv = resp_iv[0].df()
+    if 'ID' not in df_iv.columns:
+        df_iv = df_iv.reset_index()
+    iv_df = df_iv.pivot(columns='ID', values='iv')
 
     weights = {}
     if not wt_df.empty:
+        if 'ID' not in wt_df.columns:
+            wt_df = wt_df.reset_index()
         total_wt = 0
         for _, row in wt_df.iterrows():
             ticker = row.get('ID', '')
@@ -2729,7 +2738,10 @@ def _bql_fetch_index_iv(index_ticker='SPX Index', lookback_days=252):
         'iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
     })
     resp = bq.execute(req)
-    s = resp[0].df()['iv']
+    _df_iv = resp[0].df()
+    if isinstance(_df_iv.index, pd.MultiIndex):
+        _df_iv.index = _df_iv.index.droplevel(0)
+    s = _df_iv['iv']
     s.index = pd.to_datetime(s.index)
     return s
 
@@ -3647,7 +3659,7 @@ def compute_opex_stats(log_returns, lookback_years=5):
     Estatísticas de OPEX: return flip probability, RV impact.
     Inspirado nos slides SpotGamma.
     """
-    idx = log_returns.index
+    idx = pd.to_datetime(log_returns.index)
     if len(idx) < 252:
         return {}
 
@@ -4736,7 +4748,10 @@ def run_analysis(_):
                         'px': bq.data.px_last(fill='PREV', dates=dt_rng),
                     })
                     vix_resp = bq.execute(vix_req)
-                    vix_s = vix_resp[0].df()['px'].dropna()
+                    _vix_df = vix_resp[0].df()
+                    if isinstance(_vix_df.index, pd.MultiIndex):
+                        _vix_df.index = _vix_df.index.droplevel(0)
+                    vix_s = _vix_df['px'].dropna()
                     vix_s.index = pd.to_datetime(vix_s.index)
                     vix_changes = vix_s.diff().dropna()
                     analytics['spot_vol_up'] = compute_spot_up_vol_up(log_returns, vix_changes)
