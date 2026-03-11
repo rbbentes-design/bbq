@@ -2032,23 +2032,46 @@ def compute_cta_pivot_levels(prices, spot, rv_current):
 def compute_cta_historical_positions(prices, rv_series=None, lookback=252):
     """
     Calcula série histórica de trend strength, position sizing e notional.
-    Retorna DataFrame com colunas: date, trend, position, notional_$B.
+    Versão vetorizada: computa rolling MAs uma vez e extrai valores por dia.
+    Retorna DataFrame com colunas: date, trend, position, notional.
     """
     if len(prices) < 201:
         return pd.DataFrame()
 
-    records = []
+    # Pré-computar todas as rolling MAs de uma vez
+    ma_dict = {}
+    for short_w, long_w in CTA_MA_PAIRS:
+        ma_dict[(short_w, long_w)] = (
+            prices.rolling(short_w).mean(),
+            prices.rolling(long_w).mean(),
+        )
+
+    # Rolling realized vol (63d)
+    rets = prices.pct_change()
+    rv_rolling = rets.rolling(63).std() * np.sqrt(252)
+
     start = max(201, len(prices) - lookback)
-    for i in range(start, len(prices)):
-        px_slice = prices.iloc[:i+1]
-        trend = compute_cta_trend_strength(px_slice)
-        # Realized vol (63d)
-        rets = px_slice.pct_change().dropna()
-        rv = rets.iloc[-63:].std() * np.sqrt(252) if len(rets) >= 63 else 0.15
+    idx_range = range(start, len(prices))
+
+    records = []
+    for i in idx_range:
+        # Trend = mean of clipped MA spread scores
+        scores = []
+        for short_w, long_w in CTA_MA_PAIRS:
+            ms, ml = ma_dict[(short_w, long_w)]
+            ms_v = ms.iloc[i]
+            ml_v = ml.iloc[i]
+            if pd.isna(ms_v) or pd.isna(ml_v) or ml_v == 0:
+                continue
+            spread = (ms_v - ml_v) / ml_v
+            scores.append(np.clip(spread * 100, -1, 1))
+        trend = float(np.mean(scores)) if scores else 0.0
+
+        rv = rv_rolling.iloc[i] if not pd.isna(rv_rolling.iloc[i]) else 0.15
         pos = np.clip(trend * (0.10 / max(rv, 1e-6)), -2, 2)
         notional = CTA_AUM * CTA_EQUITY_ALLOC * pos
         records.append({
-            'date': px_slice.index[-1],
+            'date': prices.index[i],
             'trend': trend,
             'position': pos,
             'notional': notional,
@@ -3083,6 +3106,10 @@ def run_analysis(_):
                     # CTA historical positions (last 6M)
                     loading.value = "<h4>14b/16: CTA — histórico de posições...</h4>"
                     fp_cta_hist = compute_cta_historical_positions(_px_series, lookback=126)
+                    print(f"[FLOW] CTA hist: {len(fp_cta_hist)} rows, "
+                          f"scenarios 1W: {len(fp_cta_scenarios_1w)}, "
+                          f"1M: {len(fp_cta_scenarios_1m)}, "
+                          f"pivots: {len(fp_cta_pivots)}")
                 except Exception as e:
                     print(f"⚠️ CTA flow: {e}")
 
