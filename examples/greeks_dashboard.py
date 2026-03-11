@@ -31,6 +31,7 @@ from typing import Optional, Dict, List, Tuple
 import math
 import traceback
 from scipy.stats import norm, t as student_t
+from scipy.optimize import minimize as sp_minimize
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
@@ -280,6 +281,16 @@ OPTIONS_TRADE_DESC = [
 ]
 # Total avg daily contracts (latest month, OVME)
 OPTIONS_TOTAL_ADC = 21_685_696
+
+# ── Dispersion Trade Constants ──
+MAG7 = [
+    'AAPL US Equity', 'MSFT US Equity', 'GOOGL US Equity', 'AMZN US Equity',
+    'NVDA US Equity', 'META US Equity', 'TSLA US Equity',
+]
+DISP_CORR_WINDOWS = {'1M': 21, '3M': 63, '6M': 126}
+DISP_IV_FIELD = 'implied_volatility'  # BQL field
+DISP_SPXSK3 = '.SPXSK3 G Index'  # CBOE S&P 500 3M Implied Corr Index
+DISP_VIX9D = 'VIX9D Index'
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
@@ -1673,6 +1684,40 @@ def compute_dealer_hedging_flow(gex_per_pt, daily_price_change, spot):
     return flow
 
 
+def fetch_options_volume_bql(ticker='SPX Index'):
+    """
+    Busca volume total de opções e dados de volume via BQL.
+    Substitui a constante OPTIONS_TOTAL_ADC quando possível.
+    Retorna dict com total_adc, put_vol, call_vol, pc_ratio.
+    """
+    bq = bql.Service()
+    try:
+        req = bql.Request(ticker, {
+            'call_vol': bq.data.call_opt_volume(),
+            'put_vol': bq.data.put_opt_volume(),
+            'pc_ratio': bq.data.put_call_open_interest_ratio(fill='PREV'),
+        })
+        resp = bq.execute(req)
+        row = resp[0].df().iloc[0] if len(resp[0].df()) > 0 else {}
+        cv = float(row.get('call_vol', 0) or 0)
+        pv = float(row.get('put_vol', 0) or 0)
+        pcr = float(row.get('pc_ratio', 0) or 0)
+        total = cv + pv
+        return {
+            'total_adc': total if total > 0 else OPTIONS_TOTAL_ADC,
+            'call_vol': cv,
+            'put_vol': pv,
+            'pc_ratio': pcr,
+            'source': 'BQL' if total > 0 else 'fallback',
+        }
+    except Exception:
+        return {
+            'total_adc': OPTIONS_TOTAL_ADC,
+            'call_vol': 0, 'put_vol': 0, 'pc_ratio': 0,
+            'source': 'fallback',
+        }
+
+
 def estimate_mm_var_by_book(gex_per_pt, spot, risk_params, oi_total):
     """
     Estima VaR 95%/99% por market maker, proporcional ao volume share.
@@ -2620,6 +2665,589 @@ def fp_grid_buyback(buyback_df):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5G — DISPERSION TRADE + TAIL RISK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _bql_fetch_member_data(index_ticker='SPX Index', lookback_days=252):
+    """
+    Busca preços e IV dos membros de um índice via BQL.
+    Retorna (prices_df, iv_df, weights_dict).
+    """
+    bq = bql.Service()
+    univ = bq.univ.members(index_ticker)
+    dt_range = bq.func.range('-{}d'.format(lookback_days), '0d')
+    req_px = bql.Request(univ, {
+        'px': bq.data.px_last(fill='PREV', dates=dt_range),
+    })
+    req_iv = bql.Request(univ, {
+        'iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
+    })
+    req_wt = bql.Request(univ, {
+        'wt': bq.data.indx_mweight(fill='PREV'),
+    })
+    resp_px = bq.execute(req_px)
+    resp_iv = bq.execute(req_iv)
+    resp_wt = bq.execute(req_wt)
+
+    prices_df = resp_px[0].df().pivot(columns='ID', values='px')
+    iv_df = resp_iv[0].df().pivot(columns='ID', values='iv')
+
+    wt_df = resp_wt[0].df()
+    weights = {}
+    for _, row in wt_df.iterrows():
+        ticker = row.get('ID', '')
+        w = row.get('wt', 0.0)
+        if ticker and w and not np.isnan(w):
+            weights[ticker] = w / 100.0
+    return prices_df, iv_df, weights
+
+
+def _bql_fetch_index_iv(index_ticker='SPX Index', lookback_days=252):
+    """Busca IV histórica do índice."""
+    bq = bql.Service()
+    dt_range = bq.func.range('-{}d'.format(lookback_days), '0d')
+    req = bql.Request(index_ticker, {
+        'iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
+    })
+    resp = bq.execute(req)
+    s = resp[0].df()['iv']
+    s.index = pd.to_datetime(s.index)
+    return s
+
+
+def _bql_fetch_impl_corr(lookback_days=252):
+    """Busca o CBOE S&P 500 3M Implied Correlation Index (.SPXSK3 G Index)."""
+    bq = bql.Service()
+    dt_range = bq.func.range('-{}d'.format(lookback_days), '0d')
+    try:
+        req = bql.Request(DISP_SPXSK3, {
+            'px': bq.data.px_last(fill='PREV', dates=dt_range),
+        })
+        resp = bq.execute(req)
+        s = resp[0].df()['px']
+        s.index = pd.to_datetime(s.index)
+        return s
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def compute_realized_correlation(prices_df, windows=None):
+    """
+    Calcula correlação realizada média (pairwise) para cada janela.
+    Retorna DataFrame: index=datas, cols=window labels.
+    """
+    if windows is None:
+        windows = DISP_CORR_WINDOWS
+    log_rets = np.log(prices_df / prices_df.shift(1)).dropna()
+    result = {}
+    for label, w in windows.items():
+        corrs = []
+        dates_out = []
+        for end in range(w, len(log_rets)):
+            window_rets = log_rets.iloc[end - w:end]
+            corr_mat = window_rets.corr()
+            n = len(corr_mat)
+            if n < 2:
+                continue
+            upper = corr_mat.values[np.triu_indices(n, k=1)]
+            avg_corr = float(np.nanmean(upper))
+            corrs.append(avg_corr)
+            dates_out.append(log_rets.index[end])
+        result[label] = pd.Series(corrs, index=dates_out)
+    return pd.DataFrame(result)
+
+
+def compute_implied_correlation(sigma_idx, sigmas_i, weights):
+    """
+    Calcula correlação implícita (CBOE methodology).
+    ρ_impl = (σ²_idx - Σ wi² σi²) / (Σ_{i≠j} wi wj σi σj)
+    Inputs: escalares (para um dia).
+    """
+    tickers = list(weights.keys())
+    n = len(tickers)
+    if n < 2:
+        return np.nan
+    w = np.array([weights[t] for t in tickers])
+    s = np.array([sigmas_i.get(t, 0.0) for t in tickers])
+    var_idx = sigma_idx ** 2
+    sum_wi2_si2 = np.sum(w ** 2 * s ** 2)
+    cross = 0.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            cross += w[i] * w[j] * s[i] * s[j]
+    denom = 2.0 * cross
+    if abs(denom) < 1e-12:
+        return np.nan
+    rho = (var_idx - sum_wi2_si2) / denom
+    return float(np.clip(rho, -1.0, 1.0))
+
+
+def compute_implied_corr_series(index_iv, member_iv_df, weights):
+    """
+    Calcula série temporal de correlação implícita.
+    index_iv: Series (dates → IV), member_iv_df: DataFrame (dates × tickers).
+    """
+    common_dates = index_iv.index.intersection(member_iv_df.index)
+    impl_corrs = []
+    dates_out = []
+    for dt in common_dates:
+        sig_idx = index_iv.loc[dt]
+        if np.isnan(sig_idx) or sig_idx <= 0:
+            continue
+        sigmas = {}
+        for t in weights:
+            if t in member_iv_df.columns:
+                val = member_iv_df.loc[dt, t]
+                if not np.isnan(val) and val > 0:
+                    sigmas[t] = val / 100.0
+        sub_w = {t: weights[t] for t in sigmas if t in weights}
+        total_w = sum(sub_w.values())
+        if total_w < 0.5:
+            continue
+        sub_w = {t: v / total_w for t, v in sub_w.items()}
+        rho = compute_implied_correlation(sig_idx / 100.0, sigmas, sub_w)
+        if not np.isnan(rho):
+            impl_corrs.append(rho)
+            dates_out.append(dt)
+    return pd.Series(impl_corrs, index=dates_out, name='impl_corr')
+
+
+def compute_dispersion_signal(impl_corr_series, real_corr_df, window='3M'):
+    """
+    Gera sinal de dispersion trade.
+    Spread = Impl Corr - Realized Corr → positivo = vender vol do índice.
+    Retorna DataFrame com colunas: impl_corr, real_corr, spread, z_score, signal.
+    """
+    real_col = real_corr_df[window] if window in real_corr_df.columns else real_corr_df.iloc[:, 0]
+    common = impl_corr_series.index.intersection(real_col.index)
+    if len(common) < 20:
+        return pd.DataFrame()
+    impl = impl_corr_series.reindex(common)
+    real = real_col.reindex(common)
+    spread = impl - real
+    roll_mean = spread.rolling(63, min_periods=20).mean()
+    roll_std = spread.rolling(63, min_periods=20).std()
+    z = (spread - roll_mean) / roll_std.replace(0, np.nan)
+    signal = pd.Series('NEUTRAL', index=common)
+    signal[z > 1.0] = 'SHORT INDEX VOL'
+    signal[z < -1.0] = 'LONG INDEX VOL'
+    return pd.DataFrame({
+        'impl_corr': impl, 'real_corr': real,
+        'spread': spread, 'z_score': z, 'signal': signal,
+    })
+
+
+def optimize_tracking_basket(index_prices, member_prices, n_stocks=10):
+    """
+    Seleciona N ações que melhor replicam o índice (minimize tracking error).
+    Retorna (selected_tickers, weights_dict, tracking_error).
+    """
+    idx_ret = np.log(index_prices / index_prices.shift(1)).dropna()
+    mem_ret = np.log(member_prices / member_prices.shift(1)).dropna()
+    common = idx_ret.index.intersection(mem_ret.index)
+    idx_ret = idx_ret.reindex(common).values
+    mem_ret = mem_ret.reindex(common)
+    tickers = list(mem_ret.columns)
+    mem_arr = mem_ret.values
+
+    corrs = np.array([np.corrcoef(idx_ret, mem_arr[:, i])[0, 1]
+                       for i in range(mem_arr.shape[1])])
+    valid = ~np.isnan(corrs)
+    top_k = min(max(n_stocks * 3, 30), int(valid.sum()))
+    top_idx = np.argsort(-np.abs(np.where(valid, corrs, 0)))[:top_k]
+    sub_tickers = [tickers[i] for i in top_idx]
+    sub_arr = mem_arr[:, top_idx]
+
+    def objective(w):
+        port_ret = sub_arr @ w
+        te = np.std(port_ret - idx_ret)
+        return te
+
+    n = len(sub_tickers)
+    w0 = np.ones(n) / n
+    bounds = [(0.0, 1.0)] * n
+    cons = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+    res = sp_minimize(objective, w0, method='SLSQP',
+                      bounds=bounds, constraints=cons,
+                      options={'maxiter': 500, 'ftol': 1e-10})
+    opt_w = res.x
+    ranked = np.argsort(-opt_w)[:n_stocks]
+    sel_tickers = [sub_tickers[i] for i in ranked]
+    sel_weights = {sub_tickers[i]: float(opt_w[i]) for i in ranked}
+    total = sum(sel_weights.values())
+    if total > 0:
+        sel_weights = {t: v / total for t, v in sel_weights.items()}
+    te_final = float(objective(opt_w))
+    return sel_tickers, sel_weights, te_final
+
+
+def compute_mag7_dispersion(prices_df):
+    """
+    Calcula dispersão entre pares Mag7.
+    Retorna DataFrame com IV spread e correlation para cada par.
+    """
+    mag7_in_df = [t for t in MAG7 if t in prices_df.columns]
+    if len(mag7_in_df) < 2:
+        return pd.DataFrame()
+    log_rets = np.log(prices_df[mag7_in_df] / prices_df[mag7_in_df].shift(1)).dropna()
+    corr_mat = log_rets.tail(63).corr()
+    pairs = []
+    for i in range(len(mag7_in_df)):
+        for j in range(i + 1, len(mag7_in_df)):
+            t1 = mag7_in_df[i]
+            t2 = mag7_in_df[j]
+            short_1 = t1.split(' ')[0]
+            short_2 = t2.split(' ')[0]
+            corr_val = corr_mat.loc[t1, t2]
+            vol1 = float(log_rets[t1].std() * np.sqrt(252) * 100)
+            vol2 = float(log_rets[t2].std() * np.sqrt(252) * 100)
+            pairs.append({
+                'Par': '{}/{}'.format(short_1, short_2),
+                'Corr 3M': round(corr_val, 3),
+                'RVol1 (%)': round(vol1, 1),
+                'RVol2 (%)': round(vol2, 1),
+                'Vol Spread': round(abs(vol1 - vol2), 1),
+            })
+    df = pd.DataFrame(pairs)
+    df = df.sort_values('Vol Spread', ascending=False).reset_index(drop=True)
+    return df
+
+
+def find_best_2x2_dispersion(prices_df, iv_df=None):
+    """
+    Encontra melhor combo 2x2 entre Mag7 para dispersion trade.
+    2 stocks long vol + 2 stocks short vol.
+    Critério: maximize a diferença de IV (ou RVol) entre os dois grupos.
+    """
+    mag7_in = [t for t in MAG7 if t in prices_df.columns]
+    if len(mag7_in) < 4:
+        return []
+    log_rets = np.log(prices_df[mag7_in] / prices_df[mag7_in].shift(1)).dropna()
+    vols = {}
+    for t in mag7_in:
+        vols[t] = float(log_rets[t].tail(63).std() * np.sqrt(252))
+
+    if iv_df is not None:
+        for t in mag7_in:
+            if t in iv_df.columns:
+                last_iv = iv_df[t].dropna()
+                if len(last_iv) > 0:
+                    vols[t] = float(last_iv.iloc[-1]) / 100.0
+
+    sorted_by_vol = sorted(mag7_in, key=lambda t: vols.get(t, 0), reverse=True)
+    high_vol = sorted_by_vol[:2]
+    low_vol = sorted_by_vol[-2:]
+    spread = np.mean([vols[t] for t in high_vol]) - np.mean([vols[t] for t in low_vol])
+    combos = [{
+        'Long Vol (Buy)': ', '.join(t.split(' ')[0] for t in high_vol),
+        'Short Vol (Sell)': ', '.join(t.split(' ')[0] for t in low_vol),
+        'Avg IV High': round(np.mean([vols[t] for t in high_vol]) * 100, 1),
+        'Avg IV Low': round(np.mean([vols[t] for t in low_vol]) * 100, 1),
+        'Spread (pp)': round(spread * 100, 1),
+    }]
+    return combos
+
+
+# ── Tail Risk (EVT + Conditional Expectations) ──
+
+def compute_tail_risk(log_returns, threshold_pct=5):
+    """
+    Calcula métricas de risco caudal usando EVT simplificada.
+    - Exceedances abaixo do percentil threshold_pct
+    - Hill estimator para tail index
+    - Conditional Tail Expectation (CTE)
+    - Expected Shortfall beyond threshold
+    Retorna dict com métricas.
+    """
+    rets = np.asarray(log_returns, dtype=float)
+    rets = rets[~np.isnan(rets)]
+    n = len(rets)
+    if n < 50:
+        return {}
+
+    threshold = np.percentile(rets, threshold_pct)
+    exceedances = rets[rets <= threshold]
+    n_exceed = len(exceedances)
+
+    cte = float(np.mean(exceedances)) if n_exceed > 0 else np.nan
+
+    abs_exceed = np.abs(exceedances - threshold)
+    abs_exceed = abs_exceed[abs_exceed > 0]
+    if len(abs_exceed) >= 5:
+        log_excess = np.log(abs_exceed / abs_exceed.min())
+        hill_alpha = float(1.0 / np.mean(log_excess)) if np.mean(log_excess) > 0 else np.nan
+    else:
+        hill_alpha = np.nan
+
+    max_loss = float(np.min(rets))
+    p1 = np.percentile(rets, 1)
+    p5 = np.percentile(rets, 5)
+    below_1 = rets[rets <= p1]
+    cte_1 = float(np.mean(below_1)) if len(below_1) > 0 else np.nan
+
+    kurtosis_val = float(
+        np.mean((rets - np.mean(rets)) ** 4) / (np.std(rets) ** 4)
+    ) if np.std(rets) > 0 else np.nan
+    skew_val = float(
+        np.mean((rets - np.mean(rets)) ** 3) / (np.std(rets) ** 3)
+    ) if np.std(rets) > 0 else np.nan
+
+    return {
+        'threshold_pct': threshold_pct,
+        'threshold_ret': round(float(threshold) * 100, 2),
+        'n_exceedances': n_exceed,
+        'pct_exceedances': round(n_exceed / n * 100, 1),
+        'CTE (5%)': round(float(cte) * 100, 2),
+        'CTE (1%)': round(float(cte_1) * 100, 2),
+        'Max Loss': round(float(max_loss) * 100, 2),
+        'Hill Alpha': round(hill_alpha, 2) if not np.isnan(hill_alpha) else 'N/A',
+        'Kurtosis': round(kurtosis_val, 2),
+        'Skewness': round(skew_val, 3),
+        'VaR 1%': round(float(p1) * 100, 2),
+        'VaR 5%': round(float(p5) * 100, 2),
+    }
+
+
+# ── Dispersion Dashboard Visualizations ──
+
+def build_dispersion_chart(disp_signal_df, impl_corr_cboe=None):
+    """
+    Gráfico principal de dispersion: Impl Corr vs Realized Corr + Spread.
+    """
+    if disp_signal_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text='Sem dados de dispersão', x=0.5, y=0.5,
+                           xref='paper', yref='paper', showarrow=False,
+                           font=dict(color='white', size=16))
+        fig.update_layout(template='plotly_dark',
+                          paper_bgcolor='#0d1117', plot_bgcolor='#161b22')
+        return go.FigureWidget(fig)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4],
+                        subplot_titles=['Correlação Implícita vs Realizada',
+                                        'Spread (Impl - Real) + Z-Score'],
+                        vertical_spacing=0.08)
+
+    fig.add_trace(go.Scatter(
+        x=disp_signal_df.index, y=disp_signal_df['impl_corr'],
+        name='Impl Corr (calc)', line=dict(color='#f0883e', width=2),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=disp_signal_df.index, y=disp_signal_df['real_corr'],
+        name='Real Corr 3M', line=dict(color='#58a6ff', width=2),
+    ), row=1, col=1)
+
+    if impl_corr_cboe is not None and len(impl_corr_cboe) > 0:
+        cboe_scaled = impl_corr_cboe / 100.0
+        fig.add_trace(go.Scatter(
+            x=cboe_scaled.index, y=cboe_scaled,
+            name='CBOE Impl Corr (.SPXSK3)', line=dict(color='#d29922',
+                                                         width=1, dash='dot'),
+        ), row=1, col=1)
+
+    colors = ['#238636' if v > 0 else '#da3633'
+              for v in disp_signal_df['spread'].values]
+    fig.add_trace(go.Bar(
+        x=disp_signal_df.index, y=disp_signal_df['spread'],
+        name='Spread', marker_color=colors, opacity=0.6,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=disp_signal_df.index, y=disp_signal_df['z_score'],
+        name='Z-Score', line=dict(color='#bc8cff', width=1.5),
+        yaxis='y4',
+    ), row=2, col=1)
+
+    fig.add_hline(y=1.0, line_dash='dash', line_color='#238636',
+                  opacity=0.5, row=2, col=1)
+    fig.add_hline(y=-1.0, line_dash='dash', line_color='#da3633',
+                  opacity=0.5, row=2, col=1)
+
+    fig.update_layout(
+        template='plotly_dark', height=520,
+        paper_bgcolor='#0d1117', plot_bgcolor='#161b22',
+        font=dict(color='#c9d1d9', size=11),
+        legend=dict(orientation='h', y=1.06, x=0.5, xanchor='center'),
+        margin=dict(l=60, r=40, t=50, b=30),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_corr_regime_chart(real_corr_df):
+    """Gráfico de correlação realizada em múltiplos timeframes."""
+    if real_corr_df.empty:
+        fig = go.Figure()
+        fig.update_layout(template='plotly_dark',
+                          paper_bgcolor='#0d1117', plot_bgcolor='#161b22')
+        return go.FigureWidget(fig)
+
+    palette = {'1M': '#58a6ff', '3M': '#f0883e', '6M': '#bc8cff'}
+    fig = go.Figure()
+    for col in real_corr_df.columns:
+        fig.add_trace(go.Scatter(
+            x=real_corr_df.index, y=real_corr_df[col],
+            name='Corr {}'.format(col),
+            line=dict(color=palette.get(col, '#8b949e'), width=1.8),
+        ))
+    fig.add_hline(y=0.5, line_dash='dash', line_color='#8b949e', opacity=0.4)
+    fig.update_layout(
+        template='plotly_dark', height=300,
+        title='Correlação Realizada Média (Pairwise)',
+        paper_bgcolor='#0d1117', plot_bgcolor='#161b22',
+        font=dict(color='#c9d1d9', size=11),
+        yaxis_title='Avg Correlation',
+        legend=dict(orientation='h', y=1.08, x=0.5, xanchor='center'),
+        margin=dict(l=60, r=40, t=50, b=30),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_tail_risk_chart(log_returns, tail_metrics):
+    """Histograma de retornos com cauda marcada + métricas."""
+    rets = np.asarray(log_returns, dtype=float)
+    rets = rets[~np.isnan(rets)]
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=rets * 100, nbinsx=80, name='Retornos (%)',
+        marker_color='#58a6ff', opacity=0.7,
+    ))
+    var5 = tail_metrics.get('VaR 5%', None)
+    var1 = tail_metrics.get('VaR 1%', None)
+    if var5 is not None:
+        fig.add_vline(x=var5, line_dash='dash', line_color='#f0883e',
+                      annotation_text='VaR 5%', annotation_font_color='#f0883e')
+    if var1 is not None:
+        fig.add_vline(x=var1, line_dash='dash', line_color='#da3633',
+                      annotation_text='VaR 1%', annotation_font_color='#da3633')
+    fig.update_layout(
+        template='plotly_dark', height=300,
+        title='Distribuição de Retornos + Tail Risk',
+        paper_bgcolor='#0d1117', plot_bgcolor='#161b22',
+        font=dict(color='#c9d1d9', size=11),
+        xaxis_title='Retorno (%)', yaxis_title='Frequência',
+        margin=dict(l=60, r=40, t=50, b=30),
+    )
+    return go.FigureWidget(fig)
+
+
+def _disp_table_widget(df, title='', height='250px'):
+    """Helper: cria widget de tabela para dispersion data."""
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        return wd.HTML('<p style="color:#8b949e;">{}: Sem dados</p>'.format(title))
+    html = '<div style="color:#c9d1d9; font-size:12px;">'
+    html += '<b>{}</b>'.format(title)
+    html += '<table style="border-collapse:collapse; width:100%; margin-top:5px;">'
+    html += '<tr>'
+    for c in df.columns:
+        html += '<th style="border-bottom:1px solid #30363d; padding:4px 8px; '
+        html += 'text-align:left; color:#58a6ff;">{}</th>'.format(c)
+    html += '</tr>'
+    for _, row in df.iterrows():
+        html += '<tr>'
+        for c in df.columns:
+            val = row[c]
+            html += '<td style="padding:3px 8px; border-bottom:1px solid #21262d; '
+            html += 'color:#c9d1d9;">{}</td>'.format(val)
+        html += '</tr>'
+    html += '</table></div>'
+    return wd.HTML(html)
+
+
+def _tail_metrics_widget(metrics):
+    """Widget de métricas de tail risk."""
+    if not metrics:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados de tail risk.</p>')
+    html = '<div style="color:#c9d1d9; font-size:12px;">'
+    html += '<b>Tail Risk Metrics (EVT)</b>'
+    html += '<table style="border-collapse:collapse; margin-top:5px;">'
+    for k, v in metrics.items():
+        color = '#da3633' if 'Loss' in str(k) or 'CTE' in str(k) else '#c9d1d9'
+        html += '<tr>'
+        html += '<td style="padding:3px 10px; color:#8b949e;">{}</td>'.format(k)
+        html += '<td style="padding:3px 10px; color:{}; font-weight:600;">'.format(color)
+        html += '{}</td>'.format(v)
+        html += '</tr>'
+    html += '</table></div>'
+    return wd.HTML(html)
+
+
+def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
+    """
+    Executa análise completa de dispersion trade.
+    Retorna dict com todos os resultados.
+    """
+    result = {
+        'error': None,
+        'disp_signal': pd.DataFrame(),
+        'real_corr': pd.DataFrame(),
+        'impl_corr_cboe': pd.Series(dtype=float),
+        'mag7_pairs': pd.DataFrame(),
+        'best_2x2': [],
+        'optimal_basket': {},
+        'tail_risk': {},
+        'index_returns': np.array([]),
+    }
+
+    try:
+        prices_df, iv_df, weights = _bql_fetch_member_data(index_ticker, lookback)
+    except Exception as e:
+        result['error'] = 'Erro ao buscar membros: {}'.format(str(e))
+        return result
+
+    try:
+        index_iv = _bql_fetch_index_iv(index_ticker, lookback)
+    except Exception as e:
+        result['error'] = 'Erro ao buscar IV do índice: {}'.format(str(e))
+        return result
+
+    try:
+        result['real_corr'] = compute_realized_correlation(prices_df)
+    except Exception:
+        pass
+
+    try:
+        impl_corr_ts = compute_implied_corr_series(index_iv, iv_df, weights)
+        if not impl_corr_ts.empty and not result['real_corr'].empty:
+            result['disp_signal'] = compute_dispersion_signal(
+                impl_corr_ts, result['real_corr'], window='3M')
+    except Exception:
+        pass
+
+    try:
+        result['impl_corr_cboe'] = _bql_fetch_impl_corr(lookback)
+    except Exception:
+        pass
+
+    try:
+        result['mag7_pairs'] = compute_mag7_dispersion(prices_df)
+    except Exception:
+        pass
+
+    try:
+        result['best_2x2'] = find_best_2x2_dispersion(prices_df, iv_df)
+    except Exception:
+        pass
+
+    try:
+        idx_prices = prices_df.mean(axis=1)
+        sel, wts, te = optimize_tracking_basket(idx_prices, prices_df, n_stocks=10)
+        result['optimal_basket'] = {'tickers': sel, 'weights': wts,
+                                    'tracking_error': te}
+    except Exception:
+        pass
+
+    try:
+        log_rets = np.log(prices_df.mean(axis=1) /
+                          prices_df.mean(axis=1).shift(1)).dropna().values
+        result['index_returns'] = log_rets
+        result['tail_risk'] = compute_tail_risk(log_rets)
+    except Exception:
+        pass
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 6 — MATRIZES DE SENSIBILIDADE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2914,6 +3542,8 @@ spx_pred_w = wd.Checkbox(value=False, description='Incluir Previsão SPX',
                          indent=False, layout={'width': '250px'})
 flow_pred_w = wd.Checkbox(value=True, description='Incluir Flow Predictor',
                           indent=False, layout={'width': '250px'})
+disp_w = wd.Checkbox(value=False, description='Incluir Dispersão',
+                     indent=False, layout={'width': '250px'})
 cot_type_w = wd.Dropdown(
     options=list(COT_CONTRACTS.keys()),
     value='Equity Indices', description='COT Categoria:',
@@ -3273,6 +3903,14 @@ def run_analysis(_):
                 # Market Maker VaR by individual book
                 fp_mm_var = []
                 fp_mm_var_totals = {}
+                fp_vol_data = {'total_adc': OPTIONS_TOTAL_ADC, 'source': 'fallback',
+                               'call_vol': 0, 'put_vol': 0, 'pc_ratio': 0}
+                try:
+                    fp_vol_data = fetch_options_volume_bql(ticker)
+                    print(f"[FLOW] Options volume: {fp_vol_data['total_adc']:,.0f} "
+                          f"(source={fp_vol_data['source']})")
+                except Exception as e:
+                    print(f"⚠️ Options volume BQL: {e}")
                 try:
                     _oi_total = df['OI'].sum()
                     _theta_total = (greeks_now['theta'] * df['OI'].values * 100).sum()
@@ -3410,6 +4048,28 @@ def run_analysis(_):
                     fp_ok = True
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
+
+            # ── 15. Dispersion Trade + Tail Risk ─────────────────────────
+            disp_result = {
+                'error': None, 'disp_signal': pd.DataFrame(),
+                'real_corr': pd.DataFrame(),
+                'impl_corr_cboe': pd.Series(dtype=float),
+                'mag7_pairs': pd.DataFrame(), 'best_2x2': [],
+                'optimal_basket': {}, 'tail_risk': {},
+                'index_returns': np.array([]),
+            }
+            disp_ok = False
+            if disp_w.value:
+                loading.value = "<h4>15/16: Dispersion Trade + Tail Risk (BQL)...</h4>"
+                try:
+                    disp_result = run_dispersion_analysis(
+                        index_ticker=ticker, lookback=252)
+                    if disp_result['error'] is None:
+                        disp_ok = True
+                    else:
+                        print(f"⚠️ Dispersion: {disp_result['error']}")
+                except Exception as disp_err:
+                    print(f"⚠️ Dispersion: {disp_err}")
 
             clear_output(wait=True)
 
@@ -4387,16 +5047,27 @@ def run_analysis(_):
                         f"Proporcional ao share de cada MM.</small></p>")
 
                 # ── Options Volume by Trade Description ──
+                _total_adc = fp_vol_data.get('total_adc', OPTIONS_TOTAL_ADC)
+                _vol_src = fp_vol_data.get('source', 'fallback')
+                _cv = fp_vol_data.get('call_vol', 0)
+                _pv = fp_vol_data.get('put_vol', 0)
+                _pcr = fp_vol_data.get('pc_ratio', 0)
+                _vol_extra = ''
+                if _vol_src == 'BQL':
+                    _vol_extra = (
+                        f" │ Call: {_cv:,.0f} │ Put: {_pv:,.0f}"
+                        f" │ P/C: {_pcr:.2f}")
                 _dl_html += (
                     f"<h4 style='margin-top:16px;'>📈 Mercado de Opções — Volume por Trade Type</h4>"
-                    f"<p>Total Avg Daily Contracts: <b>{OPTIONS_TOTAL_ADC:,.0f}</b></p>"
+                    f"<p>Total Avg Daily Contracts: <b>{_total_adc:,.0f}</b>"
+                    f" <small>({_vol_src}{_vol_extra})</small></p>"
                     f"<table class='mm-table' style='width:100%;font-size:12px;'>"
                     f"<tr style='background:{_card2};'>"
                     f"<th>Trade Description</th>"
                     f"<th>%</th>"
                     f"<th>Avg Daily Contracts</th></tr>")
                 for _td_name, _td_pct in OPTIONS_TRADE_DESC:
-                    _td_vol = OPTIONS_TOTAL_ADC * _td_pct / 100
+                    _td_vol = _total_adc * _td_pct / 100
                     _bar_w = max(1, int(_td_pct * 2))
                     _dl_html += (
                         f"<tr>"
@@ -4546,10 +5217,100 @@ def run_analysis(_):
                 print(f"[UI] st_f: {len(st_f_children)} children")
                 st_f = wd.VBox(st_f_children)
 
+                # ─── Sub-tab Dispersão (st_g) ────────────────────────────
+                st_g_children = []
+                if disp_ok:
+                    try:
+                        # Dispersion signal chart
+                        disp_chart = build_dispersion_chart(
+                            disp_result['disp_signal'],
+                            disp_result.get('impl_corr_cboe'))
+                        st_g_children.append(disp_chart)
+
+                        # Correlation regime chart
+                        if not disp_result['real_corr'].empty:
+                            corr_chart = build_corr_regime_chart(
+                                disp_result['real_corr'])
+                            st_g_children.append(corr_chart)
+
+                        # Current signal
+                        if not disp_result['disp_signal'].empty:
+                            last_row = disp_result['disp_signal'].iloc[-1]
+                            sig_color = '#238636' if 'SHORT' in str(last_row.get('signal', '')) else (
+                                '#da3633' if 'LONG' in str(last_row.get('signal', '')) else '#8b949e')
+                            _ic = last_row.get('impl_corr', 0)
+                            _rc = last_row.get('real_corr', 0)
+                            _sp = last_row.get('spread', 0)
+                            _zs = last_row.get('z_score', 0)
+                            _sg = last_row.get('signal', 'N/A')
+                            st_g_children.append(wd.HTML(
+                                f"<div style='background:#161b22; padding:10px; "
+                                f"border-radius:6px; margin:5px 0;'>"
+                                f"<b style='color:{sig_color}; font-size:14px;'>"
+                                f"Sinal Atual: {_sg}</b><br>"
+                                f"<span style='color:#c9d1d9; font-size:12px;'>"
+                                f"Impl Corr: {_ic:.3f} │ Real Corr: {_rc:.3f} │ "
+                                f"Spread: {_sp:.3f} │ Z-Score: {_zs:.2f}</span>"
+                                f"</div>"))
+
+                        # Mag7 pairs dispersion table
+                        if not disp_result['mag7_pairs'].empty:
+                            st_g_children.append(_disp_table_widget(
+                                disp_result['mag7_pairs'],
+                                title='Mag7 — Dispersão por Par'))
+
+                        # Best 2x2 dispersion trade
+                        if disp_result['best_2x2']:
+                            b22_df = pd.DataFrame(disp_result['best_2x2'])
+                            st_g_children.append(_disp_table_widget(
+                                b22_df,
+                                title='Melhor Trade 2x2 (Mag7)'))
+
+                        # Optimal tracking basket
+                        ob = disp_result.get('optimal_basket', {})
+                        if ob.get('weights'):
+                            ob_df = pd.DataFrame([
+                                {'Ticker': t.split(' ')[0],
+                                 'Peso': round(w * 100, 1)}
+                                for t, w in sorted(ob['weights'].items(),
+                                                   key=lambda x: -x[1])
+                            ])
+                            te_val = ob.get('tracking_error', 0)
+                            st_g_children.append(_disp_table_widget(
+                                ob_df,
+                                title='Basket Ótimo ({} stocks, TE={:.4f})'.format(
+                                    len(ob_df), te_val)))
+
+                        # Tail risk metrics + chart
+                        if disp_result['tail_risk']:
+                            st_g_children.append(
+                                _tail_metrics_widget(disp_result['tail_risk']))
+                            if len(disp_result['index_returns']) > 50:
+                                tail_chart = build_tail_risk_chart(
+                                    disp_result['index_returns'],
+                                    disp_result['tail_risk'])
+                                st_g_children.append(tail_chart)
+
+                    except Exception as _dsp_err:
+                        st_g_children.append(wd.HTML(
+                            f"<p style='color:#da3633;'>Erro na UI de dispersão: "
+                            f"{_dsp_err}</p>"))
+                else:
+                    if disp_w.value:
+                        _de = disp_result.get('error', 'Erro desconhecido')
+                        st_g_children.append(wd.HTML(
+                            f"<p style='color:#8b949e;'>Dispersão: {_de}</p>"))
+                    else:
+                        st_g_children.append(wd.HTML(
+                            "<p style='color:#8b949e;'>Marque 'Incluir Dispersão' "
+                            "para analisar.</p>"))
+                st_g = wd.VBox(st_g_children)
+
                 fp_tabs = wd.Tab()
-                fp_tabs.children = [st_a, st_b, st_c, st_d, st_e, st_f]
+                fp_tabs.children = [st_a, st_b, st_c, st_d, st_e, st_f, st_g]
                 for idx_t, nm in enumerate(['Score', 'Histórico', 'Buyback',
-                                            'COT', 'Correlação', 'Sistemáticos']):
+                                            'COT', 'Correlação', 'Sistemáticos',
+                                            'Dispersão']):
                     fp_tabs.set_title(idx_t, nm)
                 tab10 = fp_tabs
               else:
@@ -4676,7 +5437,7 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([ticker_w, dte_w]),
         mny_w,
-        wd.HBox([run_btn, spx_pred_w, flow_pred_w, export_btn]),
+        wd.HBox([run_btn, spx_pred_w, flow_pred_w, disp_w, export_btn]),
         wd.HBox([rebal_date_w]),
     ], layout=_ctrl_box_layout),
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
