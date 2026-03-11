@@ -3515,13 +3515,18 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
     df['put_skew'] = df['put25d'] / atm
     df['call_skew'] = df['call25d'] / atm
 
+    # Percentis calculados individualmente para cada coluna usando sua própria série
     for col in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
         if col in df.columns:
             vals = df[col].dropna()
             if len(vals) > 20:
+                # Percentil rolling: para cada data, rank dentro do histórico até aquele ponto
+                # Mas para o summary, basta o percentil do último valor vs toda a série
                 last = vals.iloc[-1]
-                pctile = float((vals < last).sum() / len(vals) * 100)
-                df['{}_pctile'.format(col)] = pctile
+                pctile = float((vals.iloc[:-1] < last).sum() / max(len(vals) - 1, 1) * 100)
+                # Armazenar como metadado no DataFrame (última linha apenas)
+                df['{}_pctile'.format(col)] = np.nan
+                df.loc[df.index[-1], '{}_pctile'.format(col)] = pctile
     return df
 
 
