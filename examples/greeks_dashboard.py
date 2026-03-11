@@ -25,6 +25,7 @@ import ipywidgets as wd
 from IPython.display import display, clear_output, HTML
 import pandas as pd
 import numpy as np
+import os
 from datetime import datetime
 from functools import lru_cache
 from typing import Optional, Dict, List, Tuple
@@ -296,6 +297,9 @@ DISP_DSPX = 'DSPX Index'         # CBOE S&P 500 Dispersion Index
 DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq vol)
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 
+# Historical gamma data (CSV database)
+GAMMA_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'gamma_history.csv')
+
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
     'template': DASH_TEMPLATE,
@@ -495,7 +499,7 @@ def _bql_ts_df(resp_item):
 
 
 def fetch_market_data(ticker):
-    """Busca spot, IV 30d, RV 30d, skew, volume médio em dólares."""
+    """Busca spot, IV 30d, RV 30d, skew, volume médio em dólares, risk-free rate, MOVE Index."""
     spot = pd.to_numeric(
         bq.execute(bql.Request(ticker, {'Value': bq.data.px_last()}))[0].df()['Value'].iloc[-1],
         errors='coerce')
@@ -526,9 +530,30 @@ def fetch_market_data(ticker):
         bq.execute(bql.Request(ticker, {'Value': avg_dollar_volume_item}))[0].df()['Value'].iloc[-1],
         errors='coerce')
 
+    # Risk-free rate: 3M US T-Bill yield
+    rfr = 0.0
+    try:
+        rfr = pd.to_numeric(
+            bq.execute(bql.Request('USGG3M Index', {'Value': bq.data.px_last()}))[0].df()['Value'].iloc[-1],
+            errors='coerce') / 100.0  # BQL retorna em %
+        if pd.isna(rfr):
+            rfr = 0.0
+    except Exception:
+        pass
+
+    # MOVE Index (bond vol proxy) para Risk Parity
+    move_idx = np.nan
+    try:
+        move_idx = pd.to_numeric(
+            bq.execute(bql.Request('MOVE Index', {'Value': bq.data.px_last()}))[0].df()['Value'].iloc[-1],
+            errors='coerce')
+    except Exception:
+        pass
+
     return {
         'spot': spot, 'iv_30d': iv_30d, 'rv_30d': rv_30d,
-        'skew': skew, 'avg_dollar_volume': avg_dollar_volume
+        'skew': skew, 'avg_dollar_volume': avg_dollar_volume,
+        'risk_free_rate': rfr, 'move_index': move_idx,
     }
 
 
@@ -630,7 +655,7 @@ def compute_strike_exposures(df, greeks, spot):
     return agg
 
 
-def compute_model_curves(df, levels, configs=None):
+def compute_model_curves(df, levels, configs=None, r=0.0):
     """
     Calcula curvas modelo (exposure vs. preço spot) para todas as gregas
     em uma única passagem por nível de preço.
@@ -650,7 +675,7 @@ def compute_model_curves(df, levels, configs=None):
     is_put = types == 'Put'
 
     for L in levels:
-        greeks = calculate_all_greeks(L, strikes, ivs, ttes, types)
+        greeks = calculate_all_greeks(L, strikes, ivs, ttes, types, r=r)
         for cfg in configs:
             key = cfg['key']
             raw = greeks[key]
@@ -689,10 +714,10 @@ def fit_risk_model(log_returns):
             'var_99': var_99, 'cvar_99': cvar_99}
 
 
-def run_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5):
+def run_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5, r=0.0):
     """Simula P&L acumulado do livro do market maker ao longo de n_days."""
     greeks = calculate_all_greeks(spot, df.Strike.values, df.IV.values,
-                                  df.Tte.values, df.Type.values)
+                                  df.Tte.values, df.Type.values, r=r)
     oi100 = df.OI.values * 100
     call_sign = np.where(df.Type.values == 'Call', 1, -1)
     dex = (greeks['delta'] * oi100).sum()
@@ -713,7 +738,7 @@ def run_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5):
     return cum_pnl, cur_spot
 
 
-def compute_pnl_curves(greeks_now, df, spot, levels, skew):
+def compute_pnl_curves(greeks_now, df, spot, levels, skew, r=0.0):
     """
     Calcula curvas de P&L comparativas:
     - Simplificada (Delta + Gamma)
@@ -753,7 +778,7 @@ def compute_pnl_curves(greeks_now, df, spot, levels, skew):
 
         # Demanda de hedge (contratos futuros para ficar delta-neutro)
         greeks_at_s = calculate_all_greeks(s, df.Strike.values, df.IV.values,
-                                           df.Tte.values, df.Type.values)
+                                           df.Tte.values, df.Type.values, r=r)
         mkt_delta = np.nansum(greeks_at_s['delta'] * oi * 100)
         hedge_demand.append(mkt_delta / FUTURES_MULTIPLIER)
 
@@ -2011,12 +2036,14 @@ def compute_risk_parity_flow(rv_equity, rv_equity_prev,
 
     detail = {}
     total = 0
+    _bv_new = rv_bonds if rv_bonds and rv_bonds > 1e-6 else 0.05
+    _bv_old = rv_bonds_prev if rv_bonds_prev and rv_bonds_prev > 1e-6 else 0.05
     for tv, params in RISK_PARITY_TARGETS.items():
         aum = RISK_PARITY_AUM * params['aum_share']
         tv_dec = tv / 100.0
         # Portfolio vol ≈ weighted avg of component vols (simplificação)
-        port_vol_new = rv_equity * eq_w_new + 0.05 * (1 - eq_w_new)
-        port_vol_old = rv_equity_prev * eq_w_old + 0.05 * (1 - eq_w_old)
+        port_vol_new = rv_equity * eq_w_new + _bv_new * (1 - eq_w_new)
+        port_vol_old = rv_equity_prev * eq_w_old + _bv_old * (1 - eq_w_old)
         lev_new = min(tv_dec / max(port_vol_new, 0.01), params['max_lev'])
         lev_old = min(tv_dec / max(port_vol_old, 0.01), params['max_lev'])
         eq_exp_new = lev_new * eq_w_new
@@ -3256,6 +3283,163 @@ def _disp_table_widget(df, title='', height='250px'):
     return wd.HTML(html)
 
 
+# ── Gamma History Database ──────────────────────────────────────────────────
+def load_gamma_history(path=None):
+    """
+    Carrega histórico de gamma do CSV e calcula RV 21d a partir do Ref Px.
+    Retorna DataFrame com colunas: date, px, gamma, delta, call_wall, put_wall,
+    vol_trigger, rv21d.
+    """
+    fpath = path or GAMMA_HISTORY_PATH
+    if not os.path.exists(fpath):
+        return pd.DataFrame()
+    df = pd.read_csv(fpath, parse_dates=['Trade Date'])
+    df = df.rename(columns={
+        'Trade Date': 'date', 'Ref Px': 'px', 'Net Gamma': 'gamma',
+        'Net Delta': 'delta', 'Call Wall': 'call_wall', 'Put Wall': 'put_wall',
+        'Vol Trigger': 'vol_trigger', 'Data Release': 'data_release',
+    })
+    df = df.sort_values('date').reset_index(drop=True)
+    # RV 21d (annualized) from Ref Px
+    log_ret = np.log(df['px'] / df['px'].shift(1))
+    df['rv21d'] = log_ret.rolling(21).std() * np.sqrt(252)
+    return df
+
+
+def append_gamma_snapshot(spot, gamma_idx, net_delta, call_wall, put_wall,
+                          vol_trigger, trade_date=None, path=None):
+    """Append today's snapshot to the gamma history CSV."""
+    fpath = path or GAMMA_HISTORY_PATH
+    dt = trade_date or datetime.now().strftime('%Y-%m-%d')
+    row = f"{dt},{spot},{gamma_idx},{net_delta},{call_wall},{put_wall},{vol_trigger},{dt}\n"
+    exists = os.path.exists(fpath)
+    with open(fpath, 'a') as f:
+        if not exists:
+            f.write("Trade Date,Ref Px,Net Gamma,Net Delta,Call Wall,Put Wall,Vol Trigger,Data Release\n")
+        f.write(row)
+
+
+def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
+    """
+    Scatter: RV 21d (y) vs Gamma Index (x).
+    Colore por regime: gamma positivo (verde), gamma negativo (vermelho).
+    Destaca ponto atual.
+    """
+    df = gamma_hist.dropna(subset=['rv21d', 'gamma']).copy()
+    if df.empty:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados históricos de gamma.</p>')
+
+    pos = df[df['gamma'] >= 0]
+    neg = df[df['gamma'] < 0]
+
+    fig = go.Figure()
+
+    # Positive gamma regime (green)
+    if not pos.empty:
+        fig.add_trace(go.Scatter(
+            x=pos['gamma'], y=pos['rv21d'] * 100,
+            mode='markers', name='γ ≥ 0 (Longo Gamma)',
+            marker=dict(color='rgba(63,185,80,0.45)', size=5),
+            text=pos['date'].dt.strftime('%Y-%m-%d') + '<br>Px: ' + pos['px'].astype(str),
+            hovertemplate='<b>%{text}</b><br>Gamma: %{x:.2f}<br>RV21d: %{y:.1f}%<extra></extra>',
+        ))
+
+    # Negative gamma regime (red)
+    if not neg.empty:
+        fig.add_trace(go.Scatter(
+            x=neg['gamma'], y=neg['rv21d'] * 100,
+            mode='markers', name='γ < 0 (Curto Gamma)',
+            marker=dict(color='rgba(248,81,73,0.45)', size=5),
+            text=neg['date'].dt.strftime('%Y-%m-%d') + '<br>Px: ' + neg['px'].astype(str),
+            hovertemplate='<b>%{text}</b><br>Gamma: %{x:.2f}<br>RV21d: %{y:.1f}%<extra></extra>',
+        ))
+
+    # Current point
+    if current_gamma is not None and current_rv is not None:
+        fig.add_trace(go.Scatter(
+            x=[current_gamma], y=[current_rv * 100],
+            mode='markers', name='HOJE',
+            marker=dict(color='#f0883e', size=14, symbol='star',
+                        line=dict(width=2, color='white')),
+            hovertemplate='<b>HOJE</b><br>Gamma: %{x:.2f}<br>RV21d: %{y:.1f}%<extra></extra>',
+        ))
+
+    # Add zero gamma vertical line
+    fig.add_vline(x=0, line=dict(color='#8b949e', dash='dash', width=1),
+                  annotation_text='Gamma Flip', annotation_position='top')
+
+    # RV percentiles as horizontal lines
+    all_rv = df['rv21d'].dropna() * 100
+    for pct, lbl, clr in [(0.75, '75th', '#d29922'), (0.90, '90th', '#f85149')]:
+        val = all_rv.quantile(pct)
+        fig.add_hline(y=val, line=dict(color=clr, dash='dot', width=1),
+                      annotation_text=f'RV {lbl}: {val:.0f}%',
+                      annotation_position='right')
+
+    fig.update_layout(
+        title='RV Realizada 21d vs Gamma Index — Regime Map',
+        template=DASH_TEMPLATE,
+        height=440,
+        margin=dict(l=50, r=80, t=45, b=40),
+        xaxis_title='Gamma Index (Net GEX Bn)',
+        yaxis_title='Realized Vol 21d (%)',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.22,
+                    xanchor='center', x=0.5),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_gamma_ts_chart(gamma_hist):
+    """
+    Time-series: Gamma Index + Call Wall + Put Wall + Vol Trigger + Ref Px.
+    Dual axis: left = gamma/walls, right = price.
+    """
+    df = gamma_hist.dropna(subset=['gamma']).copy()
+    if df.empty:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados históricos de gamma.</p>')
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['gamma'],
+        name='Gamma Index', line=dict(color=_C['accent'], width=1.5),
+        fill='tozeroy', fillcolor='rgba(88,166,255,0.08)'),
+        secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['call_wall'],
+        name='Call Wall', line=dict(color=_C['green'], width=1, dash='dot')),
+        secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['put_wall'],
+        name='Put Wall', line=dict(color=_C['red'], width=1, dash='dot')),
+        secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['vol_trigger'],
+        name='Vol Trigger (Gamma Flip)', line=dict(color=_C['yellow'], width=1.2, dash='dash')),
+        secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['px'],
+        name='SPX', line=dict(color='#ffffff', width=1)),
+        secondary_y=True)
+
+    fig.update_layout(
+        title='Gamma Index + Walls + Vol Trigger vs SPX',
+        template=DASH_TEMPLATE,
+        height=420,
+        margin=dict(l=50, r=60, t=45, b=30),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.25,
+                    xanchor='center', x=0.5),
+    )
+    fig.update_yaxes(title_text='Gamma Index (Bn)', secondary_y=False)
+    fig.update_yaxes(title_text='SPX Level', secondary_y=True)
+
+    return go.FigureWidget(fig)
+
+
 def build_dispersion_index_chart(cor1m, dspx, vixeq):
     """
     Gráfico estilo Bloomberg G 1059: COR1M + DSPX + VIXEQ (single stock vol premium).
@@ -3693,13 +3877,13 @@ def compute_vix_spx_regression(spx_returns, vix_changes, window_years=2):
 
 # ── Enhanced Dealer Book + Per-Dealer Monte Carlo ────────────────
 
-def run_dealer_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5):
+def run_dealer_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5, r=0.0):
     """
     Monte Carlo por dealer individual.
     Retorna dict: {dealer_name: {var95, var99, cvar95, mean_pnl, mc_pnl_array}}.
     """
     greeks = calculate_all_greeks(spot, df.Strike.values, df.IV.values,
-                                  df.Tte.values, df.Type.values)
+                                  df.Tte.values, df.Type.values, r=r)
     oi100 = df.OI.values * 100
     call_sign = np.where(df.Type.values == 'Call', 1, -1)
     total_dex = (greeks['delta'] * oi100).sum()
@@ -4087,7 +4271,7 @@ def build_tail_gauge(score, interpretation):
 # SEÇÃO 6 — MATRIZES DE SENSIBILIDADE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_sensitivity_matrices(df, spot):
+def compute_sensitivity_matrices(df, spot, r=0.0):
     """
     Calcula matrizes de sensibilidade (preço × vol shift) para cada grega.
     Retorna dict: {greek_name: pd.DataFrame}.
@@ -4110,7 +4294,7 @@ def compute_sensitivity_matrices(df, spot):
     for i, iv_shift in enumerate(vol_shifts):
         shifted_ivs = np.clip(base_ivs + iv_shift, 0.001, None)
         for j, s in enumerate(spot_range):
-            greeks = calculate_all_greeks(s, strikes, shifted_ivs, ttes, types)
+            greeks = calculate_all_greeks(s, strikes, shifted_ivs, ttes, types, r=r)
             oi_100 = ois * 100.0
             is_call = types == 'Call'
 
@@ -4526,6 +4710,9 @@ def run_analysis(_):
             rv_30d = mkt['rv_30d']
             skew = mkt['skew']
             avg_vol = mkt['avg_dollar_volume']
+            rfr = mkt.get('risk_free_rate', 0.0)
+            move_index = mkt.get('move_index', np.nan)
+            print(f"[MKT] risk-free rate = {rfr:.4f} (USGG3M), MOVE = {move_index}")
 
             if pd.isna(spot):
                 raise ValueError(f"Spot inválido para {ticker}")
@@ -4543,7 +4730,7 @@ def run_analysis(_):
             # ── 4. Gregas + Exposições ───────────────────────────────────
             loading.value = f"<h4>4/16: Calculando gregas para {len(df)} opções...</h4>"
             greeks_now = calculate_all_greeks(
-                spot, df.Strike.values, df.IV.values, df.Tte.values, df.Type.values)
+                spot, df.Strike.values, df.IV.values, df.Tte.values, df.Type.values, r=rfr)
             agg = compute_strike_exposures(df, greeks_now, spot)
             call_wall, put_wall = compute_walls(agg)
 
@@ -4553,7 +4740,7 @@ def run_analysis(_):
             # ── 5. Curvas Modelo ─────────────────────────────────────────
             loading.value = "<h4>5/16: Calculando curvas modelo (100 níveis × 7 gregas)...</h4>"
             levels = np.linspace(from_strike, to_strike, 100)
-            model_curves = compute_model_curves(df, levels)
+            model_curves = compute_model_curves(df, levels, r=rfr)
 
             # Flip points
             flip_points = {}
@@ -4566,16 +4753,16 @@ def run_analysis(_):
 
             # ── 6. Matrizes de Sensibilidade ─────────────────────────────
             loading.value = "<h4>6/16: Matrizes de sensibilidade (7×5×7)...</h4>"
-            sens_matrices = compute_sensitivity_matrices(df, spot)
+            sens_matrices = compute_sensitivity_matrices(df, spot, r=rfr)
 
             # ── 7. Monte Carlo ───────────────────────────────────────────
             loading.value = "<h4>7/16: Simulação Monte Carlo (10k cenários, 5 dias)...</h4>"
             mc_n_days = 5
-            mc_pnl, mc_prices = run_monte_carlo(spot, df, risk, n_days=mc_n_days)
+            mc_pnl, mc_prices = run_monte_carlo(spot, df, risk, n_days=mc_n_days, r=rfr)
 
             # ── 8. Curvas de P&L ─────────────────────────────────────────
             loading.value = "<h4>8/16: Curvas de P&L e hedge demand...</h4>"
-            pnl_curves = compute_pnl_curves(greeks_now, df, spot, levels, skew)
+            pnl_curves = compute_pnl_curves(greeks_now, df, spot, levels, skew, r=rfr)
 
             # ── 9. Rebalanceamento ETFs ──────────────────────────────────
             loading.value = "<h4>9/16: Fluxo de rebalanceamento ETFs passivos...</h4>"
@@ -4833,7 +5020,10 @@ def run_analysis(_):
                     _rets_rp = log_returns.iloc[-_rv_window * 2:]
                     _rv_eq_cur = _rets_rp.iloc[-_rv_window:].std() * np.sqrt(252)
                     _rv_eq_prev = _rets_rp.iloc[-_rv_window * 2:-_rv_window].std() * np.sqrt(252)
-                    fp_rp = compute_risk_parity_flow(_rv_eq_cur, _rv_eq_prev)
+                    # Bond vol from MOVE Index (yield vol → price vol, ~7yr duration)
+                    _bond_vol = (move_index / 10000) * 7 if move_index and move_index > 0 else None
+                    fp_rp = compute_risk_parity_flow(_rv_eq_cur, _rv_eq_prev,
+                                                     rv_bonds=_bond_vol, rv_bonds_prev=_bond_vol)
                     print(f"[FLOW] Risk Parity: ${fp_rp['total']:,.0f} "
                           f"(eq_alloc={fp_rp['eq_alloc_new']:.1%}→{fp_rp['eq_alloc_old']:.1%})")
                 except Exception as e:
@@ -4951,7 +5141,7 @@ def run_analysis(_):
                 # Per-dealer MC
                 try:
                     analytics['dealer_mc'] = run_dealer_monte_carlo(
-                        spot, df, risk, n_sims=10000, n_days=mc_n_days)
+                        spot, df, risk, n_sims=10000, n_days=mc_n_days, r=rfr)
                 except Exception as _dmc_err:
                     print(f"⚠️ Dealer MC: {_dmc_err}")
 
@@ -4995,6 +5185,17 @@ def run_analysis(_):
 
             except Exception as _analytics_err:
                 print(f"⚠️ Analytics: {_analytics_err}")
+
+            # ── Gamma History (CSV database) ─────────────────────────────
+            gamma_hist = pd.DataFrame()
+            try:
+                gamma_hist = load_gamma_history()
+                if not gamma_hist.empty:
+                    print(f"[GAMMA DB] {len(gamma_hist)} rows loaded "
+                          f"({gamma_hist['date'].iloc[0].strftime('%Y-%m-%d')} → "
+                          f"{gamma_hist['date'].iloc[-1].strftime('%Y-%m-%d')})")
+            except Exception as _gh_err:
+                print(f"⚠️ Gamma History: {_gh_err}")
 
             clear_output(wait=True)
 
@@ -5513,7 +5714,7 @@ def run_analysis(_):
                 _flip_level = None
                 _prev_gex = None
                 for L in levels:
-                    g = calculate_all_greeks(L, df.Strike.values, sim_vol, sim_tte, types_arr)
+                    g = calculate_all_greeks(L, df.Strike.values, sim_vol, sim_tte, types_arr, r=rfr)
                     oi_100 = df.OI.values * 100.0
                     dex_c.append(np.nansum(g['delta'] * oi_100 * L))
                     _gex_val = np.nansum(g['gamma'] * np.where(types_arr == 'Call', 1, -1)
@@ -5571,7 +5772,7 @@ def run_analysis(_):
 
                 _oi_sim = df.OI.values * 100
                 _cs_sim = np.where(types_arr == 'Call', 1, -1)
-                g_new = calculate_all_greeks(new_spot, df.Strike.values, sim_vol, sim_tte, types_arr)
+                g_new = calculate_all_greeks(new_spot, df.Strike.values, sim_vol, sim_tte, types_arr, r=rfr)
                 _gex_new = float(np.nansum(g_new['gamma'] * _cs_sim * _oi_sim))
                 _dex_new = float(np.nansum(g_new['delta'] * _oi_sim))
                 dealer_flow = -(_dex_new * ds + 0.5 * _gex_new * ds ** 2)
@@ -6721,6 +6922,20 @@ def run_analysis(_):
                     if not _cor1m_a.empty or not _dspx_a.empty or not _vixeq_a.empty:
                         analytics_children.append(
                             build_dispersion_index_chart(_cor1m_a, _dspx_a, _vixeq_a))
+
+                # ── Row 10: RV 21d vs Gamma Index (scatter) ──
+                if not gamma_hist.empty:
+                    _cur_rv = rv_30d if pd.notna(rv_30d) else None
+                    # Net GEX in billions for current snapshot
+                    _cur_gex_bn = total_gex_val / 1e9 if 'total_gex_val' in dir() else None
+                    analytics_children.append(
+                        build_rv_gamma_chart(gamma_hist,
+                                             current_gamma=_cur_gex_bn,
+                                             current_rv=_cur_rv))
+
+                # ── Row 11: Gamma Index + Walls time-series ──
+                if not gamma_hist.empty:
+                    analytics_children.append(build_gamma_ts_chart(gamma_hist))
 
                 if not analytics_children:
                     analytics_children.append(wd.HTML(
