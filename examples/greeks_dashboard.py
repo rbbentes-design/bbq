@@ -296,6 +296,7 @@ DISP_COR1M = 'COR1M Index'       # 1M 50-Delta Implied Correlation
 DISP_DSPX = 'DSPX Index'         # CBOE S&P 500 Dispersion Index
 DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq vol)
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
+DISP_EXCLUDE = {'BRK/B US Equity'}  # Tickers excluídos da análise de dispersão
 
 # Historical gamma data (CSV database)
 try:
@@ -3049,10 +3050,13 @@ def compute_mag7_dispersion(prices_df):
 
 def find_best_2x2_dispersion(prices_df, iv_df=None):
     """
-    Encontra melhor combo 2x2 entre Mag7 para dispersion trade.
-    2 stocks long vol + 2 stocks short vol.
-    Critério: maximize a diferença de IV (ou RVol) entre os dois grupos.
+    Encontra melhor combo NxN entre Mag7 para dispersion trade.
+    Testa 2x2, 3x3, ... até floor(len/2) x floor(len/2).
+    Para cada tamanho N: top-N high vol vs bottom-N low vol.
+    Retorna lista com melhor combo de cada tamanho + o ótimo geral.
     """
+    from itertools import combinations
+
     mag7_in = [t for t in MAG7 if t in prices_df.columns]
     if len(mag7_in) < 4:
         return []
@@ -3069,16 +3073,54 @@ def find_best_2x2_dispersion(prices_df, iv_df=None):
                     vols[t] = float(last_iv.iloc[-1]) / 100.0
 
     sorted_by_vol = sorted(mag7_in, key=lambda t: vols.get(t, 0), reverse=True)
-    high_vol = sorted_by_vol[:2]
-    low_vol = sorted_by_vol[-2:]
-    spread = np.mean([vols[t] for t in high_vol]) - np.mean([vols[t] for t in low_vol])
-    combos = [{
-        'Long Vol (Buy)': ', '.join(t.split(' ')[0] for t in high_vol),
-        'Short Vol (Sell)': ', '.join(t.split(' ')[0] for t in low_vol),
-        'Avg IV High': round(np.mean([vols[t] for t in high_vol]) * 100, 1),
-        'Avg IV Low': round(np.mean([vols[t] for t in low_vol]) * 100, 1),
-        'Spread (pp)': round(spread * 100, 1),
-    }]
+    max_n = len(mag7_in) // 2  # max group size
+
+    combos = []
+    best_spread = -np.inf
+    best_combo = None
+
+    for n in range(2, max_n + 1):
+        # Try all combinations of n from high-vol pool vs n from low-vol pool
+        # For efficiency: top 2*n candidates, test all combos of n from each half
+        pool_high = sorted_by_vol[:min(2 * n, len(sorted_by_vol))]
+        pool_low = sorted_by_vol[max(0, len(sorted_by_vol) - 2 * n):]
+
+        local_best_spread = -np.inf
+        local_best_high = sorted_by_vol[:n]
+        local_best_low = sorted_by_vol[-n:]
+
+        for high_combo in combinations(pool_high, n):
+            remaining = [t for t in mag7_in if t not in high_combo]
+            if len(remaining) < n:
+                continue
+            for low_combo in combinations(remaining, n):
+                avg_high = np.mean([vols[t] for t in high_combo])
+                avg_low = np.mean([vols[t] for t in low_combo])
+                spread = avg_high - avg_low
+                if spread > local_best_spread:
+                    local_best_spread = spread
+                    local_best_high = list(high_combo)
+                    local_best_low = list(low_combo)
+
+        combo_entry = {
+            'Combo': f'{n}x{n}',
+            'Long Vol (Buy)': ', '.join(t.split(' ')[0] for t in local_best_high),
+            'Short Vol (Sell)': ', '.join(t.split(' ')[0] for t in local_best_low),
+            'Avg IV High': round(np.mean([vols[t] for t in local_best_high]) * 100, 1),
+            'Avg IV Low': round(np.mean([vols[t] for t in local_best_low]) * 100, 1),
+            'Spread (pp)': round(local_best_spread * 100, 1),
+        }
+        combos.append(combo_entry)
+
+        if local_best_spread > best_spread:
+            best_spread = local_best_spread
+            best_combo = combo_entry
+
+    # Mark the best overall combo
+    if best_combo:
+        for c in combos:
+            c['Ótimo'] = '⭐' if c['Combo'] == best_combo['Combo'] else ''
+
     return combos
 
 
@@ -3325,10 +3367,12 @@ def append_gamma_snapshot(spot, gamma_idx, net_delta, call_wall, put_wall,
 
 def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
     """
-    Scatter: RV 21d (y) vs Gamma Index (x).
+    Scatter: RV 21d (y) vs Gamma Index (x) com regressão OLS + teste de hipótese.
     Colore por regime: gamma positivo (verde), gamma negativo (vermelho).
-    Destaca ponto atual.
+    Destaca ponto atual + forecasted RV.
     """
+    from scipy import stats as sp_stats
+
     df = gamma_hist.dropna(subset=['rv21d', 'gamma']).copy()
     if df.empty:
         return wd.HTML('<p style="color:#8b949e;">Sem dados históricos de gamma.</p>')
@@ -3358,11 +3402,55 @@ def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
             hovertemplate='<b>%{text}</b><br>Gamma: %{x:.2f}<br>RV21d: %{y:.1f}%<extra></extra>',
         ))
 
+    # ── OLS Regression line + hypothesis test ──
+    x_all = df['gamma'].values.astype(float)
+    y_all = (df['rv21d'] * 100).values.astype(float)
+    slope, intercept, r_val, p_val, std_err = sp_stats.linregress(x_all, y_all)
+    r2 = r_val ** 2
+    n = len(x_all)
+    f_stat = (r2 / 1) / ((1 - r2) / (n - 2)) if r2 < 1 and n > 2 else np.inf
+    f_pval = 1 - sp_stats.f.cdf(f_stat, 1, n - 2) if n > 2 else 1.0
+
+    x_fit = np.linspace(x_all.min(), x_all.max(), 200)
+    y_fit = slope * x_fit + intercept
+    fig.add_trace(go.Scatter(
+        x=x_fit, y=y_fit,
+        mode='lines', name=f'OLS (R²={r2:.3f}, p={p_val:.2e})',
+        line=dict(color='#58a6ff', width=2.5, dash='solid'),
+    ))
+
+    # ── Confidence band (95%) ──
+    x_mean = x_all.mean()
+    se_fit = std_err * np.sqrt(1/n + (x_fit - x_mean)**2 / ((x_all - x_mean)**2).sum())
+    t_crit = sp_stats.t.ppf(0.975, n - 2)
+    y_upper = y_fit + t_crit * se_fit
+    y_lower = y_fit - t_crit * se_fit
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([x_fit, x_fit[::-1]]),
+        y=np.concatenate([y_upper, y_lower[::-1]]),
+        fill='toself', fillcolor='rgba(88,166,255,0.12)',
+        line=dict(width=0), showlegend=False,
+        hoverinfo='skip',
+    ))
+
+    # Forecasted RV at current gamma (SpotGamma-style blue dot)
+    forecasted_rv = None
+    if current_gamma is not None:
+        forecasted_rv = slope * current_gamma + intercept
+        fig.add_trace(go.Scatter(
+            x=[current_gamma], y=[forecasted_rv],
+            mode='markers', name=f'Forecast: {forecasted_rv:.1f}%',
+            marker=dict(color='#58a6ff', size=12, symbol='diamond',
+                        line=dict(width=2, color='white')),
+            hovertemplate=f'<b>FORECAST</b><br>Gamma: {current_gamma:.2f}<br>'
+                          f'RV Prevista: {forecasted_rv:.1f}%<extra></extra>',
+        ))
+
     # Current point
     if current_gamma is not None and current_rv is not None:
         fig.add_trace(go.Scatter(
             x=[current_gamma], y=[current_rv * 100],
-            mode='markers', name='HOJE',
+            mode='markers', name='HOJE (Realizado)',
             marker=dict(color='#f0883e', size=14, symbol='star',
                         line=dict(width=2, color='white')),
             hovertemplate='<b>HOJE</b><br>Gamma: %{x:.2f}<br>RV21d: %{y:.1f}%<extra></extra>',
@@ -3380,10 +3468,27 @@ def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
                       annotation_text=f'RV {lbl}: {val:.0f}%',
                       annotation_position='right')
 
+    # Annotation with regression stats
+    sig_txt = '✅ Significativo' if p_val < 0.05 else '❌ Não significativo'
+    ann_text = (f"OLS: RV = {slope:.3f}·γ + {intercept:.1f}<br>"
+                f"R² = {r2:.4f} | p = {p_val:.2e}<br>"
+                f"F = {f_stat:.1f} (p={f_pval:.2e}) | n = {n}<br>"
+                f"{sig_txt}")
+    if forecasted_rv is not None and current_rv is not None:
+        delta = current_rv * 100 - forecasted_rv
+        ann_text += f"<br>Forecast: {forecasted_rv:.1f}% | Δ: {delta:+.1f}pp"
+    fig.add_annotation(
+        x=0.02, y=0.98, xref='paper', yref='paper',
+        text=ann_text, showarrow=False,
+        font=dict(size=10, color='#c9d1d9'),
+        bgcolor='rgba(22,27,34,0.85)', bordercolor='#30363d',
+        borderwidth=1, borderpad=6, align='left',
+        xanchor='left', yanchor='top')
+
     fig.update_layout(
-        title='RV Realizada 21d vs Gamma Index — Regime Map',
+        title='RV Realizada 21d vs Gamma Index — Regressão + Teste de Hipótese',
         template=DASH_TEMPLATE,
-        height=440,
+        height=480,
         margin=dict(l=50, r=80, t=45, b=40),
         xaxis_title='Gamma Index (Net GEX Bn)',
         yaxis_title='Realized Vol 21d (%)',
@@ -3779,23 +3884,140 @@ def compute_straddle_richness(straddle_data, iv_hist_df, rv_df=None):
     return pd.DataFrame(rows)
 
 
+def build_atm_vol_matrix(straddle_data):
+    """
+    Constrói matriz de ATM vol (call IV vs put IV) para Mag8 + SPX.
+    Retorna (DataFrame com a matriz, FigureWidget com heatmap).
+    """
+    rows = []
+    for tk, data in straddle_data.items():
+        short = tk.split(' ')[0]
+        call_iv = data.get('call_iv', np.nan)
+        put_iv = data.get('put_iv', np.nan)
+        strl_iv = data.get('straddle_iv', np.nan)
+        # Normalize to % if needed
+        if not np.isnan(call_iv) and call_iv < 1:
+            call_iv *= 100
+        if not np.isnan(put_iv) and put_iv < 1:
+            put_iv *= 100
+        if not np.isnan(strl_iv) and strl_iv < 1:
+            strl_iv *= 100
+        skew = put_iv - call_iv if not (np.isnan(put_iv) or np.isnan(call_iv)) else np.nan
+        rows.append({
+            'Ticker': short,
+            'Call IV (%)': round(call_iv, 1) if not np.isnan(call_iv) else np.nan,
+            'Put IV (%)': round(put_iv, 1) if not np.isnan(put_iv) else np.nan,
+            'Straddle IV (%)': round(strl_iv, 1) if not np.isnan(strl_iv) else np.nan,
+            'Put-Call Skew (pp)': round(skew, 1) if not np.isnan(skew) else np.nan,
+        })
+    matrix_df = pd.DataFrame(rows)
+    if matrix_df.empty:
+        return matrix_df, wd.HTML('<p style="color:#8b949e;">Sem dados de ATM vol.</p>')
+
+    # Build grouped bar chart: call IV vs put IV per ticker
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=matrix_df['Ticker'], y=matrix_df['Call IV (%)'],
+        name='Call IV', marker_color='rgba(63,185,80,0.7)',
+        text=matrix_df['Call IV (%)'], textposition='outside',
+        textfont=dict(size=10),
+    ))
+    fig.add_trace(go.Bar(
+        x=matrix_df['Ticker'], y=matrix_df['Put IV (%)'],
+        name='Put IV', marker_color='rgba(248,81,73,0.7)',
+        text=matrix_df['Put IV (%)'], textposition='outside',
+        textfont=dict(size=10),
+    ))
+
+    # Add skew as scatter on secondary axis
+    fig.add_trace(go.Scatter(
+        x=matrix_df['Ticker'], y=matrix_df['Put-Call Skew (pp)'],
+        name='Put-Call Skew', yaxis='y2',
+        mode='markers+lines',
+        marker=dict(color=_C['yellow'], size=10, symbol='diamond'),
+        line=dict(color=_C['yellow'], width=1.5, dash='dot'),
+    ))
+
+    fig.update_layout(
+        title='ATM Vol Matrix — Call vs Put IV (Mag8 + SPX)',
+        template=DASH_TEMPLATE,
+        height=420,
+        barmode='group',
+        margin=dict(l=50, r=60, t=45, b=40),
+        xaxis_title='',
+        yaxis_title='IV (%)',
+        yaxis2=dict(title='Skew (pp)', overlaying='y', side='right',
+                    showgrid=False),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18,
+                    xanchor='center', x=0.5),
+    )
+    return matrix_df, go.FigureWidget(fig)
+
+
+def build_intraday_mag8_chart(prices_df, index_ticker='SPX Index'):
+    """
+    Gráfico intraday (última sessão) de Mag8 + SPX normalizados como % change.
+    Usa dados BQL de preço intraday 1-min bars.
+    Se intraday não disponível, usa últimos 5 dias normalized.
+    """
+    tickers = [t for t in MAG8 if t in prices_df.columns]
+    if index_ticker in prices_df.columns:
+        tickers.append(index_ticker)
+
+    if not tickers or len(prices_df) < 2:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados intraday.</p>')
+
+    # Use last 5 trading days for near-intraday view
+    df = prices_df[tickers].tail(5).copy()
+    # Normalize: % change from start of window
+    base = df.iloc[0]
+    pct_change = (df / base - 1) * 100
+
+    fig = go.Figure()
+    colors = ['#3fb950', '#f85149', '#58a6ff', '#bc8cff',
+              '#d29922', '#f0883e', '#8b949e', '#da3633', 'white']
+
+    for i, tk in enumerate(tickers):
+        short = tk.split(' ')[0]
+        is_index = 'Index' in tk
+        fig.add_trace(go.Scatter(
+            x=pct_change.index, y=pct_change[tk],
+            name=short,
+            line=dict(color=colors[i % len(colors)],
+                      width=3 if is_index else 1.5,
+                      dash='solid' if is_index else 'solid'),
+            opacity=1.0 if is_index else 0.8,
+        ))
+
+    fig.add_hline(y=0, line=dict(color='#30363d', width=1))
+
+    fig.update_layout(
+        title='Mag8 + SPX — Retorno Recente (% Change, últimos 5D)',
+        template=DASH_TEMPLATE,
+        height=400,
+        margin=dict(l=50, r=30, t=45, b=30),
+        xaxis_title='', yaxis_title='% Change',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.22,
+                    xanchor='center', x=0.5),
+    )
+    return go.FigureWidget(fig)
+
+
 def build_dispersion_trade_recommendations(pair_df, richness_df, straddle_data):
     """
-    Gera recomendações de trade de dispersão baseado em:
-    - Pares com baixa correlação
-    - Straddle richness (caro vs barato)
-    - Direção: Long straddle do barato, Short straddle do caro
-    Retorna DataFrame com trades sugeridos.
+    Gera recomendações de trade de dispersão com interpretação clara e detalhada.
+    Para cada par: operação exata, direção, preços, IV, percentil.
     """
     if pair_df.empty or richness_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), ''
 
     richness_map = {}
     for _, row in richness_df.iterrows():
         richness_map[row['Ticker']] = row
 
     trades = []
-    for _, pair in pair_df.iterrows():
+    interp_lines = []
+    for idx, (_, pair) in enumerate(pair_df.iterrows()):
         t1_short = pair['Ticker1'].split(' ')[0]
         t2_short = pair['Ticker2'].split(' ')[0]
         r1 = richness_map.get(t1_short, {})
@@ -3811,29 +4033,81 @@ def build_dispersion_trade_recommendations(pair_df, richness_df, straddle_data):
         if pd.isna(pct2):
             pct2 = 50
 
+        # Straddle data for each leg
+        s1 = straddle_data.get(pair['Ticker1'], {})
+        s2 = straddle_data.get(pair['Ticker2'], {})
+
         # Determine direction: buy cheap vol, sell expensive vol
         if pct1 > pct2:
             long_leg, short_leg = t2_short, t1_short
             long_pct, short_pct = pct2, pct1
+            long_s, short_s = s2, s1
+            long_r, short_r = r2, r1
         else:
             long_leg, short_leg = t1_short, t2_short
             long_pct, short_pct = pct1, pct2
+            long_s, short_s = s1, s2
+            long_r, short_r = r1, r2
 
         spread_pct = short_pct - long_pct
         edge = pair['Disp Score'] * (spread_pct / 100) if spread_pct > 0 else 0
 
+        # Build detailed interpretation
+        long_iv = long_r.get('IV Atual (%)', '?')
+        short_iv = short_r.get('IV Atual (%)', '?')
+        long_strd_pct = long_s.get('straddle_pct', 0)
+        short_strd_pct = short_s.get('straddle_pct', 0)
+        long_expiry = long_s.get('expiry', '30D')
+        short_expiry = short_s.get('expiry', '30D')
+
+        op_tipo = 'DISPERSÃO' if pair['Avg Corr'] < 0.5 else 'RELATIVE VALUE'
+
+        # Clear leg descriptions
+        long_desc = f"COMPRAR Straddle ATM {long_leg} (IV={long_iv}%, pctl={long_pct:.0f}th — BARATO)"
+        short_desc = f"VENDER Straddle ATM {short_leg} (IV={short_iv}%, pctl={short_pct:.0f}th — CARO)"
+
         trades.append({
-            'Long Straddle': long_leg,
-            'Short Straddle': short_leg,
+            'Operação': f'{long_leg}/{short_leg}',
+            'Leg 1 (Long)': long_desc,
+            'Leg 2 (Short)': short_desc,
             'Corr': pair['Avg Corr'],
             'Long IV Pctl': round(long_pct, 0),
             'Short IV Pctl': round(short_pct, 0),
+            'Straddle Long (%)': round(long_strd_pct, 2) if long_strd_pct else np.nan,
+            'Straddle Short (%)': round(short_strd_pct, 2) if short_strd_pct else np.nan,
             'Edge Score': round(edge, 2),
-            'Tipo': 'DISPERSÃO' if pair['Avg Corr'] < 0.5 else 'RELATIVE VALUE',
+            'Tipo': op_tipo,
         })
 
+        if idx < 3:  # Top 3 detailed interpretation
+            interp_lines.append(
+                f"<b style='color:#58a6ff;'>Trade {idx + 1}: {op_tipo} — {long_leg} vs {short_leg}</b><br>"
+                f"&nbsp;&nbsp;📈 {long_desc}<br>"
+                f"&nbsp;&nbsp;📉 {short_desc}<br>"
+                f"&nbsp;&nbsp;↔ Correlação: {pair['Avg Corr']:.3f} | Edge: {edge:.2f} | "
+                f"Spread Pctl: {spread_pct:.0f}pp"
+            )
+
     df = pd.DataFrame(trades).sort_values('Edge Score', ascending=False)
-    return df.head(8).reset_index(drop=True)
+    df = df.head(8).reset_index(drop=True)
+
+    # Build interpretation HTML
+    interpretation = ''
+    if interp_lines:
+        interpretation = (
+            "<div style='background:#161b22; padding:12px; border-radius:6px; "
+            "margin:5px 0; border-left:3px solid #58a6ff;'>"
+            "<b style='color:#f0883e; font-size:13px;'>🎯 Interpretação — "
+            "O que fazer exatamente:</b><br><br>"
+            + "<br><br>".join(interp_lines)
+            + "<br><br><small style='color:#8b949e;'>"
+            "Long straddle = comprar ATM call + ATM put (aposta que vol sobe ou "
+            "ativo se move). Short straddle = vender ATM call + ATM put (aposta "
+            "que vol cai ou ativo fica parado). Spread de dispersão lucra quando "
+            "a vol individual diverge da vol do índice.</small></div>"
+        )
+
+    return df, interpretation
 
 
 def train_dispersion_model(prices_df, iv_df, lookback=126):
@@ -3984,8 +4258,11 @@ def predict_dispersion(model, prices_df, iv_df=None):
 
 def build_kde_distribution_chart(prices_df, weights=None):
     """
-    Chart KDE de distribuição de retornos dos constituintes (adaptado do código BQL do user).
-    Mostra: distribuição individual + ponderada + top-10 labels.
+    Chart KDE de distribuição de retornos dos constituintes — estilo matplotlib original.
+    Dual display: distribuição individual (equi-weighted) + ponderada por peso no índice.
+    Inclui: top-10 labels, médias up/down annotadas, interpretação de pesos,
+    análise de mean-reversion para heavy stocks.
+    Retorna (FigureWidget, HTML_interpretacao).
     """
     from scipy.stats import gaussian_kde
 
@@ -3993,33 +4270,43 @@ def build_kde_distribution_chart(prices_df, weights=None):
     rets = log_rets_1d.dropna()
 
     if len(rets) < 5:
-        return wd.HTML('<p style="color:#8b949e;">Dados insuficientes para KDE.</p>')
+        return wd.HTML('<p style="color:#8b949e;">Dados insuficientes para KDE.</p>'), ''
+
+    n_down = int((rets < 0).sum())
+    n_up = int((rets >= 0).sum())
+    avg_all = rets.mean()
+    avg_up = rets[rets >= 0].mean() if (rets >= 0).any() else 0
+    avg_dn = rets[rets < 0].mean() if (rets < 0).any() else 0
 
     kde = gaussian_kde(rets)
-    x = np.linspace(rets.min() - 1, rets.max() + 1, 300)
+    x = np.linspace(rets.min() - 1.5, rets.max() + 1.5, 500)
     y = kde(x)
 
-    fig = go.Figure()
+    from plotly.subplots import make_subplots
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Fill negative region (red)
-    neg_mask = x < 0
+    # ── Fill areas: red (negative) / green (positive) ──
+    # Split at zero for clean fill
+    neg_mask = x <= 0
+    pos_mask = x >= 0
+
     fig.add_trace(go.Scatter(
         x=x[neg_mask], y=y[neg_mask],
-        fill='tozeroy', fillcolor='rgba(248,81,73,0.3)',
-        line=dict(color='rgba(248,81,73,0.6)', width=1),
-        name=f'Down: {(rets < 0).sum()} stocks',
-        showlegend=True))
+        fill='tozeroy', fillcolor='rgba(220,38,38,0.25)',
+        line=dict(color='rgba(220,38,38,0.7)', width=1.5),
+        name=f'📉 Down: {n_down} stocks',
+        showlegend=True), secondary_y=False)
 
-    # Fill positive region (green)
-    pos_mask = x >= 0
     fig.add_trace(go.Scatter(
         x=x[pos_mask], y=y[pos_mask],
-        fill='tozeroy', fillcolor='rgba(63,185,80,0.3)',
-        line=dict(color='rgba(63,185,80,0.6)', width=1),
-        name=f'Up: {(rets >= 0).sum()} stocks',
-        showlegend=True))
+        fill='tozeroy', fillcolor='rgba(34,197,94,0.25)',
+        line=dict(color='rgba(34,197,94,0.7)', width=1.5),
+        name=f'📈 Up: {n_up} stocks',
+        showlegend=True), secondary_y=False)
 
-    # Weighted distribution
+    # ── Weighted KDE (secondary y-axis or overlayed) ──
+    has_weighted = False
+    kde_w = None
     if weights:
         w_arr = np.array([weights.get(t, 0) for t in rets.index])
         w_arr = w_arr / w_arr.sum() if w_arr.sum() > 0 else w_arr
@@ -4029,46 +4316,110 @@ def build_kde_distribution_chart(prices_df, weights=None):
             y_w = kde_w(x)
             fig.add_trace(go.Scatter(
                 x=x, y=y_w,
-                line=dict(color=_C['yellow'], width=2.5),
-                name='Weighted Distribution'))
+                line=dict(color='#fbbf24', width=2.5),
+                name='Weighted (Index Wgt)',
+                opacity=0.9), secondary_y=True)
+            has_weighted = True
 
-    # Average lines
-    avg_all = rets.mean()
-    avg_up = rets[rets >= 0].mean() if (rets >= 0).any() else 0
-    avg_dn = rets[rets < 0].mean() if (rets < 0).any() else 0
+    # ── Average lines with labels ──
+    fig.add_vline(x=0, line=dict(color='#6b7280', dash='solid', width=1))
 
-    fig.add_vline(x=avg_all, line=dict(color='white', dash='dash', width=1),
-                  annotation_text=f'Avg: {avg_all:.1f}%')
-    fig.add_vline(x=avg_up, line=dict(color=_C['green'], dash='dash', width=1.5))
-    fig.add_vline(x=avg_dn, line=dict(color=_C['red'], dash='dash', width=1.5))
+    fig.add_vline(x=avg_all, line=dict(color='white', dash='dash', width=1.5))
+    fig.add_annotation(x=avg_all, y=max(y) * 0.95, text=f'Avg: {avg_all:+.2f}%',
+                       showarrow=False, font=dict(size=11, color='white'),
+                       bgcolor='rgba(0,0,0,0.6)', borderpad=3)
 
-    # Top 10 by weight annotation
+    fig.add_vline(x=avg_up, line=dict(color='#22c55e', dash='dot', width=1.5))
+    fig.add_annotation(x=avg_up, y=max(y) * 0.82, text=f'Avg Up: +{avg_up:.2f}%',
+                       showarrow=False, font=dict(size=10, color='#22c55e'),
+                       bgcolor='rgba(0,0,0,0.5)', borderpad=2)
+
+    fig.add_vline(x=avg_dn, line=dict(color='#dc2626', dash='dot', width=1.5))
+    fig.add_annotation(x=avg_dn, y=max(y) * 0.82, text=f'Avg Down: {avg_dn:.2f}%',
+                       showarrow=False, font=dict(size=10, color='#dc2626'),
+                       bgcolor='rgba(0,0,0,0.5)', borderpad=2)
+
+    # ── Top 10 by weight: scatter points with labels ──
+    interp_heavy = []
     if weights:
         w_series = pd.Series(weights)
         top10 = w_series.nlargest(10)
         for tk, w in top10.items():
             if tk in rets.index:
                 ret_val = rets[tk]
+                kde_val = kde(np.array([ret_val]))[0]
+                short = tk.split(' ')[0]
+                marker_color = '#22c55e' if ret_val >= 0 else '#dc2626'
                 fig.add_trace(go.Scatter(
-                    x=[ret_val], y=[kde(np.array([ret_val]))[0] * 1.1],
+                    x=[ret_val], y=[kde_val],
                     mode='markers+text',
-                    marker=dict(color=_C['accent'], size=8),
-                    text=[tk.split(' ')[0]],
+                    marker=dict(color=marker_color, size=9,
+                                line=dict(width=1, color='white')),
+                    text=[f'{short} ({ret_val:+.1f}%)'],
                     textposition='top center',
-                    textfont=dict(size=10, color='white'),
-                    showlegend=False))
+                    textfont=dict(size=9, color='white'),
+                    showlegend=False), secondary_y=False)
+
+                # Mean-reversion analysis for heavy stocks
+                w_pct = w * 100
+                # Get 21d rolling mean return for mean reversion check
+                if tk in prices_df.columns and len(prices_df) > 21:
+                    recent = (prices_df[tk].iloc[-21:] / prices_df[tk].iloc[-22:-1].values - 1) * 100
+                    r_mean = recent.mean()
+                    r_std = recent.std()
+                    z = (ret_val - r_mean) / r_std if r_std > 0 else 0
+                    if abs(z) > 1.5:
+                        direction = 'ABAIXO da média 21d' if z < -1.5 else 'ACIMA da média 21d'
+                        interp_heavy.append(
+                            f"<b>{short}</b> (peso {w_pct:.1f}%): ret 1D = {ret_val:+.1f}%, "
+                            f"Z-score 21d = {z:.1f} → {direction} — "
+                            f"<b style='color:#fbbf24;'>possível reversão à média</b>")
+
+    # ── Title with summary ──
+    title_text = (f'Distribuição de Retornos 1D — SPX Constituintes '
+                  f'(↓{n_down} | ↑{n_up} | avg {avg_all:+.2f}%)')
 
     fig.update_layout(
-        title='Distribuição de Retornos 1D — Constituintes SPX',
+        title=title_text,
         template=DASH_TEMPLATE,
-        height=380,
-        margin=dict(l=50, r=30, t=45, b=30),
-        xaxis_title='Retorno (%)',
-        yaxis_title='Densidade',
-        legend=dict(orientation='h', yanchor='bottom', y=-0.2,
+        height=440,
+        margin=dict(l=50, r=50, t=50, b=50),
+        xaxis_title='Retorno Individual (%)',
+        yaxis_title='Densidade (Equi-Weighted)',
+        yaxis2_title='Densidade (Index-Weighted)' if has_weighted else '',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.22,
                     xanchor='center', x=0.5),
+        yaxis=dict(showgrid=False),
+        yaxis2=dict(showgrid=False) if has_weighted else {},
     )
-    return go.FigureWidget(fig)
+
+    chart_widget = go.FigureWidget(fig)
+
+    # ── Build interpretation HTML ──
+    interp_html = ''
+    if interp_heavy or weights:
+        parts = []
+        parts.append(
+            f"<b style='color:#58a6ff;'>📊 Análise de Distribuição</b><br>"
+            f"Total: {n_down + n_up} stocks | ↓ {n_down} caindo ({100*n_down/(n_down+n_up):.0f}%) "
+            f"| ↑ {n_up} subindo ({100*n_up/(n_down+n_up):.0f}%)<br>"
+            f"Média geral: {avg_all:+.2f}% | Média ganhos: +{avg_up:.2f}% "
+            f"| Média perdas: {avg_dn:.2f}%"
+        )
+        if interp_heavy:
+            parts.append(
+                "<br><br><b style='color:#fbbf24;'>🔄 Candidatos à Reversão à Média "
+                "(Heavy Stocks com Z > 1.5):</b><br>"
+                + "<br>".join(interp_heavy)
+            )
+        interp_html = (
+            "<div style='background:#161b22; padding:12px; border-radius:6px; "
+            "margin:5px 0; border-left:3px solid #fbbf24;'>"
+            + "<br>".join(parts)
+            + "</div>"
+        )
+
+    return chart_widget, interp_html
 
 
 def build_straddle_richness_chart(richness_df):
@@ -4170,6 +4521,9 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         return result
 
     # ── Filtrar top-N membros por peso (mais robusto que 500 stocks) ──
+    # Excluir tickers indesejados (ex: BRK/B)
+    if weights:
+        weights = {t: w for t, w in weights.items() if t not in DISP_EXCLUDE}
     if weights and len(weights) > DISP_TOP_N:
         top_tickers = sorted(weights, key=lambda t: -weights[t])[:DISP_TOP_N]
         top_weights = {t: weights[t] for t in top_tickers}
@@ -4325,12 +4679,15 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
 
     # ── Trade recommendations ──
     try:
-        result['trade_recs'] = build_dispersion_trade_recommendations(
+        recs_df, recs_interp = build_dispersion_trade_recommendations(
             result.get('dispersion_pairs', pd.DataFrame()),
             result.get('straddle_richness', pd.DataFrame()),
             result.get('straddle_data', {}))
+        result['trade_recs'] = recs_df
+        result['trade_interp'] = recs_interp
     except Exception:
         result['trade_recs'] = pd.DataFrame()
+        result['trade_interp'] = ''
 
     # ── ML Dispersion Model ──
     try:
@@ -4351,6 +4708,15 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
     # ── KDE distribution data ──
     result['prices_df'] = prices_df
     result['weights'] = weights
+
+    # ── ATM vol matrix (from straddle data already fetched) ──
+    if result.get('straddle_data'):
+        try:
+            atm_matrix_df, atm_matrix_chart = build_atm_vol_matrix(result['straddle_data'])
+            result['atm_vol_matrix'] = atm_matrix_df
+            result['atm_vol_chart'] = atm_matrix_chart
+        except Exception as _atm_err:
+            print(f"⚠️ ATM Vol Matrix: {_atm_err}")
 
     return result
 
@@ -7315,12 +7681,12 @@ def run_analysis(_):
                                 disp_result['mag7_pairs'],
                                 title='Mag7 — Dispersão por Par'))
 
-                        # Best 2x2 dispersion trade
+                        # Best NxN dispersion trade (2x2, 3x3, etc.)
                         if disp_result['best_2x2']:
                             b22_df = pd.DataFrame(disp_result['best_2x2'])
                             st_g_children.append(_disp_table_widget(
                                 b22_df,
-                                title='Melhor Trade 2x2 (Mag7)'))
+                                title='Melhor Trade NxN (Mag7) — ⭐ = Combo Ótimo'))
 
                         # Optimal tracking basket
                         ob = disp_result.get('optimal_basket', {})
@@ -7397,8 +7763,26 @@ def run_analysis(_):
                                 rich_df,
                                 title='Straddle ATM — Caro vs Barato (Mag8 + SPX)'))
 
-                        # ── Trade recommendations ──
+                        # ── ATM Vol Matrix (Call vs Put IV) ──
+                        atm_chart = disp_result.get('atm_vol_chart')
+                        atm_matrix = disp_result.get('atm_vol_matrix')
+                        if atm_chart is not None:
+                            st_g_children.append(atm_chart)
+                        if atm_matrix is not None and not atm_matrix.empty:
+                            st_g_children.append(_disp_table_widget(
+                                atm_matrix,
+                                title='ATM Vol Matrix — Call IV vs Put IV (Mag8 + SPX)'))
+
+                        # ── Intraday / Recent Price Chart (Mag8 + SPX) ──
+                        _px_df_all = disp_result.get('prices_df', pd.DataFrame())
+                        if not _px_df_all.empty and len(_px_df_all) >= 5:
+                            st_g_children.append(build_intraday_mag8_chart(_px_df_all))
+
+                        # ── Trade recommendations + interpretation ──
                         trade_recs = disp_result.get('trade_recs', pd.DataFrame())
+                        trade_interp = disp_result.get('trade_interp', '')
+                        if trade_interp:
+                            st_g_children.append(wd.HTML(trade_interp))
                         if not trade_recs.empty:
                             st_g_children.append(_disp_table_widget(
                                 trade_recs,
@@ -7415,8 +7799,14 @@ def run_analysis(_):
                         _px_df = disp_result.get('prices_df', pd.DataFrame())
                         _wts = disp_result.get('weights', {})
                         if not _px_df.empty and len(_px_df) >= 2:
-                            st_g_children.append(
-                                build_kde_distribution_chart(_px_df, _wts))
+                            _kde_result = build_kde_distribution_chart(_px_df, _wts)
+                            if isinstance(_kde_result, tuple):
+                                kde_chart, kde_interp = _kde_result
+                                st_g_children.append(kde_chart)
+                                if kde_interp:
+                                    st_g_children.append(wd.HTML(kde_interp))
+                            else:
+                                st_g_children.append(_kde_result)
 
                     except Exception as _dsp_err:
                         st_g_children.append(wd.HTML(
