@@ -507,11 +507,11 @@ def fetch_market_data(ticker):
 
     put_iv = pd.to_numeric(
         bq.execute(bql.Request(ticker, {'Value': bq.data.implied_volatility(
-            expiry='30D', delta=25, put_call='PUT')}))[0].df()['Value'].iloc[-1],
+            expiry='30D', delta='25', put_call='PUT')}))[0].df()['Value'].iloc[-1],
         errors='coerce')
     call_iv = pd.to_numeric(
         bq.execute(bql.Request(ticker, {'Value': bq.data.implied_volatility(
-            expiry='30D', delta=25, put_call='CALL')}))[0].df()['Value'].iloc[-1],
+            expiry='30D', delta='25', put_call='CALL')}))[0].df()['Value'].iloc[-1],
         errors='coerce')
     skew = (put_iv - call_iv) / 100.0 if pd.notna(put_iv) and pd.notna(call_iv) else 0.0
 
@@ -3379,7 +3379,7 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
         try:
             req_p = bql.Request(ticker, {
                 'put25d': bq.data.implied_volatility(
-                    expiry='30D', delta=25, put_call='PUT', fill='PREV', dates=dt_range),
+                    expiry='30D', delta='25', put_call='PUT', fill='PREV', dates=dt_range),
             })
             df['put25d'] = _bql_ts(bq.execute(req_p)[0], 'put25d')
         except Exception:
@@ -3387,7 +3387,7 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
         try:
             req_c = bql.Request(ticker, {
                 'call25d': bq.data.implied_volatility(
-                    expiry='30D', delta=25, put_call='CALL', fill='PREV', dates=dt_range),
+                    expiry='30D', delta='25', put_call='CALL', fill='PREV', dates=dt_range),
             })
             df['call25d'] = _bql_ts(bq.execute(req_c)[0], 'call25d')
         except Exception:
