@@ -3093,25 +3093,36 @@ def run_analysis(_):
                     print(f"[FLOW] CTA: ${fp_cta['flow']:,.0f} "
                           f"(trend={fp_cta['trend_today']:+.3f}, "
                           f"pos={fp_cta['pos_today']:+.3f}→{fp_cta['pos_prev']:+.3f})")
+                except Exception as e:
+                    import traceback
+                    print(f"⚠️ CTA flow: {e}\n{traceback.format_exc()}")
 
-                    # CTA scenario table (GS style): 1W and 1M
+                # CTA GS-style: scenarios, pivots, historical
+                try:
+                    _px_series_ok = '_px_series' in dir() and len(_px_series) > 200
+                    if not _px_series_ok:
+                        _px_series = np.exp(np.cumsum(log_returns))
+                        _px_series = _px_series * (spot / _px_series.iloc[-1])
+                        _cta_rv = log_returns.iloc[-63:].std() * np.sqrt(252) if len(log_returns) >= 63 else rv_30d
+                    print(f"[FLOW] CTA GS: px_series len={len(_px_series)}, rv={_cta_rv:.4f}")
+
                     fp_cta_scenarios_1w = compute_cta_scenario_flows(
                         _px_series, _cta_rv, spot, horizon_days=5)
+                    print(f"[FLOW] CTA scenarios 1W: {len(fp_cta_scenarios_1w)}")
+
                     fp_cta_scenarios_1m = compute_cta_scenario_flows(
                         _px_series, _cta_rv, spot, horizon_days=21)
+                    print(f"[FLOW] CTA scenarios 1M: {len(fp_cta_scenarios_1m)}")
 
-                    # CTA pivot levels
                     fp_cta_pivots = compute_cta_pivot_levels(_px_series, spot, _cta_rv)
+                    print(f"[FLOW] CTA pivots: {len(fp_cta_pivots)}")
 
-                    # CTA historical positions (last 6M)
                     loading.value = "<h4>14b/16: CTA — histórico de posições...</h4>"
                     fp_cta_hist = compute_cta_historical_positions(_px_series, lookback=126)
-                    print(f"[FLOW] CTA hist: {len(fp_cta_hist)} rows, "
-                          f"scenarios 1W: {len(fp_cta_scenarios_1w)}, "
-                          f"1M: {len(fp_cta_scenarios_1m)}, "
-                          f"pivots: {len(fp_cta_pivots)}")
+                    print(f"[FLOW] CTA hist: {len(fp_cta_hist)} rows")
                 except Exception as e:
-                    print(f"⚠️ CTA flow: {e}")
+                    import traceback
+                    print(f"⚠️ CTA GS-style: {e}\n{traceback.format_exc()}")
 
                 # Risk Parity flow
                 fp_rp = {'total': 0, 'detail': {}, 'eq_alloc_new': 0, 'eq_alloc_old': 0}
