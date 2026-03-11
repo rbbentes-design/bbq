@@ -1334,9 +1334,12 @@ def fetch_earnings_dates(index_ticker='SPX Index'):
     return pd.DataFrame()
 
 
-def compute_blackout_curve(earnings_df, n_days_forward=60):
+def compute_blackout_curve(earnings_df, n_days_forward=365):
     """Calcula curva de blackout: para os próximos N dias, quantas empresas do
     SPX estão em janela de restrição de buyback.
+
+    BQL retorna apenas o PRÓXIMO earnings de cada empresa. Para projetar o ano
+    inteiro, replicamos cada data trimestralmente (~91 dias) para frente.
 
     Returns:
         DataFrame com colunas: date, n_blackout, pct_blackout
@@ -1345,22 +1348,36 @@ def compute_blackout_curve(earnings_df, n_days_forward=60):
         return pd.DataFrame()
 
     today = pd.Timestamp.now().normalize()
-    dates = pd.date_range(today - pd.Timedelta(days=30), today + pd.Timedelta(days=n_days_forward))
-    earn_dates = earnings_df['earn_dt'].values
+    horizon = today + pd.Timedelta(days=n_days_forward)
+
+    # Projetar earnings trimestrais a partir da data conhecida
+    projected = []
+    for dt in earnings_df['earn_dt']:
+        if pd.isna(dt):
+            continue
+        d = pd.Timestamp(dt).normalize()
+        # Gerar datas trimestrais para trás e para frente
+        for q in range(-1, 5):  # -1 trimestre atrás até +4 à frente
+            qd = d + pd.Timedelta(days=91 * q)
+            if (today - pd.Timedelta(days=60)) <= qd <= horizon:
+                projected.append(qd.to_datetime64())
+    earn_dates_all = np.array(projected)
     total_companies = len(earnings_df)
 
+    dates = pd.date_range(today - pd.Timedelta(days=30),
+                          today + pd.Timedelta(days=n_days_forward))
     records = []
     for d in dates:
         # Uma empresa está em blackout se: earn_dt - 28 <= d <= earn_dt + 2
         in_blackout = np.sum(
-            (earn_dates >= (d - pd.Timedelta(days=BLACKOUT_DAYS_AFTER)).to_datetime64()) &
-            (earn_dates <= (d + pd.Timedelta(days=BLACKOUT_DAYS_BEFORE)).to_datetime64())
+            (earn_dates_all >= (d - pd.Timedelta(days=BLACKOUT_DAYS_AFTER)).to_datetime64()) &
+            (earn_dates_all <= (d + pd.Timedelta(days=BLACKOUT_DAYS_BEFORE)).to_datetime64())
         )
-        # Limitar ao total (pode ter duplicatas)
-        in_blackout = min(in_blackout, total_companies)
+        # Limitar ao total (pode ter duplicatas por projeção)
+        in_blackout = min(int(in_blackout), total_companies)
         records.append({
             'date': d,
-            'n_blackout': int(in_blackout),
+            'n_blackout': in_blackout,
             'pct_blackout': in_blackout / total_companies if total_companies > 0 else 0
         })
     return pd.DataFrame(records)
@@ -2948,7 +2965,7 @@ def run_analysis(_):
                     fp_earnings_df = fetch_earnings_dates(ticker if ticker.strip().endswith('Index') else 'SPX Index')
                     if not fp_earnings_df.empty:
                         fp_blackout_pct, fp_blackout_n, fp_blackout_total = blackout_pct_today(fp_earnings_df)
-                        fp_blackout_curve = compute_blackout_curve(fp_earnings_df, n_days_forward=60)
+                        fp_blackout_curve = compute_blackout_curve(fp_earnings_df, n_days_forward=365)
                         # Ajustar buyback diário pela janela de blackout
                         fp_buyback['blackout_pct'] = fp_blackout_pct
                         fp_buyback['blackout_n'] = fp_blackout_n
@@ -3818,11 +3835,29 @@ def run_analysis(_):
                             textposition='top center',
                             textfont=dict(color=_C['text'], size=12),
                             name='Hoje'))
+                    # Earnings season labels (Q1=Jan-Feb, Q2=Apr-May, Q3=Jul-Aug, Q4=Oct-Nov)
+                    _season_labels = [
+                        ('Q4 Earnings', 1, 2), ('Q1 Earnings', 4, 5),
+                        ('Q2 Earnings', 7, 8), ('Q3 Earnings', 10, 11)]
+                    _bc_min_dt = _bc['date'].min()
+                    _bc_max_dt = _bc['date'].max()
+                    for _sl, _sm1, _sm2 in _season_labels:
+                        for _yr in range(_bc_min_dt.year, _bc_max_dt.year + 1):
+                            _mid = pd.Timestamp(_yr, _sm1, 15) + pd.Timedelta(days=15)
+                            if _bc_min_dt <= _mid <= _bc_max_dt:
+                                fig_blackout.add_vline(
+                                    x=_mid.timestamp() * 1000,
+                                    line_dash='dot', line_color=_C['text_muted'],
+                                    opacity=0.3,
+                                    annotation_text=_sl,
+                                    annotation_position='top',
+                                    annotation_font=dict(
+                                        size=9, color=_C['text_muted']))
                     fig_blackout.update_layout(
-                        title="Distribuição de Blackout Entries — S&P 500",
+                        title="Distribuição de Blackout Entries — S&P 500 (Projeção Trimestral)",
                         yaxis_title="# de Empresas em Blackout",
                         xaxis_title="",
-                        height=320, template=DASH_TEMPLATE,
+                        height=350, template=DASH_TEMPLATE,
                         showlegend=False)
                     st_c_children.append(fig_blackout)
 
