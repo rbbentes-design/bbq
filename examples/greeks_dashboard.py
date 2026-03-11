@@ -298,7 +298,11 @@ DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq v
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 
 # Historical gamma data (CSV database)
-GAMMA_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'gamma_history.csv')
+try:
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _base_dir = os.getcwd()
+GAMMA_HISTORY_PATH = os.path.join(_base_dir, '..', 'data', 'gamma_history.csv')
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
