@@ -3248,6 +3248,620 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5H — SKEW MONITOR + TAIL ANALYTICS + DEALER BOOK MC + OPEX
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Mag8 constituents (Mag7 + AVGO) ──
+MAG8 = [
+    'AAPL US Equity', 'MSFT US Equity', 'GOOGL US Equity', 'AMZN US Equity',
+    'NVDA US Equity', 'META US Equity', 'TSLA US Equity', 'AVGO US Equity',
+]
+
+# ── Skew Monitor (Nomura-style) ─────────────────────────────────
+
+def fetch_skew_metrics(ticker='SPX Index', lookback=252):
+    """
+    Busca métricas de skew via BQL: 25d put IV, 25d call IV, ATM IV.
+    Calcula: Risk Reversal (25dP - 25dC), Put Skew (25dP/ATM), Call Skew (25dC/ATM).
+    Retorna DataFrame com colunas: atm_iv, put25d_iv, call25d_iv, risk_reversal,
+    put_skew, call_skew + percentis.
+    """
+    bq = bql.Service()
+    dt_range = bq.func.range('-{}d'.format(lookback), '0d')
+    try:
+        req = bql.Request(ticker, {
+            'atm_iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
+            'put25d': bq.data.ivol_delta_put(delta=25, fill='PREV', dates=dt_range),
+            'call25d': bq.data.ivol_delta_call(delta=25, fill='PREV', dates=dt_range),
+        })
+        resp = bq.execute(req)
+        df = resp[0].df()
+        df.index = pd.to_datetime(df.index)
+    except Exception:
+        try:
+            req = bql.Request(ticker, {
+                'atm_iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
+            })
+            resp = bq.execute(req)
+            df = resp[0].df()
+            df.index = pd.to_datetime(df.index)
+            df['put25d'] = np.nan
+            df['call25d'] = np.nan
+        except Exception:
+            return pd.DataFrame()
+
+    if df.empty:
+        return df
+
+    df['risk_reversal'] = df['put25d'] - df['call25d']
+    atm = df['atm_iv'].replace(0, np.nan)
+    df['put_skew'] = df['put25d'] / atm
+    df['call_skew'] = df['call25d'] / atm
+
+    for col in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
+        if col in df.columns:
+            vals = df[col].dropna()
+            if len(vals) > 20:
+                last = vals.iloc[-1]
+                pctile = float((vals < last).sum() / len(vals) * 100)
+                df['{}_pctile'.format(col)] = pctile
+    return df
+
+
+def compute_skew_summary(skew_df):
+    """Resumo das métricas de skew atuais + percentis."""
+    if skew_df.empty:
+        return {}
+    last = skew_df.iloc[-1]
+    summary = {}
+    for col in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
+        if col in last.index and not np.isnan(last.get(col, np.nan)):
+            summary[col] = round(float(last[col]), 2)
+            pctile_col = '{}_pctile'.format(col)
+            if pctile_col in last.index:
+                summary[pctile_col] = round(float(last[pctile_col]), 0)
+    return summary
+
+
+def build_skew_chart(skew_df):
+    """
+    Gráfico 4-panel Nomura-style: Risk Reversal, ATM Vol, Call Skew, Put Skew.
+    """
+    if skew_df.empty or len(skew_df) < 10:
+        fig = go.Figure()
+        fig.add_annotation(text='Sem dados de skew', x=0.5, y=0.5,
+                           xref='paper', yref='paper', showarrow=False,
+                           font=dict(color='white', size=14))
+        fig.update_layout(template='plotly_dark',
+                          paper_bgcolor='#0d1117', plot_bgcolor='#161b22')
+        return go.FigureWidget(fig)
+
+    fig = make_subplots(rows=2, cols=2,
+                        subplot_titles=[
+                            'Risk Reversal (25dP - 25dC)',
+                            'ATM Implied Volatility',
+                            'Call Skew (25dC / ATM)',
+                            'Put Skew (25dP / ATM)',
+                        ],
+                        vertical_spacing=0.12, horizontal_spacing=0.08)
+
+    if 'risk_reversal' in skew_df.columns:
+        rr = skew_df['risk_reversal'].dropna()
+        fig.add_trace(go.Scatter(x=rr.index, y=rr, name='Risk Reversal',
+                                 line=dict(color='#da3633', width=1.5)), row=1, col=1)
+
+    if 'atm_iv' in skew_df.columns:
+        atm = skew_df['atm_iv'].dropna()
+        fig.add_trace(go.Scatter(x=atm.index, y=atm, name='ATM IV',
+                                 line=dict(color='#8b949e', width=1.5)), row=1, col=2)
+
+    if 'call_skew' in skew_df.columns:
+        cs = skew_df['call_skew'].dropna()
+        fig.add_trace(go.Scatter(x=cs.index, y=cs, name='Call Skew 25dC/ATM',
+                                 line=dict(color='#3fb950', width=1.5)), row=2, col=1)
+
+    if 'put_skew' in skew_df.columns:
+        ps = skew_df['put_skew'].dropna()
+        fig.add_trace(go.Scatter(x=ps.index, y=ps, name='Put Skew 25dP/ATM',
+                                 line=dict(color='#f0883e', width=1.5)), row=2, col=2)
+
+    fig.update_layout(
+        template='plotly_dark', height=480,
+        paper_bgcolor='#0d1117', plot_bgcolor='#161b22',
+        font=dict(color='#c9d1d9', size=11),
+        showlegend=False,
+        margin=dict(l=50, r=30, t=50, b=30),
+    )
+    return go.FigureWidget(fig)
+
+
+# ── Spot-Up-Vol-Up Tracker ───────────────────────────────────────
+
+def compute_spot_up_vol_up(log_returns, vix_changes):
+    """
+    Conta dias consecutivos onde Spot sobe E Vol sobe (raro, sinal de euforia).
+    Retorna dict com: current_streak, max_streak, history (series de streaks),
+    total_occurrences, pct_of_days.
+    """
+    n = min(len(log_returns), len(vix_changes))
+    if n < 20:
+        return {'current_streak': 0, 'max_streak': 0, 'history': pd.Series(dtype=int),
+                'total_days': 0, 'pct_up_up': 0}
+
+    spot_up = np.asarray(log_returns.iloc[-n:]) > 0
+    vol_up = np.asarray(vix_changes.iloc[-n:]) > 0
+    both_up = spot_up & vol_up
+
+    streaks = []
+    current = 0
+    dates = log_returns.index[-n:]
+    streak_dates = []
+    streak_vals = []
+    for i in range(n):
+        if both_up[i]:
+            current += 1
+        else:
+            if current > 0:
+                streak_dates.append(dates[i - 1])
+                streak_vals.append(current)
+            current = 0
+    if current > 0:
+        streak_dates.append(dates[-1])
+        streak_vals.append(current)
+
+    current_streak = current
+    max_streak = max(streak_vals) if streak_vals else 0
+    total_up_up = int(both_up.sum())
+
+    return {
+        'current_streak': current_streak,
+        'max_streak': max_streak,
+        'history': pd.Series(streak_vals, index=streak_dates) if streak_dates else pd.Series(dtype=int),
+        'total_days': total_up_up,
+        'pct_up_up': round(total_up_up / n * 100, 1) if n > 0 else 0,
+    }
+
+
+def compute_vix_spx_regression(spx_returns, vix_changes, window_years=2):
+    """
+    Regressão VIX Move vs SPX Move (1M rolling).
+    Retorna dict com: slope, intercept, r2, prediction, scatter_data.
+    """
+    n = min(len(spx_returns), len(vix_changes))
+    if n < 30:
+        return {}
+
+    spx_1m = spx_returns.rolling(21).sum().dropna()
+    vix_1m = vix_changes.rolling(21).sum().dropna()
+    common = spx_1m.index.intersection(vix_1m.index)
+    spx_1m = spx_1m.reindex(common).values * 100
+    vix_1m = vix_1m.reindex(common).values
+
+    window = min(window_years * 252, len(spx_1m))
+    x = spx_1m[-window:]
+    y = vix_1m[-window:]
+    valid = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[valid], y[valid]
+
+    if len(x) < 20:
+        return {}
+
+    mean_x, mean_y = np.mean(x), np.mean(y)
+    cov_xy = np.mean((x - mean_x) * (y - mean_y))
+    var_x = np.mean((x - mean_x) ** 2)
+    slope = cov_xy / var_x if var_x > 1e-12 else 0
+    intercept = mean_y - slope * mean_x
+    y_pred = slope * x + intercept
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - mean_y) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 1e-12 else 0
+
+    last_spx_1m = float(x[-1]) if len(x) > 0 else 0
+    predicted_vix = slope * last_spx_1m + intercept
+
+    return {
+        'slope': round(float(slope), 3),
+        'intercept': round(float(intercept), 2),
+        'r2': round(float(r2), 3),
+        'predicted_vix_move': round(float(predicted_vix), 1),
+        'last_spx_1m': round(float(last_spx_1m), 1),
+        'x': x, 'y': y,
+    }
+
+
+# ── Enhanced Dealer Book + Per-Dealer Monte Carlo ────────────────
+
+def run_dealer_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5):
+    """
+    Monte Carlo por dealer individual.
+    Retorna dict: {dealer_name: {var95, var99, cvar95, mean_pnl, mc_pnl_array}}.
+    """
+    greeks = calculate_all_greeks(spot, df.Strike.values, df.IV.values,
+                                  df.Tte.values, df.Type.values)
+    oi100 = df.OI.values * 100
+    call_sign = np.where(df.Type.values == 'Call', 1, -1)
+    total_dex = (greeks['delta'] * oi100).sum()
+    total_gex = (greeks['gamma'] * call_sign * oi100).sum()
+    total_theta = (greeks['theta'] * oi100).sum()
+    total_vanna = (greeks['vanna'] * oi100).sum()
+
+    day_rets_all = np.empty((n_days, n_sims), dtype=float)
+    for d in range(n_days):
+        day_rets_all[d] = student_t.rvs(
+            risk_params['tdf'], loc=risk_params['tloc'],
+            scale=risk_params['tscale'], size=n_sims)
+
+    results = {}
+    total_book = {
+        'dex': total_dex, 'gex': total_gex,
+        'theta': total_theta, 'vanna': total_vanna,
+    }
+
+    all_dealers = list(MM_VOLUME_SHARES.items()) + [('TOTAL', 1.0)]
+    for mm_name, share in all_dealers:
+        mm_dex = total_dex * share
+        mm_gex = total_gex * share
+        mm_theta = total_theta * share
+        mm_vanna = total_vanna * share
+
+        cum_pnl = np.zeros(n_sims)
+        cur_spot = np.full(n_sims, spot)
+        for d in range(n_days):
+            new_spot = cur_spot * (1 + day_rets_all[d])
+            ds = new_spot - cur_spot
+            daily_pnl = -(mm_dex * ds + 0.5 * mm_gex * ds ** 2) + mm_theta
+            cum_pnl += daily_pnl
+            cur_spot = new_spot
+
+        results[mm_name] = {
+            'share': share,
+            'var_95': float(np.percentile(cum_pnl, 5)),
+            'var_99': float(np.percentile(cum_pnl, 1)),
+            'cvar_95': float(np.mean(cum_pnl[cum_pnl <= np.percentile(cum_pnl, 5)])),
+            'mean_pnl': float(np.mean(cum_pnl)),
+            'median_pnl': float(np.median(cum_pnl)),
+            'max_loss': float(np.min(cum_pnl)),
+            'max_gain': float(np.max(cum_pnl)),
+            'win_pct': float((cum_pnl > 0).mean() * 100),
+            'mc_pnl': cum_pnl,
+        }
+
+    results['_book'] = total_book
+    return results
+
+
+def compute_dealer_scenario_matrix(spot, df, greeks_now):
+    """
+    Matriz de cenários: dealer buy/sell por nível de spot (estilo dos slides).
+    Inclui SPX, QQQ proxies, Mag8, e Vol Control.
+    Retorna DataFrame com cenários ±3% a ±20%.
+    """
+    oi100 = df.OI.values * 100
+    call_sign = np.where(df.Type.values == 'Call', 1, -1)
+    gex_per_pt = (greeks_now['gamma'] * call_sign * oi100).sum()
+    dex = (greeks_now['delta'] * oi100).sum()
+    vanna_not = np.nansum(greeks_now['vanna'] * oi100) * spot
+
+    moves = [0.20, 0.15, 0.10, 0.05, 0.03, -0.03, -0.05, -0.10, -0.15, -0.20]
+    rows = []
+    for m in moves:
+        ds = spot * m
+        dealer_flow = -(dex * ds + 0.5 * gex_per_pt * ds ** 2)
+        vol_chg = max(0, -m) * 150
+        vanna_flow = -vanna_not * vol_chg / 100.0
+        total = dealer_flow + vanna_flow
+        rows.append({
+            'Move': '{:+.0%}'.format(m),
+            'SPX Level': round(spot * (1 + m), 0),
+            'Dealer Gamma ($B)': round(dealer_flow / 1e9, 1),
+            'Vanna Flow ($B)': round(vanna_flow / 1e9, 1),
+            'Total ($B)': round(total / 1e9, 1),
+        })
+    return pd.DataFrame(rows)
+
+
+def compute_mag8_dealer_scenarios(spot, df, greeks_now):
+    """
+    Projeta rebalance de dealers por Mag8 stock (estilo slides: dealer buy/sell).
+    Assume que Mag8 representa ~35% do GEX total ponderado por market cap.
+    """
+    oi100 = df.OI.values * 100
+    call_sign = np.where(df.Type.values == 'Call', 1, -1)
+    total_gex = (greeks_now['gamma'] * call_sign * oi100).sum()
+
+    mag8_weights = {
+        'MSFT': 0.065, 'NVDA': 0.060, 'TSLA': 0.035, 'AAPL': 0.070,
+        'META': 0.040, 'GOOG': 0.045, 'AMZN': 0.050, 'AVGO': 0.030,
+    }
+    moves = [0.15, 0.10, 0.05, 0.03, -0.03, -0.05, -0.10, -0.15]
+    rows = []
+    for m in moves:
+        ds = spot * m
+        row = {'Move': '{:+.0%}'.format(m)}
+        total = 0.0
+        for stock, wt in mag8_weights.items():
+            stock_gex = total_gex * wt
+            flow = -0.5 * stock_gex * ds ** 2
+            flow_b = flow / 1e9
+            row[stock] = round(flow_b, 1)
+            total += flow_b
+        row['Total'] = round(total, 1)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ── OPEX Analysis ────────────────────────────────────────────────
+
+def compute_opex_dates(year_start=2020, year_end=2026):
+    """
+    Gera datas de OPEX (3ª sexta de cada mês) + VIX expiration (30d antes SPX OPEX).
+    Retorna DataFrame com opex_date, vix_exp_date, vix_before_opex (bool).
+    """
+    from datetime import timedelta
+    opex_dates = []
+    for y in range(year_start, year_end + 1):
+        for mth in range(1, 13):
+            first_day = datetime(y, mth, 1)
+            dow = first_day.weekday()
+            first_friday = first_day + timedelta(days=(4 - dow) % 7)
+            third_friday = first_friday + timedelta(days=14)
+            opex_dates.append(third_friday)
+
+    rows = []
+    for opex in opex_dates:
+        vix_exp = opex - timedelta(days=30)
+        vix_exp_dow = vix_exp.weekday()
+        if vix_exp_dow == 5:
+            vix_exp -= timedelta(days=1)
+        elif vix_exp_dow == 6:
+            vix_exp -= timedelta(days=2)
+        rows.append({
+            'opex_date': opex,
+            'vix_exp_date': vix_exp,
+            'vix_before_opex': vix_exp < opex,
+        })
+    return pd.DataFrame(rows)
+
+
+def compute_opex_stats(log_returns, lookback_years=5):
+    """
+    Estatísticas de OPEX: return flip probability, RV impact.
+    Inspirado nos slides SpotGamma.
+    """
+    idx = log_returns.index
+    if len(idx) < 252:
+        return {}
+
+    opex_df = compute_opex_dates(
+        year_start=idx[0].year, year_end=idx[-1].year)
+
+    week_before_returns = []
+    week_after_returns = []
+    flip_count = 0
+    total_opex = 0
+
+    rv_into_5d = []
+    rv_out_5d = []
+    rv_into_10d = []
+    rv_out_10d = []
+
+    for _, row in opex_df.iterrows():
+        opex = row['opex_date']
+        pos = idx.searchsorted(opex)
+        if pos < 15 or pos >= len(idx) - 10:
+            continue
+
+        ret_before_5d = float(log_returns.iloc[pos - 5:pos].sum())
+        ret_after_5d = float(log_returns.iloc[pos:pos + 5].sum())
+
+        week_before_returns.append(ret_before_5d)
+        week_after_returns.append(ret_after_5d)
+
+        if (ret_before_5d > 0 and ret_after_5d < 0) or \
+           (ret_before_5d < 0 and ret_after_5d > 0):
+            flip_count += 1
+        total_opex += 1
+
+        rv5_into = float(log_returns.iloc[pos - 5:pos].std() * np.sqrt(252) * 100)
+        rv5_out = float(log_returns.iloc[pos:pos + 5].std() * np.sqrt(252) * 100)
+        rv_into_5d.append(rv5_into)
+        rv_out_5d.append(rv5_out)
+
+        if pos >= 10 and pos + 10 < len(idx):
+            rv10_into = float(log_returns.iloc[pos - 10:pos].std() * np.sqrt(252) * 100)
+            rv10_out = float(log_returns.iloc[pos:pos + 10].std() * np.sqrt(252) * 100)
+            rv_into_10d.append(rv10_into)
+            rv_out_10d.append(rv10_out)
+
+    flip_pct = flip_count / total_opex * 100 if total_opex > 0 else 0
+
+    return {
+        'total_opex': total_opex,
+        'flip_count': flip_count,
+        'flip_pct': round(flip_pct, 1),
+        'avg_ret_before': round(np.mean(week_before_returns) * 100, 2) if week_before_returns else 0,
+        'avg_ret_after': round(np.mean(week_after_returns) * 100, 2) if week_after_returns else 0,
+        'rv5_delta_into': round(np.mean(rv_into_5d), 1) if rv_into_5d else 0,
+        'rv5_delta_out': round(np.mean(rv_out_5d), 1) if rv_out_5d else 0,
+        'rv10_delta_into': round(np.mean(rv_into_10d), 1) if rv_into_10d else 0,
+        'rv10_delta_out': round(np.mean(rv_out_10d), 1) if rv_out_10d else 0,
+    }
+
+
+# ── Gamma Index → Realized Vol Model ────────────────────────────
+
+def compute_gamma_vol_relationship(gex_series, rv_series, window=21):
+    """
+    Modela relação Gamma Exposure → Realized Vol prevista.
+    Quanto maior o GEX positivo, menor a vol.
+    Retorna: slope, r2, predicted_vol, scatter (for plotting).
+    """
+    n = min(len(gex_series), len(rv_series))
+    if n < 30:
+        return {}
+    gex = np.asarray(gex_series[-n:], dtype=float)
+    rv = np.asarray(rv_series[-n:], dtype=float)
+    valid = ~(np.isnan(gex) | np.isnan(rv))
+    gex, rv = gex[valid], rv[valid]
+    if len(gex) < 20:
+        return {}
+    mean_g, mean_r = np.mean(gex), np.mean(rv)
+    cov = np.mean((gex - mean_g) * (rv - mean_r))
+    var_g = np.mean((gex - mean_g) ** 2)
+    slope = cov / var_g if var_g > 1e-12 else 0
+    intercept = mean_r - slope * mean_g
+    predicted = slope * gex[-1] + intercept
+    y_pred = slope * gex + intercept
+    ss_res = np.sum((rv - y_pred) ** 2)
+    ss_tot = np.sum((rv - mean_r) ** 2)
+    r2 = max(0, 1 - ss_res / ss_tot) if ss_tot > 1e-12 else 0
+    return {
+        'slope': round(float(slope), 6),
+        'intercept': round(float(intercept), 4),
+        'r2': round(float(r2), 3),
+        'predicted_rv': round(float(predicted) * 100, 1),
+        'current_gex': float(gex[-1]),
+        'gex': gex, 'rv': rv * 100,
+    }
+
+
+# ── Vol Control + Leveraged ETF Scenario Projections (Nomura-style) ──
+
+def compute_vol_rebalance_projection(rv_current, spot, gex_per_pt=0,
+                                      vanna_notional=0, dex=0):
+    """
+    Projeção de rebalanceamento combinado (Vol Control + Dealer + LevETF).
+    Estilo dos slides: tabela por cenário ±3% a ±20%.
+    """
+    moves = [0.20, 0.15, 0.10, 0.05, 0.03, -0.03, -0.05, -0.10, -0.15, -0.20]
+    rows = []
+    for m in moves:
+        ds = spot * m
+        rv_shock = rv_current * (1 + max(0, -m) * 5)
+        rv_shock = min(rv_shock, 0.80)
+
+        vc_flow = 0
+        for tv in [5, 10, 15]:
+            tv_dec = tv / 100.0
+            exp_cur = _vc_exposure(tv_dec, rv_current)
+            exp_shock = _vc_exposure(tv_dec, rv_shock)
+            vc_flow += VOL_CTRL_AUM.get(tv, 100e9) * (exp_shock - exp_cur)
+
+        dealer_flow = -(dex * ds + 0.5 * gex_per_pt * ds ** 2) if gex_per_pt != 0 else 0
+
+        lev_flow = 0
+        for _lev, _aum in [('3x', 15e9), ('2x', 25e9), ('-3x', 8e9), ('-1x', 32e9)]:
+            mult = 3 if '3x' in _lev else (2 if '2x' in _lev else (-3 if '-3x' in _lev else -1))
+            rebal = _aum * mult * m
+            if '-' in _lev:
+                rebal = -rebal
+            lev_flow += rebal
+
+        total = vc_flow + dealer_flow + lev_flow
+        rows.append({
+            'Move': '{:+.0%}'.format(m),
+            'Vol Ctrl ($B)': round(vc_flow / 1e9, 1),
+            'Dealer ($B)': round(dealer_flow / 1e9, 1),
+            'Lev ETF ($B)': round(lev_flow / 1e9, 1),
+            'Total ($B)': round(total / 1e9, 1),
+        })
+    return pd.DataFrame(rows)
+
+
+# ── Tail Risk Probabilistic Gauge ────────────────────────────────
+
+def compute_tail_risk_gauge(log_returns, iv_30d=None, rv_30d=None,
+                            skew_summary=None, spot_vol_up_streak=0):
+    """
+    Computa um score probabilístico de risco caudal (0-100).
+    Combina múltiplos fatores:
+    - Kurtosis excess (caudas pesadas)
+    - Skew negativo (assimetria left-tail)
+    - IV/RV ratio (fear premium)
+    - Put skew level (proteção downside demandada)
+    - Risk reversal magnitude
+    - Spot-up-vol-up streak (raro, sinal de stress próximo)
+    Retorna: score (0-100), components dict, interpretation string.
+    """
+    rets = np.asarray(log_returns, dtype=float)
+    rets = rets[~np.isnan(rets)]
+    if len(rets) < 50:
+        return 50, {}, 'Dados insuficientes'
+
+    std_r = np.std(rets)
+    if std_r < 1e-10:
+        return 50, {}, 'Vol zero'
+
+    kurtosis = float(np.mean((rets - np.mean(rets)) ** 4) / std_r ** 4)
+    skewness = float(np.mean((rets - np.mean(rets)) ** 3) / std_r ** 3)
+
+    components = {}
+
+    kurt_score = min(25, max(0, (kurtosis - 3) * 5))
+    components['kurtosis'] = {'value': round(kurtosis, 2), 'score': round(kurt_score, 1),
+                              'label': 'Excess Kurtosis'}
+
+    skew_score = min(20, max(0, abs(min(0, skewness)) * 10))
+    components['skewness'] = {'value': round(skewness, 3), 'score': round(skew_score, 1),
+                              'label': 'Left Skew'}
+
+    iv_rv_score = 0
+    if iv_30d is not None and rv_30d is not None and rv_30d > 1e-6:
+        ratio = iv_30d / rv_30d
+        if ratio > 1.3:
+            iv_rv_score = min(15, (ratio - 1.0) * 10)
+        else:
+            iv_rv_score = max(0, min(15, (1.3 - ratio) * 15))
+        components['iv_rv_ratio'] = {'value': round(ratio, 2), 'score': round(iv_rv_score, 1),
+                                     'label': 'IV/RV Ratio'}
+
+    put_skew_score = 0
+    rr_score = 0
+    if skew_summary:
+        ps = skew_summary.get('put_skew', 1.0)
+        if ps > 1.15:
+            put_skew_score = min(15, (ps - 1.0) * 50)
+        components['put_skew'] = {'value': round(ps, 3), 'score': round(put_skew_score, 1),
+                                  'label': 'Put Skew 25d/ATM'}
+
+        rr = skew_summary.get('risk_reversal', 0)
+        rr_score = min(10, abs(rr) * 1.5)
+        components['risk_reversal'] = {'value': round(rr, 2), 'score': round(rr_score, 1),
+                                       'label': 'Risk Reversal'}
+
+    suvu_score = min(15, spot_vol_up_streak * 3)
+    components['spot_vol_up'] = {'value': spot_vol_up_streak, 'score': round(suvu_score, 1),
+                                 'label': 'Spot Up Vol Up Streak'}
+
+    total = kurt_score + skew_score + iv_rv_score + put_skew_score + rr_score + suvu_score
+    total = min(100, max(0, total))
+
+    if total >= 75:
+        interp = 'EXTREMO — Proteção caudal recomendada'
+    elif total >= 50:
+        interp = 'ELEVADO — Monitorar sinais de stress'
+    elif total >= 25:
+        interp = 'MODERADO — Complacência relativa'
+    else:
+        interp = 'BAIXO — Ambiente de baixo risco caudal'
+
+    return round(total, 1), components, interp
+
+
+def build_tail_gauge(score, interpretation):
+    """Cria gauge widget para tail risk score."""
+    color = '#3fb950' if score < 25 else '#d29922' if score < 50 else '#f0883e' if score < 75 else '#da3633'
+    return create_gauge(
+        score, 'Tail Risk Score', 0, 100, color, '',
+        steps=[
+            {'range': [0, 25], 'color': '#1a3a2a'},
+            {'range': [25, 50], 'color': '#2a2a1a'},
+            {'range': [50, 75], 'color': '#3a2a1a'},
+            {'range': [75, 100], 'color': '#3a1a1a'},
+        ], width=280, height=220)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 6 — MATRIZES DE SENSIBILIDADE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -4071,6 +4685,94 @@ def run_analysis(_):
                 except Exception as disp_err:
                     print(f"⚠️ Dispersion: {disp_err}")
 
+            # ── 16. Advanced Analytics (Skew, Tail Gauge, Dealer MC, OPEX) ──
+            analytics = {
+                'skew_df': pd.DataFrame(),
+                'skew_summary': {},
+                'spot_vol_up': {'current_streak': 0, 'max_streak': 0, 'total_days': 0, 'pct_up_up': 0, 'history': pd.Series(dtype=int)},
+                'vix_reg': {},
+                'dealer_mc': {},
+                'opex_stats': {},
+                'tail_score': 50, 'tail_components': {}, 'tail_interp': '',
+                'dealer_scenarios': pd.DataFrame(),
+                'mag8_scenarios': pd.DataFrame(),
+                'vol_rebal': pd.DataFrame(),
+                'gamma_vol': {},
+            }
+            try:
+                loading.value = "<h4>16/16: Advanced Analytics...</h4>"
+
+                # Skew monitor
+                try:
+                    analytics['skew_df'] = fetch_skew_metrics(ticker, lookback=252)
+                    analytics['skew_summary'] = compute_skew_summary(analytics['skew_df'])
+                except Exception as _sk_err:
+                    print(f"⚠️ Skew: {_sk_err}")
+
+                # Spot-Up-Vol-Up: fetch VIX
+                try:
+                    bq = bql.Service()
+                    dt_rng = bq.func.range('-504d', '0d')
+                    vix_req = bql.Request('VIX Index', {
+                        'px': bq.data.px_last(fill='PREV', dates=dt_rng),
+                    })
+                    vix_resp = bq.execute(vix_req)
+                    vix_s = vix_resp[0].df()['px'].dropna()
+                    vix_s.index = pd.to_datetime(vix_s.index)
+                    vix_changes = vix_s.diff().dropna()
+                    analytics['spot_vol_up'] = compute_spot_up_vol_up(log_returns, vix_changes)
+                    analytics['vix_reg'] = compute_vix_spx_regression(log_returns, vix_changes)
+                except Exception as _vix_err:
+                    print(f"⚠️ VIX/Spot-Vol-Up: {_vix_err}")
+
+                # Per-dealer MC
+                try:
+                    analytics['dealer_mc'] = run_dealer_monte_carlo(
+                        spot, df, risk, n_sims=10000, n_days=mc_n_days)
+                except Exception as _dmc_err:
+                    print(f"⚠️ Dealer MC: {_dmc_err}")
+
+                # OPEX stats
+                try:
+                    analytics['opex_stats'] = compute_opex_stats(log_returns, lookback_years=5)
+                except Exception as _opex_err:
+                    print(f"⚠️ OPEX: {_opex_err}")
+
+                # Dealer scenario matrices
+                try:
+                    analytics['dealer_scenarios'] = compute_dealer_scenario_matrix(
+                        spot, df, greeks_now)
+                    analytics['mag8_scenarios'] = compute_mag8_dealer_scenarios(
+                        spot, df, greeks_now)
+                except Exception as _dsm_err:
+                    print(f"⚠️ Dealer Scenarios: {_dsm_err}")
+
+                # Vol Control rebalance projection
+                oi100_vc = df.OI.values * 100
+                cs_vc = np.where(df.Type.values == 'Call', 1, -1)
+                _gex_pt = (greeks_now['gamma'] * cs_vc * oi100_vc).sum()
+                _dex_vc = (greeks_now['delta'] * oi100_vc).sum()
+                _vanna_not = float(np.nansum(greeks_now['vanna'] * oi100_vc) * spot)
+                try:
+                    analytics['vol_rebal'] = compute_vol_rebalance_projection(
+                        rv_30d if pd.notna(rv_30d) else 0.15, spot,
+                        gex_per_pt=_gex_pt, vanna_notional=_vanna_not, dex=_dex_vc)
+                except Exception as _vr_err:
+                    print(f"⚠️ Vol Rebal: {_vr_err}")
+
+                # Tail risk gauge
+                suvu_streak = analytics['spot_vol_up'].get('current_streak', 0)
+                analytics['tail_score'], analytics['tail_components'], analytics['tail_interp'] = \
+                    compute_tail_risk_gauge(
+                        log_returns,
+                        iv_30d=iv_30d if pd.notna(iv_30d) else None,
+                        rv_30d=rv_30d if pd.notna(rv_30d) else None,
+                        skew_summary=analytics['skew_summary'],
+                        spot_vol_up_streak=suvu_streak)
+
+            except Exception as _analytics_err:
+                print(f"⚠️ Analytics: {_analytics_err}")
+
             clear_output(wait=True)
 
             # ═════════════════════════════════════════════════════════════
@@ -4303,11 +5005,40 @@ def run_analysis(_):
                           f'{mc_n_days} dias úteis']
             }).to_html(classes='mm-table', index=False, border=0)
 
+            # Per-dealer MC table
+            dealer_mc_html = ''
+            if analytics.get('dealer_mc') and len(analytics['dealer_mc']) > 1:
+                dmc = analytics['dealer_mc']
+                dmc_rows = []
+                for mm_name in list(MM_VOLUME_SHARES.keys()) + ['TOTAL']:
+                    if mm_name in dmc:
+                        d = dmc[mm_name]
+                        dmc_rows.append({
+                            'Dealer': mm_name,
+                            'Share': '{:.0%}'.format(d.get('share', 0)),
+                            'Mean P&L ($M)': '{:,.1f}'.format(d['mean_pnl'] / 1e6),
+                            'VaR 95% ($M)': '{:,.1f}'.format(d['var_95'] / 1e6),
+                            'VaR 99% ($M)': '{:,.1f}'.format(d['var_99'] / 1e6),
+                            'CVaR 95% ($M)': '{:,.1f}'.format(d['cvar_95'] / 1e6),
+                            'Win %': '{:.1f}'.format(d['win_pct']),
+                            'Max Loss ($M)': '{:,.1f}'.format(d['max_loss'] / 1e6),
+                        })
+                if dmc_rows:
+                    dealer_mc_html = pd.DataFrame(dmc_rows).to_html(
+                        classes='mm-table', index=False, border=0)
+
+            mc_dealer_widget = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card'>"
+                "<h3>Monte Carlo por Dealer</h3>"
+                "{}</div></div>".format(dealer_mc_html if dealer_mc_html else
+                                        '<p style="color:#8b949e;">Sem dados de dealer MC</p>'))
+
             tab5 = wd.VBox([
                 wd.HTML("<div class='mm-dash'><div class='mm-card'>"
                         f"<h3>Simulação Monte Carlo (t-Student, {mc_n_days} Dias)</h3></div></div>"),
                 wd.HBox([fig_mc_hist, wd.HTML(
-                    f"<div class='mm-dash'><div class='mm-card'>{mc_table}</div></div>")])
+                    f"<div class='mm-dash'><div class='mm-card'>{mc_table}</div></div>")]),
+                mc_dealer_widget,
             ])
 
             # ─── ABA 6: REBALANCEAMENTO ETFs + ALAVANCADOS ─────────────
@@ -5327,15 +6058,174 @@ def run_analysis(_):
                     f"<p style='color:red;'>Erro ao montar UI: {_fp_ui_err}</p>"
                     f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>{_fp_tb}</pre>")])
 
+            # ─── ABA 11: ANALYTICS AVANÇADO ─────────────────────────────
+            try:
+                analytics_children = []
+
+                # ── Row 1: Tail Risk Gauge + Skew Summary ──
+                tail_gauge = build_tail_gauge(
+                    analytics['tail_score'], analytics['tail_interp'])
+                tail_info_parts = ['<h3>Tail Risk</h3>']
+                tail_info_parts.append(
+                    '<p><b>Score:</b> {:.0f}/100 — {}</p>'.format(
+                        analytics['tail_score'], analytics['tail_interp']))
+                for comp_key, comp_val in analytics['tail_components'].items():
+                    label = comp_val.get('label', comp_key)
+                    val = comp_val.get('value', 0)
+                    scr = comp_val.get('score', 0)
+                    tail_info_parts.append(
+                        '<p style="margin:2px 0;font-size:12px;">'
+                        '{}: <b>{}</b> (contrib: {:.1f})</p>'.format(label, val, scr))
+                tail_info_html = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "{}</div></div>".format(''.join(tail_info_parts)))
+
+                skew_summary_parts = ['<h3>Skew Monitor</h3>']
+                sk = analytics['skew_summary']
+                if sk:
+                    for key in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
+                        if key in sk:
+                            pctile_key = '{}_pctile'.format(key)
+                            pctile_str = ' (pctile: {:.0f}%)'.format(sk[pctile_key]) if pctile_key in sk else ''
+                            skew_summary_parts.append(
+                                '<p style="margin:2px 0;font-size:12px;">'
+                                '{}: <b>{}</b>{}</p>'.format(key.replace('_', ' ').title(), sk[key], pctile_str))
+                else:
+                    skew_summary_parts.append('<p style="color:#8b949e;">Sem dados de skew</p>')
+                skew_summary_widget = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "{}</div></div>".format(''.join(skew_summary_parts)))
+
+                analytics_children.append(wd.HBox([tail_gauge, tail_info_html, skew_summary_widget]))
+
+                # ── Row 2: Skew 4-Panel Chart ──
+                skew_chart = build_skew_chart(analytics['skew_df'])
+                analytics_children.append(skew_chart)
+
+                # ── Row 3: Spot-Up-Vol-Up + VIX Regression ──
+                suvu = analytics['spot_vol_up']
+                suvu_parts = [
+                    '<h3>Spot Up / Vol Up</h3>',
+                    '<p>Streak Atual: <b style="color:#f0883e;">{}</b> dias</p>'.format(
+                        suvu.get('current_streak', 0)),
+                    '<p>Streak Máximo: <b>{}</b></p>'.format(suvu.get('max_streak', 0)),
+                    '<p>Total dias Up/Up: {} ({:.1f}%)</p>'.format(
+                        suvu.get('total_days', 0), suvu.get('pct_up_up', 0)),
+                ]
+                suvu_widget = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "{}</div></div>".format(''.join(suvu_parts)))
+
+                vix_reg = analytics['vix_reg']
+                vix_parts = ['<h3>VIX vs SPX Regressão (1M)</h3>']
+                if vix_reg:
+                    vix_parts.append(
+                        '<p>R²: <b>{:.1%}</b></p>'.format(vix_reg.get('r2', 0)))
+                    vix_parts.append(
+                        '<p>Slope: {} | Intercept: {}</p>'.format(
+                            vix_reg.get('slope', 0), vix_reg.get('intercept', 0)))
+                    vix_parts.append(
+                        '<p>SPX 1M: {:.1f}% → VIX pred: <b>{:+.1f} pts</b></p>'.format(
+                            vix_reg.get('last_spx_1m', 0), vix_reg.get('predicted_vix_move', 0)))
+                else:
+                    vix_parts.append('<p style="color:#8b949e;">Sem dados VIX</p>')
+                vix_widget = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "{}</div></div>".format(''.join(vix_parts)))
+
+                # VIX scatter chart
+                if vix_reg and 'x' in vix_reg and len(vix_reg['x']) > 10:
+                    fig_vix_sc = go.FigureWidget()
+                    fig_vix_sc.add_trace(go.Scatter(
+                        x=vix_reg['x'], y=vix_reg['y'],
+                        mode='markers', name='1M obs',
+                        marker=dict(color=_C['accent'], size=4, opacity=0.5)))
+                    x_line = np.array([min(vix_reg['x']), max(vix_reg['x'])])
+                    y_line = vix_reg['slope'] * x_line + vix_reg['intercept']
+                    fig_vix_sc.add_trace(go.Scatter(
+                        x=x_line, y=y_line, mode='lines',
+                        line=dict(color=_C['red'], width=2), name='Reg'))
+                    fig_vix_sc.update_layout(
+                        title='VIX Move vs SPX Move (1M, R²={:.1%})'.format(vix_reg['r2']),
+                        xaxis_title='SPX 1M (%)', yaxis_title='VIX 1M (pts)',
+                        height=320, template=DASH_TEMPLATE)
+                    analytics_children.append(wd.HBox([suvu_widget, vix_widget, fig_vix_sc]))
+                else:
+                    analytics_children.append(wd.HBox([suvu_widget, vix_widget]))
+
+                # ── Row 4: OPEX Analysis ──
+                opex = analytics['opex_stats']
+                if opex:
+                    opex_parts = [
+                        '<h3>OPEX Price Action</h3>',
+                        '<p>Total OPEX analisados: <b>{}</b></p>'.format(opex.get('total_opex', 0)),
+                        '<p>Performance Flip: <b>{:.1f}%</b> ({} de {})</p>'.format(
+                            opex.get('flip_pct', 0), opex.get('flip_count', 0), opex.get('total_opex', 0)),
+                        '<p>Avg Ret Antes 5d: {:.2f}% | Depois 5d: {:.2f}%</p>'.format(
+                            opex.get('avg_ret_before', 0), opex.get('avg_ret_after', 0)),
+                        '<h4>Realized Vol Impact</h4>',
+                        '<p>RV 5d Into OPEX: {:.1f}% | Out: {:.1f}%</p>'.format(
+                            opex.get('rv5_delta_into', 0), opex.get('rv5_delta_out', 0)),
+                        '<p>RV 10d Into: {:.1f}% | Out: {:.1f}%</p>'.format(
+                            opex.get('rv10_delta_into', 0), opex.get('rv10_delta_out', 0)),
+                    ]
+                    opex_widget = wd.HTML(
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "{}</div></div>".format(''.join(opex_parts)))
+                    analytics_children.append(opex_widget)
+
+                # ── Row 5: Dealer Scenario Matrix ──
+                if not analytics['dealer_scenarios'].empty:
+                    ds_html = analytics['dealer_scenarios'].to_html(
+                        classes='mm-table', index=False, border=0)
+                    analytics_children.append(wd.HTML(
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "<h3>Dealer Scenario Matrix</h3>"
+                        "{}</div></div>".format(ds_html)))
+
+                # ── Row 6: Mag8 Rebalance Projection ──
+                if not analytics['mag8_scenarios'].empty:
+                    m8_html = analytics['mag8_scenarios'].to_html(
+                        classes='mm-table', index=False, border=0)
+                    analytics_children.append(wd.HTML(
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "<h3>Mag8 Dealer Rebalance Projection ($B)</h3>"
+                        "{}</div></div>".format(m8_html)))
+
+                # ── Row 7: Vol Control Rebalance Projection ──
+                if not analytics['vol_rebal'].empty:
+                    vr_html = analytics['vol_rebal'].to_html(
+                        classes='mm-table', index=False, border=0)
+                    analytics_children.append(wd.HTML(
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "<h3>Vol Ctrl + Dealer + LevETF Rebalance Projection</h3>"
+                        "{}</div></div>".format(vr_html)))
+
+                if not analytics_children:
+                    analytics_children.append(wd.HTML(
+                        '<p style="color:#8b949e;">Sem dados de analytics.</p>'))
+
+                tab11 = wd.VBox(analytics_children)
+
+            except Exception as _an_ui_err:
+                import traceback
+                _an_tb = traceback.format_exc()
+                print(f"⚠️ Analytics UI: {_an_ui_err}\n{_an_tb}")
+                tab11 = wd.VBox([wd.HTML(
+                    "<h3>Analytics</h3>"
+                    f"<p style='color:red;'>Erro: {_an_ui_err}</p>"
+                    f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>"
+                    f"{_an_tb}</pre>")])
+
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
-            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10]
+            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
-                'Simulador', 'Relatório', 'Flow Predictor'
+                'Simulador', 'Relatório', 'Flow Predictor', 'Analytics'
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
