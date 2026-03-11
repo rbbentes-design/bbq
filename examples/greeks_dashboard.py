@@ -2239,7 +2239,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
             row=1, col=1)
 
         # Scenario fan from last date
-        last_date = hist_dates.iloc[-1]
+        last_date = pd.Timestamp(hist_dates.iloc[-1])
         last_notional = hist_notional.iloc[-1]
 
         # Build forward points for 1W and 1M scenarios
@@ -2262,8 +2262,8 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
                 d1w = last_date + pd.Timedelta(days=7)
                 d1m = last_date + pd.Timedelta(days=30)
             except Exception:
-                d1w = last_date + 5
-                d1m = last_date + 21
+                d1w = last_date + pd.Timedelta(days=5)
+                d1m = last_date + pd.Timedelta(days=21)
 
             fig.add_trace(go.Scatter(
                 x=[last_date, d1w, d1m],
@@ -2682,23 +2682,42 @@ def _bql_fetch_member_data(index_ticker='SPX Index', lookback_days=252):
     req_iv = bql.Request(univ, {
         'iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
     })
-    req_wt = bql.Request(univ, {
-        'wt': bq.data.indx_mweight(fill='PREV'),
-    })
+
+    # Pesos: tentar idx_wt_val, senão cur_mkt_cap como proxy
+    try:
+        req_wt = bql.Request(univ, {
+            'wt': bq.data.idx_wt_val(fill='PREV'),
+        })
+        resp_wt = bq.execute(req_wt)
+        wt_df = resp_wt[0].df()
+    except Exception:
+        try:
+            req_wt = bql.Request(univ, {
+                'wt': bq.data.cur_mkt_cap(),
+            })
+            resp_wt = bq.execute(req_wt)
+            wt_df = resp_wt[0].df()
+        except Exception:
+            wt_df = pd.DataFrame()
+
     resp_px = bq.execute(req_px)
     resp_iv = bq.execute(req_iv)
-    resp_wt = bq.execute(req_wt)
 
     prices_df = resp_px[0].df().pivot(columns='ID', values='px')
     iv_df = resp_iv[0].df().pivot(columns='ID', values='iv')
 
-    wt_df = resp_wt[0].df()
     weights = {}
-    for _, row in wt_df.iterrows():
-        ticker = row.get('ID', '')
-        w = row.get('wt', 0.0)
-        if ticker and w and not np.isnan(w):
-            weights[ticker] = w / 100.0
+    if not wt_df.empty:
+        total_wt = 0
+        for _, row in wt_df.iterrows():
+            ticker = row.get('ID', '')
+            w = row.get('wt', 0.0)
+            if ticker and w and not np.isnan(w):
+                weights[ticker] = float(w)
+                total_wt += float(w)
+        if total_wt > 0:
+            for k in weights:
+                weights[k] = weights[k] / total_wt
     return prices_df, iv_df, weights
 
 
@@ -4931,13 +4950,50 @@ def run_analysis(_):
             fig_dealer = go.FigureWidget()
             fig_dealer.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['dealer'] / 1e6,
-                mode='lines', name='P&L Dealer', line_color=_C['purple'],
+                mode='lines', name='P&L Dealer (Total)', line_color=_C['purple'],
+                line=dict(width=2.5),
                 fill='tozeroy', fillcolor='rgba(188,140,255,0.08)'))
+            # Per-dealer P&L curves
+            _dealer_colors = ['#58a6ff', '#3fb950', '#f0883e', '#da3633',
+                              '#d29922', '#bc8cff', '#8b949e', '#e6edf3']
+            for _di, (_mm, _share) in enumerate(MM_VOLUME_SHARES.items()):
+                _dlr_pnl = pnl_curves['dealer'] * _share / 1e6
+                fig_dealer.add_trace(go.Scatter(
+                    x=levels, y=_dlr_pnl,
+                    mode='lines', name=_mm,
+                    line=dict(color=_dealer_colors[_di % len(_dealer_colors)],
+                              width=1, dash='dot'),
+                    visible='legendonly'))
             fig_dealer.add_vline(x=spot, line_dash="dash", line_color=_C['red'])
             fig_dealer.add_hline(y=0, line_width=0.5, line_color=_C['text_dim'])
-            fig_dealer.update_layout(title="P&L Estimado do Market Maker",
+            fig_dealer.update_layout(title="P&L Estimado — Total + Por Dealer",
                                      yaxis_title="P&L ($ Mi)", xaxis_title="Preço do Ativo",
-                                     height=380, template=DASH_TEMPLATE)
+                                     height=420, template=DASH_TEMPLATE,
+                                     legend=dict(font=dict(size=9), y=1.02, orientation='h'))
+
+            # Dealer book summary table
+            _oi100_pnl = df.OI.values * 100
+            _cs_pnl = np.where(df.Type.values == 'Call', 1, -1)
+            _total_dex = float(np.nansum(greeks_now['delta'] * _oi100_pnl))
+            _total_gex = float(np.nansum(greeks_now['gamma'] * _cs_pnl * _oi100_pnl))
+            _total_theta = float(np.nansum(greeks_now['theta'] * _oi100_pnl))
+            _total_vanna = float(np.nansum(greeks_now['vanna'] * _oi100_pnl))
+            _book_rows = []
+            for _mm, _share in list(MM_VOLUME_SHARES.items()) + [('TOTAL', 1.0)]:
+                _book_rows.append({
+                    'Dealer': _mm,
+                    'Share': '{:.0%}'.format(_share),
+                    'DEX ($M)': '{:,.1f}'.format(_total_dex * _share * spot / 1e6),
+                    'GEX/pt ($M)': '{:,.1f}'.format(_total_gex * _share / 1e6),
+                    'Theta ($K/d)': '{:,.0f}'.format(_total_theta * _share / 1e3),
+                    'Vanna': '{:,.0f}'.format(_total_vanna * _share),
+                })
+            _book_html = pd.DataFrame(_book_rows).to_html(
+                classes='mm-table', index=False, border=0)
+            dealer_summary_w = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card'>"
+                "<h3>Book dos Dealers (Estimado)</h3>"
+                "{}</div></div>".format(_book_html))
 
             # Hedge demand
             fig_hedge = go.FigureWidget()
@@ -4952,7 +5008,8 @@ def run_analysis(_):
                 xaxis_title="Preço do Ativo",
                 height=380, template=DASH_TEMPLATE)
 
-            tab4 = wd.VBox([fig_pnl, wd.HBox([fig_dealer, fig_hedge])])
+            tab4 = wd.VBox([fig_pnl, wd.HBox([fig_dealer, fig_hedge]),
+                            dealer_summary_w])
 
             # ─── ABA 5: MONTE CARLO ──────────────────────────────────────
             sim_var_95 = np.percentile(mc_pnl, 5)
@@ -5033,12 +5090,29 @@ def run_analysis(_):
                 "{}</div></div>".format(dealer_mc_html if dealer_mc_html else
                                         '<p style="color:#8b949e;">Sem dados de dealer MC</p>'))
 
+            # Per-dealer histograms (overlay top 4 dealers)
+            fig_mc_dealers = go.FigureWidget()
+            _mc_d_colors = ['#58a6ff', '#3fb950', '#f0883e', '#da3633']
+            _mc_top4 = list(MM_VOLUME_SHARES.keys())[:4]
+            dmc = analytics.get('dealer_mc', {})
+            for _mci, _mmn in enumerate(_mc_top4):
+                if _mmn in dmc and 'mc_pnl' in dmc[_mmn]:
+                    fig_mc_dealers.add_trace(go.Histogram(
+                        x=dmc[_mmn]['mc_pnl'] / 1e6, nbinsx=80,
+                        marker_color=_mc_d_colors[_mci], opacity=0.5,
+                        name=_mmn))
+            fig_mc_dealers.update_layout(
+                title='Distribuição P&L por Dealer (Top 4)',
+                xaxis_title='P&L ($ Mi)', yaxis_title='Frequência',
+                barmode='overlay', height=350, template=DASH_TEMPLATE)
+
             tab5 = wd.VBox([
                 wd.HTML("<div class='mm-dash'><div class='mm-card'>"
                         f"<h3>Simulação Monte Carlo (t-Student, {mc_n_days} Dias)</h3></div></div>"),
                 wd.HBox([fig_mc_hist, wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>{mc_table}</div></div>")]),
                 mc_dealer_widget,
+                fig_mc_dealers,
             ])
 
             # ─── ABA 6: REBALANCEAMENTO ETFs + ALAVANCADOS ─────────────
@@ -5167,26 +5241,37 @@ def run_analysis(_):
             vol_slider = wd.FloatSlider(
                 value=0, min=-5, max=5, step=0.5,
                 description='Shift Vol (%):', continuous_update=False,
-                layout={'width': '400px'})
+                layout={'width': '350px'})
             dte_slider = wd.IntSlider(
                 value=0, min=0, max=20, step=1,
                 description='Dias a Frente:', continuous_update=False,
-                layout={'width': '400px'})
+                layout={'width': '350px'})
+            spot_slider = wd.FloatSlider(
+                value=0, min=-10, max=10, step=0.5,
+                description='Spot Move (%):', continuous_update=False,
+                layout={'width': '350px'})
 
             fig_sim_dex = go.FigureWidget()
             fig_sim_dex.add_trace(go.Scatter(x=levels, y=np.zeros(len(levels)),
                                              mode='lines', line_color=_C['accent'],
                                              name='Delta'))
+            fig_sim_dex.add_trace(go.Scatter(x=[spot], y=[0], mode='markers',
+                                             marker=dict(color=_C['red'], size=10, symbol='x'),
+                                             name='Spot'))
             fig_sim_dex.update_layout(title="Delta Nocional", yaxis_title="$ Bi",
-                                      height=300, template=DASH_TEMPLATE,
+                                      height=320, template=DASH_TEMPLATE,
                                       margin=dict(t=30, b=20))
 
             fig_sim_gex = go.FigureWidget()
             fig_sim_gex.add_trace(go.Scatter(x=levels, y=np.zeros(len(levels)),
                                              mode='lines', line_color=_C['red'],
                                              name='Gamma'))
-            fig_sim_gex.update_layout(title="Gamma (GEX)", yaxis_title="$ Bi / 1% move",
-                                      height=300, template=DASH_TEMPLATE,
+            fig_sim_gex.add_trace(go.Scatter(x=[spot], y=[0], mode='markers',
+                                             marker=dict(color='#d29922', size=10, symbol='diamond'),
+                                             name='Flip'))
+            fig_sim_gex.update_layout(title="Gamma (GEX) + Gamma Flip",
+                                      yaxis_title="$ Bi / 1% move",
+                                      height=320, template=DASH_TEMPLATE,
                                       margin=dict(t=30, b=20))
 
             fig_sim_vega = go.FigureWidget()
@@ -5194,44 +5279,142 @@ def run_analysis(_):
                                               mode='lines', line_color=_C['purple'],
                                               name='Vega'))
             fig_sim_vega.update_layout(title="Vega Nocional", yaxis_title="$ Mi",
-                                       height=300, template=DASH_TEMPLATE,
+                                       height=320, template=DASH_TEMPLATE,
                                        margin=dict(t=30, b=20))
+
+            # Flow adjustment chart (how vol ctrl / RP / CTA / dealer adjust)
+            fig_sim_flows = go.FigureWidget()
+            fig_sim_flows.add_trace(go.Bar(x=['Vol Ctrl', 'Risk Parity', 'CTA', 'Dealer', 'Vanna'],
+                                           y=[0, 0, 0, 0, 0],
+                                           marker_color=[_C['accent'], _C['teal'], _C['orange'],
+                                                         _C['purple'], _C['pink']],
+                                           name='Flow ($B)'))
+            fig_sim_flows.update_layout(
+                title="Fluxo Estimado por Componente ($B)",
+                yaxis_title="$ Bi", height=320, template=DASH_TEMPLATE,
+                margin=dict(t=30, b=20))
+
+            sim_info = wd.HTML('')
 
             def _update_simulator(change=None):
                 v_shift = vol_slider.value / 100.0
                 d_shift = dte_slider.value
+                s_move = spot_slider.value / 100.0
                 sim_vol = np.clip(df.IV.values + v_shift, 0.001, None)
                 sim_tte = np.clip(df.Tte.values - d_shift / TRADING_DAYS, 1.0 / TRADING_DAYS, None)
                 types_arr = df.Type.values
+                new_spot = spot * (1 + s_move)
 
                 dex_c, gex_c, vex_c = [], [], []
+                _flip_level = None
+                _prev_gex = None
                 for L in levels:
                     g = calculate_all_greeks(L, df.Strike.values, sim_vol, sim_tte, types_arr)
                     oi_100 = df.OI.values * 100.0
                     dex_c.append(np.nansum(g['delta'] * oi_100 * L))
-                    gex_c.append(np.nansum(g['gamma'] * np.where(types_arr == 'Call', 1, -1)
-                                           * oi_100 * (L**2) * 0.01))
+                    _gex_val = np.nansum(g['gamma'] * np.where(types_arr == 'Call', 1, -1)
+                                         * oi_100 * (L**2) * 0.01)
+                    gex_c.append(_gex_val)
                     vex_c.append(np.nansum(g['vega'] * oi_100))
+                    if _prev_gex is not None and _flip_level is None:
+                        if (_prev_gex < 0 and _gex_val >= 0) or (_prev_gex > 0 and _gex_val <= 0):
+                            _flip_level = L
+                    _prev_gex = _gex_val
+
+                dex_arr = np.array(dex_c) / 1e9
+                gex_arr = np.array(gex_c) / 1e9
+                vex_arr = np.array(vex_c) / 1e6
 
                 with fig_sim_dex.batch_update():
-                    fig_sim_dex.data[0].y = np.array(dex_c) / 1e9
+                    fig_sim_dex.data[0].y = dex_arr
+                    fig_sim_dex.data[1].x = [new_spot]
+                    idx_ns = np.argmin(np.abs(levels - new_spot))
+                    fig_sim_dex.data[1].y = [dex_arr[idx_ns]] if idx_ns < len(dex_arr) else [0]
                 with fig_sim_gex.batch_update():
-                    fig_sim_gex.data[0].y = np.array(gex_c) / 1e9
+                    fig_sim_gex.data[0].y = gex_arr
+                    if _flip_level is not None:
+                        fig_sim_gex.data[1].x = [_flip_level]
+                        fig_sim_gex.data[1].y = [0]
+                    else:
+                        fig_sim_gex.data[1].x = [new_spot]
+                        idx_ns2 = np.argmin(np.abs(levels - new_spot))
+                        fig_sim_gex.data[1].y = [gex_arr[idx_ns2]] if idx_ns2 < len(gex_arr) else [0]
                 with fig_sim_vega.batch_update():
-                    fig_sim_vega.data[0].y = np.array(vex_c) / 1e6
+                    fig_sim_vega.data[0].y = vex_arr
+
+                # Compute combined flow for that scenario
+                ds = new_spot - spot
+                rv_now = rv_30d if pd.notna(rv_30d) else 0.15
+                rv_shock = rv_now * (1 + max(0, -s_move) * 5)
+                rv_shock = min(rv_shock, 0.80)
+
+                vc_flow = 0
+                for _tv in [5, 10, 15]:
+                    _tv_d = _tv / 100.0
+                    _e0 = _vc_exposure(_tv_d, rv_now)
+                    _e1 = _vc_exposure(_tv_d, rv_shock)
+                    vc_flow += VOL_CTRL_AUM.get(_tv, 100e9) * (_e1 - _e0)
+
+                rp_flow = 0
+                if abs(s_move) > 0.02:
+                    rp_flow = -abs(s_move) * 200e9 * 0.15
+
+                cta_flow = 0
+                if s_move < -0.03:
+                    cta_flow = s_move * 150e9 * 0.5
+                elif s_move > 0.03:
+                    cta_flow = s_move * 150e9 * 0.3
+
+                _oi_sim = df.OI.values * 100
+                _cs_sim = np.where(types_arr == 'Call', 1, -1)
+                g_new = calculate_all_greeks(new_spot, df.Strike.values, sim_vol, sim_tte, types_arr)
+                _gex_new = float(np.nansum(g_new['gamma'] * _cs_sim * _oi_sim))
+                _dex_new = float(np.nansum(g_new['delta'] * _oi_sim))
+                dealer_flow = -(_dex_new * ds + 0.5 * _gex_new * ds ** 2)
+
+                vanna_not = float(np.nansum(g_new['vanna'] * _oi_sim) * new_spot)
+                vol_chg = max(0.0, -s_move) * 150
+                vanna_flow = -vanna_not * vol_chg / 100.0
+
+                flows = [vc_flow / 1e9, rp_flow / 1e9, cta_flow / 1e9,
+                         dealer_flow / 1e9, vanna_flow / 1e9]
+                total_flow = sum(flows)
+
+                with fig_sim_flows.batch_update():
+                    fig_sim_flows.data[0].y = flows
+
+                # Info panel
+                regime = 'ESTABILIDADE (GEX+)' if _flip_level and new_spot > _flip_level else 'ACELERAÇÃO (GEX−)'
+                flip_str = '{:,.0f}'.format(_flip_level) if _flip_level else 'N/A'
+                sim_info.value = (
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "<h4>Cenário: SPX {:+.1f}% → {:,.0f} | Vol {:+.1f}% | "
+                    "{} dias à frente</h4>"
+                    "<p>Gamma Flip: <b>{}</b> | Regime: <b>{}</b></p>"
+                    "<p>Fluxo Total Estimado: <b style='color:{};'>${:+.1f}B</b> "
+                    "(VC: ${:.1f}B, RP: ${:.1f}B, CTA: ${:.1f}B, "
+                    "Dealer: ${:.1f}B, Vanna: ${:.1f}B)</p>"
+                    "</div></div>".format(
+                        s_move * 100, new_spot, vol_slider.value, d_shift,
+                        flip_str, regime,
+                        '#3fb950' if total_flow > 0 else '#da3633', total_flow,
+                        flows[0], flows[1], flows[2], flows[3], flows[4]))
 
             vol_slider.observe(_update_simulator, names='value')
             dte_slider.observe(_update_simulator, names='value')
+            spot_slider.observe(_update_simulator, names='value')
             _update_simulator()
 
             tab8 = wd.VBox([
                 wd.HTML("<div class='mm-dash'><div class='mm-card'>"
-                        "<h3>Simulador Interativo de Gregas</h3>"
-                        "<p>Ajuste vol e tempo para ver como as exposições mudam.</p>"
+                        "<h3>Simulador Interativo — Cenários + Fluxos</h3>"
+                        "<p>Ajuste spot, vol e tempo para ver inflexões, "
+                        "gamma flip e como dealers/vol-ctrl/RP/CTA ajustam.</p>"
                         "</div></div>"),
-                wd.HBox([vol_slider, dte_slider]),
+                wd.HBox([spot_slider, vol_slider, dte_slider]),
+                sim_info,
                 wd.HBox([fig_sim_dex, fig_sim_gex]),
-                fig_sim_vega
+                wd.HBox([fig_sim_vega, fig_sim_flows]),
             ])
 
             # ─── ABA 9: RELATÓRIO DE RISCO ───────────────────────────────
