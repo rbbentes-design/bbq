@@ -3494,6 +3494,649 @@ def _tail_metrics_widget(metrics):
     return wd.HTML(html)
 
 
+# ── Multi-Window Correlation Matrix + Dispersion Trade Engine ─────────────
+
+def compute_multi_window_correlations(prices_df, windows=None):
+    """
+    Calcula matrizes de correlação para múltiplas janelas temporais.
+    windows: dict {label: n_days} — e.g., {'1D': 1, '5D': 5, '1M_roll5D': (21,5)}
+    Para tupla (W, R): rolling(R) sobre retornos de W dias.
+    Retorna dict {label: corr_matrix (DataFrame)}.
+    """
+    if windows is None:
+        windows = {'Intraday (1D)': 1, '5D': 5, '1M rolling 5D': (21, 5)}
+
+    log_rets_1d = np.log(prices_df / prices_df.shift(1)).dropna()
+    result = {}
+
+    for label, spec in windows.items():
+        if isinstance(spec, tuple):
+            # Rolling window: compute W-day returns, then rolling R-day corr
+            w_days, r_days = spec
+            rets_w = np.log(prices_df / prices_df.shift(w_days)).dropna()
+            if len(rets_w) >= r_days:
+                result[label] = rets_w.tail(r_days * 4).corr()
+        elif spec == 1:
+            # Last N days of daily returns for intraday proxy
+            result[label] = log_rets_1d.tail(21).corr()
+        else:
+            # Simple N-day return correlation
+            rets_n = np.log(prices_df / prices_df.shift(spec)).dropna()
+            if len(rets_n) >= 21:
+                result[label] = rets_n.tail(63).corr()
+
+    return result
+
+
+def build_correlation_heatmap(corr_matrix, title='Correlation Matrix'):
+    """Heatmap interativo de correlação com Plotly."""
+    tickers = [t.split(' ')[0] for t in corr_matrix.columns]
+    z = corr_matrix.values
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=tickers, y=tickers,
+        colorscale=[
+            [0.0, '#da3633'], [0.25, '#f85149'],
+            [0.5, '#161b22'], [0.75, '#238636'],
+            [1.0, '#3fb950']],
+        zmin=-1, zmax=1,
+        text=np.round(z, 2), texttemplate='%{text}',
+        textfont=dict(size=9),
+        hovertemplate='%{x} vs %{y}: %{z:.3f}<extra></extra>',
+    ))
+    fig.update_layout(
+        title=title,
+        template=DASH_TEMPLATE,
+        height=400, width=450,
+        margin=dict(l=60, r=20, t=40, b=60),
+        xaxis=dict(side='bottom', tickangle=45),
+    )
+    return go.FigureWidget(fig)
+
+
+def find_dispersion_pairs(corr_matrices, iv_latest, n_pairs=8):
+    """
+    Identifica os melhores pares para dispersion trade via straddle/strangle.
+    Critérios:
+    1. Baixa correlação (ou negativa) entre os ativos
+    2. Alto diferencial de IV
+    3. Consistência entre janelas temporais
+    Retorna DataFrame com pares rankeados.
+    """
+    # Collect pairwise metrics across windows
+    pair_scores = {}
+    tickers = None
+
+    for label, corr in corr_matrices.items():
+        if tickers is None:
+            tickers = list(corr.columns)
+        for i in range(len(tickers)):
+            for j in range(i + 1, len(tickers)):
+                t1, t2 = tickers[i], tickers[j]
+                key = (t1, t2)
+                if key not in pair_scores:
+                    pair_scores[key] = {'corrs': [], 'labels': []}
+                pair_scores[key]['corrs'].append(corr.iloc[i, j])
+                pair_scores[key]['labels'].append(label)
+
+    if not pair_scores:
+        return pd.DataFrame()
+
+    rows = []
+    for (t1, t2), info in pair_scores.items():
+        avg_corr = np.mean(info['corrs'])
+        min_corr = np.min(info['corrs'])
+        iv1 = iv_latest.get(t1, np.nan)
+        iv2 = iv_latest.get(t2, np.nan)
+        iv_spread = abs(iv1 - iv2) if not (np.isnan(iv1) or np.isnan(iv2)) else 0
+
+        # Score: low correlation + high IV spread = better dispersion opportunity
+        # Normalize: corr contributes negatively (lower = better), IV spread positively
+        disp_score = (1 - avg_corr) * 0.4 + (1 - min_corr) * 0.3 + iv_spread * 100 * 0.3
+
+        rows.append({
+            'Pair': f"{t1.split(' ')[0]}/{t2.split(' ')[0]}",
+            'Ticker1': t1, 'Ticker2': t2,
+            'Avg Corr': round(avg_corr, 3),
+            'Min Corr': round(min_corr, 3),
+            'IV1 (%)': round(iv1 * 100, 1) if not np.isnan(iv1) else np.nan,
+            'IV2 (%)': round(iv2 * 100, 1) if not np.isnan(iv2) else np.nan,
+            'IV Spread (pp)': round(iv_spread * 100, 1),
+            'Disp Score': round(disp_score, 2),
+        })
+
+    df = pd.DataFrame(rows).sort_values('Disp Score', ascending=False).head(n_pairs)
+    return df.reset_index(drop=True)
+
+
+def fetch_straddle_prices(tickers, expiry_range='30D'):
+    """
+    Busca preços de straddle ATM (50-delta) para uma lista de tickers via BQL.
+    Para cada ticker: busca cadeia de opções, encontra ATM call + put, soma bids.
+    Retorna dict {ticker: {call_iv, put_iv, straddle_iv, call_px, put_px, straddle_px,
+                           strike, expiry}}.
+    """
+    bq = bql.Service()
+    results = {}
+
+    for tk in tickers:
+        try:
+            # Spot price
+            spot_req = bql.Request(tk, {'px': bq.data.px_last()})
+            spot_val = bq.execute(spot_req)[0].df().reset_index()
+            spot_v = float(spot_val.iloc[0]['px']) if len(spot_val) > 0 else np.nan
+            if np.isnan(spot_v):
+                continue
+
+            # Options universe: 25-35 DTE
+            opt_univ = bq.univ.filter(
+                bq.univ.options(tk),
+                bq.func.and_(
+                    bq.data.expire_dt() >= bq.func.today() + '15D',
+                    bq.data.expire_dt() <= bq.func.today() + '45D',
+                ))
+
+            req = bql.Request(opt_univ, {
+                'strike': bq.data.strike_px(),
+                'pc': bq.data.put_call(),
+                'iv': bq.data.ivol(),
+                'bid': bq.data.px_bid(),
+                'ask': bq.data.px_ask(),
+                'delta': bq.data.delta(),
+                'expiry': bq.data.expire_dt(),
+            })
+            resp = bq.execute(req)
+
+            # Build DataFrame from all response items
+            dfs = []
+            for item in resp:
+                _d = item.df().reset_index()
+                if not _d.empty:
+                    dfs.append(_d)
+            if not dfs:
+                continue
+
+            df = pd.concat(dfs, axis=1)
+            df = df.loc[:, ~df.columns.duplicated()]
+            df = df.dropna(subset=['strike', 'pc'])
+
+            # Find nearest ATM strike
+            df['dist'] = (df['strike'] - spot_v).abs()
+            atm_strike = df.loc[df['dist'].idxmin(), 'strike']
+
+            atm = df[df['strike'] == atm_strike]
+            calls = atm[atm['pc'] == 'Call']
+            puts = atm[atm['pc'] == 'Put']
+
+            if calls.empty or puts.empty:
+                continue
+
+            call_row = calls.iloc[0]
+            put_row = puts.iloc[0]
+
+            call_mid = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
+            put_mid = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
+            call_iv = float(call_row.get('iv', np.nan))
+            put_iv = float(put_row.get('iv', np.nan))
+
+            straddle_px = call_mid + put_mid
+            straddle_iv = (call_iv + put_iv) / 2 if not (np.isnan(call_iv) or np.isnan(put_iv)) else np.nan
+
+            results[tk] = {
+                'spot': spot_v,
+                'strike': float(atm_strike),
+                'expiry': str(call_row.get('expiry', '')),
+                'call_iv': call_iv,
+                'put_iv': put_iv,
+                'straddle_iv': straddle_iv,
+                'call_mid': call_mid,
+                'put_mid': put_mid,
+                'straddle_px': straddle_px,
+                'straddle_pct': straddle_px / spot_v * 100 if spot_v > 0 else np.nan,
+            }
+        except Exception as e:
+            print(f"⚠️ Straddle {tk}: {e}")
+
+    return results
+
+
+def fetch_historical_straddle_iv(tickers, lookback=252):
+    """
+    Busca IV ATM histórica para avaliar se straddle está caro/barato.
+    Usa implied_volatility(expiry='30D', pct_moneyness='100').
+    Retorna DataFrame com IV histórica de cada ticker.
+    """
+    bq = bql.Service()
+    dt_range = bq.func.range(f'-{lookback}d', '0d')
+    iv_hist = {}
+
+    for tk in tickers:
+        try:
+            req = bql.Request(tk, {
+                'iv': bq.data.implied_volatility(
+                    expiry='30D', pct_moneyness='100', fill='PREV', dates=dt_range),
+            })
+            s = _bql_ts(bq.execute(req)[0], 'iv')
+            if not s.empty:
+                iv_hist[tk] = s
+        except Exception:
+            pass
+
+    if not iv_hist:
+        return pd.DataFrame()
+    return pd.DataFrame(iv_hist)
+
+
+def compute_straddle_richness(straddle_data, iv_hist_df, rv_df=None):
+    """
+    Avalia se cada straddle está caro ou barato.
+    - Percentil da IV atual vs histórico
+    - IV vs RV spread (se rv_df disponível)
+    Retorna DataFrame com métricas de richness.
+    """
+    rows = []
+    for tk, data in straddle_data.items():
+        iv_now = data.get('straddle_iv', np.nan)
+        if np.isnan(iv_now):
+            continue
+
+        short_name = tk.split(' ')[0]
+
+        # Percentil vs histórico
+        hist = iv_hist_df[tk].dropna() if tk in iv_hist_df.columns else pd.Series(dtype=float)
+        if len(hist) > 20:
+            pct = (hist < iv_now).sum() / len(hist) * 100
+            avg_iv = hist.mean()
+            std_iv = hist.std()
+            z_score = (iv_now - avg_iv) / std_iv if std_iv > 0 else 0
+        else:
+            pct, avg_iv, std_iv, z_score = np.nan, np.nan, np.nan, np.nan
+
+        # IV-RV spread
+        rv_now = np.nan
+        if rv_df is not None and tk in rv_df.columns:
+            rv_series = rv_df[tk].dropna()
+            if len(rv_series) > 0:
+                rv_now = rv_series.iloc[-1]
+
+        iv_rv_spread = iv_now - rv_now if not np.isnan(rv_now) else np.nan
+
+        rows.append({
+            'Ticker': short_name,
+            'IV Atual (%)': round(iv_now * 100, 1) if iv_now < 1 else round(iv_now, 1),
+            'IV Média (%)': round(avg_iv * 100, 1) if not np.isnan(avg_iv) and avg_iv < 1 else round(avg_iv, 1) if not np.isnan(avg_iv) else np.nan,
+            'Percentil': round(pct, 0) if not np.isnan(pct) else np.nan,
+            'Z-Score': round(z_score, 2) if not np.isnan(z_score) else np.nan,
+            'RV 21d (%)': round(rv_now * 100, 1) if not np.isnan(rv_now) and rv_now < 1 else round(rv_now, 1) if not np.isnan(rv_now) else np.nan,
+            'IV-RV (pp)': round(iv_rv_spread * 100, 1) if not np.isnan(iv_rv_spread) and abs(iv_rv_spread) < 1 else round(iv_rv_spread, 1) if not np.isnan(iv_rv_spread) else np.nan,
+            'Straddle (%)': round(data['straddle_pct'], 2),
+            'Sinal': 'CARO' if not np.isnan(pct) and pct > 75 else ('BARATO' if not np.isnan(pct) and pct < 25 else 'NEUTRO'),
+        })
+    return pd.DataFrame(rows)
+
+
+def build_dispersion_trade_recommendations(pair_df, richness_df, straddle_data):
+    """
+    Gera recomendações de trade de dispersão baseado em:
+    - Pares com baixa correlação
+    - Straddle richness (caro vs barato)
+    - Direção: Long straddle do barato, Short straddle do caro
+    Retorna DataFrame com trades sugeridos.
+    """
+    if pair_df.empty or richness_df.empty:
+        return pd.DataFrame()
+
+    richness_map = {}
+    for _, row in richness_df.iterrows():
+        richness_map[row['Ticker']] = row
+
+    trades = []
+    for _, pair in pair_df.iterrows():
+        t1_short = pair['Ticker1'].split(' ')[0]
+        t2_short = pair['Ticker2'].split(' ')[0]
+        r1 = richness_map.get(t1_short, {})
+        r2 = richness_map.get(t2_short, {})
+
+        if not r1 or not r2:
+            continue
+
+        pct1 = r1.get('Percentil', 50)
+        pct2 = r2.get('Percentil', 50)
+        if pd.isna(pct1):
+            pct1 = 50
+        if pd.isna(pct2):
+            pct2 = 50
+
+        # Determine direction: buy cheap vol, sell expensive vol
+        if pct1 > pct2:
+            long_leg, short_leg = t2_short, t1_short
+            long_pct, short_pct = pct2, pct1
+        else:
+            long_leg, short_leg = t1_short, t2_short
+            long_pct, short_pct = pct1, pct2
+
+        spread_pct = short_pct - long_pct
+        edge = pair['Disp Score'] * (spread_pct / 100) if spread_pct > 0 else 0
+
+        trades.append({
+            'Long Straddle': long_leg,
+            'Short Straddle': short_leg,
+            'Corr': pair['Avg Corr'],
+            'Long IV Pctl': round(long_pct, 0),
+            'Short IV Pctl': round(short_pct, 0),
+            'Edge Score': round(edge, 2),
+            'Tipo': 'DISPERSÃO' if pair['Avg Corr'] < 0.5 else 'RELATIVE VALUE',
+        })
+
+    df = pd.DataFrame(trades).sort_values('Edge Score', ascending=False)
+    return df.head(8).reset_index(drop=True)
+
+
+def train_dispersion_model(prices_df, iv_df, lookback=126):
+    """
+    Modelo de ML simples (Logistic Regression) para prever dispersão futura.
+    Features: IV spread, correlação rolling, RV ratio, momentum divergence.
+    Target: retorno da dispersão foi positivo nos próximos 5 dias?
+    Retorna (model, feature_names, accuracy, feature_importance).
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import TimeSeriesSplit
+
+    tickers = list(prices_df.columns)
+    if len(tickers) < 2:
+        return None, [], 0, {}
+
+    log_rets = np.log(prices_df / prices_df.shift(1)).dropna()
+
+    # Build features for each day
+    features_list = []
+    targets = []
+
+    for end_idx in range(63, len(log_rets) - 5):
+        window = log_rets.iloc[end_idx - 21:end_idx]
+        window_long = log_rets.iloc[end_idx - 63:end_idx]
+
+        # Feature 1: Average pairwise correlation (21d)
+        corr_21 = window.corr()
+        mask = np.triu(np.ones(corr_21.shape, dtype=bool), k=1)
+        avg_corr = corr_21.values[mask].mean()
+
+        # Feature 2: Std of individual vols (cross-sectional vol dispersion)
+        vol_cs = window.std() * np.sqrt(252)
+        vol_disp = vol_cs.std()
+
+        # Feature 3: Correlation change (21d vs 63d)
+        corr_63 = window_long.corr()
+        avg_corr_63 = corr_63.values[mask[:corr_63.shape[0], :corr_63.shape[1]]].mean() \
+            if corr_63.shape == corr_21.shape else avg_corr
+        corr_chg = avg_corr - avg_corr_63
+
+        # Feature 4: Mean IV level (if available)
+        mean_iv = 0
+        if iv_df is not None and not iv_df.empty:
+            iv_slice = iv_df.iloc[min(end_idx, len(iv_df) - 1)]
+            mean_iv = iv_slice.mean() if not iv_slice.isna().all() else 0
+
+        # Feature 5: Return dispersion (cross-sectional std of returns)
+        ret_disp = window.iloc[-1].std()
+
+        # Feature 6: Momentum divergence (range of cumulative returns)
+        cum_21 = window.sum()
+        mom_div = cum_21.max() - cum_21.min()
+
+        features_list.append([avg_corr, vol_disp, corr_chg, mean_iv, ret_disp, mom_div])
+
+        # Target: was cross-sectional vol dispersion higher in next 5 days?
+        future = log_rets.iloc[end_idx:end_idx + 5]
+        future_disp = future.std().std() * np.sqrt(252)
+        current_disp = vol_disp
+        targets.append(1 if future_disp > current_disp else 0)
+
+    if len(features_list) < 50:
+        return None, [], 0, {}
+
+    X = np.array(features_list)
+    y = np.array(targets)
+
+    # Remove NaN rows
+    valid = ~(np.isnan(X).any(axis=1) | np.isnan(y))
+    X, y = X[valid], y[valid]
+
+    if len(X) < 50:
+        return None, [], 0, {}
+
+    feature_names = ['Avg Corr 21d', 'Vol Dispersion', 'Corr Change',
+                     'Mean IV', 'Return Dispersion', 'Momentum Divergence']
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Time-series cross-validation
+    tscv = TimeSeriesSplit(n_splits=5)
+    accuracies = []
+    for train_idx, test_idx in tscv.split(X_scaled):
+        model = LogisticRegression(max_iter=500, C=0.1, random_state=42)
+        model.fit(X_scaled[train_idx], y[train_idx])
+        acc = model.score(X_scaled[test_idx], y[test_idx])
+        accuracies.append(acc)
+
+    # Train final model on all data
+    final_model = LogisticRegression(max_iter=500, C=0.1, random_state=42)
+    final_model.fit(X_scaled, y)
+
+    importance = dict(zip(feature_names, np.abs(final_model.coef_[0])))
+
+    # Store scaler for prediction
+    final_model._scaler = scaler
+    final_model._feature_names = feature_names
+
+    return final_model, feature_names, np.mean(accuracies), importance
+
+
+def predict_dispersion(model, prices_df, iv_df=None):
+    """
+    Usa modelo treinado para prever probabilidade de dispersão futura.
+    Retorna (probability, features_dict).
+    """
+    if model is None:
+        return 0.5, {}
+
+    log_rets = np.log(prices_df / prices_df.shift(1)).dropna()
+    if len(log_rets) < 63:
+        return 0.5, {}
+
+    window21 = log_rets.tail(21)
+    window63 = log_rets.tail(63)
+
+    corr_21 = window21.corr()
+    mask = np.triu(np.ones(corr_21.shape, dtype=bool), k=1)
+    avg_corr = corr_21.values[mask].mean()
+
+    vol_cs = window21.std() * np.sqrt(252)
+    vol_disp = vol_cs.std()
+
+    corr_63 = window63.corr()
+    mask_63 = np.triu(np.ones(corr_63.shape, dtype=bool), k=1)
+    avg_corr_63 = corr_63.values[mask_63].mean()
+    corr_chg = avg_corr - avg_corr_63
+
+    mean_iv = 0
+    if iv_df is not None and not iv_df.empty:
+        iv_last = iv_df.iloc[-1]
+        mean_iv = iv_last.mean() if not iv_last.isna().all() else 0
+
+    ret_disp = window21.iloc[-1].std()
+    cum_21 = window21.sum()
+    mom_div = cum_21.max() - cum_21.min()
+
+    X = np.array([[avg_corr, vol_disp, corr_chg, mean_iv, ret_disp, mom_div]])
+    X_scaled = model._scaler.transform(X)
+    prob = model.predict_proba(X_scaled)[0, 1]
+
+    features_dict = dict(zip(model._feature_names, X[0]))
+    return float(prob), features_dict
+
+
+def build_kde_distribution_chart(prices_df, weights=None):
+    """
+    Chart KDE de distribuição de retornos dos constituintes (adaptado do código BQL do user).
+    Mostra: distribuição individual + ponderada + top-10 labels.
+    """
+    from scipy.stats import gaussian_kde
+
+    log_rets_1d = (prices_df.iloc[-1] / prices_df.iloc[-2] - 1) * 100
+    rets = log_rets_1d.dropna()
+
+    if len(rets) < 5:
+        return wd.HTML('<p style="color:#8b949e;">Dados insuficientes para KDE.</p>')
+
+    kde = gaussian_kde(rets)
+    x = np.linspace(rets.min() - 1, rets.max() + 1, 300)
+    y = kde(x)
+
+    fig = go.Figure()
+
+    # Fill negative region (red)
+    neg_mask = x < 0
+    fig.add_trace(go.Scatter(
+        x=x[neg_mask], y=y[neg_mask],
+        fill='tozeroy', fillcolor='rgba(248,81,73,0.3)',
+        line=dict(color='rgba(248,81,73,0.6)', width=1),
+        name=f'Down: {(rets < 0).sum()} stocks',
+        showlegend=True))
+
+    # Fill positive region (green)
+    pos_mask = x >= 0
+    fig.add_trace(go.Scatter(
+        x=x[pos_mask], y=y[pos_mask],
+        fill='tozeroy', fillcolor='rgba(63,185,80,0.3)',
+        line=dict(color='rgba(63,185,80,0.6)', width=1),
+        name=f'Up: {(rets >= 0).sum()} stocks',
+        showlegend=True))
+
+    # Weighted distribution
+    if weights:
+        w_arr = np.array([weights.get(t, 0) for t in rets.index])
+        w_arr = w_arr / w_arr.sum() if w_arr.sum() > 0 else w_arr
+        non_zero = w_arr > 0
+        if non_zero.sum() > 3:
+            kde_w = gaussian_kde(rets[non_zero], weights=w_arr[non_zero])
+            y_w = kde_w(x)
+            fig.add_trace(go.Scatter(
+                x=x, y=y_w,
+                line=dict(color=_C['yellow'], width=2.5),
+                name='Weighted Distribution'))
+
+    # Average lines
+    avg_all = rets.mean()
+    avg_up = rets[rets >= 0].mean() if (rets >= 0).any() else 0
+    avg_dn = rets[rets < 0].mean() if (rets < 0).any() else 0
+
+    fig.add_vline(x=avg_all, line=dict(color='white', dash='dash', width=1),
+                  annotation_text=f'Avg: {avg_all:.1f}%')
+    fig.add_vline(x=avg_up, line=dict(color=_C['green'], dash='dash', width=1.5))
+    fig.add_vline(x=avg_dn, line=dict(color=_C['red'], dash='dash', width=1.5))
+
+    # Top 10 by weight annotation
+    if weights:
+        w_series = pd.Series(weights)
+        top10 = w_series.nlargest(10)
+        for tk, w in top10.items():
+            if tk in rets.index:
+                ret_val = rets[tk]
+                fig.add_trace(go.Scatter(
+                    x=[ret_val], y=[kde(np.array([ret_val]))[0] * 1.1],
+                    mode='markers+text',
+                    marker=dict(color=_C['accent'], size=8),
+                    text=[tk.split(' ')[0]],
+                    textposition='top center',
+                    textfont=dict(size=10, color='white'),
+                    showlegend=False))
+
+    fig.update_layout(
+        title='Distribuição de Retornos 1D — Constituintes SPX',
+        template=DASH_TEMPLATE,
+        height=380,
+        margin=dict(l=50, r=30, t=45, b=30),
+        xaxis_title='Retorno (%)',
+        yaxis_title='Densidade',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.2,
+                    xanchor='center', x=0.5),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_straddle_richness_chart(richness_df):
+    """Bar chart horizontal: IV percentil de cada ativo (caro vs barato)."""
+    if richness_df.empty:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados de straddle.</p>')
+
+    df = richness_df.sort_values('Percentil', ascending=True)
+    colors = ['#da3633' if p > 75 else '#3fb950' if p < 25 else '#8b949e'
+              for p in df['Percentil']]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=df['Ticker'], x=df['Percentil'],
+        orientation='h',
+        marker=dict(color=colors),
+        text=[f"{p:.0f}th | IV: {iv}" for p, iv in zip(df['Percentil'], df['IV Atual (%)'])],
+        textposition='outside',
+        hovertemplate='%{y}: IV Pctl %{x:.0f}th<extra></extra>',
+    ))
+
+    fig.add_vline(x=50, line=dict(color='#8b949e', dash='dash', width=1))
+    fig.add_vline(x=25, line=dict(color=_C['green'], dash='dot', width=1),
+                  annotation_text='Barato', annotation_position='top')
+    fig.add_vline(x=75, line=dict(color=_C['red'], dash='dot', width=1),
+                  annotation_text='Caro', annotation_position='top')
+
+    fig.update_layout(
+        title='Straddle ATM — Percentil de IV (Caro vs Barato)',
+        template=DASH_TEMPLATE,
+        height=max(250, len(df) * 35),
+        margin=dict(l=80, r=60, t=45, b=30),
+        xaxis_title='Percentil IV (%)',
+        xaxis=dict(range=[0, 105]),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_dispersion_ml_widget(model_accuracy, feature_importance, disp_prob, features_dict):
+    """Widget HTML com output do modelo ML de dispersão."""
+    prob_color = _C['green'] if disp_prob > 0.6 else (_C['red'] if disp_prob < 0.4 else _C['yellow'])
+    signal = 'LONG DISPERSÃO' if disp_prob > 0.6 else ('SHORT DISPERSÃO' if disp_prob < 0.4 else 'NEUTRO')
+
+    html = (
+        f"<div style='background:#161b22; padding:12px; border-radius:6px; margin:5px 0;'>"
+        f"<b style='color:#58a6ff; font-size:14px;'>🤖 ML Dispersion Model</b><br>"
+        f"<span style='color:#c9d1d9; font-size:13px;'>"
+        f"Acurácia CV: <b>{model_accuracy:.1%}</b> │ "
+        f"P(dispersão ↑): <b style='color:{prob_color}'>{disp_prob:.1%}</b> │ "
+        f"Sinal: <b style='color:{prob_color}'>{signal}</b></span><br>"
+        f"<div style='margin-top:6px;'>"
+    )
+
+    # Feature importance bars
+    if feature_importance:
+        sorted_fi = sorted(feature_importance.items(), key=lambda x: -x[1])
+        max_fi = max(v for _, v in sorted_fi) if sorted_fi else 1
+        for fname, fval in sorted_fi:
+            bar_w = int(fval / max_fi * 150)
+            current = features_dict.get(fname, 0)
+            html += (
+                f"<div style='display:flex; align-items:center; margin:2px 0;'>"
+                f"<span style='color:#8b949e; font-size:11px; width:160px;'>{fname}</span>"
+                f"<div style='background:#58a6ff; height:10px; width:{bar_w}px; "
+                f"border-radius:3px; margin:0 8px;'></div>"
+                f"<span style='color:#c9d1d9; font-size:11px;'>{current:.4f}</span>"
+                f"</div>"
+            )
+    html += "</div></div>"
+    return wd.HTML(html)
+
+
 def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
     """
     Executa análise completa de dispersion trade.
@@ -3626,6 +4269,84 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         result['tail_risk'] = compute_tail_risk(log_rets)
     except Exception:
         pass
+
+    # ── Multi-window correlation matrices ──
+    try:
+        corr_matrices = compute_multi_window_correlations(prices_top)
+        result['corr_matrices'] = corr_matrices
+
+        # Latest IV for pair scoring
+        iv_latest = {}
+        if iv_top is not None and not iv_top.empty:
+            for col in iv_top.columns:
+                last_val = iv_top[col].dropna()
+                if len(last_val) > 0:
+                    iv_latest[col] = float(last_val.iloc[-1])
+                    if iv_latest[col] > 1:
+                        iv_latest[col] /= 100.0
+
+        result['dispersion_pairs'] = find_dispersion_pairs(corr_matrices, iv_latest)
+        print(f"[DISP] {len(result['dispersion_pairs'])} dispersion pairs identified")
+    except Exception as _mwc_err:
+        print(f"⚠️ Multi-window corr: {_mwc_err}")
+        result['corr_matrices'] = {}
+        result['dispersion_pairs'] = pd.DataFrame()
+
+    # ── Straddle pricing (Mag8 + SPX) ──
+    straddle_tickers = [t for t in MAG8 if t in prices_df.columns] + [index_ticker]
+    try:
+        result['straddle_data'] = fetch_straddle_prices(straddle_tickers)
+        print(f"[DISP] Straddle prices for {len(result['straddle_data'])} tickers")
+    except Exception as _strd_err:
+        print(f"⚠️ Straddle prices: {_strd_err}")
+        result['straddle_data'] = {}
+
+    # ── Historical IV for richness ──
+    try:
+        iv_hist = fetch_historical_straddle_iv(straddle_tickers, lookback=lookback)
+        # RV from prices for IV-RV spread
+        rv_df = pd.DataFrame()
+        for tk in straddle_tickers:
+            if tk in prices_df.columns:
+                p = prices_df[tk].dropna()
+                lr = np.log(p / p.shift(1))
+                rv_df[tk] = lr.rolling(21).std() * np.sqrt(252)
+
+        result['straddle_richness'] = compute_straddle_richness(
+            result['straddle_data'], iv_hist, rv_df)
+        print(f"[DISP] Richness computed for {len(result['straddle_richness'])} tickers")
+    except Exception as _rich_err:
+        print(f"⚠️ Straddle richness: {_rich_err}")
+        result['straddle_richness'] = pd.DataFrame()
+
+    # ── Trade recommendations ──
+    try:
+        result['trade_recs'] = build_dispersion_trade_recommendations(
+            result.get('dispersion_pairs', pd.DataFrame()),
+            result.get('straddle_richness', pd.DataFrame()),
+            result.get('straddle_data', {}))
+    except Exception:
+        result['trade_recs'] = pd.DataFrame()
+
+    # ── ML Dispersion Model ──
+    try:
+        model, feat_names, accuracy, feat_imp = train_dispersion_model(
+            prices_top, iv_top, lookback=min(lookback, 126))
+        if model is not None:
+            disp_prob, feat_dict = predict_dispersion(model, prices_top, iv_top)
+            result['ml_model'] = {
+                'accuracy': accuracy,
+                'feature_importance': feat_imp,
+                'disp_prob': disp_prob,
+                'features': feat_dict,
+            }
+            print(f"[DISP] ML model: accuracy={accuracy:.1%}, P(disp↑)={disp_prob:.1%}")
+    except Exception as _ml_err:
+        print(f"⚠️ ML Dispersion: {_ml_err}")
+
+    # ── KDE distribution data ──
+    result['prices_df'] = prices_df
+    result['weights'] = weights
 
     return result
 
@@ -6644,6 +7365,54 @@ def run_analysis(_):
                         if not _cor1m.empty or not _dspx.empty or not _vixeq.empty:
                             st_g_children.append(build_dispersion_index_chart(
                                 _cor1m, _dspx, _vixeq))
+
+                        # ── Multi-window correlation heatmaps ──
+                        corr_mats = disp_result.get('corr_matrices', {})
+                        if corr_mats:
+                            heatmap_widgets = []
+                            for lbl, cmat in corr_mats.items():
+                                if cmat is not None and not cmat.empty:
+                                    heatmap_widgets.append(
+                                        build_correlation_heatmap(cmat, title=f'Correlação — {lbl}'))
+                            if heatmap_widgets:
+                                st_g_children.append(wd.HBox(heatmap_widgets))
+
+                        # ── Dispersion pairs (multi-window scoring) ──
+                        dp = disp_result.get('dispersion_pairs', pd.DataFrame())
+                        if not dp.empty:
+                            st_g_children.append(_disp_table_widget(
+                                dp[['Pair', 'Avg Corr', 'Min Corr', 'IV1 (%)',
+                                    'IV2 (%)', 'IV Spread (pp)', 'Disp Score']],
+                                title='Top Pares para Dispersão (Multi-Window)'))
+
+                        # ── Straddle richness chart ──
+                        rich_df = disp_result.get('straddle_richness', pd.DataFrame())
+                        if not rich_df.empty:
+                            st_g_children.append(build_straddle_richness_chart(rich_df))
+                            st_g_children.append(_disp_table_widget(
+                                rich_df,
+                                title='Straddle ATM — Caro vs Barato (Mag8 + SPX)'))
+
+                        # ── Trade recommendations ──
+                        trade_recs = disp_result.get('trade_recs', pd.DataFrame())
+                        if not trade_recs.empty:
+                            st_g_children.append(_disp_table_widget(
+                                trade_recs,
+                                title='🎯 Recomendações de Dispersão — Straddle/Strangle'))
+
+                        # ── ML Dispersion Model ──
+                        ml = disp_result.get('ml_model', {})
+                        if ml:
+                            st_g_children.append(build_dispersion_ml_widget(
+                                ml['accuracy'], ml['feature_importance'],
+                                ml['disp_prob'], ml['features']))
+
+                        # ── KDE return distribution ──
+                        _px_df = disp_result.get('prices_df', pd.DataFrame())
+                        _wts = disp_result.get('weights', {})
+                        if not _px_df.empty and len(_px_df) >= 2:
+                            st_g_children.append(
+                                build_kde_distribution_chart(_px_df, _wts))
 
                     except Exception as _dsp_err:
                         st_g_children.append(wd.HTML(
