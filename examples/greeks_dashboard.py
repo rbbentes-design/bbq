@@ -3124,6 +3124,105 @@ def find_best_2x2_dispersion(prices_df, iv_df=None):
     return combos
 
 
+def find_best_pair_combos(prices_df, iv_df=None, straddle_data=None, max_pairs=3):
+    """
+    Encontra melhores combinações de até max_pairs pares para dispersion trade.
+    Cada par = (long vol ticker, short vol ticker).
+    Score = soma dos vol spreads * (1 - abs(corr)) para diversificação.
+    Retorna list of dicts com detalhes de cada combo (1-par, 2-pares, 3-pares).
+    """
+    from itertools import combinations
+
+    mag7_in = [t for t in MAG7 if t in prices_df.columns]
+    if len(mag7_in) < 2:
+        return []
+    log_rets = np.log(prices_df[mag7_in] / prices_df[mag7_in].shift(1)).dropna()
+    corr_mat = log_rets.tail(63).corr()
+    vols = {}
+    for t in mag7_in:
+        vols[t] = float(log_rets[t].tail(63).std() * np.sqrt(252))
+    if iv_df is not None:
+        for t in mag7_in:
+            if t in iv_df.columns:
+                last_iv = iv_df[t].dropna()
+                if len(last_iv) > 0:
+                    vols[t] = float(last_iv.iloc[-1]) / 100.0
+
+    # Build all possible pairs
+    all_pairs = []
+    for t1, t2 in combinations(mag7_in, 2):
+        v1, v2 = vols[t1], vols[t2]
+        if v1 < v2:
+            t1, t2 = t2, t1
+            v1, v2 = v2, v1
+        spread = v1 - v2
+        corr = corr_mat.loc[t1, t2] if t1 in corr_mat.index and t2 in corr_mat.index else 0
+        # Straddle cost info
+        s1_pct = straddle_data.get(t1, {}).get('straddle_pct', np.nan) if straddle_data else np.nan
+        s2_pct = straddle_data.get(t2, {}).get('straddle_pct', np.nan) if straddle_data else np.nan
+        all_pairs.append({
+            'long': t1, 'short': t2,
+            'spread': spread, 'corr': corr,
+            'score': spread * (1 - abs(corr)),
+            'straddle_long': s1_pct, 'straddle_short': s2_pct,
+        })
+    all_pairs.sort(key=lambda x: x['score'], reverse=True)
+
+    results = []
+    for n_pairs in range(1, min(max_pairs + 1, len(all_pairs) + 1)):
+        # For n_pairs: find best non-overlapping combination
+        best_score = -np.inf
+        best_selection = None
+        # Try top candidates (limit search space for speed)
+        top_pool = all_pairs[:min(15, len(all_pairs))]
+        for combo in combinations(range(len(top_pool)), n_pairs):
+            selected = [top_pool[i] for i in combo]
+            # Ensure no ticker overlap
+            tickers_used = set()
+            overlap = False
+            for p in selected:
+                if p['long'] in tickers_used or p['short'] in tickers_used:
+                    overlap = True
+                    break
+                tickers_used.add(p['long'])
+                tickers_used.add(p['short'])
+            if overlap:
+                continue
+            total_score = sum(p['score'] for p in selected)
+            if total_score > best_score:
+                best_score = total_score
+                best_selection = selected
+
+        if best_selection is None:
+            continue
+
+        pair_strs = []
+        for p in best_selection:
+            l_short = p['long'].split(' ')[0]
+            s_short = p['short'].split(' ')[0]
+            pair_strs.append(f"{l_short}/{s_short}")
+
+        avg_spread = np.mean([p['spread'] for p in best_selection])
+        avg_corr = np.mean([p['corr'] for p in best_selection])
+        straddle_costs = []
+        for p in best_selection:
+            if not np.isnan(p['straddle_long']) and not np.isnan(p['straddle_short']):
+                straddle_costs.append(p['straddle_long'] + p['straddle_short'])
+
+        entry = {
+            'N Pares': n_pairs,
+            'Pares': ' + '.join(pair_strs),
+            'Spread Médio (pp)': round(avg_spread * 100, 1),
+            'Corr Média': round(avg_corr, 3),
+            'Score': round(best_score * 100, 2),
+        }
+        if straddle_costs:
+            entry['Custo Straddle (%)'] = round(np.mean(straddle_costs), 2)
+        results.append(entry)
+
+    return results
+
+
 # ── Tail Risk (EVT + Conditional Expectations) ──
 
 def compute_tail_risk(log_returns, threshold_pct=5):
@@ -3200,38 +3299,40 @@ def build_dispersion_chart(disp_signal_df, impl_corr_cboe=None):
         return go.FigureWidget(fig)
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.6, 0.4],
+                        row_heights=[0.55, 0.45],
                         subplot_titles=['Correlação Implícita vs Realizada',
                                         'Spread (Impl - Real) + Z-Score'],
-                        vertical_spacing=0.08)
+                        vertical_spacing=0.14)
 
     fig.add_trace(go.Scatter(
         x=disp_signal_df.index, y=disp_signal_df['impl_corr'],
-        name='Impl Corr (calc)', line=dict(color='#f0883e', width=2),
+        name='Impl Corr (calc)', line=dict(color='#f0883e', width=2.5),
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=disp_signal_df.index, y=disp_signal_df['real_corr'],
-        name='Real Corr 3M', line=dict(color='#58a6ff', width=2),
+        name='Real Corr 3M', line=dict(color='#58a6ff', width=2.5),
     ), row=1, col=1)
 
     if impl_corr_cboe is not None and len(impl_corr_cboe) > 0:
         cboe_scaled = impl_corr_cboe / 100.0
         fig.add_trace(go.Scatter(
             x=cboe_scaled.index, y=cboe_scaled,
-            name='CBOE Impl Corr (.SPXSK3)', line=dict(color='#d29922',
-                                                         width=1, dash='dot'),
+            name='CBOE Impl Corr', line=dict(color='#d29922',
+                                              width=1.5, dash='dot'),
         ), row=1, col=1)
 
+    # --- Row 2: Spread bars + Z-score on secondary y ---
     colors = ['#238636' if v > 0 else '#da3633'
               for v in disp_signal_df['spread'].values]
     fig.add_trace(go.Bar(
         x=disp_signal_df.index, y=disp_signal_df['spread'],
-        name='Spread', marker_color=colors, opacity=0.6,
+        name='Spread', marker_color=colors, opacity=0.55,
     ), row=2, col=1)
+
+    # Z-Score on secondary y-axis for row 2
     fig.add_trace(go.Scatter(
         x=disp_signal_df.index, y=disp_signal_df['z_score'],
-        name='Z-Score', line=dict(color='#bc8cff', width=1.5),
-        yaxis='y4',
+        name='Z-Score', line=dict(color='#bc8cff', width=2),
     ), row=2, col=1)
 
     fig.add_hline(y=1.0, line_dash='dash', line_color='#238636',
@@ -3239,13 +3340,21 @@ def build_dispersion_chart(disp_signal_df, impl_corr_cboe=None):
     fig.add_hline(y=-1.0, line_dash='dash', line_color='#da3633',
                   opacity=0.5, row=2, col=1)
 
+    # --- Layout ---
     fig.update_layout(
-        template='plotly_dark', height=520,
+        template='plotly_dark', height=660,
         paper_bgcolor='#0d1117', plot_bgcolor='#161b22',
-        font=dict(color='#c9d1d9', size=11),
-        legend=dict(orientation='h', y=1.06, x=0.5, xanchor='center'),
-        margin=dict(l=60, r=40, t=50, b=30),
+        font=dict(color='#c9d1d9', size=12),
+        legend=dict(orientation='h', y=1.08, x=0.5, xanchor='center',
+                    font=dict(size=12), bgcolor='rgba(13,17,23,0.7)'),
+        margin=dict(l=60, r=60, t=60, b=30),
     )
+    # Axis labels
+    fig.update_yaxes(title_text='Correlação', row=1, col=1, title_font_size=12)
+    fig.update_yaxes(title_text='Spread / Z-Score', row=2, col=1, title_font_size=12)
+    fig.update_xaxes(tickfont=dict(size=10), row=1, col=1)
+    fig.update_xaxes(tickfont=dict(size=10), row=2, col=1)
+
     return go.FigureWidget(fig)
 
 
@@ -3720,10 +3829,10 @@ def find_dispersion_pairs(corr_matrices, iv_latest, n_pairs=8):
 
 def fetch_straddle_prices(tickers, expiry_range='30D'):
     """
-    Busca preços de straddle ATM (50-delta) para uma lista de tickers via BQL.
-    Para cada ticker: busca cadeia de opções, encontra ATM call + put, soma bids.
-    Retorna dict {ticker: {call_iv, put_iv, straddle_iv, call_px, put_px, straddle_px,
-                           strike, expiry}}.
+    Busca preços de straddle ATM (50-delta) + strangle 25-delta para tickers via BQL.
+    Para cada ticker: cadeia de opções → ATM call+put (straddle) + 25Δ put + 25Δ call (strangle).
+    Retorna dict {ticker: {call_iv, put_iv, straddle_iv, straddle_px, straddle_pct,
+                           strangle_iv, strangle_px, strangle_pct, p25_iv, c25_iv, ...}}.
     """
     bq = bql.Service()
     results = {}
@@ -3737,7 +3846,7 @@ def fetch_straddle_prices(tickers, expiry_range='30D'):
             if np.isnan(spot_v):
                 continue
 
-            # Options universe: 25-35 DTE
+            # Options universe: 15-45 DTE
             opt_univ = bq.univ.filter(
                 bq.univ.options(tk),
                 bq.func.and_(
@@ -3769,19 +3878,22 @@ def fetch_straddle_prices(tickers, expiry_range='30D'):
             df = df.loc[:, ~df.columns.duplicated()]
             df = df.dropna(subset=['strike', 'pc'])
 
-            # Find nearest ATM strike
+            # Ensure numeric delta
+            df['delta'] = pd.to_numeric(df['delta'], errors='coerce')
+
+            # ── ATM Straddle ──
             df['dist'] = (df['strike'] - spot_v).abs()
             atm_strike = df.loc[df['dist'].idxmin(), 'strike']
 
             atm = df[df['strike'] == atm_strike]
-            calls = atm[atm['pc'] == 'Call']
-            puts = atm[atm['pc'] == 'Put']
+            calls_atm = atm[atm['pc'] == 'Call']
+            puts_atm = atm[atm['pc'] == 'Put']
 
-            if calls.empty or puts.empty:
+            if calls_atm.empty or puts_atm.empty:
                 continue
 
-            call_row = calls.iloc[0]
-            put_row = puts.iloc[0]
+            call_row = calls_atm.iloc[0]
+            put_row = puts_atm.iloc[0]
 
             call_mid = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
             put_mid = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
@@ -3790,6 +3902,31 @@ def fetch_straddle_prices(tickers, expiry_range='30D'):
 
             straddle_px = call_mid + put_mid
             straddle_iv = (call_iv + put_iv) / 2 if not (np.isnan(call_iv) or np.isnan(put_iv)) else np.nan
+
+            # ── 25-Delta Strangle ──
+            calls_all = df[df['pc'] == 'Call'].copy()
+            puts_all = df[df['pc'] == 'Put'].copy()
+
+            c25_iv, p25_iv, strangle_px, strangle_iv = np.nan, np.nan, np.nan, np.nan
+            c25_mid, p25_mid = 0.0, 0.0
+
+            # 25-delta call: delta closest to 0.25
+            if not calls_all.empty and calls_all['delta'].notna().any():
+                calls_all['d25_dist'] = (calls_all['delta'].abs() - 0.25).abs()
+                c25_row = calls_all.loc[calls_all['d25_dist'].idxmin()]
+                c25_iv = float(c25_row.get('iv', np.nan))
+                c25_mid = (c25_row.get('bid', 0) + c25_row.get('ask', 0)) / 2
+
+            # 25-delta put: delta closest to -0.25
+            if not puts_all.empty and puts_all['delta'].notna().any():
+                puts_all['d25_dist'] = (puts_all['delta'].abs() - 0.25).abs()
+                p25_row = puts_all.loc[puts_all['d25_dist'].idxmin()]
+                p25_iv = float(p25_row.get('iv', np.nan))
+                p25_mid = (p25_row.get('bid', 0) + p25_row.get('ask', 0)) / 2
+
+            strangle_px = c25_mid + p25_mid
+            if not (np.isnan(c25_iv) or np.isnan(p25_iv)):
+                strangle_iv = (c25_iv + p25_iv) / 2
 
             results[tk] = {
                 'spot': spot_v,
@@ -3802,6 +3939,11 @@ def fetch_straddle_prices(tickers, expiry_range='30D'):
                 'put_mid': put_mid,
                 'straddle_px': straddle_px,
                 'straddle_pct': straddle_px / spot_v * 100 if spot_v > 0 else np.nan,
+                'c25_iv': c25_iv,
+                'p25_iv': p25_iv,
+                'strangle_iv': strangle_iv,
+                'strangle_px': strangle_px,
+                'strangle_pct': strangle_px / spot_v * 100 if spot_v > 0 else np.nan,
             }
         except Exception as e:
             print(f"⚠️ Straddle {tk}: {e}")
@@ -3886,8 +4028,9 @@ def compute_straddle_richness(straddle_data, iv_hist_df, rv_df=None):
 
 def build_atm_vol_matrix(straddle_data):
     """
-    Constrói matriz de ATM vol (call IV vs put IV) para Mag8 + SPX.
-    Retorna (DataFrame com a matriz, FigureWidget com heatmap).
+    Constrói matriz de ATM vol: Call/Put IV, Straddle IV, Strangle 25Δ IV,
+    Straddle %, Strangle % para Mag8 + SPX.
+    Retorna (DataFrame, FigureWidget).
     """
     rows = []
     for tk, data in straddle_data.items():
@@ -3895,62 +4038,83 @@ def build_atm_vol_matrix(straddle_data):
         call_iv = data.get('call_iv', np.nan)
         put_iv = data.get('put_iv', np.nan)
         strl_iv = data.get('straddle_iv', np.nan)
-        # Normalize to % if needed
+        c25_iv = data.get('c25_iv', np.nan)
+        p25_iv = data.get('p25_iv', np.nan)
+        strg_iv = data.get('strangle_iv', np.nan)
+        straddle_pct = data.get('straddle_pct', np.nan)
+        strangle_pct = data.get('strangle_pct', np.nan)
+        # Normalize to % if value is in decimal form (< 1)
         if not np.isnan(call_iv) and call_iv < 1:
             call_iv *= 100
         if not np.isnan(put_iv) and put_iv < 1:
             put_iv *= 100
         if not np.isnan(strl_iv) and strl_iv < 1:
             strl_iv *= 100
+        if not np.isnan(c25_iv) and c25_iv < 1:
+            c25_iv *= 100
+        if not np.isnan(p25_iv) and p25_iv < 1:
+            p25_iv *= 100
+        if not np.isnan(strg_iv) and strg_iv < 1:
+            strg_iv *= 100
         skew = put_iv - call_iv if not (np.isnan(put_iv) or np.isnan(call_iv)) else np.nan
         rows.append({
             'Ticker': short,
             'Call IV (%)': round(call_iv, 1) if not np.isnan(call_iv) else np.nan,
             'Put IV (%)': round(put_iv, 1) if not np.isnan(put_iv) else np.nan,
             'Straddle IV (%)': round(strl_iv, 1) if not np.isnan(strl_iv) else np.nan,
-            'Put-Call Skew (pp)': round(skew, 1) if not np.isnan(skew) else np.nan,
+            'Straddle (%)': round(straddle_pct, 2) if not np.isnan(straddle_pct) else np.nan,
+            '25Δ Call IV (%)': round(c25_iv, 1) if not np.isnan(c25_iv) else np.nan,
+            '25Δ Put IV (%)': round(p25_iv, 1) if not np.isnan(p25_iv) else np.nan,
+            'Strangle IV (%)': round(strg_iv, 1) if not np.isnan(strg_iv) else np.nan,
+            'Strangle (%)': round(strangle_pct, 2) if not np.isnan(strangle_pct) else np.nan,
+            'Skew (pp)': round(skew, 1) if not np.isnan(skew) else np.nan,
         })
     matrix_df = pd.DataFrame(rows)
     if matrix_df.empty:
         return matrix_df, wd.HTML('<p style="color:#8b949e;">Sem dados de ATM vol.</p>')
 
-    # Build grouped bar chart: call IV vs put IV per ticker
-    fig = go.Figure()
+    # Build grouped bar chart: Straddle IV vs Strangle IV + skew overlay
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(
-        x=matrix_df['Ticker'], y=matrix_df['Call IV (%)'],
-        name='Call IV', marker_color='rgba(63,185,80,0.7)',
-        text=matrix_df['Call IV (%)'], textposition='outside',
+        x=matrix_df['Ticker'], y=matrix_df['Straddle IV (%)'],
+        name='Straddle IV', marker_color='rgba(63,185,80,0.75)',
+        text=matrix_df['Straddle IV (%)'], textposition='outside',
         textfont=dict(size=10),
-    ))
+    ), secondary_y=False)
     fig.add_trace(go.Bar(
-        x=matrix_df['Ticker'], y=matrix_df['Put IV (%)'],
-        name='Put IV', marker_color='rgba(248,81,73,0.7)',
-        text=matrix_df['Put IV (%)'], textposition='outside',
+        x=matrix_df['Ticker'], y=matrix_df['Strangle IV (%)'],
+        name='Strangle 25Δ IV', marker_color='rgba(88,166,255,0.75)',
+        text=matrix_df['Strangle IV (%)'], textposition='outside',
         textfont=dict(size=10),
-    ))
+    ), secondary_y=False)
 
-    # Add skew as scatter on secondary axis
+    # Add straddle % as spot-normalized cost
     fig.add_trace(go.Scatter(
-        x=matrix_df['Ticker'], y=matrix_df['Put-Call Skew (pp)'],
-        name='Put-Call Skew', yaxis='y2',
-        mode='markers+lines',
+        x=matrix_df['Ticker'], y=matrix_df['Straddle (%)'],
+        name='Straddle Cost (%Spot)', mode='markers+lines',
+        marker=dict(color=_C['purple'], size=9, symbol='circle'),
+        line=dict(color=_C['purple'], width=1.5, dash='dot'),
+    ), secondary_y=True)
+
+    # Skew diamonds
+    fig.add_trace(go.Scatter(
+        x=matrix_df['Ticker'], y=matrix_df['Skew (pp)'],
+        name='Put-Call Skew', mode='markers',
         marker=dict(color=_C['yellow'], size=10, symbol='diamond'),
-        line=dict(color=_C['yellow'], width=1.5, dash='dot'),
-    ))
+    ), secondary_y=True)
 
     fig.update_layout(
-        title='ATM Vol Matrix — Call vs Put IV (Mag8 + SPX)',
+        title='ATM Vol Matrix — Straddle & Strangle (Mag8 + SPX)',
         template=DASH_TEMPLATE,
-        height=420,
+        height=450,
         barmode='group',
-        margin=dict(l=50, r=60, t=45, b=40),
+        margin=dict(l=50, r=60, t=50, b=40),
         xaxis_title='',
-        yaxis_title='IV (%)',
-        yaxis2=dict(title='Skew (pp)', overlaying='y', side='right',
-                    showgrid=False),
-        legend=dict(orientation='h', yanchor='bottom', y=-0.18,
-                    xanchor='center', x=0.5),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.20,
+                    xanchor='center', x=0.5, font=dict(size=11)),
     )
+    fig.update_yaxes(title_text='IV (%)', secondary_y=False)
+    fig.update_yaxes(title_text='Cost (%) / Skew (pp)', secondary_y=True, showgrid=False)
     return matrix_df, go.FigureWidget(fig)
 
 
@@ -4339,12 +4503,15 @@ def build_kde_distribution_chart(prices_df, weights=None):
                        showarrow=False, font=dict(size=10, color='#dc2626'),
                        bgcolor='rgba(0,0,0,0.5)', borderpad=2)
 
-    # ── Top 10 by weight: scatter points with labels ──
+    # ── Top 10 by weight: scatter points with labels (staggered to avoid overlap) ──
     interp_heavy = []
     if weights:
         w_series = pd.Series(weights)
         top10 = w_series.nlargest(10)
-        for tk, w in top10.items():
+        _label_positions = ['top center', 'bottom center', 'top right', 'bottom left',
+                            'top left', 'bottom right', 'middle right', 'middle left',
+                            'top center', 'bottom center']
+        for _ti, (tk, w) in enumerate(top10.items()):
             if tk in rets.index:
                 ret_val = rets[tk]
                 kde_val = kde(np.array([ret_val]))[0]
@@ -4356,7 +4523,7 @@ def build_kde_distribution_chart(prices_df, weights=None):
                     marker=dict(color=marker_color, size=9,
                                 line=dict(width=1, color='white')),
                     text=[f'{short} ({ret_val:+.1f}%)'],
-                    textposition='top center',
+                    textposition=_label_positions[_ti % len(_label_positions)],
                     textfont=dict(size=9, color='white'),
                     showlegend=False), secondary_y=False)
 
@@ -4505,6 +4672,7 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         'impl_corr_cboe': pd.Series(dtype=float),
         'mag7_pairs': pd.DataFrame(),
         'best_2x2': [],
+        'best_pairs': [],
         'optimal_basket': {},
         'tail_risk': {},
         'index_returns': np.array([]),
@@ -4658,6 +4826,15 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
     except Exception as _strd_err:
         print(f"⚠️ Straddle prices: {_strd_err}")
         result['straddle_data'] = {}
+
+    # ── Best pair combos (1-pair, 2-pair, 3-pair) ──
+    try:
+        result['best_pairs'] = find_best_pair_combos(
+            prices_df, iv_df,
+            straddle_data=result.get('straddle_data'),
+            max_pairs=3)
+    except Exception:
+        result['best_pairs'] = []
 
     # ── Historical IV for richness ──
     try:
@@ -5001,11 +5178,12 @@ def fetch_odte_volume_pct(lookback=2000):
     return ratio, go.FigureWidget(fig)
 
 
-def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
+def build_buyback_blackout_chart(blackout_curve, earnings_df=None, buyback_annual=None):
     """
     Buyback blackout chart:
     - Teal area: % of S&P 500 in blackout period
     - Orange bars: earnings reports/day
+    - Purple line: estimated daily buyback flow ($B) modulated by blackout
     - "Today" marker with current pct annotation
     Retorna FigureWidget.
     """
@@ -5015,7 +5193,23 @@ def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
     _bc = blackout_curve.copy()
     _bc['pct'] = _bc['pct_blackout'] * 100
 
-    fig = go.Figure()
+    # Estimate daily buyback flow across full year modulated by blackout openness
+    annual_bb = buyback_annual if buyback_annual and buyback_annual > 0 else SPX_ANNUAL_BUYBACK_EST
+    _bc['open_pct'] = 1.0 - _bc['pct_blackout']
+    # Weight each day's flow by proportion of market open for buybacks
+    # Normalize so total across year = annual_bb * execution_rate
+    open_sum = _bc['open_pct'].sum()
+    if open_sum > 0:
+        _bc['daily_flow'] = annual_bb * 0.80 * _bc['open_pct'] / open_sum
+    else:
+        _bc['daily_flow'] = annual_bb * 0.80 / len(_bc)
+
+    # Rolling 5d for smoother display
+    _bc['flow_5d'] = _bc['daily_flow'].rolling(5, min_periods=1, center=True).mean()
+
+    fig = make_subplots(
+        rows=1, cols=1,
+        specs=[[{"secondary_y": True}]])
 
     # Area fill: % in blackout (teal/dark cyan)
     fig.add_trace(go.Scatter(
@@ -5024,36 +5218,39 @@ def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
         fillcolor='rgba(45,212,191,0.25)',
         line=dict(color='#2dd4bf', width=1.5),
         name='% S&P 500 in Blackout',
-    ))
+    ), secondary_y=False)
 
     # Earnings reports/day as bars (if we have earnings data)
     if earnings_df is not None and not earnings_df.empty:
         earn_counts = (earnings_df['earn_dt'].dt.normalize()
                        .value_counts().sort_index())
-        # Only keep dates in our range
         mask = (earn_counts.index >= _bc['date'].min()) & (earn_counts.index <= _bc['date'].max())
         earn_counts = earn_counts[mask]
         if not earn_counts.empty:
-            # Scale to same y-axis range (earnings counts → percentage scale)
-            max_earn = earn_counts.max()
-            max_pct = _bc['pct'].max()
-            scale = max_pct / max_earn if max_earn > 0 else 1
             fig.add_trace(go.Bar(
-                x=earn_counts.index, y=earn_counts.values * scale,
+                x=earn_counts.index, y=earn_counts.values,
                 name='Earnings Reports/Day',
                 marker=dict(color='rgba(249,115,22,0.7)'),
-                yaxis='y2',
-            ))
+                opacity=0.6,
+            ), secondary_y=True)
+
+    # Buyback flow line (purple) on secondary axis
+    fig.add_trace(go.Scatter(
+        x=_bc['date'], y=_bc['flow_5d'] / 1e9,
+        mode='lines', name='Est. Buyback Flow ($B/dia)',
+        line=dict(color='#bc8cff', width=2, dash='solid'),
+    ), secondary_y=True)
 
     # Mark "Hoje" (today)
     _today = pd.Timestamp.now().normalize()
     _today_row = _bc.loc[_bc['date'] == _today]
     if not _today_row.empty:
         today_pct = float(_today_row['pct'].iloc[0])
+        today_flow = float(_today_row['flow_5d'].iloc[0]) / 1e9
         fig.add_vline(x=_today, line=dict(color='#dc2626', dash='dash', width=1.5))
         fig.add_annotation(
             x=_today, y=today_pct + 5,
-            text=f"<b>{today_pct:.1f}%</b> of S&P 500<br>In Blackout Period",
+            text=f"<b>{today_pct:.1f}%</b> in Blackout<br>Flow: ${today_flow:.2f}B/dia",
             showarrow=True, arrowhead=2, arrowcolor='#dc2626',
             font=dict(size=11, color='white'),
             bgcolor='rgba(139,25,25,0.8)', bordercolor='#dc2626',
@@ -5062,33 +5259,35 @@ def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
             x=[_today], y=[today_pct],
             mode='markers', showlegend=False,
             marker=dict(size=8, color='#dc2626'),
-        ))
+        ), secondary_y=False)
 
-    # Determine current quarter for title
     q = (_today.month - 1) // 3 + 1
     q_prev = q - 1 if q > 1 else 4
     q_year = _today.year if q > 1 else _today.year - 1
 
     fig.update_layout(
-        title=f"S&P 500 Q{q_prev} {q_year} Buyback Blackout vs. Earnings Dates",
+        title=f"S&P 500 Q{q_prev} {q_year} Buyback Blackout vs. Earnings + Flow Estimado",
         template=DASH_TEMPLATE,
-        height=400,
-        margin=dict(l=50, r=30, t=45, b=40),
-        xaxis_title='', yaxis_title='Percent of tickers in blackout',
-        yaxis=dict(range=[0, 105]),
-        yaxis2=dict(title='Reports/Day', overlaying='y', side='right',
-                    showgrid=False) if earnings_df is not None else {},
+        height=420,
+        margin=dict(l=50, r=60, t=45, b=40),
+        xaxis_title='',
         showlegend=True,
         legend=dict(orientation='h', yanchor='bottom', y=-0.18,
                     xanchor='center', x=0.5),
     )
+    fig.update_yaxes(title_text='Percent of tickers in blackout', range=[0, 105],
+                     secondary_y=False)
+    fig.update_yaxes(title_text='Reports/Day | Flow ($B)',
+                     showgrid=False, secondary_y=True)
+
     return go.FigureWidget(fig)
 
 
 def build_spy_intraday_candlestick(ticker='SPY US Equity', lookback_days=5):
     """
-    SPY intraday candlestick chart via BQL OHLC data.
+    SPY candlestick chart via BQL OHLC data.
     Se OHLC intraday não disponível, usa barras diárias recentes.
+    Inclui análise de padrões nos últimos 5 candles (blended).
     """
     bq_svc = bql.Service()
     dt_rng = bq_svc.func.range(f'-{lookback_days}d', '0d')
@@ -5113,6 +5312,61 @@ def build_spy_intraday_candlestick(ticker='SPY US Equity', lookback_days=5):
     if df.empty:
         return wd.HTML(f'<p style="color:#8b949e;">OHLC vazio para {ticker}.</p>')
 
+    # ── Candlestick pattern analysis (last 5 candles) ──
+    patterns = []
+    n = len(df)
+    if n >= 2:
+        o, h, lo, c = df['open'].values, df['high'].values, df['low'].values, df['close'].values
+        body = c - o
+        rng = h - lo
+        for i in range(max(0, n - 5), n):
+            b = body[i]
+            r = rng[i] if rng[i] > 0 else 1e-9
+            upper_shadow = h[i] - max(o[i], c[i])
+            lower_shadow = min(o[i], c[i]) - lo[i]
+            body_pct = abs(b) / r
+            # Doji
+            if body_pct < 0.1:
+                patterns.append(('Doji', i, '#fbbf24'))
+            # Hammer (small body top, long lower shadow)
+            elif lower_shadow > abs(b) * 2 and upper_shadow < abs(b) * 0.5:
+                patterns.append(('Hammer' if b >= 0 else 'Inverted Hammer', i, '#22c55e'))
+            # Shooting star (small body bottom, long upper shadow)
+            elif upper_shadow > abs(b) * 2 and lower_shadow < abs(b) * 0.5:
+                patterns.append(('Shooting Star', i, '#dc2626'))
+            # Engulfing
+            if i > 0 and abs(b) > abs(body[i-1]) * 1.3:
+                if b > 0 and body[i-1] < 0:
+                    patterns.append(('Bullish Engulfing', i, '#22c55e'))
+                elif b < 0 and body[i-1] > 0:
+                    patterns.append(('Bearish Engulfing', i, '#dc2626'))
+
+        # Blended candle analysis (combine last 5 into one)
+        last5 = df.iloc[-min(5, n):]
+        blended_open = last5['open'].iloc[0]
+        blended_close = last5['close'].iloc[-1]
+        blended_high = last5['high'].max()
+        blended_low = last5['low'].min()
+        blended_body = blended_close - blended_open
+        blended_range = blended_high - blended_low
+        blended_pct = abs(blended_body) / blended_range if blended_range > 0 else 0
+
+        if blended_pct < 0.1:
+            blended_signal = '⚖️ Indecisão (Doji Blended)'
+            blended_color = '#fbbf24'
+        elif blended_body > 0 and blended_pct > 0.6:
+            blended_signal = '🟢 Forte Alta (Marubozu Blended)'
+            blended_color = '#22c55e'
+        elif blended_body < 0 and blended_pct > 0.6:
+            blended_signal = '🔴 Forte Baixa (Marubozu Blended)'
+            blended_color = '#dc2626'
+        elif blended_body > 0:
+            blended_signal = '🟢 Leve Alta (Blended)'
+            blended_color = '#22c55e'
+        else:
+            blended_signal = '🔴 Leve Baixa (Blended)'
+            blended_color = '#dc2626'
+
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=df.index,
@@ -5123,10 +5377,33 @@ def build_spy_intraday_candlestick(ticker='SPY US Equity', lookback_days=5):
         decreasing=dict(line=dict(color='#dc2626'), fillcolor='rgba(220,38,38,0.4)'),
     ))
 
+    # Annotate detected patterns
+    for pname, idx, pcolor in patterns:
+        fig.add_annotation(
+            x=df.index[idx], y=df['high'].iloc[idx],
+            text=pname, showarrow=True, arrowhead=2,
+            font=dict(size=8, color=pcolor),
+            bgcolor='rgba(22,27,34,0.85)', borderpad=2,
+            ay=-25)
+
+    # Add blended candle annotation
+    if n >= 2:
+        pct_chg = (blended_close / blended_open - 1) * 100
+        fig.add_annotation(
+            x=0.02, y=0.98, xref='paper', yref='paper',
+            text=(f"<b>Blended {min(5,n)} Candles:</b> {blended_signal}<br>"
+                  f"O:{blended_open:.2f} H:{blended_high:.2f} "
+                  f"L:{blended_low:.2f} C:{blended_close:.2f} "
+                  f"({pct_chg:+.2f}%)"),
+            showarrow=False, font=dict(size=10, color=blended_color),
+            bgcolor='rgba(22,27,34,0.85)', bordercolor='#30363d',
+            borderwidth=1, borderpad=6, align='left',
+            xanchor='left', yanchor='top')
+
     fig.update_layout(
-        title=f'{ticker.split(" ")[0]} — Candlestick (Last {lookback_days}D)',
+        title=f'{ticker.split(" ")[0]} — Candlestick (Last {lookback_days}D) + Padrões',
         template=DASH_TEMPLATE,
-        height=350,
+        height=400,
         margin=dict(l=50, r=30, t=45, b=30),
         xaxis_title='', yaxis_title='Price',
         xaxis_rangeslider_visible=False,
@@ -5146,13 +5423,16 @@ MAG8 = [
 
 # ── Skew Monitor ─────────────────────────────────────────────────
 
-def fetch_skew_metrics(ticker='SPX Index', lookback=252):
+def fetch_skew_metrics(ticker='SPX Index', lookback=756):
     """
     Busca métricas de skew via BQL: 25d put IV, 25d call IV, ATM IV.
     Calcula: Risk Reversal (25dP - 25dC), Put Skew (25dP/ATM), Call Skew (25dC/ATM).
+    Lookback padrão: 756 dias (~3 anos) para percentis mais significativos.
     Retorna DataFrame com colunas: atm_iv, put25d_iv, call25d_iv, risk_reversal,
     put_skew, call_skew + percentis.
     """
+    from scipy.stats import percentileofscore as _pctof
+
     bq = bql.Service()
     dt_range = bq.func.range('-{}d'.format(lookback), '0d')
     try:
@@ -5203,16 +5483,13 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
     df['put_skew'] = df['put25d'] / atm
     df['call_skew'] = df['call25d'] / atm
 
-    # Percentis calculados individualmente para cada coluna usando sua própria série
+    # Percentis: rank do último valor vs série histórica inteira (scipy percentileofscore)
     for col in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
         if col in df.columns:
             vals = df[col].dropna()
             if len(vals) > 20:
-                # Percentil rolling: para cada data, rank dentro do histórico até aquele ponto
-                # Mas para o summary, basta o percentil do último valor vs toda a série
                 last = vals.iloc[-1]
-                pctile = float((vals.iloc[:-1] < last).sum() / max(len(vals) - 1, 1) * 100)
-                # Armazenar como metadado no DataFrame (última linha apenas)
+                pctile = float(_pctof(vals.values, last, kind='rank'))
                 df['{}_pctile'.format(col)] = np.nan
                 df.loc[df.index[-1], '{}_pctile'.format(col)] = pctile
     return df
@@ -5383,17 +5660,16 @@ def compute_vix_spx_regression(spx_returns, vix_changes, window_years=2):
 
 def run_dealer_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5, r=0.0):
     """
-    Monte Carlo por dealer individual.
-    Retorna dict: {dealer_name: {var95, var99, cvar95, mean_pnl, mc_pnl_array}}.
+    Monte Carlo por dealer individual com dinâmica de vol.
+    Simula evolução de spot + vol, recalcula Greeks em cada passo para
+    capturar gamma hedging e convexity. Retorna dict por dealer.
     """
-    greeks = calculate_all_greeks(spot, df.Strike.values, df.IV.values,
-                                  df.Tte.values, df.Type.values, r=r)
     oi100 = df.OI.values * 100
     call_sign = np.where(df.Type.values == 'Call', 1, -1)
-    total_dex = (greeks['delta'] * oi100).sum()
-    total_gex = (greeks['gamma'] * call_sign * oi100).sum()
-    total_theta = (greeks['theta'] * oi100).sum()
-    total_vanna = (greeks['vanna'] * oi100).sum()
+    strikes = df.Strike.values
+    base_iv = df.IV.values.copy()
+    base_tte = df.Tte.values.copy()
+    types_arr = df.Type.values
 
     day_rets_all = np.empty((n_days, n_sims), dtype=float)
     for d in range(n_days):
@@ -5401,33 +5677,64 @@ def run_dealer_monte_carlo(spot, df, risk_params, n_sims=10000, n_days=5, r=0.0)
             risk_params['tdf'], loc=risk_params['tloc'],
             scale=risk_params['tscale'], size=n_sims)
 
+    # Simulate total book P&L first (full path with Greeks recomputation)
+    # For each path: recompute Greeks at each step
+    total_cum_pnl = np.zeros(n_sims)
+    # Batch: compute average path then scale by sims for speed
+    # Use representative scenarios: compute Greeks at percentile spots
+    pctiles = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+    cum_spots = np.full(n_sims, spot)
+    for d in range(n_days):
+        new_spots = cum_spots * (1 + day_rets_all[d])
+        ds = new_spots - cum_spots
+        # Vol response: spot-vol correlation (empirical: ~-0.5 to -0.8 for SPX)
+        spot_chg_pct = day_rets_all[d]
+        vol_chg = -0.5 * spot_chg_pct  # ~50% inverse correlation
+        sim_iv = np.clip(base_iv + vol_chg.mean(), 0.001, None)
+        sim_tte = np.clip(base_tte - (d + 1) / TRADING_DAYS, 1.0 / TRADING_DAYS, None)
+
+        # Recompute Greeks at current mean spot for better P&L estimation
+        mean_spot = float(np.mean(new_spots))
+        g = calculate_all_greeks(mean_spot, strikes, sim_iv, sim_tte, types_arr, r=r)
+
+        total_dex = (g['delta'] * oi100).sum()
+        total_gex = (g['gamma'] * call_sign * oi100).sum()
+        total_theta = (g['theta'] * oi100).sum()
+        total_vanna = (g['vanna'] * oi100).sum()
+        vol_chg_total = float(np.mean(vol_chg)) * 100  # in vol pts
+
+        daily_pnl = (-(total_dex * ds + 0.5 * total_gex * ds ** 2)
+                     + total_theta
+                     - total_vanna * vol_chg_total * mean_spot / 100)
+        total_cum_pnl += daily_pnl
+        cum_spots = new_spots
+
+    # Per-dealer: scale from total
+    greeks = calculate_all_greeks(spot, strikes, base_iv, base_tte, types_arr, r=r)
+    total_dex0 = (greeks['delta'] * oi100).sum()
+    total_gex0 = (greeks['gamma'] * call_sign * oi100).sum()
+    total_theta0 = (greeks['theta'] * oi100).sum()
+    total_vanna0 = (greeks['vanna'] * oi100).sum()
+
     results = {}
     total_book = {
-        'dex': total_dex, 'gex': total_gex,
-        'theta': total_theta, 'vanna': total_vanna,
+        'dex': total_dex0, 'gex': total_gex0,
+        'theta': total_theta0, 'vanna': total_vanna0,
     }
 
     all_dealers = list(MM_VOLUME_SHARES.items()) + [('TOTAL', 1.0)]
     for mm_name, share in all_dealers:
-        mm_dex = total_dex * share
-        mm_gex = total_gex * share
-        mm_theta = total_theta * share
-        mm_vanna = total_vanna * share
-
-        cum_pnl = np.zeros(n_sims)
-        cur_spot = np.full(n_sims, spot)
-        for d in range(n_days):
-            new_spot = cur_spot * (1 + day_rets_all[d])
-            ds = new_spot - cur_spot
-            daily_pnl = -(mm_dex * ds + 0.5 * mm_gex * ds ** 2) + mm_theta
-            cum_pnl += daily_pnl
-            cur_spot = new_spot
+        if mm_name == 'TOTAL':
+            cum_pnl = total_cum_pnl
+        else:
+            cum_pnl = total_cum_pnl * share
 
         results[mm_name] = {
             'share': share,
             'var_95': float(np.percentile(cum_pnl, 5)),
             'var_99': float(np.percentile(cum_pnl, 1)),
             'cvar_95': float(np.mean(cum_pnl[cum_pnl <= np.percentile(cum_pnl, 5)])),
+            'cvar_99': float(np.mean(cum_pnl[cum_pnl <= np.percentile(cum_pnl, 1)])),
             'mean_pnl': float(np.mean(cum_pnl)),
             'median_pnl': float(np.median(cum_pnl)),
             'max_loss': float(np.min(cum_pnl)),
@@ -6582,7 +6889,7 @@ def run_analysis(_):
                 'error': None, 'disp_signal': pd.DataFrame(),
                 'real_corr': pd.DataFrame(),
                 'impl_corr_cboe': pd.Series(dtype=float),
-                'mag7_pairs': pd.DataFrame(), 'best_2x2': [],
+                'mag7_pairs': pd.DataFrame(), 'best_2x2': [], 'best_pairs': [],
                 'optimal_basket': {}, 'tail_risk': {},
                 'index_returns': np.array([]),
                 'hyp_test': {},
@@ -6904,11 +7211,24 @@ def run_analysis(_):
                 "<h3>Book dos Dealers (Estimado)</h3>"
                 "{}</div></div>".format(_book_html))
 
-            # Hedge demand
+            # Hedge demand — per dealer
             fig_hedge = go.FigureWidget()
+            _dealer_colors_h = ['#58a6ff', '#3fb950', '#f0883e', '#da3633',
+                                '#d29922', '#bc8cff', '#8b949e', '#e6edf3']
+            # Total hedge demand (main curve)
             fig_hedge.add_trace(go.Scatter(
                 x=levels, y=pnl_curves['hedge_demand'],
-                mode='lines', line_color=_C['teal'], name='Contratos'))
+                mode='lines', line=dict(color=_C['teal'], width=2.5),
+                name='Total'))
+            # Per-dealer hedge demand curves
+            for _dhi, (_mm_h, _share_h) in enumerate(MM_VOLUME_SHARES.items()):
+                _dlr_hedge = pnl_curves['hedge_demand'] * _share_h
+                fig_hedge.add_trace(go.Scatter(
+                    x=levels, y=_dlr_hedge,
+                    mode='lines', name=_mm_h,
+                    line=dict(color=_dealer_colors_h[_dhi % len(_dealer_colors_h)],
+                              width=1, dash='dot'),
+                    visible='legendonly'))
             fig_hedge.add_vline(x=spot, line_dash="dash", line_color=_C['red'])
             fig_hedge.add_hline(y=0, line_width=0.5, line_color=_C['text_dim'])
             fig_hedge.update_layout(
@@ -7254,9 +7574,12 @@ def run_analysis(_):
                 # Compute combined flow for that scenario
                 ds = new_spot - spot
                 rv_now = rv_30d if pd.notna(rv_30d) else 0.15
-                rv_shock = rv_now * (1 + max(0, -s_move) * 5)
+                # Vol slider shifts IV; treat it as realized vol shock too
+                vol_shift_dec = v_shift  # already in decimal (slider / 100)
+                rv_shock = max(rv_now + vol_shift_dec, rv_now * (1 + max(0, -s_move) * 5))
                 rv_shock = min(rv_shock, 0.80)
 
+                # Vol Control: responds to BOTH spot crash and vol rise
                 vc_flow = 0
                 for _tv in [5, 10, 15]:
                     _tv_d = _tv / 100.0
@@ -7264,15 +7587,16 @@ def run_analysis(_):
                     _e1 = _vc_exposure(_tv_d, rv_shock)
                     vc_flow += VOL_CTRL_AUM.get(_tv, 100e9) * (_e1 - _e0)
 
-                rp_flow = 0
-                if abs(s_move) > 0.02:
-                    rp_flow = -abs(s_move) * 200e9 * 0.15
+                # Risk Parity: responds to vol changes (inverse-vol allocation)
+                rp_result = compute_risk_parity_flow(rv_shock, rv_now)
+                rp_flow = rp_result['total']
 
+                # CTA: responds to spot trends
                 cta_flow = 0
                 if s_move < -0.03:
-                    cta_flow = s_move * 150e9 * 0.5
+                    cta_flow = s_move * CTA_AUM * CTA_EQUITY_ALLOC * 0.5
                 elif s_move > 0.03:
-                    cta_flow = s_move * 150e9 * 0.3
+                    cta_flow = s_move * CTA_AUM * CTA_EQUITY_ALLOC * 0.3
 
                 _oi_sim = df.OI.values * 100
                 _cs_sim = np.where(types_arr == 'Call', 1, -1)
@@ -7282,8 +7606,8 @@ def run_analysis(_):
                 dealer_flow = -(_dex_new * ds + 0.5 * _gex_new * ds ** 2)
 
                 vanna_not = float(np.nansum(g_new['vanna'] * _oi_sim) * new_spot)
-                vol_chg = max(0.0, -s_move) * 150
-                vanna_flow = -vanna_not * vol_chg / 100.0
+                vol_chg_pts = (rv_shock - rv_now) * 100  # em pontos de vol
+                vanna_flow = -vanna_not * vol_chg_pts if vanna_not != 0 else 0
 
                 flows = [vc_flow / 1e9, rp_flow / 1e9, cta_flow / 1e9,
                          dealer_flow / 1e9, vanna_flow / 1e9]
@@ -7567,8 +7891,13 @@ def run_analysis(_):
 
                 # Blackout curve chart
                 if not fp_blackout_curve.empty:
+                    _bb_annual = fp_buyback.get('announced', 0)
+                    if not _bb_annual or _bb_annual <= 0:
+                        _bb_annual = SPX_ANNUAL_BUYBACK_EST
                     st_c_children.append(
-                        build_buyback_blackout_chart(fp_blackout_curve, fp_earnings_df))
+                        build_buyback_blackout_chart(
+                            fp_blackout_curve, fp_earnings_df,
+                            buyback_annual=_bb_annual))
 
                 try:
                     bb_df = estimate_index_buyback_flow(ticker, top_n=30)
@@ -8058,6 +8387,13 @@ def run_analysis(_):
                                 b22_df,
                                 title='Melhor Trade NxN (Mag7) — ⭐ = Combo Ótimo'))
 
+                        # Best pair combos (1-pair, 2-pair, 3-pair)
+                        if disp_result.get('best_pairs'):
+                            bp_df = pd.DataFrame(disp_result['best_pairs'])
+                            st_g_children.append(_disp_table_widget(
+                                bp_df,
+                                title='Melhores Combinações de Pares (até 3)'))
+
                         # Optimal tracking basket
                         ob = disp_result.get('optimal_basket', {})
                         if ob.get('weights'):
@@ -8185,6 +8521,18 @@ def run_analysis(_):
                                     st_g_children.append(wd.HTML(kde_interp))
                             else:
                                 st_g_children.append(_kde_result)
+
+                        # ── RV 1M × Gamma Scatter ──
+                        if not gamma_hist.empty:
+                            try:
+                                _cur_rv_d = rv_30d if pd.notna(rv_30d) else None
+                                _cur_gex_d = total_gex_val / 1e9 if 'total_gex_val' in dir() else None
+                                st_g_children.append(
+                                    build_rv_gamma_chart(gamma_hist,
+                                                         current_gamma=_cur_gex_d,
+                                                         current_rv=_cur_rv_d))
+                            except Exception:
+                                pass
 
                         # ── SPY Intraday Candlestick ──
                         try:
