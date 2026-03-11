@@ -3768,6 +3768,7 @@ def run_analysis(_):
 
             # ─── ABA 10: FLOW PREDICTOR ──────────────────────────────────
             if fp_ok and fp_score is not None:
+              try:
                 # Score summary header
                 fp_title = wd.HTML(
                     f"<div class='mm-dash'><div class='mm-card'>"
@@ -3972,14 +3973,15 @@ def run_analysis(_):
                     "</div></div>")]
 
                 # CTA Trend Following — GS-style presentation
-                _cta_flow = fp_cta.get('flow', 0)
-                _cta_trend = fp_cta.get('trend_today', 0)
-                _cta_pos = fp_cta.get('pos_today', 0)
-                _cta_pos_prev = fp_cta.get('pos_prev', 0)
-                _cta_color = _C['green'] if _cta_flow > 0 else _C['red'] if _cta_flow < 0 else _C['text_muted']
-                _cta_dir = 'COMPRA' if _cta_flow > 0 else 'VENDA' if _cta_flow < 0 else 'FLAT'
-                _trend_bar = '█' * max(1, int(abs(_cta_trend) * 10))
-                _trend_color = _C['green'] if _cta_trend > 0 else _C['red'] if _cta_trend < 0 else _C['text_muted']
+                try:
+                    _cta_flow = fp_cta.get('flow', 0)
+                    _cta_trend = fp_cta.get('trend_today', 0)
+                    _cta_pos = fp_cta.get('pos_today', 0)
+                    _cta_pos_prev = fp_cta.get('pos_prev', 0)
+                    _cta_color = _C['green'] if _cta_flow > 0 else _C['red'] if _cta_flow < 0 else _C['text_muted']
+                    _cta_dir = 'COMPRA' if _cta_flow > 0 else 'VENDA' if _cta_flow < 0 else 'FLAT'
+                    _trend_bar = '█' * max(1, int(abs(_cta_trend) * 10))
+                    _trend_color = _C['green'] if _cta_trend > 0 else _C['red'] if _cta_trend < 0 else _C['text_muted']
 
                 # ── 1. Current status summary ──
                 _cta_html = (
@@ -4101,6 +4103,15 @@ def run_analysis(_):
                         gridcolor=_C['border'],
                         tickfont=dict(color=_C['text_muted']))
                     st_f_children.append(_flow_border(go.FigureWidget(_hfig)))
+                except Exception as _cta_err:
+                    import traceback
+                    _tb = traceback.format_exc()
+                    print(f"⚠️ CTA GS-style rendering: {_cta_err}\n{_tb}")
+                    st_f_children.append(wd.HTML(
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h4>CTA / Trend Following</h4>"
+                        f"<p style='color:{_C['red']}'>Erro ao renderizar CTA: {_cta_err}</p>"
+                        f"</div></div>"))
 
                 # Dealer flow
                 _dl_color = _C['green'] if fp_dealer_flow > 0 else _C['red'] if fp_dealer_flow < 0 else _C['text_muted']
@@ -4250,6 +4261,14 @@ def run_analysis(_):
                                             'COT', 'Correlação', 'Sistemáticos']):
                     fp_tabs.set_title(idx_t, nm)
                 tab10 = fp_tabs
+              except Exception as _fp_ui_err:
+                import traceback
+                _fp_tb = traceback.format_exc()
+                print(f"⚠️ Flow Predictor UI: {_fp_ui_err}\n{_fp_tb}")
+                tab10 = wd.VBox([wd.HTML(
+                    f"<h3>Flow Predictor</h3>"
+                    f"<p style='color:red;'>Erro ao montar UI: {_fp_ui_err}</p>"
+                    f"<pre style='font-size:10px;color:#aaa;'>{_fp_tb}</pre>")])
             else:
                 reason = ("Marque 'Incluir Flow Predictor' e rode novamente."
                           if not flow_pred_w.value else "Erro na execução.")
