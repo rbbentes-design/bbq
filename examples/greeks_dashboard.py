@@ -1888,6 +1888,156 @@ def compute_cta_flow(prices, rv_current, target_vol=0.10):
         'pos_prev': pos_prev,
     }
 
+def compute_cta_scenario_flows(prices, rv_current, spot, horizon_days=5,
+                                annualized_vol=None):
+    """
+    Calcula fluxos de CTA em diferentes cenários (Flat / Up / Down) ao estilo GS.
+
+    Para cada cenário, simula o preço nos próximos `horizon_days` dias úteis,
+    recalcula trend strength, position sizing, e estima o fluxo total.
+
+    Returns:
+        list of dicts: [{name, spx_end, pct_move, flow_total, flow_us, trend_end, pos_end}]
+    """
+    if len(prices) < 201 or rv_current < 1e-6:
+        return []
+    if annualized_vol is None:
+        annualized_vol = rv_current
+
+    daily_vol = annualized_vol / np.sqrt(252)
+    move_1sigma = daily_vol * np.sqrt(horizon_days)
+
+    scenarios = [
+        ('Flat', 0.0),
+        ('Up 1 Std Dev', move_1sigma),
+        ('Up 2 Std Dev', 2 * move_1sigma),
+        ('Down 1 Std Dev', -move_1sigma),
+        ('Down 2 Std Dev', -2 * move_1sigma),
+        ('Down 2.5 Std Dev', -2.5 * move_1sigma),
+    ]
+
+    # Current position
+    trend_now = compute_cta_trend_strength(prices)
+    pos_now = np.clip(trend_now * (0.10 / rv_current), -2, 2)
+    current_notional = CTA_AUM * CTA_EQUITY_ALLOC * pos_now
+
+    results = []
+    for name, pct_move in scenarios:
+        # Simulate gradual price path over horizon
+        sim_prices = prices.copy()
+        daily_step = pct_move / max(horizon_days, 1)
+        for d in range(horizon_days):
+            new_px = sim_prices.iloc[-1] * (1 + daily_step)
+            sim_prices = pd.concat([sim_prices, pd.Series([new_px],
+                index=[sim_prices.index[-1] + pd.Timedelta(days=1)])])
+
+        trend_end = compute_cta_trend_strength(sim_prices)
+        # RV adjusts: in down scenarios vol typically spikes
+        rv_end = rv_current * (1 + max(0, -pct_move) * 3)  # vol spike heuristic
+        pos_end = np.clip(trend_end * (0.10 / max(rv_end, 1e-6)), -2, 2)
+        end_notional = CTA_AUM * CTA_EQUITY_ALLOC * pos_end
+        flow = end_notional - current_notional
+
+        results.append({
+            'name': name,
+            'spx_end': spot * (1 + pct_move),
+            'pct_move': pct_move,
+            'flow_total': flow,
+            'trend_end': trend_end,
+            'pos_end': pos_end,
+            'pos_now': pos_now,
+        })
+    return results
+
+
+def compute_cta_pivot_levels(prices, spot, rv_current):
+    """
+    Calcula níveis de preço onde sinais de trend MA flip (pivot levels).
+    Para cada par de MAs, o crossover acontece quando MA_short = MA_long.
+    O preço que CAUSARIA esse crossover é o pivot level.
+
+    Returns:
+        list of dicts: [{label, ma_pair, level, type, distance_pct}]
+        sorted by proximity to spot.
+    """
+    if len(prices) < 201:
+        return []
+
+    pivots = []
+    labels = {
+        (5, 20): 'Curto prazo',
+        (5, 60): 'Curto-médio',
+        (10, 60): 'Médio prazo',
+        (20, 120): 'Médio-longo',
+        (20, 200): 'Longo prazo',
+    }
+
+    for short_w, long_w in CTA_MA_PAIRS:
+        ma_short_vals = prices.rolling(short_w).mean()
+        ma_long_vals = prices.rolling(long_w).mean()
+
+        ma_short_now = ma_short_vals.iloc[-1]
+        ma_long_now = ma_long_vals.iloc[-1]
+
+        if pd.isna(ma_short_now) or pd.isna(ma_long_now):
+            continue
+
+        # Current signal
+        above = ma_short_now > ma_long_now
+
+        # The pivot level: price that would make MA_short = MA_long
+        # MA_short = (sum of last (short_w-1) prices + pivot) / short_w
+        # We need: MA_short_new = MA_long (approximation - MA_long moves slowly)
+        sum_recent = prices.iloc[-short_w+1:].sum() if short_w > 1 else 0
+        pivot_px = ma_long_now * short_w - sum_recent
+
+        if pivot_px <= 0 or pivot_px > spot * 2:
+            continue
+
+        dist_pct = (pivot_px - spot) / spot
+        signal_type = 'SELL trigger' if above else 'BUY trigger'
+        label = labels.get((short_w, long_w), f'MA{short_w}/{long_w}')
+
+        pivots.append({
+            'label': label,
+            'ma_pair': f'{short_w}/{long_w}',
+            'level': pivot_px,
+            'type': signal_type,
+            'distance_pct': dist_pct,
+            'above_now': above,
+        })
+
+    # Sort by proximity to spot
+    pivots.sort(key=lambda x: abs(x['distance_pct']))
+    return pivots
+
+
+def compute_cta_historical_positions(prices, rv_series=None, lookback=252):
+    """
+    Calcula série histórica de trend strength, position sizing e notional.
+    Retorna DataFrame com colunas: date, trend, position, notional_$B.
+    """
+    if len(prices) < 201:
+        return pd.DataFrame()
+
+    records = []
+    start = max(201, len(prices) - lookback)
+    for i in range(start, len(prices)):
+        px_slice = prices.iloc[:i+1]
+        trend = compute_cta_trend_strength(px_slice)
+        # Realized vol (63d)
+        rets = px_slice.pct_change().dropna()
+        rv = rets.iloc[-63:].std() * np.sqrt(252) if len(rets) >= 63 else 0.15
+        pos = np.clip(trend * (0.10 / max(rv, 1e-6)), -2, 2)
+        notional = CTA_AUM * CTA_EQUITY_ALLOC * pos
+        records.append({
+            'date': px_slice.index[-1],
+            'trend': trend,
+            'position': pos,
+            'notional': notional,
+        })
+    return pd.DataFrame(records)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 5F — VISUALIZAÇÕES DO FLOW PREDICTOR
@@ -2890,6 +3040,10 @@ def run_analysis(_):
 
                 # CTA trend following flow
                 fp_cta = {'flow': 0, 'trend_today': 0, 'pos_today': 0, 'pos_prev': 0}
+                fp_cta_scenarios_1w = []
+                fp_cta_scenarios_1m = []
+                fp_cta_pivots = []
+                fp_cta_hist = pd.DataFrame()
                 try:
                     # Reconstruir preços a partir de log returns
                     _px_series = np.exp(np.cumsum(log_returns))
@@ -2899,6 +3053,19 @@ def run_analysis(_):
                     print(f"[FLOW] CTA: ${fp_cta['flow']:,.0f} "
                           f"(trend={fp_cta['trend_today']:+.3f}, "
                           f"pos={fp_cta['pos_today']:+.3f}→{fp_cta['pos_prev']:+.3f})")
+
+                    # CTA scenario table (GS style): 1W and 1M
+                    fp_cta_scenarios_1w = compute_cta_scenario_flows(
+                        _px_series, _cta_rv, spot, horizon_days=5)
+                    fp_cta_scenarios_1m = compute_cta_scenario_flows(
+                        _px_series, _cta_rv, spot, horizon_days=21)
+
+                    # CTA pivot levels
+                    fp_cta_pivots = compute_cta_pivot_levels(_px_series, spot, _cta_rv)
+
+                    # CTA historical positions (last 6M)
+                    loading.value = "<h4>14b/16: CTA — histórico de posições...</h4>"
+                    fp_cta_hist = compute_cta_historical_positions(_px_series, lookback=126)
                 except Exception as e:
                     print(f"⚠️ CTA flow: {e}")
 
@@ -3742,7 +3909,7 @@ def run_analysis(_):
                     "<p><small>Ref: BofA Systematic Flows Monitor methodology</small></p>"
                     "</div></div>")]
 
-                # CTA Trend Following
+                # CTA Trend Following — GS-style presentation
                 _cta_flow = fp_cta.get('flow', 0)
                 _cta_trend = fp_cta.get('trend_today', 0)
                 _cta_pos = fp_cta.get('pos_today', 0)
@@ -3751,21 +3918,126 @@ def run_analysis(_):
                 _cta_dir = 'COMPRA' if _cta_flow > 0 else 'VENDA' if _cta_flow < 0 else 'FLAT'
                 _trend_bar = '█' * max(1, int(abs(_cta_trend) * 10))
                 _trend_color = _C['green'] if _cta_trend > 0 else _C['red'] if _cta_trend < 0 else _C['text_muted']
-                st_f_children.append(wd.HTML(
+
+                # ── 1. Current status summary ──
+                _cta_html = (
                     f"<div class='mm-dash'><div class='mm-card'>"
-                    f"<h4>CTA / Trend Following (AUM: ~$340B, ~25% equity)</h4>"
+                    f"<h4>CTA / Trend Following (AUM: ~$340B, ~25% equity = ~$85B)</h4>"
                     f"<table class='mm-table' style='width:auto;'>"
                     f"<tr><td>Trend Strength:</td>"
                     f"<td style='color:{_trend_color}'><b>{_cta_trend:+.3f}</b> "
                     f"<span style='font-size:10px;'>{_trend_bar}</span></td></tr>"
                     f"<tr><td>Posição CTA:</td>"
                     f"<td>{_cta_pos_prev:+.3f}x → <b>{_cta_pos:+.3f}x</b></td></tr>"
-                    f"<tr><td>Fluxo Estimado:</td>"
+                    f"<tr><td>Fluxo Estimado (hoje):</td>"
                     f"<td style='color:{_cta_color}'><b>${_cta_flow/1e9:,.2f}B</b> ({_cta_dir})</td></tr>"
-                    f"</table>"
+                    f"</table>")
+
+                # ── 2. Scenario table (1W + 1M) ──
+                if fp_cta_scenarios_1w and fp_cta_scenarios_1m:
+                    _cta_html += (
+                        f"<h4 style='margin-top:16px;'>📊 CTA Estimated Flows by Scenario</h4>"
+                        f"<table class='mm-table' style='width:100%;font-size:12px;'>"
+                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<th rowspan='2'>Cenário</th>"
+                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_C[\"border\"]};'>1 Week</th>"
+                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_C[\"border\"]};'>1 Month</th></tr>"
+                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th>"
+                        f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th></tr>")
+                    for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
+                        _f1w = s1w['flow_total']
+                        _f1m = s1m['flow_total']
+                        _fc1w = _C['green'] if _f1w > 0 else _C['red'] if _f1w < 0 else _C['text_muted']
+                        _fc1m = _C['green'] if _f1m > 0 else _C['red'] if _f1m < 0 else _C['text_muted']
+                        _row_bg = ''
+                        if 'Down' in s1w['name']:
+                            _row_bg = f" style='background:rgba(255,77,77,0.08);'"
+                        elif 'Up' in s1w['name']:
+                            _row_bg = f" style='background:rgba(0,200,100,0.08);'"
+                        _cta_html += (
+                            f"<tr{_row_bg}>"
+                            f"<td><b>{s1w['name']}</b></td>"
+                            f"<td>{s1w['spx_end']:,.0f} ({s1w['pct_move']:+.1%})</td>"
+                            f"<td style='color:{_fc1w}'><b>${_f1w/1e9:,.1f}B</b></td>"
+                            f"<td>{s1w['pos_end']:+.2f}x</td>"
+                            f"<td>{s1m['spx_end']:,.0f} ({s1m['pct_move']:+.1%})</td>"
+                            f"<td style='color:{_fc1m}'><b>${_f1m/1e9:,.1f}B</b></td>"
+                            f"<td>{s1m['pos_end']:+.2f}x</td>"
+                            f"</tr>")
+                    _cta_html += f"</table>"
+
+                # ── 3. Pivot levels ──
+                if fp_cta_pivots:
+                    _cta_html += (
+                        f"<h4 style='margin-top:16px;'>🎯 CTA Pivot Levels — Trigger Thresholds</h4>"
+                        f"<table class='mm-table' style='width:auto;font-size:12px;'>"
+                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<th>Horizonte</th><th>MA Pair</th><th>Nível</th>"
+                        f"<th>Tipo</th><th>Distância</th></tr>")
+                    for pv in fp_cta_pivots:
+                        _pv_color = _C['red'] if 'SELL' in pv['type'] else _C['green']
+                        _pv_icon = '🔻' if 'SELL' in pv['type'] else '🔺'
+                        _cta_html += (
+                            f"<tr>"
+                            f"<td><b>{pv['label']}</b></td>"
+                            f"<td>{pv['ma_pair']}</td>"
+                            f"<td><b>{pv['level']:,.0f}</b></td>"
+                            f"<td style='color:{_pv_color}'>{_pv_icon} {pv['type']}</td>"
+                            f"<td>{pv['distance_pct']:+.1%}</td>"
+                            f"</tr>")
+                    _cta_html += (
+                        f"</table>"
+                        f"<p><small>Nível de preço que causaria flip do sinal de MA cross. "
+                        f"Mais próximo do spot = maior risco de trigger.</small></p>")
+
+                _cta_html += (
                     f"<p><small>Trend = média de MA crosses (5/20, 5/60, 10/60, 20/120, 20/200). "
-                    f"Sizing = trend/vol. CTAs ajustam diariamente.</small></p>"
-                    f"</div></div>"))
+                    f"Sizing = trend/vol. CTAs ajustam diariamente. "
+                    f"Vol spike em cenários Down: RV_end = RV × (1 + |move| × 3).</small></p>"
+                    f"</div></div>")
+                st_f_children.append(wd.HTML(_cta_html))
+
+                # ── 4. CTA historical chart (Plotly) ──
+                if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
+                    _hist_fig = go.FigureWidget(
+                        make_subplots(rows=1, cols=1, specs=[[{"secondary_y": True}]]))
+                    _hist_fig.add_trace(go.Scatter(
+                        x=fp_cta_hist['date'], y=fp_cta_hist['position'],
+                        name='CTA Position (x)',
+                        fill='tozeroy',
+                        fillcolor='rgba(0,150,255,0.15)',
+                        line=dict(color='rgba(0,150,255,0.8)', width=2)),
+                        secondary_y=False)
+                    _hist_fig.add_trace(go.Scatter(
+                        x=fp_cta_hist['date'],
+                        y=fp_cta_hist['notional'] / 1e9,
+                        name='CTA Notional ($B)',
+                        line=dict(color=_C['yellow'], width=2, dash='dot')),
+                        secondary_y=True)
+                    _hist_fig.add_hline(y=0, line_dash='dash',
+                        line_color=_C['text_muted'], opacity=0.5,
+                        secondary_y=False)
+                    _hist_fig.update_layout(
+                        title=dict(text='CTA Position & Notional — Last 6 Months',
+                                   font=dict(color=_C['text'], size=14)),
+                        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+                        font=dict(color=_C['text'], size=11),
+                        legend=dict(orientation='h', y=-0.15,
+                                    font=dict(color=_C['text_muted'])),
+                        height=320, margin=dict(l=50, r=50, t=40, b=50))
+                    _hist_fig.update_yaxes(
+                        title_text='Position (x)', secondary_y=False,
+                        gridcolor=_C['border'], zerolinecolor=_C['border'],
+                        tickfont=dict(color=_C['text_muted']))
+                    _hist_fig.update_yaxes(
+                        title_text='Notional ($B)', secondary_y=True,
+                        gridcolor=_C['border'],
+                        tickfont=dict(color=_C['text_muted']))
+                    _hist_fig.update_xaxes(
+                        gridcolor=_C['border'],
+                        tickfont=dict(color=_C['text_muted']))
+                    st_f_children.append(_flow_border(_hist_fig))
 
                 # Dealer flow
                 _dl_color = _C['green'] if fp_dealer_flow > 0 else _C['red'] if fp_dealer_flow < 0 else _C['text_muted']
