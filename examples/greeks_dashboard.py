@@ -4065,25 +4065,23 @@ def run_analysis(_):
 
                 # ── 4. CTA historical chart (Plotly) ──
                 if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
-                    _hist_fig = go.FigureWidget(
-                        make_subplots(rows=1, cols=1, specs=[[{"secondary_y": True}]]))
-                    _hist_fig.add_trace(go.Scatter(
+                    _hfig = make_subplots(specs=[[{'secondary_y': True}]])
+                    _hfig.add_trace(go.Scatter(
                         x=fp_cta_hist['date'], y=fp_cta_hist['position'],
                         name='CTA Position (x)',
                         fill='tozeroy',
                         fillcolor='rgba(0,150,255,0.15)',
                         line=dict(color='rgba(0,150,255,0.8)', width=2)),
                         secondary_y=False)
-                    _hist_fig.add_trace(go.Scatter(
+                    _hfig.add_trace(go.Scatter(
                         x=fp_cta_hist['date'],
                         y=fp_cta_hist['notional'] / 1e9,
                         name='CTA Notional ($B)',
                         line=dict(color=_C['yellow'], width=2, dash='dot')),
                         secondary_y=True)
-                    _hist_fig.add_hline(y=0, line_dash='dash',
-                        line_color=_C['text_muted'], opacity=0.5,
-                        secondary_y=False)
-                    _hist_fig.update_layout(
+                    _hfig.add_hline(y=0, line_dash='dash',
+                        line_color=_C['text_muted'], opacity=0.5)
+                    _hfig.update_layout(
                         title=dict(text='CTA Position & Notional — Last 6 Months',
                                    font=dict(color=_C['text'], size=14)),
                         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
@@ -4091,18 +4089,18 @@ def run_analysis(_):
                         legend=dict(orientation='h', y=-0.15,
                                     font=dict(color=_C['text_muted'])),
                         height=320, margin=dict(l=50, r=50, t=40, b=50))
-                    _hist_fig.update_yaxes(
+                    _hfig.update_yaxes(
                         title_text='Position (x)', secondary_y=False,
                         gridcolor=_C['border'], zerolinecolor=_C['border'],
                         tickfont=dict(color=_C['text_muted']))
-                    _hist_fig.update_yaxes(
+                    _hfig.update_yaxes(
                         title_text='Notional ($B)', secondary_y=True,
                         gridcolor=_C['border'],
                         tickfont=dict(color=_C['text_muted']))
-                    _hist_fig.update_xaxes(
+                    _hfig.update_xaxes(
                         gridcolor=_C['border'],
                         tickfont=dict(color=_C['text_muted']))
-                    st_f_children.append(_flow_border(_hist_fig))
+                    st_f_children.append(_flow_border(go.FigureWidget(_hfig)))
 
                 # Dealer flow
                 _dl_color = _C['green'] if fp_dealer_flow > 0 else _C['red'] if fp_dealer_flow < 0 else _C['text_muted']
