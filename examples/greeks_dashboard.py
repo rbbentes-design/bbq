@@ -1291,8 +1291,94 @@ def safe_fetch_cot(ticker, start='-2Y', end='0D'):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SEÇÃO 5D — ESTIMATIVA DE BUYBACK
+# SEÇÃO 5D — ESTIMATIVA DE BUYBACK + BLACKOUT WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Blackout: empresas não podem recomprar ações de ~28 dias antes do balanço
+# até ~2 dias úteis após a divulgação. Quando muitas estão em blackout, o
+# fluxo de buyback cai significativamente.
+BLACKOUT_DAYS_BEFORE = 28  # ~4 semanas antes do earnings
+BLACKOUT_DAYS_AFTER = 2    # ~2 dias após divulgação
+
+
+def fetch_earnings_dates(index_ticker='SPX Index'):
+    """Busca datas de earnings esperadas dos membros do índice via BQL.
+    Retorna DataFrame com coluna 'earn_dt' (datetime)."""
+    try:
+        uni = bq.univ.members(index_ticker)
+        # Tentar EXPECTED_REPORT_DT primeiro, depois EARN_ANN_DT_NEXT_ACTUAL
+        for fld_name in ['expected_report_dt', 'earn_ann_dt_next_actual',
+                         'next_announce_dt']:
+            try:
+                fld = getattr(bq.data, fld_name, None)
+                if fld is None:
+                    continue
+                req = bql.Request(uni, {'earn_dt': fld()})
+                resp = bq.execute(req)
+                df_r = resp[0].df()
+                if df_r is not None and not df_r.empty:
+                    # Encontrar coluna de data
+                    for c in df_r.columns:
+                        if 'earn' in str(c).lower() or 'dt' in str(c).lower() or 'announce' in str(c).lower():
+                            df_r['earn_dt'] = pd.to_datetime(df_r[c], errors='coerce')
+                            break
+                    else:
+                        df_r['earn_dt'] = pd.to_datetime(df_r.iloc[:, 0], errors='coerce')
+                    df_r = df_r.dropna(subset=['earn_dt'])
+                    if len(df_r) > 10:
+                        return df_r[['earn_dt']]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def compute_blackout_curve(earnings_df, n_days_forward=60):
+    """Calcula curva de blackout: para os próximos N dias, quantas empresas do
+    SPX estão em janela de restrição de buyback.
+
+    Returns:
+        DataFrame com colunas: date, n_blackout, pct_blackout
+    """
+    if earnings_df.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp.now().normalize()
+    dates = pd.date_range(today - pd.Timedelta(days=30), today + pd.Timedelta(days=n_days_forward))
+    earn_dates = earnings_df['earn_dt'].values
+    total_companies = len(earnings_df)
+
+    records = []
+    for d in dates:
+        # Uma empresa está em blackout se: earn_dt - 28 <= d <= earn_dt + 2
+        in_blackout = np.sum(
+            (earn_dates >= (d - pd.Timedelta(days=BLACKOUT_DAYS_AFTER)).to_datetime64()) &
+            (earn_dates <= (d + pd.Timedelta(days=BLACKOUT_DAYS_BEFORE)).to_datetime64())
+        )
+        # Limitar ao total (pode ter duplicatas)
+        in_blackout = min(in_blackout, total_companies)
+        records.append({
+            'date': d,
+            'n_blackout': int(in_blackout),
+            'pct_blackout': in_blackout / total_companies if total_companies > 0 else 0
+        })
+    return pd.DataFrame(records)
+
+
+def blackout_pct_today(earnings_df):
+    """Retorna % de empresas atualmente em blackout."""
+    if earnings_df.empty:
+        return 0.0, 0, 0
+    today = pd.Timestamp.now().normalize()
+    earn_dates = earnings_df['earn_dt'].values
+    total = len(earnings_df)
+    in_blackout = int(np.sum(
+        (earn_dates >= (today - pd.Timedelta(days=BLACKOUT_DAYS_AFTER)).to_datetime64()) &
+        (earn_dates <= (today + pd.Timedelta(days=BLACKOUT_DAYS_BEFORE)).to_datetime64())
+    ))
+    in_blackout = min(in_blackout, total)
+    return in_blackout / total if total > 0 else 0, in_blackout, total
 
 @lru_cache(maxsize=128)
 def fetch_buyback_data(ticker):
@@ -2701,6 +2787,28 @@ def run_analysis(_):
                     print(f"⚠️ Buyback: {fp_err}")
                     fp_buyback_daily = 0
 
+                # Blackout window: buscar datas de earnings e calcular % em restrição
+                fp_earnings_df = pd.DataFrame()
+                fp_blackout_pct = 0.0
+                fp_blackout_n = 0
+                fp_blackout_total = 0
+                fp_blackout_curve = pd.DataFrame()
+                try:
+                    loading.value = "<h4>12b/16: Blackout window — earnings dates...</h4>"
+                    fp_earnings_df = fetch_earnings_dates(ticker if ticker.strip().endswith('Index') else 'SPX Index')
+                    if not fp_earnings_df.empty:
+                        fp_blackout_pct, fp_blackout_n, fp_blackout_total = blackout_pct_today(fp_earnings_df)
+                        fp_blackout_curve = compute_blackout_curve(fp_earnings_df, n_days_forward=60)
+                        # Ajustar buyback diário pela janela de blackout
+                        fp_buyback['blackout_pct'] = fp_blackout_pct
+                        fp_buyback['blackout_n'] = fp_blackout_n
+                        fp_buyback['blackout_total'] = fp_blackout_total
+                        fp_buyback['daily_est_open'] = fp_buyback.get('daily_est', 0)
+                        fp_buyback['daily_est'] = fp_buyback['daily_est_open'] * (1 - fp_blackout_pct)
+                        fp_buyback_daily = fp_buyback['daily_est']
+                except Exception as bo_err:
+                    print(f"⚠️ Blackout: {bo_err}")
+
                 # ── 13. Flow Predictor — COT ─────────────────────────────
                 loading.value = "<h4>13/16: Flow Predictor — COT...</h4>"
                 cot_ok_fp, cot_fut_fp = has_cot(ticker)
@@ -3476,24 +3584,81 @@ def run_analysis(_):
                     st_b_children.append(fp_bqp_scatter(fp_flow_hist))
                 st_b = wd.VBox(st_b_children)
 
-                # Sub-tab C: Buyback
+                # Sub-tab C: Buyback + Blackout
+                _bo_pct = fp_buyback.get('blackout_pct', 0)
+                _bo_n = fp_buyback.get('blackout_n', 0)
+                _bo_total = fp_buyback.get('blackout_total', 0)
+                _bo_open = 1 - _bo_pct
+                _bo_color = _C['red'] if _bo_pct > 0.4 else _C['yellow'] if _bo_pct > 0.2 else _C['green']
+                _bo_signal = ('🔴 BLACKOUT PESADO' if _bo_pct > 0.4
+                              else '🟡 BLACKOUT MODERADO' if _bo_pct > 0.2
+                              else '🟢 JANELA ABERTA')
+
                 st_c_children = [
-                    wd.HTML("<div class='mm-dash'><div class='mm-card'>"
-                            "<h3>Estimativa de Buyback</h3>"
-                            "<p>⚠️ Confiança baixa: não temos % ADV executado"
-                            " nem saldo restante.</p></div></div>")]
+                    wd.HTML(
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h3>Estimativa de Buyback + Blackout Window</h3>"
+                        f"<p>{_bo_signal} — <b style='color:{_bo_color}'>"
+                        f"{_bo_pct:.0%}</b> das empresas em blackout "
+                        f"({_bo_n}/{_bo_total})</p>"
+                        f"<p><small>Empresas não podem recomprar ações ~{BLACKOUT_DAYS_BEFORE} dias "
+                        f"antes do balanço até ~{BLACKOUT_DAYS_AFTER} dias após divulgação. "
+                        f"Quando muitas estão em restrição, o fluxo de buyback cai "
+                        f"significativamente.</small></p>"
+                        f"</div></div>")]
+
                 bb_pct_adv = fp_buyback.get('pct_adv_est', 0)
                 bb_pct_str = 'N/A' if (bb_pct_adv is None or pd.isna(bb_pct_adv)) else f'{bb_pct_adv:.2f}%'
+                _daily_open = fp_buyback.get('daily_est_open', fp_buyback.get('daily_est', 0))
+                _daily_adj = fp_buyback.get('daily_est', 0)
                 bb_html = (
                     f"<div class='mm-dash'><div class='mm-card'>"
                     f"<table class='mm-table' style='width:auto;'>"
-                    f"<tr><td>Anunciado:</td><td style='text-align:right;'>${fp_buyback.get('announced', 0):,.0f}</td></tr>"
-                    f"<tr><td>Estimativa diária:</td><td style='text-align:right;'>${fp_buyback.get('daily_est', 0):,.0f}</td></tr>"
+                    f"<tr><td>Anunciado:</td><td style='text-align:right;'>"
+                    f"${fp_buyback.get('announced', 0):,.0f}</td></tr>"
+                    f"<tr><td>Estimativa diária (sem blackout):</td>"
+                    f"<td style='text-align:right;'>${_daily_open:,.0f}</td></tr>"
+                    f"<tr><td>Blackout ({_bo_pct:.0%} restrito):</td>"
+                    f"<td style='text-align:right;color:{_bo_color}'>-{_bo_pct:.0%}</td></tr>"
+                    f"<tr><td><b>Estimativa diária ajustada:</b></td>"
+                    f"<td style='text-align:right;font-weight:bold;'>${_daily_adj:,.0f}</td></tr>"
                     f"<tr><td>% ADV estimado:</td><td style='text-align:right;'>"
                     f"{bb_pct_str}</td></tr>"
-                    f"<tr><td>Confiança:</td><td style='text-align:right;'>{fp_buyback.get('confidence', 'N/A')}</td></tr>"
+                    f"<tr><td>Confiança:</td><td style='text-align:right;'>"
+                    f"{fp_buyback.get('confidence', 'N/A')}</td></tr>"
                     f"</table></div></div>")
                 st_c_children.append(wd.HTML(bb_html))
+
+                # Blackout curve chart (Plotly)
+                if not fp_blackout_curve.empty:
+                    _bc = fp_blackout_curve
+                    fig_blackout = go.FigureWidget()
+                    fig_blackout.add_trace(go.Scatter(
+                        x=_bc['date'], y=_bc['n_blackout'],
+                        mode='lines', fill='tozeroy',
+                        fillcolor='rgba(88,166,255,0.15)',
+                        line=dict(color=_C['accent'], width=2),
+                        name='# em Blackout'))
+                    # Mark today
+                    _today = pd.Timestamp.now().normalize()
+                    _today_row = _bc.loc[_bc['date'] == _today]
+                    if not _today_row.empty:
+                        fig_blackout.add_trace(go.Scatter(
+                            x=[_today], y=[int(_today_row['n_blackout'].iloc[0])],
+                            mode='markers+text',
+                            marker=dict(size=10, color=_C['red']),
+                            text=[f"{int(_today_row['pct_blackout'].iloc[0]*100)}%"],
+                            textposition='top center',
+                            textfont=dict(color=_C['text'], size=12),
+                            name='Hoje'))
+                    fig_blackout.update_layout(
+                        title="Distribuição de Blackout Entries — S&P 500",
+                        yaxis_title="# de Empresas em Blackout",
+                        xaxis_title="",
+                        height=320, template=DASH_TEMPLATE,
+                        showlegend=False)
+                    st_c_children.append(fig_blackout)
+
                 try:
                     bb_df = estimate_index_buyback_flow(ticker, top_n=30)
                     if not bb_df.empty:
