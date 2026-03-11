@@ -2311,7 +2311,7 @@ def compute_cta_historical_positions(prices, rv_series=None, lookback=252):
 def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
                        spot):
     """
-    Constroi chart estilo Goldman Sachs: histórico de posição CTA com fan de
+    Constroi chart: histórico de posição CTA com fan de
     cenários projetados para 1W e 1M à frente.
     Retorna go.Figure (converter para FigureWidget externamente).
     """
@@ -2323,7 +2323,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         shared_xaxes=False,
         vertical_spacing=0.12,
         subplot_titles=[
-            'GS-Style CTA Estimates — S&P 500 (Notional $B)',
+            'CTA Estimates — S&P 500 (Notional $B)',
             'CTA Scenario Flows ($B) — 1 Week vs 1 Month',
         ])
 
@@ -3433,7 +3433,7 @@ def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
         hoverinfo='skip',
     ))
 
-    # Forecasted RV at current gamma (SpotGamma-style blue dot)
+    # Forecasted RV at current gamma
     forecasted_rv = None
     if current_gamma is not None:
         forecasted_rv = slope * current_gamma + intercept
@@ -4722,13 +4722,13 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SEÇÃO 5G-B — TIER1 ALPHA-STYLE CHARTS (MBAD, Correlation, 0DTE, Blackout)
+# SEÇÃO 5G-B — BREADTH, CORRELATION, 0DTE, BLACKOUT CHARTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 def build_mbad_summary_cards(prices_df, weights=None, spx_chg_pct=None):
     """
-    MBAD-style summary cards (Tier1 Alpha):
+    Breadth summary cards:
     - SPX Last Price + %chg
     - Stocks Advancing count + %
     - Stocks Declining count + %
@@ -4816,7 +4816,7 @@ def fetch_spx_eq_weight_correlation(lookback=2520):
     Busca SPX e SPW Index (S&P 500 Equal Weight) via BQL.
     Calcula correlação rolling 3M (63 dias úteis).
     Retorna (correlation_series, fig_widget).
-    Inspirado em Tier1 Alpha: SPX vs Equal-Weight SPX Rolling Correlation.
+    SPX vs Equal-Weight SPX Rolling Correlation (3M window).
     """
     bq_svc = bql.Service()
     dt_rng = bq_svc.func.range(f'-{lookback}d', '0d')
@@ -4849,7 +4849,7 @@ def fetch_spx_eq_weight_correlation(lookback=2520):
     corr_3m = log_rets.iloc[:, 0].rolling(63).corr(log_rets.iloc[:, 1])
     corr_3m = corr_3m.dropna()
 
-    # Build chart (Tier1 Alpha style — cyan line, dark background)
+    # Build chart
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=corr_3m.index, y=corr_3m.values,
@@ -4891,7 +4891,7 @@ def fetch_odte_volume_pct(lookback=2000):
     Busca volume de opções 0DTE do SPX como % do volume total via BQL.
     Usa SPX Index options volume histórico.
     Retorna (series, fig_widget).
-    Inspirado em Tier1 Alpha: ODTE SPX Option Volume as % of Total Volume.
+    0DTE SPX Option Volume as a Percentage of Total Volume.
     """
     bq_svc = bql.Service()
     dt_rng = bq_svc.func.range(f'-{lookback}d', '0d')
@@ -5003,7 +5003,7 @@ def fetch_odte_volume_pct(lookback=2000):
 
 def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
     """
-    Tier1 Alpha-style buyback blackout chart:
+    Buyback blackout chart:
     - Teal area: % of S&P 500 in blackout period
     - Orange bars: earnings reports/day
     - "Today" marker with current pct annotation
@@ -5087,7 +5087,7 @@ def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
 
 def build_spy_intraday_candlestick(ticker='SPY US Equity', lookback_days=5):
     """
-    SPY intraday candlestick chart via BQL OHLC data (estilo Tier1 Alpha).
+    SPY intraday candlestick chart via BQL OHLC data.
     Se OHLC intraday não disponível, usa barras diárias recentes.
     """
     bq_svc = bql.Service()
@@ -5144,7 +5144,7 @@ MAG8 = [
     'NVDA US Equity', 'META US Equity', 'TSLA US Equity', 'AVGO US Equity',
 ]
 
-# ── Skew Monitor (Nomura-style) ─────────────────────────────────
+# ── Skew Monitor ─────────────────────────────────────────────────
 
 def fetch_skew_metrics(ticker='SPX Index', lookback=252):
     """
@@ -5235,7 +5235,7 @@ def compute_skew_summary(skew_df):
 
 def build_skew_chart(skew_df):
     """
-    Gráfico 4-panel Nomura-style: Risk Reversal, ATM Vol, Call Skew, Put Skew.
+    Gráfico 4-panel: Risk Reversal, ATM Vol, Call Skew, Put Skew.
     """
     if skew_df.empty or len(skew_df) < 10:
         fig = go.Figure()
@@ -5536,7 +5536,7 @@ def compute_opex_dates(year_start=2020, year_end=2026):
 def compute_opex_stats(log_returns, lookback_years=5):
     """
     Estatísticas de OPEX: return flip probability, RV impact.
-    Inspirado nos slides SpotGamma.
+    Inspirado nos frameworks de gamma exposure.
     """
     idx = pd.to_datetime(log_returns.index)
     if len(idx) < 252:
@@ -5635,7 +5635,7 @@ def compute_gamma_vol_relationship(gex_series, rv_series, window=21):
     }
 
 
-# ── Vol Control + Leveraged ETF Scenario Projections (Nomura-style) ──
+# ── Vol Control + Leveraged ETF Scenario Projections ──
 
 def compute_vol_rebalance_projection(rv_current, spot, gex_per_pt=0,
                                       vanna_notional=0, dex=0):
@@ -6485,7 +6485,7 @@ def run_analysis(_):
                 except Exception as e:
                     print(f"⚠️ CTA flow: {e}\n{traceback.format_exc()}")
 
-                # CTA GS-style: scenarios, pivots, historical
+                # CTA: scenarios, pivots, historical
                 try:
                     if len(_px_series) < 201:
                         _px_series = np.exp(np.cumsum(log_returns))
@@ -6515,7 +6515,7 @@ def run_analysis(_):
                     fp_cta_hist = compute_cta_historical_positions(_px_series, lookback=126)
                     print(f"[FLOW] CTA hist: {len(fp_cta_hist)} rows")
                 except Exception as e:
-                    print(f"⚠️ CTA GS-style: {e}\n{traceback.format_exc()}")
+                    print(f"⚠️ CTA: {e}\n{traceback.format_exc()}")
 
                 # Risk Parity flow
                 fp_rp = {'total': 0, 'detail': {}, 'eq_alloc_new': 0, 'eq_alloc_old': 0}
@@ -7565,7 +7565,7 @@ def run_analysis(_):
                     f"</table></div></div>")
                 st_c_children.append(wd.HTML(bb_html))
 
-                # Blackout curve chart (Tier1 Alpha-style)
+                # Blackout curve chart
                 if not fp_blackout_curve.empty:
                     st_c_children.append(
                         build_buyback_blackout_chart(fp_blackout_curve, fp_earnings_df))
@@ -7654,7 +7654,7 @@ def run_analysis(_):
                     "<p><small>Ref: BofA Systematic Flows Monitor methodology</small></p>"
                     "</div></div>")]
 
-                # CTA Trend Following — GS-style presentation
+                # CTA Trend Following
                 print(f"[UI] CTA data: flow={fp_cta.get('flow',0):.0f}, "
                       f"scenarios_1w={len(fp_cta_scenarios_1w)}, "
                       f"scenarios_1m={len(fp_cta_scenarios_1m)}, "
@@ -7765,7 +7765,7 @@ def run_analysis(_):
                         f"</div></div>")
                     st_f_children.append(wd.HTML(_cta_html))
 
-                    # ── 4. GS-style CTA chart: historical + scenario fan ──
+                    # ── 4. CTA chart: historical + scenario fan ──
                     _has_hist = (not fp_cta_hist.empty and len(fp_cta_hist) > 5)
                     _has_scen = bool(fp_cta_scenarios_1w and fp_cta_scenarios_1m)
                     if _has_hist or _has_scen:
@@ -7775,7 +7775,7 @@ def run_analysis(_):
                         st_f_children.append(_flow_border(go.FigureWidget(_gs_fig)))
                 except Exception as _cta_err:
                     _tb = traceback.format_exc()
-                    print(f"⚠️ CTA GS-style rendering: {_cta_err}\n{_tb}")
+                    print(f"⚠️ CTA rendering: {_cta_err}\n{_tb}")
                     st_f_children.append(wd.HTML(
                         f"<div class='mm-dash'><div class='mm-card'>"
                         f"<h4>CTA / Trend Following</h4>"
@@ -8165,11 +8165,11 @@ def run_analysis(_):
                                 ml['accuracy'], ml['feature_importance'],
                                 ml['disp_prob'], ml['features']))
 
-                        # ── MBAD Summary Cards + KDE return distribution ──
+                        # ── Breadth Summary Cards + KDE return distribution ──
                         _px_df = disp_result.get('prices_df', pd.DataFrame())
                         _wts = disp_result.get('weights', {})
                         if not _px_df.empty and len(_px_df) >= 2:
-                            # MBAD summary cards (Tier1 Alpha-style)
+                            # Breadth summary cards
                             try:
                                 st_g_children.append(
                                     build_mbad_summary_cards(_px_df, _wts))
