@@ -422,6 +422,74 @@ def fmt_value(value, decimals=2):
 # SEÇÃO 2 — PIPELINE DE DADOS (BQL)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+def _bql_ts(resp_item, field):
+    """
+    Extrai série temporal de um BQL response item para single-ticker.
+    Usa reset_index() para robustez contra variações de MultiIndex.
+    Retorna pd.Series com DatetimeIndex.
+    """
+    df = resp_item.df().reset_index()
+    # Encontrar coluna de data
+    date_col = None
+    for c in df.columns:
+        if str(c).upper() == 'DATE':
+            date_col = c
+            break
+    if date_col is None:
+        # Tentar detectar coluna com datas
+        for c in df.columns:
+            if c == field or str(c).upper() == 'ID':
+                continue
+            try:
+                sample = df[c].dropna().head(5)
+                if len(sample) > 0:
+                    pd.to_datetime(sample)
+                    date_col = c
+                    break
+            except Exception:
+                continue
+    if date_col is not None:
+        s = df.set_index(date_col)[field]
+        s.index = pd.to_datetime(s.index)
+    else:
+        # Fallback: tentar converter index original
+        s = resp_item.df()[field]
+        try:
+            s.index = pd.to_datetime(s.index)
+        except Exception:
+            if isinstance(s.index, pd.MultiIndex):
+                s.index = s.index.droplevel(0)
+                s.index = pd.to_datetime(s.index)
+    return s
+
+
+def _bql_ts_df(resp_item):
+    """
+    Extrai DataFrame de um BQL response item para single-ticker.
+    Retorna DataFrame com DatetimeIndex (sem coluna ID).
+    """
+    df = resp_item.df().reset_index()
+    date_col = None
+    for c in df.columns:
+        if str(c).upper() == 'DATE':
+            date_col = c
+            break
+    if date_col is not None:
+        id_col = [c for c in df.columns if str(c).upper() == 'ID']
+        if id_col:
+            df = df.drop(columns=id_col)
+        df = df.set_index(date_col)
+        df.index = pd.to_datetime(df.index)
+    else:
+        orig = resp_item.df()
+        if isinstance(orig.index, pd.MultiIndex):
+            orig.index = orig.index.droplevel(0)
+        orig.index = pd.to_datetime(orig.index)
+        df = orig
+    return df
+
+
 def fetch_market_data(ticker):
     """Busca spot, IV 30d, RV 30d, skew, volume médio em dólares."""
     spot = pd.to_numeric(
@@ -439,11 +507,11 @@ def fetch_market_data(ticker):
 
     put_iv = pd.to_numeric(
         bq.execute(bql.Request(ticker, {'Value': bq.data.implied_volatility(
-            expiry='30D', delta='25', put_call='PUT')}))[0].df()['Value'].iloc[-1],
+            expiry='30D', delta=25, put_call='PUT')}))[0].df()['Value'].iloc[-1],
         errors='coerce')
     call_iv = pd.to_numeric(
         bq.execute(bql.Request(ticker, {'Value': bq.data.implied_volatility(
-            expiry='30D', delta='25', put_call='CALL')}))[0].df()['Value'].iloc[-1],
+            expiry='30D', delta=25, put_call='CALL')}))[0].df()['Value'].iloc[-1],
         errors='coerce')
     skew = (put_iv - call_iv) / 100.0 if pd.notna(put_iv) and pd.notna(call_iv) else 0.0
 
@@ -511,11 +579,9 @@ def fetch_historical(ticker, period='-2Y'):
     """Busca preços históricos e retorna log-retornos."""
     hist_req = bql.Request(ticker, {'Value': bq.data.px_last(
         dates=bq.func.range(period, '0D'), fill='PREV')})
-    _df_h = bq.execute(hist_req)[0].df()
-    if isinstance(_df_h.index, pd.MultiIndex):
-        _df_h.index = _df_h.index.droplevel(0)
-    _df_h.index = pd.to_datetime(_df_h.index)
-    prices = pd.to_numeric(_df_h['Value'], errors='coerce').dropna()
+    prices = pd.to_numeric(
+        _bql_ts(bq.execute(hist_req)[0], 'Value'), errors='coerce'
+    ).dropna()
     if prices.empty:
         raise ValueError("Histórico de preços vazio.")
     log_returns = np.log(prices / prices.shift(1)).dropna()
@@ -2705,15 +2771,22 @@ def _bql_fetch_member_data(index_ticker='SPX Index', lookback_days=252):
     resp_px = bq.execute(req_px)
     resp_iv = bq.execute(req_iv)
 
-    df_px = resp_px[0].df()
-    if 'ID' not in df_px.columns:
-        df_px = df_px.reset_index()
-    prices_df = df_px.pivot(columns='ID', values='px')
+    df_px = resp_px[0].df().reset_index()
+    # Encontrar coluna de data para usar como index do pivot
+    _dt_col_px = next((c for c in df_px.columns if str(c).upper() == 'DATE'), None)
+    if _dt_col_px:
+        df_px[_dt_col_px] = pd.to_datetime(df_px[_dt_col_px])
+        prices_df = df_px.pivot(index=_dt_col_px, columns='ID', values='px')
+    else:
+        prices_df = df_px.pivot(columns='ID', values='px')
 
-    df_iv = resp_iv[0].df()
-    if 'ID' not in df_iv.columns:
-        df_iv = df_iv.reset_index()
-    iv_df = df_iv.pivot(columns='ID', values='iv')
+    df_iv = resp_iv[0].df().reset_index()
+    _dt_col_iv = next((c for c in df_iv.columns if str(c).upper() == 'DATE'), None)
+    if _dt_col_iv:
+        df_iv[_dt_col_iv] = pd.to_datetime(df_iv[_dt_col_iv])
+        iv_df = df_iv.pivot(index=_dt_col_iv, columns='ID', values='iv')
+    else:
+        iv_df = df_iv.pivot(columns='ID', values='iv')
 
     weights = {}
     if not wt_df.empty:
@@ -2740,12 +2813,7 @@ def _bql_fetch_index_iv(index_ticker='SPX Index', lookback_days=252):
         'iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
     })
     resp = bq.execute(req)
-    _df_iv = resp[0].df()
-    if isinstance(_df_iv.index, pd.MultiIndex):
-        _df_iv.index = _df_iv.index.droplevel(0)
-    s = _df_iv['iv']
-    s.index = pd.to_datetime(s.index)
-    return s
+    return _bql_ts(resp[0], 'iv')
 
 
 def _bql_fetch_impl_corr(lookback_days=252):
@@ -2757,12 +2825,7 @@ def _bql_fetch_impl_corr(lookback_days=252):
             'px': bq.data.px_last(fill='PREV', dates=dt_range),
         })
         resp = bq.execute(req)
-        _df_corr = resp[0].df()
-        if isinstance(_df_corr.index, pd.MultiIndex):
-            _df_corr.index = _df_corr.index.droplevel(0)
-        s = _df_corr['px']
-        s.index = pd.to_datetime(s.index)
-        return s
+        return _bql_ts(resp[0], 'px')
     except Exception:
         return pd.Series(dtype=float)
 
@@ -3305,34 +3368,44 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
     bq = bql.Service()
     dt_range = bq.func.range('-{}d'.format(lookback), '0d')
     try:
-        req = bql.Request(ticker, {
+        # Tentar buscar ATM + 25d put/call IV em queries separadas (mais robusto)
+        req_atm = bql.Request(ticker, {
             'atm_iv': bq.data.implied_volatility(
                 expiry='30D', pct_moneyness='100', fill='PREV', dates=dt_range),
-            'put25d': bq.data.implied_volatility(
-                expiry='30D', delta='25', put_call='PUT', fill='PREV', dates=dt_range),
-            'call25d': bq.data.implied_volatility(
-                expiry='30D', delta='25', put_call='CALL', fill='PREV', dates=dt_range),
         })
-        resp = bq.execute(req)
-        df = resp[0].df()
-        if isinstance(df.index, pd.MultiIndex):
-            df.index = df.index.droplevel(0)
-        df.index = pd.to_datetime(df.index)
-    except Exception:
+        resp_atm = bq.execute(req_atm)
+        df = _bql_ts_df(resp_atm[0])
+        # Tentar 25d put/call IV separadamente
         try:
-            req = bql.Request(ticker, {
-                'atm_iv': bq.data.implied_volatility(
-                    expiry='30D', pct_moneyness='100', fill='PREV', dates=dt_range),
+            req_p = bql.Request(ticker, {
+                'put25d': bq.data.implied_volatility(
+                    expiry='30D', delta=25, put_call='PUT', fill='PREV', dates=dt_range),
             })
-            resp = bq.execute(req)
-            df = resp[0].df()
-            if isinstance(df.index, pd.MultiIndex):
-                df.index = df.index.droplevel(0)
-            df.index = pd.to_datetime(df.index)
-            df['put25d'] = np.nan
-            df['call25d'] = np.nan
+            df['put25d'] = _bql_ts(bq.execute(req_p)[0], 'put25d')
         except Exception:
-            return pd.DataFrame()
+            df['put25d'] = np.nan
+        try:
+            req_c = bql.Request(ticker, {
+                'call25d': bq.data.implied_volatility(
+                    expiry='30D', delta=25, put_call='CALL', fill='PREV', dates=dt_range),
+            })
+            df['call25d'] = _bql_ts(bq.execute(req_c)[0], 'call25d')
+        except Exception:
+            df['call25d'] = np.nan
+        # Se ambos falharam, tentar SKEW Index como proxy
+        if df['put25d'].isna().all() and df['call25d'].isna().all():
+            try:
+                req_skew = bql.Request('SKEW Index', {
+                    'px': bq.data.px_last(fill='PREV', dates=dt_range),
+                })
+                skew_s = _bql_ts(bq.execute(req_skew)[0], 'px')
+                # SKEW Index ~100=no skew, >100=more put skew
+                # Mapear para risk_reversal proxy: (SKEW - 100) / 100 como fraction
+                df['skew_index'] = skew_s
+            except Exception:
+                pass
+    except Exception:
+        return pd.DataFrame()
 
     if df.empty:
         return df
@@ -4295,7 +4368,7 @@ def _reload_cot(_):
         except Exception as e:
             clear_output(wait=True)
             print(f"Erro COT: {e}")
-            import traceback; traceback.print_exc()
+            import traceback as _tb_mod; _tb_mod.print_exc()
 
 
 def _reload_etfs(_):
@@ -4614,7 +4687,6 @@ def run_analysis(_):
                           f"(trend={fp_cta['trend_today']:+.3f}, "
                           f"pos={fp_cta['pos_today']:+.3f}→{fp_cta['pos_prev']:+.3f})")
                 except Exception as e:
-                    import traceback
                     print(f"⚠️ CTA flow: {e}\n{traceback.format_exc()}")
 
                 # CTA GS-style: scenarios, pivots, historical
@@ -4647,7 +4719,6 @@ def run_analysis(_):
                     fp_cta_hist = compute_cta_historical_positions(_px_series, lookback=126)
                     print(f"[FLOW] CTA hist: {len(fp_cta_hist)} rows")
                 except Exception as e:
-                    import traceback
                     print(f"⚠️ CTA GS-style: {e}\n{traceback.format_exc()}")
 
                 # Risk Parity flow
@@ -4761,11 +4832,7 @@ def run_analysis(_):
                         'px': bq.data.px_last(fill='PREV', dates=dt_rng),
                     })
                     vix_resp = bq.execute(vix_req)
-                    _vix_df = vix_resp[0].df()
-                    if isinstance(_vix_df.index, pd.MultiIndex):
-                        _vix_df.index = _vix_df.index.droplevel(0)
-                    vix_s = _vix_df['px'].dropna()
-                    vix_s.index = pd.to_datetime(vix_s.index)
+                    vix_s = _bql_ts(vix_resp[0], 'px').dropna()
                     vix_changes = vix_s.diff().dropna()
                     analytics['spot_vol_up'] = compute_spot_up_vol_up(log_returns, vix_changes)
                     analytics['vix_reg'] = compute_vix_spx_regression(log_returns, vix_changes)
@@ -5890,10 +5957,21 @@ def run_analysis(_):
                             f"<table class='mm-table' style='width:auto;font-size:12px;'>"
                             f"<tr style='background:{_card2};'>"
                             f"<th>Horizonte</th><th>MA Pair</th><th>Nível</th>"
-                            f"<th>Tipo</th><th>Distância</th></tr>")
+                            f"<th>Tipo</th><th>Distância</th><th>Posição Atual</th></tr>")
                         for pv in fp_cta_pivots:
                             _pv_color = _C['red'] if 'SELL' in pv['type'] else _C['green']
                             _pv_icon = '🔻' if 'SELL' in pv['type'] else '🔺'
+                            # Posição atual: above_now=True → fast > slow → COMPRADO
+                            _pos_now = pv.get('above_now', None)
+                            if _pos_now is True:
+                                _pos_label = '🟢 COMPRADO'
+                                _pos_color = _C['green']
+                            elif _pos_now is False:
+                                _pos_label = '🔴 VENDIDO'
+                                _pos_color = _C['red']
+                            else:
+                                _pos_label = '—'
+                                _pos_color = _C['text']
                             _cta_html += (
                                 f"<tr>"
                                 f"<td><b>{pv['label']}</b></td>"
@@ -5901,10 +5979,12 @@ def run_analysis(_):
                                 f"<td><b>{pv['level']:,.0f}</b></td>"
                                 f"<td style='color:{_pv_color}'>{_pv_icon} {pv['type']}</td>"
                                 f"<td>{pv['distance_pct']:+.1%}</td>"
+                                f"<td style='color:{_pos_color};font-weight:bold'>{_pos_label}</td>"
                                 f"</tr>")
                         _cta_html += (
                             f"</table>"
                             f"<p><small>Nível de preço que causaria flip do sinal de MA cross. "
+                            f"Posição Atual = lado corrente do CTA. "
                             f"Mais próximo do spot = maior risco de trigger.</small></p>")
 
                     _cta_html += (
@@ -5923,7 +6003,6 @@ def run_analysis(_):
                             fp_cta_scenarios_1m, spot)
                         st_f_children.append(_flow_border(go.FigureWidget(_gs_fig)))
                 except Exception as _cta_err:
-                    import traceback
                     _tb = traceback.format_exc()
                     print(f"⚠️ CTA GS-style rendering: {_cta_err}\n{_tb}")
                     st_f_children.append(wd.HTML(
@@ -6261,7 +6340,6 @@ def run_analysis(_):
                 tab10 = wd.VBox([wd.HTML(
                     f"<h3>Flow Predictor</h3><p>{reason}</p>")])
             except Exception as _fp_ui_err:
-                import traceback
                 _fp_tb = traceback.format_exc()
                 print(f"⚠️ Flow Predictor UI: {_fp_ui_err}\n{_fp_tb}")
                 tab10 = wd.VBox([wd.HTML(
@@ -6500,7 +6578,6 @@ def run_analysis(_):
                 tab11 = wd.VBox(analytics_children)
 
             except Exception as _an_ui_err:
-                import traceback
                 _an_tb = traceback.format_exc()
                 print(f"⚠️ Analytics UI: {_an_ui_err}\n{_an_tb}")
                 tab11 = wd.VBox([wd.HTML(
