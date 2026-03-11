@@ -291,6 +291,10 @@ DISP_CORR_WINDOWS = {'1M': 21, '3M': 63, '6M': 126}
 DISP_IV_FIELD = 'implied_volatility'  # BQL field
 DISP_SPXSK3 = '.SPXSK3 G Index'  # CBOE S&P 500 3M Implied Corr Index
 DISP_VIX9D = 'VIX9D Index'
+DISP_COR1M = 'COR1M Index'       # 1M 50-Delta Implied Correlation
+DISP_DSPX = 'DSPX Index'         # CBOE S&P 500 Dispersion Index
+DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq vol)
+DISP_TOP_N = 10                   # Top N members by weight for dispersion
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
@@ -3252,6 +3256,42 @@ def _disp_table_widget(df, title='', height='250px'):
     return wd.HTML(html)
 
 
+def build_dispersion_index_chart(cor1m, dspx, vixeq):
+    """
+    Gráfico estilo Bloomberg G 1059: COR1M + DSPX + VIXEQ (single stock vol premium).
+    3 séries no mesmo chart, eixo Y compartilhado.
+    """
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=1, cols=1)
+
+    if not cor1m.empty:
+        fig.add_trace(go.Scatter(
+            x=cor1m.index, y=cor1m.values,
+            name='Impl Corr 1M 50Δ (COR1M)',
+            line=dict(color='#FFFFFF', width=1.5)))
+    if not dspx.empty:
+        fig.add_trace(go.Scatter(
+            x=dspx.index, y=dspx.values,
+            name='CBOE S&P 500 Dispersion (DSPX)',
+            line=dict(color='#58a6ff', width=1.5)))
+    if not vixeq.empty:
+        fig.add_trace(go.Scatter(
+            x=vixeq.index, y=vixeq.values,
+            name='Single Stock Vol Premium (VIXEQ)',
+            line=dict(color='#f0883e', width=1.5)))
+
+    fig.update_layout(
+        title='Low Implied Correlation and Rising Dispersion for S&P 500',
+        template=DASH_TEMPLATE,
+        height=380,
+        margin=dict(l=50, r=50, t=40, b=30),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.25,
+                    xanchor='center', x=0.5),
+        yaxis_title='Index Level',
+    )
+    return go.FigureWidget(fig)
+
+
 def _tail_metrics_widget(metrics):
     """Widget de métricas de tail risk."""
     if not metrics:
@@ -3273,6 +3313,7 @@ def _tail_metrics_widget(metrics):
 def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
     """
     Executa análise completa de dispersion trade.
+    Usa top-N membros por peso (Mag8 + próximos maiores) para correlação mais robusta.
     Retorna dict com todos os resultados.
     """
     result = {
@@ -3285,6 +3326,10 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         'optimal_basket': {},
         'tail_risk': {},
         'index_returns': np.array([]),
+        'hyp_test': {},
+        'cor1m': pd.Series(dtype=float),
+        'dspx': pd.Series(dtype=float),
+        'vixeq': pd.Series(dtype=float),
     }
 
     try:
@@ -3293,6 +3338,24 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         result['error'] = 'Erro ao buscar membros: {}'.format(str(e))
         return result
 
+    # ── Filtrar top-N membros por peso (mais robusto que 500 stocks) ──
+    if weights and len(weights) > DISP_TOP_N:
+        top_tickers = sorted(weights, key=lambda t: -weights[t])[:DISP_TOP_N]
+        top_weights = {t: weights[t] for t in top_tickers}
+        tw_sum = sum(top_weights.values())
+        if tw_sum > 0:
+            top_weights = {t: v / tw_sum for t, v in top_weights.items()}
+        top_cols = [c for c in top_tickers if c in prices_df.columns]
+        prices_top = prices_df[top_cols] if top_cols else prices_df
+        iv_top = iv_df[[c for c in top_cols if c in iv_df.columns]] if top_cols else iv_df
+        weights_top = top_weights
+        print(f"[DISP] Usando top-{len(top_cols)} membros por peso: "
+              f"{[t.split(' ')[0] for t in top_cols]}")
+    else:
+        prices_top = prices_df
+        iv_top = iv_df
+        weights_top = weights
+
     try:
         index_iv = _bql_fetch_index_iv(index_ticker, lookback)
     except Exception as e:
@@ -3300,12 +3363,12 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         return result
 
     try:
-        result['real_corr'] = compute_realized_correlation(prices_df)
+        result['real_corr'] = compute_realized_correlation(prices_top)
     except Exception:
         pass
 
     try:
-        impl_corr_ts = compute_implied_corr_series(index_iv, iv_df, weights)
+        impl_corr_ts = compute_implied_corr_series(index_iv, iv_top, weights_top)
         if not impl_corr_ts.empty and not result['real_corr'].empty:
             result['disp_signal'] = compute_dispersion_signal(
                 impl_corr_ts, result['real_corr'], window='3M')
@@ -3316,6 +3379,16 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         result['impl_corr_cboe'] = _bql_fetch_impl_corr(lookback)
     except Exception:
         pass
+
+    # ── Fetch Bloomberg dispersion indices: COR1M, DSPX, VIXEQ ──
+    bq_svc = bql.Service()
+    dt_rng = bq_svc.func.range('-{}d'.format(lookback), '0d')
+    for tk, key in [(DISP_COR1M, 'cor1m'), (DISP_DSPX, 'dspx'), (DISP_VIXEQ, 'vixeq')]:
+        try:
+            req = bql.Request(tk, {'px': bq_svc.data.px_last(fill='PREV', dates=dt_rng)})
+            result[key] = _bql_ts(bq_svc.execute(req)[0], 'px').dropna()
+        except Exception as _idx_err:
+            print(f"⚠️ Disp index {tk}: {_idx_err}")
 
     try:
         result['mag7_pairs'] = compute_mag7_dispersion(prices_df)
@@ -3328,16 +3401,43 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
         pass
 
     try:
-        idx_prices = prices_df.mean(axis=1)
-        sel, wts, te = optimize_tracking_basket(idx_prices, prices_df, n_stocks=10)
+        idx_prices = prices_top.mean(axis=1)
+        sel, wts, te = optimize_tracking_basket(idx_prices, prices_top, n_stocks=min(10, len(prices_top.columns)))
         result['optimal_basket'] = {'tickers': sel, 'weights': wts,
                                     'tracking_error': te}
     except Exception:
         pass
 
+    # ── Hypothesis test: F-test para R² do modelo de dispersão ──
     try:
-        log_rets = np.log(prices_df.mean(axis=1) /
-                          prices_df.mean(axis=1).shift(1)).dropna().values
+        if not result['disp_signal'].empty:
+            ds = result['disp_signal'].dropna(subset=['impl_corr', 'real_corr'])
+            if len(ds) > 30:
+                from scipy import stats as sp_stats
+                y = ds['real_corr'].values
+                x = ds['impl_corr'].values
+                slope, intercept, r_val, p_val, std_err = sp_stats.linregress(x, y)
+                r2 = r_val ** 2
+                n = len(x)
+                k = 1  # 1 regressor
+                f_stat = (r2 / k) / ((1 - r2) / (n - k - 1)) if r2 < 1 else np.inf
+                f_pval = 1 - sp_stats.f.cdf(f_stat, k, n - k - 1)
+                result['hyp_test'] = {
+                    'R²': round(r2, 4),
+                    'R² adj': round(1 - (1 - r2) * (n - 1) / (n - k - 1), 4),
+                    'F-stat': round(f_stat, 2),
+                    'p-value': f'{f_pval:.2e}',
+                    'slope': round(slope, 4),
+                    'intercept': round(intercept, 4),
+                    'n_obs': n,
+                    'significant': p_val < 0.05,
+                }
+    except Exception:
+        pass
+
+    try:
+        log_rets = np.log(prices_top.mean(axis=1) /
+                          prices_top.mean(axis=1).shift(1)).dropna().values
         result['index_returns'] = log_rets
         result['tail_risk'] = compute_tail_risk(log_rets)
     except Exception:
@@ -4786,6 +4886,10 @@ def run_analysis(_):
                 'mag7_pairs': pd.DataFrame(), 'best_2x2': [],
                 'optimal_basket': {}, 'tail_risk': {},
                 'index_returns': np.array([]),
+                'hyp_test': {},
+                'cor1m': pd.Series(dtype=float),
+                'dspx': pd.Series(dtype=float),
+                'vixeq': pd.Series(dtype=float),
             }
             disp_ok = False
             if disp_w.value:
@@ -6302,15 +6406,38 @@ def run_analysis(_):
                                 title='Basket Ótimo ({} stocks, TE={:.4f})'.format(
                                     len(ob_df), te_val)))
 
-                        # Tail risk metrics + chart
-                        if disp_result['tail_risk']:
-                            st_g_children.append(
-                                _tail_metrics_widget(disp_result['tail_risk']))
-                            if len(disp_result['index_returns']) > 50:
-                                tail_chart = build_tail_risk_chart(
-                                    disp_result['index_returns'],
-                                    disp_result['tail_risk'])
-                                st_g_children.append(tail_chart)
+                        # Hypothesis test for R² (quality of dispersion model)
+                        ht = disp_result.get('hyp_test', {})
+                        if ht:
+                            _r2 = ht.get('R²', 0)
+                            _r2_color = _C['green'] if _r2 >= 0.5 else (
+                                '#f0883e' if _r2 >= 0.3 else _C['red'])
+                            _sig_txt = '✅ Significativo' if ht.get('significant') else '❌ Não significativo'
+                            _sig_color = _C['green'] if ht.get('significant') else _C['red']
+                            st_g_children.append(wd.HTML(
+                                f"<div style='background:#161b22; padding:10px; "
+                                f"border-radius:6px; margin:5px 0;'>"
+                                f"<b style='color:#58a6ff;'>📊 Teste de Hipótese — Modelo de Dispersão</b><br>"
+                                f"<span style='color:#c9d1d9; font-size:12px;'>"
+                                f"R² = <b style='color:{_r2_color}'>{_r2:.4f}</b> │ "
+                                f"R² adj = {ht.get('R² adj', 0):.4f} │ "
+                                f"F-stat = {ht.get('F-stat', 0):.2f} │ "
+                                f"p-value = {ht.get('p-value', 'N/A')} │ "
+                                f"<b style='color:{_sig_color}'>{_sig_txt}</b><br>"
+                                f"n = {ht.get('n_obs', 0)} │ "
+                                f"slope = {ht.get('slope', 0):.4f} │ "
+                                f"intercept = {ht.get('intercept', 0):.4f}</span>"
+                                f"<br><small style='color:#8b949e;'>Top-{DISP_TOP_N} membros por peso. "
+                                f"R² &lt; 0.30 → modelo fraco, considere usar Mag8 / top 5.</small>"
+                                f"</div>"))
+
+                        # Bloomberg-style COR1M + DSPX + VIXEQ chart
+                        _cor1m = disp_result.get('cor1m', pd.Series(dtype=float))
+                        _dspx = disp_result.get('dspx', pd.Series(dtype=float))
+                        _vixeq = disp_result.get('vixeq', pd.Series(dtype=float))
+                        if not _cor1m.empty or not _dspx.empty or not _vixeq.empty:
+                            st_g_children.append(build_dispersion_index_chart(
+                                _cor1m, _dspx, _vixeq))
 
                     except Exception as _dsp_err:
                         st_g_children.append(wd.HTML(
@@ -6570,6 +6697,25 @@ def run_analysis(_):
                         "<h3>Vol Ctrl + Dealer + LevETF Rebalance Projection</h3>"
                         "{}</div></div>".format(vr_html)))
                     analytics_children.append(_vr_fig)
+
+                # ── Row 8: Tail Risk EVT (movido da Dispersão) ──
+                if disp_ok and disp_result.get('tail_risk'):
+                    analytics_children.append(
+                        _tail_metrics_widget(disp_result['tail_risk']))
+                    if len(disp_result.get('index_returns', [])) > 50:
+                        analytics_children.append(
+                            build_tail_risk_chart(
+                                disp_result['index_returns'],
+                                disp_result['tail_risk']))
+
+                # ── Row 9: COR1M + DSPX + VIXEQ Bloomberg-style chart ──
+                if disp_ok:
+                    _cor1m_a = disp_result.get('cor1m', pd.Series(dtype=float))
+                    _dspx_a = disp_result.get('dspx', pd.Series(dtype=float))
+                    _vixeq_a = disp_result.get('vixeq', pd.Series(dtype=float))
+                    if not _cor1m_a.empty or not _dspx_a.empty or not _vixeq_a.empty:
+                        analytics_children.append(
+                            build_dispersion_index_chart(_cor1m_a, _dspx_a, _vixeq_a))
 
                 if not analytics_children:
                     analytics_children.append(wd.HTML(
