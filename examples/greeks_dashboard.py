@@ -3966,6 +3966,7 @@ def run_analysis(_):
                 st_e = wd.VBox(st_e_children)
 
                 # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control + Risk Parity)
+                print("[UI] st_f: INICIO")
                 st_f_children = [wd.HTML(
                     "<div class='mm-dash'><div class='mm-card'>"
                     "<h3>Fluxos Sistemáticos — CTA, Dealer/MM, Vol Control, Risk Parity</h3>"
@@ -3973,6 +3974,11 @@ def run_analysis(_):
                     "</div></div>")]
 
                 # CTA Trend Following — GS-style presentation
+                print(f"[UI] CTA data: flow={fp_cta.get('flow',0):.0f}, "
+                      f"scenarios_1w={len(fp_cta_scenarios_1w)}, "
+                      f"scenarios_1m={len(fp_cta_scenarios_1m)}, "
+                      f"pivots={len(fp_cta_pivots)}, "
+                      f"hist={len(fp_cta_hist) if not fp_cta_hist.empty else 0}")
                 try:
                     _cta_flow = fp_cta.get('flow', 0)
                     _cta_trend = fp_cta.get('trend_today', 0)
@@ -4253,6 +4259,7 @@ def run_analysis(_):
                         f"Valores estimados, não garantidos.</small></p>"
                         f"</div></div>"))
 
+                print(f"[UI] st_f: {len(st_f_children)} children")
                 st_f = wd.VBox(st_f_children)
 
                 fp_tabs = wd.Tab()
