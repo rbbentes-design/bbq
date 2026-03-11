@@ -3970,14 +3970,16 @@ def run_analysis(_):
 
                 # ── 2. Scenario table (1W + 1M) ──
                 if fp_cta_scenarios_1w and fp_cta_scenarios_1m:
+                    _card2 = _C['card2']
+                    _border = _C['border']
                     _cta_html += (
                         f"<h4 style='margin-top:16px;'>📊 CTA Estimated Flows by Scenario</h4>"
                         f"<table class='mm-table' style='width:100%;font-size:12px;'>"
-                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<tr style='background:{_card2};'>"
                         f"<th rowspan='2'>Cenário</th>"
-                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_C[\"border\"]};'>1 Week</th>"
-                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_C[\"border\"]};'>1 Month</th></tr>"
-                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Week</th>"
+                        f"<th colspan='3' style='text-align:center;border-bottom:1px solid {_border};'>1 Month</th></tr>"
+                        f"<tr style='background:{_card2};'>"
                         f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th>"
                         f"<th>SPX End</th><th>Flow ($B)</th><th>Pos End</th></tr>")
                     for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
@@ -4004,10 +4006,11 @@ def run_analysis(_):
 
                 # ── 3. Pivot levels ──
                 if fp_cta_pivots:
+                    _card2 = _C['card2']
                     _cta_html += (
                         f"<h4 style='margin-top:16px;'>🎯 CTA Pivot Levels — Trigger Thresholds</h4>"
                         f"<table class='mm-table' style='width:auto;font-size:12px;'>"
-                        f"<tr style='background:{_C[\"card2\"]};'>"
+                        f"<tr style='background:{_card2};'>"
                         f"<th>Horizonte</th><th>MA Pair</th><th>Nível</th>"
                         f"<th>Tipo</th><th>Distância</th></tr>")
                     for pv in fp_cta_pivots:
