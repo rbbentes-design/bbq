@@ -1905,16 +1905,27 @@ def compute_cta_flow(prices, rv_current, target_vol=0.10):
         'pos_prev': pos_prev,
     }
 
+def _trend_from_array(vals):
+    """Fast trend strength from raw numpy array (no pandas overhead)."""
+    n = len(vals)
+    scores = []
+    for short_w, long_w in CTA_MA_PAIRS:
+        if n < long_w:
+            continue
+        ms = vals[-short_w:].mean()
+        ml = vals[-long_w:].mean()
+        if ml == 0:
+            continue
+        spread = (ms - ml) / ml
+        scores.append(np.clip(spread * 100, -1, 1))
+    return float(np.mean(scores)) if scores else 0.0
+
+
 def compute_cta_scenario_flows(prices, rv_current, spot, horizon_days=5,
                                 annualized_vol=None):
     """
     Calcula fluxos de CTA em diferentes cenários (Flat / Up / Down) ao estilo GS.
-
-    Para cada cenário, simula o preço nos próximos `horizon_days` dias úteis,
-    recalcula trend strength, position sizing, e estima o fluxo total.
-
-    Returns:
-        list of dicts: [{name, spx_end, pct_move, flow_total, flow_us, trend_end, pos_end}]
+    Versão rápida: usa numpy arrays, sem pd.concat nem pd.Timedelta.
     """
     if len(prices) < 201 or rv_current < 1e-6:
         return []
@@ -1926,31 +1937,28 @@ def compute_cta_scenario_flows(prices, rv_current, spot, horizon_days=5,
 
     scenarios = [
         ('Flat', 0.0),
-        ('Up 1 Std Dev', move_1sigma),
-        ('Up 2 Std Dev', 2 * move_1sigma),
-        ('Down 1 Std Dev', -move_1sigma),
-        ('Down 2 Std Dev', -2 * move_1sigma),
-        ('Down 2.5 Std Dev', -2.5 * move_1sigma),
+        ('Up 1\u03c3', move_1sigma),
+        ('Up 2\u03c3', 2 * move_1sigma),
+        ('Down 1\u03c3', -move_1sigma),
+        ('Down 2\u03c3', -2 * move_1sigma),
+        ('Down 2.5\u03c3', -2.5 * move_1sigma),
     ]
 
-    # Current position
-    trend_now = compute_cta_trend_strength(prices)
+    vals = np.asarray(prices.values, dtype=float)
+    trend_now = _trend_from_array(vals)
     pos_now = np.clip(trend_now * (0.10 / rv_current), -2, 2)
     current_notional = CTA_AUM * CTA_EQUITY_ALLOC * pos_now
 
     results = []
     for name, pct_move in scenarios:
-        # Simulate gradual price path over horizon
-        sim_prices = prices.copy()
         daily_step = pct_move / max(horizon_days, 1)
+        sim = np.empty(len(vals) + horizon_days, dtype=float)
+        sim[:len(vals)] = vals
         for d in range(horizon_days):
-            new_px = sim_prices.iloc[-1] * (1 + daily_step)
-            sim_prices = pd.concat([sim_prices, pd.Series([new_px],
-                index=[sim_prices.index[-1] + pd.Timedelta(days=1)])])
+            sim[len(vals) + d] = sim[len(vals) + d - 1] * (1 + daily_step)
 
-        trend_end = compute_cta_trend_strength(sim_prices)
-        # RV adjusts: in down scenarios vol typically spikes
-        rv_end = rv_current * (1 + max(0, -pct_move) * 3)  # vol spike heuristic
+        trend_end = _trend_from_array(sim)
+        rv_end = rv_current * (1 + max(0, -pct_move) * 3)
         pos_end = np.clip(trend_end * (0.10 / max(rv_end, 1e-6)), -2, 2)
         end_notional = CTA_AUM * CTA_EQUITY_ALLOC * pos_end
         flow = end_notional - current_notional
@@ -1970,14 +1978,10 @@ def compute_cta_scenario_flows(prices, rv_current, spot, horizon_days=5,
 def compute_cta_pivot_levels(prices, spot, rv_current):
     """
     Calcula níveis de preço onde sinais de trend MA flip (pivot levels).
-    Para cada par de MAs, o crossover acontece quando MA_short = MA_long.
-    O preço que CAUSARIA esse crossover é o pivot level.
-
-    Returns:
-        list of dicts: [{label, ma_pair, level, type, distance_pct}]
-        sorted by proximity to spot.
+    Usa numpy arrays para robustez (sem dependência de index type).
     """
-    if len(prices) < 201:
+    vals = np.asarray(prices.values, dtype=float)
+    if len(vals) < 201:
         return []
 
     pivots = []
@@ -1990,22 +1994,16 @@ def compute_cta_pivot_levels(prices, spot, rv_current):
     }
 
     for short_w, long_w in CTA_MA_PAIRS:
-        ma_short_vals = prices.rolling(short_w).mean()
-        ma_long_vals = prices.rolling(long_w).mean()
+        ma_short_now = vals[-short_w:].mean()
+        ma_long_now = vals[-long_w:].mean()
 
-        ma_short_now = ma_short_vals.iloc[-1]
-        ma_long_now = ma_long_vals.iloc[-1]
-
-        if pd.isna(ma_short_now) or pd.isna(ma_long_now):
+        if np.isnan(ma_short_now) or np.isnan(ma_long_now):
             continue
 
-        # Current signal
         above = ma_short_now > ma_long_now
 
-        # The pivot level: price that would make MA_short = MA_long
-        # MA_short = (sum of last (short_w-1) prices + pivot) / short_w
-        # We need: MA_short_new = MA_long (approximation - MA_long moves slowly)
-        sum_recent = prices.iloc[-short_w+1:].sum() if short_w > 1 else 0
+        # Pivot: price X such that new MA_short = MA_long
+        sum_recent = vals[-short_w + 1:].sum() if short_w > 1 else 0.0
         pivot_px = ma_long_now * short_w - sum_recent
 
         if pivot_px <= 0 or pivot_px > spot * 2:
@@ -2032,51 +2030,178 @@ def compute_cta_pivot_levels(prices, spot, rv_current):
 def compute_cta_historical_positions(prices, rv_series=None, lookback=252):
     """
     Calcula série histórica de trend strength, position sizing e notional.
-    Versão vetorizada: computa rolling MAs uma vez e extrai valores por dia.
-    Retorna DataFrame com colunas: date, trend, position, notional.
+    Versão vetorizada com numpy → rápido.
     """
-    if len(prices) < 201:
+    vals = np.asarray(prices.values, dtype=float)
+    if len(vals) < 201:
         return pd.DataFrame()
 
-    # Pré-computar todas as rolling MAs de uma vez
-    ma_dict = {}
+    # Pre-compute all rolling MAs as numpy arrays
+    ma_arrays = {}
     for short_w, long_w in CTA_MA_PAIRS:
-        ma_dict[(short_w, long_w)] = (
-            prices.rolling(short_w).mean(),
-            prices.rolling(long_w).mean(),
-        )
+        ms = pd.Series(vals).rolling(short_w).mean().values
+        ml = pd.Series(vals).rolling(long_w).mean().values
+        ma_arrays[(short_w, long_w)] = (ms, ml)
 
     # Rolling realized vol (63d)
-    rets = prices.pct_change()
-    rv_rolling = rets.rolling(63).std() * np.sqrt(252)
+    rets = np.diff(vals) / vals[:-1]
+    rets = np.concatenate([[np.nan], rets])
+    rv_arr = pd.Series(rets).rolling(63).std().values * np.sqrt(252)
 
-    start = max(201, len(prices) - lookback)
-    idx_range = range(start, len(prices))
+    start = max(201, len(vals) - lookback)
+    idx_range = range(start, len(vals))
+
+    # Try to get dates from prices index
+    try:
+        dates = prices.index
+    except Exception:
+        dates = list(range(len(vals)))
 
     records = []
     for i in idx_range:
-        # Trend = mean of clipped MA spread scores
         scores = []
         for short_w, long_w in CTA_MA_PAIRS:
-            ms, ml = ma_dict[(short_w, long_w)]
-            ms_v = ms.iloc[i]
-            ml_v = ml.iloc[i]
-            if pd.isna(ms_v) or pd.isna(ml_v) or ml_v == 0:
+            ms_v, ml_v = ma_arrays[(short_w, long_w)]
+            msv = ms_v[i]
+            mlv = ml_v[i]
+            if np.isnan(msv) or np.isnan(mlv) or mlv == 0:
                 continue
-            spread = (ms_v - ml_v) / ml_v
+            spread = (msv - mlv) / mlv
             scores.append(np.clip(spread * 100, -1, 1))
         trend = float(np.mean(scores)) if scores else 0.0
 
-        rv = rv_rolling.iloc[i] if not pd.isna(rv_rolling.iloc[i]) else 0.15
+        rv = rv_arr[i] if not np.isnan(rv_arr[i]) else 0.15
         pos = np.clip(trend * (0.10 / max(rv, 1e-6)), -2, 2)
         notional = CTA_AUM * CTA_EQUITY_ALLOC * pos
         records.append({
-            'date': prices.index[i],
+            'date': dates[i],
             'trend': trend,
             'position': pos,
             'notional': notional,
         })
     return pd.DataFrame(records)
+
+
+def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
+                       spot):
+    """
+    Constroi chart estilo Goldman Sachs: histórico de posição CTA com fan de
+    cenários projetados para 1W e 1M à frente.
+    Retorna go.Figure (converter para FigureWidget externamente).
+    """
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.55, 0.45],
+        shared_xaxes=False,
+        vertical_spacing=0.12,
+        subplot_titles=[
+            'GS-Style CTA Estimates — S&P 500 (Notional $B)',
+            'CTA Scenario Flows ($B) — 1 Week vs 1 Month',
+        ])
+
+    # ── Top panel: Historical notional + scenario fan ──
+    if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
+        hist_dates = fp_cta_hist['date']
+        hist_notional = fp_cta_hist['notional'] / 1e9
+
+        # Historical line
+        fig.add_trace(go.Scatter(
+            x=hist_dates, y=hist_notional,
+            name='CTA Notional (Hist)',
+            mode='lines',
+            line=dict(color='#4A90D9', width=2.5),
+            fill='tozeroy',
+            fillcolor='rgba(74,144,217,0.10)'),
+            row=1, col=1)
+
+        # Scenario fan from last date
+        last_date = hist_dates.iloc[-1]
+        last_notional = hist_notional.iloc[-1]
+
+        # Build forward points for 1W and 1M scenarios
+        scenario_colors = {
+            'Flat': '#AAAAAA',
+            'Up 1\u03c3': '#00C853',
+            'Up 2\u03c3': '#00E676',
+            'Down 1\u03c3': '#FF5252',
+            'Down 2\u03c3': '#FF1744',
+            'Down 2.5\u03c3': '#D50000',
+        }
+
+        for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
+            name = s1w['name']
+            end_notional_1w = CTA_AUM * CTA_EQUITY_ALLOC * s1w['pos_end'] / 1e9
+            end_notional_1m = CTA_AUM * CTA_EQUITY_ALLOC * s1m['pos_end'] / 1e9
+            color = scenario_colors.get(name, '#888888')
+
+            try:
+                d1w = last_date + pd.Timedelta(days=7)
+                d1m = last_date + pd.Timedelta(days=30)
+            except Exception:
+                d1w = last_date + 5
+                d1m = last_date + 21
+
+            fig.add_trace(go.Scatter(
+                x=[last_date, d1w, d1m],
+                y=[last_notional, end_notional_1w, end_notional_1m],
+                name=name,
+                mode='lines+markers',
+                line=dict(color=color, width=2, dash='dot'),
+                marker=dict(size=6, color=color),
+                legendgroup=name),
+                row=1, col=1)
+
+        fig.add_hline(y=0, line_dash='dash', line_color='rgba(150,150,150,0.5)',
+                      row=1, col=1)
+
+    # ── Bottom panel: Scenario flow bar chart (grouped 1W vs 1M) ──
+    if fp_cta_scenarios_1w and fp_cta_scenarios_1m:
+        names = [s['name'] for s in fp_cta_scenarios_1w]
+        flows_1w = [s['flow_total'] / 1e9 for s in fp_cta_scenarios_1w]
+        flows_1m = [s['flow_total'] / 1e9 for s in fp_cta_scenarios_1m]
+
+        bar_colors_1w = ['#00C853' if f > 0 else '#FF5252' for f in flows_1w]
+        bar_colors_1m = ['#00E676' if f > 0 else '#FF1744' for f in flows_1m]
+
+        fig.add_trace(go.Bar(
+            x=names, y=flows_1w, name='1 Week Flow',
+            marker_color=bar_colors_1w,
+            text=[f'${f:+.1f}B' for f in flows_1w],
+            textposition='outside',
+            textfont=dict(size=10)),
+            row=2, col=1)
+
+        fig.add_trace(go.Bar(
+            x=names, y=flows_1m, name='1 Month Flow',
+            marker_color=bar_colors_1m,
+            text=[f'${f:+.1f}B' for f in flows_1m],
+            textposition='outside',
+            textfont=dict(size=10),
+            opacity=0.7),
+            row=2, col=1)
+
+        fig.add_hline(y=0, line_dash='dash', line_color='rgba(150,150,150,0.5)',
+                      row=2, col=1)
+
+    fig.update_layout(
+        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+        font=dict(color=_C['text'], size=11),
+        legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center',
+                    font=dict(color=_C['text_muted'], size=10)),
+        height=620, margin=dict(l=55, r=30, t=40, b=40),
+        barmode='group')
+    for ax in ['yaxis', 'yaxis2', 'xaxis', 'xaxis2']:
+        fig.update_layout(**{ax: dict(
+            gridcolor=_C['border'], zerolinecolor=_C['border'],
+            tickfont=dict(color=_C['text_muted']))})
+    # Make subplot titles use theme color
+    for ann in fig.layout.annotations:
+        ann.font.color = _C['text']
+        ann.font.size = 13
+
+    return fig
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3099,13 +3224,19 @@ def run_analysis(_):
 
                 # CTA GS-style: scenarios, pivots, historical
                 try:
-                    _px_series_ok = '_px_series' in dir() and len(_px_series) > 200
-                    if not _px_series_ok:
+                    if len(_px_series) < 201:
                         _px_series = np.exp(np.cumsum(log_returns))
                         _px_series = _px_series * (spot / _px_series.iloc[-1])
+                except Exception:
+                    _px_series = np.exp(np.cumsum(log_returns))
+                    _px_series = _px_series * (spot / _px_series.iloc[-1])
+                try:
+                    if '_cta_rv' not in dir() or _cta_rv < 1e-6:
                         _cta_rv = log_returns.iloc[-63:].std() * np.sqrt(252) if len(log_returns) >= 63 else rv_30d
+                except Exception:
+                    _cta_rv = rv_30d
+                try:
                     print(f"[FLOW] CTA GS: px_series len={len(_px_series)}, rv={_cta_rv:.4f}")
-
                     fp_cta_scenarios_1w = compute_cta_scenario_flows(
                         _px_series, _cta_rv, spot, horizon_days=5)
                     print(f"[FLOW] CTA scenarios 1W: {len(fp_cta_scenarios_1w)}")
@@ -4082,44 +4213,14 @@ def run_analysis(_):
                         f"</div></div>")
                     st_f_children.append(wd.HTML(_cta_html))
 
-                    # ── 4. CTA historical chart (Plotly) ──
-                    if not fp_cta_hist.empty and len(fp_cta_hist) > 5:
-                        _hfig = make_subplots(specs=[[{'secondary_y': True}]])
-                        _hfig.add_trace(go.Scatter(
-                            x=fp_cta_hist['date'], y=fp_cta_hist['position'],
-                            name='CTA Position (x)',
-                            fill='tozeroy',
-                            fillcolor='rgba(0,150,255,0.15)',
-                            line=dict(color='rgba(0,150,255,0.8)', width=2)),
-                            secondary_y=False)
-                        _hfig.add_trace(go.Scatter(
-                            x=fp_cta_hist['date'],
-                            y=fp_cta_hist['notional'] / 1e9,
-                            name='CTA Notional ($B)',
-                            line=dict(color=_C['yellow'], width=2, dash='dot')),
-                            secondary_y=True)
-                        _hfig.add_hline(y=0, line_dash='dash',
-                            line_color=_C['text_muted'], opacity=0.5)
-                        _hfig.update_layout(
-                            title=dict(text='CTA Position & Notional — Last 6 Months',
-                                       font=dict(color=_C['text'], size=14)),
-                            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
-                            font=dict(color=_C['text'], size=11),
-                            legend=dict(orientation='h', y=-0.15,
-                                        font=dict(color=_C['text_muted'])),
-                            height=320, margin=dict(l=50, r=50, t=40, b=50))
-                        _hfig.update_yaxes(
-                            title_text='Position (x)', secondary_y=False,
-                            gridcolor=_C['border'], zerolinecolor=_C['border'],
-                            tickfont=dict(color=_C['text_muted']))
-                        _hfig.update_yaxes(
-                            title_text='Notional ($B)', secondary_y=True,
-                            gridcolor=_C['border'],
-                            tickfont=dict(color=_C['text_muted']))
-                        _hfig.update_xaxes(
-                            gridcolor=_C['border'],
-                            tickfont=dict(color=_C['text_muted']))
-                        st_f_children.append(_flow_border(go.FigureWidget(_hfig)))
+                    # ── 4. GS-style CTA chart: historical + scenario fan ──
+                    _has_hist = (not fp_cta_hist.empty and len(fp_cta_hist) > 5)
+                    _has_scen = bool(fp_cta_scenarios_1w and fp_cta_scenarios_1m)
+                    if _has_hist or _has_scen:
+                        _gs_fig = build_cta_gs_chart(
+                            fp_cta_hist, fp_cta_scenarios_1w,
+                            fp_cta_scenarios_1m, spot)
+                        st_f_children.append(_flow_border(go.FigureWidget(_gs_fig)))
                 except Exception as _cta_err:
                     import traceback
                     _tb = traceback.format_exc()
