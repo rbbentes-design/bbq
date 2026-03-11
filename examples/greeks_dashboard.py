@@ -248,6 +248,39 @@ COT_TRADER_REPORT_MAP = {
 # Estimativa anual de buyback do SPX (fallback quando BQL não retorna)
 SPX_ANNUAL_BUYBACK_EST = 1.0e12  # ~$1T USD
 
+# ── Market Maker volume shares (OVME, avg daily contracts, latest month) ──
+# Fonte: Bloomberg OVME → Options Volume Matrix → By Exchange
+MM_VOLUME_SHARES = {
+    'Citadel Securities':       0.34,
+    'Dash Financial/IMC':       0.26,
+    'Jane Street':              0.15,
+    'Wolverine Execution':      0.11,
+    'Global Execution/Susque':  0.10,
+    'NASDAQ':                   0.025,
+    'MIAX':                     0.015,
+    'Others':                   0.01,
+}
+
+# ── Options trade description breakdown (OVME, % of total avg daily contracts) ──
+# Fonte: Bloomberg OVME → By Trade Description (as Percent %)
+OPTIONS_TRADE_DESC = [
+    ('Electronic',                         53.16),
+    ('Single Leg Auction Non ISO',         23.42),
+    ('Multi Leg Electronic',                9.57),
+    ('Intermarket Sweep',                   4.23),
+    ('Multi Leg Auction',                   3.82),
+    ('Multi Leg vs Single, Electronic',     1.92),
+    ('Multi Leg vs Single, Floor Trade',    0.84),
+    ('Open Trade / Late & Out of Seq',      0.79),
+    ('Single Leg Floor Trade',              0.58),
+    ('Multi Leg Floor Trade',               0.54),
+    ('Single Leg Cross ISO',                0.46),
+    ('Multi Leg Cross',                     0.18),
+    ('Other',                               0.49),
+]
+# Total avg daily contracts (latest month, OVME)
+OPTIONS_TOTAL_ADC = 21_685_696
+
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
     'template': DASH_TEMPLATE,
@@ -697,13 +730,16 @@ def _adv5_usd(tickers_list):
                                   with_params=BQL_PARAMS))[0].df()['ADV5']
 
 
-def compute_full_etf_flows(index_proxy=INDEX_PROXY):
+def compute_full_etf_flows(index_proxy=INDEX_PROXY, start_date_override=None):
     """
     Calcula fluxos de rebalanceamento por ETF passivo + combinado.
     Retorna (flows_dict, summary_df, start_date).
     flows_dict: {'Combined': df, 'VOO US Equity': df, ...}
     """
-    start_date = _last_spx_rebal_date().strftime('%Y-%m-%d')
+    if start_date_override:
+        start_date = pd.Timestamp(start_date_override).strftime('%Y-%m-%d')
+    else:
+        start_date = _last_spx_rebal_date().strftime('%Y-%m-%d')
 
     w0 = _float_weights(index_proxy, start_date)
     w1 = _float_weights(index_proxy)
@@ -1635,6 +1671,47 @@ def compute_dealer_hedging_flow(gex_per_pt, daily_price_change, spot):
         return 0
     flow = -gex_per_pt * daily_price_change
     return flow
+
+
+def estimate_mm_var_by_book(gex_per_pt, spot, risk_params, oi_total):
+    """
+    Estima VaR 95%/99% por market maker, proporcional ao volume share.
+    Usa distribuição t-Student calibrada dos log returns.
+    Para cada MM: assume que detém fração proporcional do GEX e OI.
+    VaR_mm = share × VaR_total (linear porque gamma exposure escala com OI).
+    Retorna lista de dicts com VaR por MM.
+    """
+    var_95 = risk_params.get('var_95', 0)
+    var_99 = risk_params.get('var_99', 0)
+    cvar_95 = risk_params.get('cvar_95', 0)
+
+    # Total portfolio 1-day VaR in $ terms
+    ds_95 = spot * abs(var_95)
+    ds_99 = spot * abs(var_99)
+    ds_cvar = spot * abs(cvar_95)
+
+    # Total P&L at VaR level: delta-neutral MM → mostly gamma exposure
+    # PnL ≈ 0.5 × GEX × ΔS²  (dealers are short the book → negative)
+    pnl_var95 = abs(0.5 * gex_per_pt * ds_95 ** 2)
+    pnl_var99 = abs(0.5 * gex_per_pt * ds_99 ** 2)
+    pnl_cvar95 = abs(0.5 * gex_per_pt * ds_cvar ** 2)
+
+    results = []
+    for mm_name, share in MM_VOLUME_SHARES.items():
+        mm_gex = gex_per_pt * share
+        mm_oi = oi_total * share
+        results.append({
+            'name': mm_name,
+            'share': share,
+            'gex_per_pt': mm_gex,
+            'oi_contracts': mm_oi,
+            'var_95': pnl_var95 * share,
+            'var_99': pnl_var99 * share,
+            'cvar_95': pnl_cvar95 * share,
+            'daily_theta': 0,  # Will be filled later if available
+        })
+    return results, {'pnl_var95': pnl_var95, 'pnl_var99': pnl_var99,
+                     'pnl_cvar95': pnl_cvar95}
 
 
 # ── Volatility Control Fund Flows ─────────────────────────────────
@@ -2856,6 +2933,10 @@ cot_end_w = wd.DatePicker(
     value=pd.Timestamp.now().date(),
     description='COT End:', layout={'width': '260px'})
 
+rebal_date_w = wd.DatePicker(
+    value=_last_spx_rebal_date().date(),
+    description='Último Rebalance:', layout={'width': '300px'})
+
 
 def _update_cot_contracts(change=None):
     opts = COT_CONTRACTS.get(cot_type_w.value, [])
@@ -3033,7 +3114,9 @@ def run_analysis(_):
             # ── 9. Rebalanceamento ETFs ──────────────────────────────────
             loading.value = "<h4>9/16: Fluxo de rebalanceamento ETFs passivos...</h4>"
             try:
-                etf_flows, etf_summary, etf_start = compute_full_etf_flows()
+                _rebal_dt = rebal_date_w.value
+                etf_flows, etf_summary, etf_start = compute_full_etf_flows(
+                    start_date_override=_rebal_dt)
                 etf_ok = True
             except Exception:
                 etf_flows, etf_summary, etf_start, etf_ok = {}, None, None, False
@@ -3186,6 +3269,22 @@ def run_analysis(_):
                           f"(GEX/pt={_gex_per_pt:,.0f}, ΔS={_daily_chg:,.1f})")
                 except Exception as e:
                     print(f"⚠️ Dealer flow: {e}")
+
+                # Market Maker VaR by individual book
+                fp_mm_var = []
+                fp_mm_var_totals = {}
+                try:
+                    _oi_total = df['OI'].sum()
+                    _theta_total = (greeks_now['theta'] * df['OI'].values * 100).sum()
+                    fp_mm_var, fp_mm_var_totals = estimate_mm_var_by_book(
+                        _gex_per_pt, spot, risk, _oi_total)
+                    # Fill theta per MM
+                    for mm in fp_mm_var:
+                        mm['daily_theta'] = _theta_total * mm['share']
+                    print(f"[FLOW] MM VaR: {len(fp_mm_var)} MMs, "
+                          f"VaR95=${fp_mm_var_totals.get('pnl_var95', 0):,.0f}")
+                except Exception as e:
+                    print(f"⚠️ MM VaR: {e}")
 
                 # Vol control fund flows (5%, 10%, 15%)
                 fp_volctrl = {'total': 0, 'detail': {}}
@@ -4231,17 +4330,90 @@ def run_analysis(_):
                         f"<p style='color:red'>Erro ao renderizar CTA: {_cta_err}</p>"
                         f"</div></div>"))
 
-                # Dealer flow
+                # Dealer flow + MM VaR by book + Options volume
                 _dl_color = _C['green'] if fp_dealer_flow > 0 else _C['red'] if fp_dealer_flow < 0 else _C['text_muted']
                 _dl_dir = 'COMPRA' if fp_dealer_flow > 0 else 'VENDA' if fp_dealer_flow < 0 else 'NEUTRO'
-                st_f_children.append(wd.HTML(
+                _card2 = _C['card2']
+
+                _dl_html = (
                     f"<div class='mm-dash'><div class='mm-card'>"
                     f"<h4>Dealer/Market Maker Delta Hedging</h4>"
                     f"<p>GEX-implied flow: <b style='color:{_dl_color}'>"
                     f"${fp_dealer_flow:,.0f}</b> ({_dl_dir})</p>"
                     f"<p><small>Baseado em GEX × ΔS. Dados de gamma derivados de "
-                    f"signed volume (firms + MMs + flex). Short gamma → pro-cíclico.</small></p>"
-                    f"</div></div>"))
+                    f"signed volume (firms + MMs + flex). Short gamma → pro-cíclico.</small></p>")
+
+                # ── MM VaR by book ──
+                if fp_mm_var:
+                    _v95_total = fp_mm_var_totals.get('pnl_var95', 0)
+                    _v99_total = fp_mm_var_totals.get('pnl_var99', 0)
+                    _dl_html += (
+                        f"<h4 style='margin-top:16px;'>📊 VaR por Market Maker (proporcional ao volume)</h4>"
+                        f"<p><small>VaR total (gamma exposure): "
+                        f"<b>95%: ${_v95_total/1e6:,.1f}M</b> | "
+                        f"<b>99%: ${_v99_total/1e6:,.1f}M</b></small></p>"
+                        f"<table class='mm-table' style='width:100%;font-size:12px;'>"
+                        f"<tr style='background:{_card2};'>"
+                        f"<th>Market Maker</th>"
+                        f"<th>Share</th>"
+                        f"<th>OI (K cts)</th>"
+                        f"<th>GEX/pt</th>"
+                        f"<th>VaR 95%</th>"
+                        f"<th>VaR 99%</th>"
+                        f"<th>CVaR 95%</th>"
+                        f"<th>Theta/dia</th></tr>")
+                    for mm in fp_mm_var:
+                        _mm_theta = mm['daily_theta']
+                        _th_c = _C['green'] if _mm_theta > 0 else _C['red']
+                        _dl_html += (
+                            f"<tr>"
+                            f"<td><b>{mm['name']}</b></td>"
+                            f"<td style='text-align:center;'>{mm['share']:.0%}</td>"
+                            f"<td style='text-align:right;'>{mm['oi_contracts']/1e3:,.0f}</td>"
+                            f"<td style='text-align:right;'>{mm['gex_per_pt']:,.0f}</td>"
+                            f"<td style='text-align:right;color:{_C['yellow']}'>"
+                            f"${mm['var_95']/1e6:,.1f}M</td>"
+                            f"<td style='text-align:right;color:{_C['red']}'>"
+                            f"${mm['var_99']/1e6:,.1f}M</td>"
+                            f"<td style='text-align:right;color:{_C['red']}'>"
+                            f"${mm['cvar_95']/1e6:,.1f}M</td>"
+                            f"<td style='text-align:right;color:{_th_c}'>"
+                            f"${_mm_theta/1e6:,.2f}M</td>"
+                            f"</tr>")
+                    _dl_html += (
+                        f"</table>"
+                        f"<p><small>Volume shares: OVME (Bloomberg). "
+                        f"VaR = 0.5 × GEX × ΔS² na pior perda (t-Student). "
+                        f"Proporcional ao share de cada MM.</small></p>")
+
+                # ── Options Volume by Trade Description ──
+                _dl_html += (
+                    f"<h4 style='margin-top:16px;'>📈 Mercado de Opções — Volume por Trade Type</h4>"
+                    f"<p>Total Avg Daily Contracts: <b>{OPTIONS_TOTAL_ADC:,.0f}</b></p>"
+                    f"<table class='mm-table' style='width:100%;font-size:12px;'>"
+                    f"<tr style='background:{_card2};'>"
+                    f"<th>Trade Description</th>"
+                    f"<th>%</th>"
+                    f"<th>Avg Daily Contracts</th></tr>")
+                for _td_name, _td_pct in OPTIONS_TRADE_DESC:
+                    _td_vol = OPTIONS_TOTAL_ADC * _td_pct / 100
+                    _bar_w = max(1, int(_td_pct * 2))
+                    _dl_html += (
+                        f"<tr>"
+                        f"<td>{_td_name}</td>"
+                        f"<td style='text-align:right;'><b>{_td_pct:.2f}%</b></td>"
+                        f"<td style='text-align:right;'>{_td_vol:,.0f}"
+                        f"<span style='display:inline-block;width:{_bar_w}px;"
+                        f"height:10px;background:{_C['green']};margin-left:6px;"
+                        f"vertical-align:middle;border-radius:2px;'></span></td>"
+                        f"</tr>")
+                _dl_html += (
+                    f"</table>"
+                    f"<p><small>Fonte: Bloomberg OVME. Electronic inclui 0DTE + 10-14DTE. "
+                    f"Multi-leg = spreads, combos, butterflies.</small></p>")
+
+                _dl_html += f"</div></div>"
+                st_f_children.append(wd.HTML(_dl_html))
 
                 # Vol control
                 vc_total = fp_volctrl.get('total', 0)
@@ -4505,6 +4677,7 @@ display(wd.VBox([
         wd.HBox([ticker_w, dte_w]),
         mny_w,
         wd.HBox([run_btn, spx_pred_w, flow_pred_w, export_btn]),
+        wd.HBox([rebal_date_w]),
     ], layout=_ctrl_box_layout),
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
     wd.VBox([
