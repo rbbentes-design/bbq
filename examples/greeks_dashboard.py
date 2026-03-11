@@ -4722,6 +4722,419 @@ def run_dispersion_analysis(index_ticker='SPX Index', lookback=252):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 5G-B — TIER1 ALPHA-STYLE CHARTS (MBAD, Correlation, 0DTE, Blackout)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def build_mbad_summary_cards(prices_df, weights=None, spx_chg_pct=None):
+    """
+    MBAD-style summary cards (Tier1 Alpha):
+    - SPX Last Price + %chg
+    - Stocks Advancing count + %
+    - Stocks Declining count + %
+    - Breadth Gauge (strong/weak)
+    Retorna HTML widget.
+    """
+    rets_1d = (prices_df.iloc[-1] / prices_df.iloc[-2] - 1) * 100
+    rets = rets_1d.dropna()
+    n_up = int((rets >= 0).sum())
+    n_down = int((rets < 0).sum())
+    n_total = n_up + n_down
+    pct_up = n_up / n_total * 100 if n_total > 0 else 0
+    pct_down = n_down / n_total * 100 if n_total > 0 else 0
+
+    # Breadth gauge: ratio-based
+    breadth_ratio = n_up / n_total if n_total > 0 else 0.5
+    if breadth_ratio >= 0.65:
+        gauge_label, gauge_color = 'Strong', '#22c55e'
+    elif breadth_ratio >= 0.55:
+        gauge_label, gauge_color = 'Moderate', '#fbbf24'
+    elif breadth_ratio >= 0.45:
+        gauge_label, gauge_color = 'Neutral', '#8b949e'
+    elif breadth_ratio >= 0.35:
+        gauge_label, gauge_color = 'Weak', '#f97316'
+    else:
+        gauge_label, gauge_color = 'Very Weak', '#dc2626'
+
+    # SPX price from last index column if available
+    spx_cols = [c for c in prices_df.columns if 'Index' in c or 'SPX' in c]
+    spx_px = prices_df[spx_cols[0]].iloc[-1] if spx_cols else 0
+    spx_chg = spx_chg_pct if spx_chg_pct is not None else (
+        (prices_df[spx_cols[0]].iloc[-1] / prices_df[spx_cols[0]].iloc[-2] - 1) * 100
+        if spx_cols and len(prices_df) >= 2 else 0)
+    spx_chg_color = '#22c55e' if spx_chg >= 0 else '#dc2626'
+
+    # Gauge SVG (speedometer arc)
+    angle = int(180 * breadth_ratio)  # 0-180 degrees
+    gauge_svg = (
+        f"<svg viewBox='0 0 120 70' width='120' height='70'>"
+        f"<path d='M 10 60 A 50 50 0 0 1 110 60' fill='none' stroke='#30363d' stroke-width='8'/>"
+        f"<path d='M 10 60 A 50 50 0 0 1 110 60' fill='none' stroke='url(#gaugeGrad)' "
+        f"stroke-width='8' stroke-dasharray='{angle * 1.74} 314'/>"
+        f"<defs><linearGradient id='gaugeGrad'>"
+        f"<stop offset='0%' stop-color='#dc2626'/>"
+        f"<stop offset='50%' stop-color='#fbbf24'/>"
+        f"<stop offset='100%' stop-color='#22c55e'/>"
+        f"</linearGradient></defs>"
+        f"<text x='60' y='55' text-anchor='middle' fill='{gauge_color}' "
+        f"font-size='12' font-weight='bold'>{gauge_label}</text>"
+        f"<text x='60' y='68' text-anchor='middle' fill='#8b949e' "
+        f"font-size='8'>{pct_up:.0f}% / {pct_down:.0f}%</text>"
+        f"</svg>"
+    )
+
+    card_style = ("display:inline-block; background:#161b22; padding:12px 20px; "
+                  "border-radius:8px; margin:4px; text-align:center; min-width:140px; "
+                  "border:1px solid #30363d;")
+
+    html = (
+        f"<div style='display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:8px 0;'>"
+        # SPX Price card
+        f"<div style='{card_style}'>"
+        f"<div style='color:#8b949e; font-size:10px;'>Last Price</div>"
+        f"<div style='color:#c9d1d9; font-size:24px; font-weight:bold;'>{spx_px:,.2f}</div>"
+        f"<div style='color:{spx_chg_color}; font-size:13px;'>{spx_chg:+.2f}%</div></div>"
+        # Advancing card
+        f"<div style='{card_style} border-color:#22c55e;'>"
+        f"<div style='color:#8b949e; font-size:10px;'>Stocks Advancing</div>"
+        f"<div style='color:#22c55e; font-size:28px; font-weight:bold;'>{n_up}</div>"
+        f"<div style='color:#22c55e; font-size:13px;'>▲{pct_up:.1f}%</div></div>"
+        # Declining card
+        f"<div style='{card_style}'>"
+        f"<div style='color:#8b949e; font-size:10px;'>Stocks Declining</div>"
+        f"<div style='color:#dc2626; font-size:28px; font-weight:bold;'>{n_down}</div>"
+        f"<div style='color:#dc2626; font-size:13px;'>▼{pct_down:.1f}%</div></div>"
+        # Gauge card
+        f"<div style='{card_style}'>{gauge_svg}</div>"
+        f"</div>"
+    )
+    return wd.HTML(html)
+
+
+def fetch_spx_eq_weight_correlation(lookback=2520):
+    """
+    Busca SPX e SPW Index (S&P 500 Equal Weight) via BQL.
+    Calcula correlação rolling 3M (63 dias úteis).
+    Retorna (correlation_series, fig_widget).
+    Inspirado em Tier1 Alpha: SPX vs Equal-Weight SPX Rolling Correlation.
+    """
+    bq_svc = bql.Service()
+    dt_rng = bq_svc.func.range(f'-{lookback}d', '0d')
+
+    # SPX vs S&P 500 Equal Weight Index (SPW Index on Bloomberg)
+    tickers = ['SPX Index', 'SPW Index']
+    prices = {}
+    for tk in tickers:
+        try:
+            req = bql.Request(tk, {'px': bq_svc.data.px_last(fill='PREV', dates=dt_rng)})
+            s = _bql_ts(bq_svc.execute(req)[0], 'px').dropna()
+            if not s.empty:
+                prices[tk] = s
+        except Exception as e:
+            print(f"⚠️ EQ Weight Corr — {tk}: {e}")
+
+    if len(prices) < 2:
+        return pd.Series(dtype=float), wd.HTML(
+            '<p style="color:#8b949e;">Sem dados SPX/EW para correlação.</p>')
+
+    df = pd.DataFrame(prices).dropna()
+    if len(df) < 63:
+        return pd.Series(dtype=float), wd.HTML(
+            '<p style="color:#8b949e;">Dados insuficientes para correlação 3M.</p>')
+
+    # Log returns
+    log_rets = np.log(df / df.shift(1)).dropna()
+
+    # Rolling 63-day (3M) correlation
+    corr_3m = log_rets.iloc[:, 0].rolling(63).corr(log_rets.iloc[:, 1])
+    corr_3m = corr_3m.dropna()
+
+    # Build chart (Tier1 Alpha style — cyan line, dark background)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=corr_3m.index, y=corr_3m.values,
+        mode='lines', name='SPX/Equal Weight 3M Correlation',
+        line=dict(color='#2dd4bf', width=1.5),
+        fill='tozeroy', fillcolor='rgba(45,212,191,0.08)',
+    ))
+
+    # Reference lines
+    fig.add_hline(y=0.7, line=dict(color='#8b949e', dash='dash', width=1),
+                  annotation_text='0.70', annotation_position='right',
+                  annotation_font=dict(size=10, color='#8b949e'))
+
+    # Current value annotation
+    curr_val = corr_3m.iloc[-1] if len(corr_3m) > 0 else 0
+    fig.add_annotation(
+        x=0.02, y=0.05, xref='paper', yref='paper',
+        text=f"Atual: <b>{curr_val:.4f}</b>",
+        showarrow=False, font=dict(size=12, color='#2dd4bf'),
+        bgcolor='rgba(22,27,34,0.8)', bordercolor='#30363d',
+        borderpad=6, xanchor='left', yanchor='bottom')
+
+    fig.update_layout(
+        title='SPX and Equal-Weight SPX Rolling Correlation (3M)',
+        template=DASH_TEMPLATE,
+        height=380,
+        margin=dict(l=50, r=30, t=45, b=40),
+        xaxis_title='', yaxis_title='Correlation',
+        yaxis=dict(range=[0.5, 1.02]),
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18,
+                    xanchor='center', x=0.5),
+    )
+    return corr_3m, go.FigureWidget(fig)
+
+
+def fetch_odte_volume_pct(lookback=2000):
+    """
+    Busca volume de opções 0DTE do SPX como % do volume total via BQL.
+    Usa SPX Index options volume histórico.
+    Retorna (series, fig_widget).
+    Inspirado em Tier1 Alpha: ODTE SPX Option Volume as % of Total Volume.
+    """
+    bq_svc = bql.Service()
+    dt_rng = bq_svc.func.range(f'-{lookback}d', '0d')
+
+    # Fetch total SPX options volume and 0DTE proxy
+    # Bloomberg fields: OPT_VOL (total), OPT_VOL_0DTE may not exist
+    # Use VOLUME_CALL + VOLUME_PUT for total, and SHORT_TERM_OPTIONS_VOLUME as proxy
+    vol_data = {}
+    # Try fetching SPX total options volume
+    for tk, label in [('SPX Index', 'spx_vol'), ('VIX Index', 'vix')]:
+        try:
+            req = bql.Request(tk, {
+                'vol': bq_svc.data.px_volume(fill='PREV', dates=dt_rng)
+            })
+            s = _bql_ts(bq_svc.execute(req)[0], 'vol').dropna()
+            if not s.empty:
+                vol_data[label] = s
+        except Exception:
+            pass
+
+    # Try Bloomberg 0DTE percentage series (SPXW)
+    # SPX 0DTE is tracked via SPXW (weekly) volume vs total
+    try:
+        # Attempt SPXW as 0DTE proxy —  SPX Weeklys
+        req = bql.Request('SPXW Index', {
+            'vol': bq_svc.data.px_volume(fill='PREV', dates=dt_rng)
+        })
+        s = _bql_ts(bq_svc.execute(req)[0], 'vol').dropna()
+        if not s.empty:
+            vol_data['spxw_vol'] = s
+    except Exception:
+        pass
+
+    if 'spx_vol' not in vol_data:
+        # Fallback: use OPT_IMPLIED_VOL_AVG_7DAY / VIX as proxy for activity
+        return pd.Series(dtype=float), wd.HTML(
+            '<p style="color:#8b949e;">Sem dados de volume de opções SPX.</p>')
+
+    # Calculate ratio
+    if 'spxw_vol' in vol_data and 'spx_vol' in vol_data:
+        df = pd.DataFrame({'total': vol_data['spx_vol'],
+                           'short': vol_data['spxw_vol']}).dropna()
+        if not df.empty and (df['total'] > 0).any():
+            ratio = (df['short'] / df['total']).clip(0, 1) * 100
+        else:
+            ratio = pd.Series(dtype=float)
+    else:
+        # Synthetic estimate: use VIX as activity proxy
+        # 0DTE has grown from ~10% (2018) to ~60% (2025)
+        ratio = pd.Series(dtype=float)
+
+    if ratio.empty:
+        return pd.Series(dtype=float), wd.HTML(
+            '<p style="color:#8b949e;">Sem dados 0DTE/SPXW volume.</p>')
+
+    # 1M moving average
+    ma_1m = ratio.rolling(21, min_periods=5).mean()
+
+    fig = go.Figure()
+    # Daily bars (cyan, semi-transparent)
+    fig.add_trace(go.Bar(
+        x=ratio.index, y=ratio.values,
+        name='0DTE as % of Total Volume',
+        marker=dict(color='rgba(45,212,191,0.5)'),
+    ))
+    # 1M moving average line (orange)
+    fig.add_trace(go.Scatter(
+        x=ma_1m.index, y=ma_1m.values,
+        mode='lines', name='0DTE % 1M Avg',
+        line=dict(color='#f97316', width=2.5),
+    ))
+
+    # Key event annotations
+    events = [
+        ('2022-05-01', 'Tues/Thurs OpEx'),
+        ('2025-01-01', 'Robinhood Launched\nSPX Options'),
+    ]
+    for edt, elbl in events:
+        try:
+            edt_ts = pd.Timestamp(edt)
+            if ratio.index.min() <= edt_ts <= ratio.index.max():
+                fig.add_vline(x=edt_ts, line=dict(color='#dc2626', dash='dash', width=1))
+                fig.add_annotation(
+                    x=edt_ts, y=ratio.max() * 0.9,
+                    text=elbl, showarrow=False,
+                    font=dict(size=9, color='#dc2626'),
+                    textangle=-90)
+        except Exception:
+            pass
+
+    # 60% reference line
+    fig.add_hline(y=60, line=dict(color='#8b949e', dash='dash', width=1))
+
+    fig.update_layout(
+        title='0DTE SPX Option Volume as a Percentage of Total Volume',
+        template=DASH_TEMPLATE,
+        height=400,
+        margin=dict(l=50, r=60, t=45, b=40),
+        xaxis_title='', yaxis_title='0DTE % of SPX Total Volume',
+        yaxis2=dict(title='0DTE % SPX Total Volume', overlaying='y',
+                    side='right', showgrid=False),
+        bargap=0,
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18,
+                    xanchor='center', x=0.5),
+    )
+    return ratio, go.FigureWidget(fig)
+
+
+def build_buyback_blackout_chart(blackout_curve, earnings_df=None):
+    """
+    Tier1 Alpha-style buyback blackout chart:
+    - Teal area: % of S&P 500 in blackout period
+    - Orange bars: earnings reports/day
+    - "Today" marker with current pct annotation
+    Retorna FigureWidget.
+    """
+    if blackout_curve.empty:
+        return wd.HTML('<p style="color:#8b949e;">Sem dados de blackout.</p>')
+
+    _bc = blackout_curve.copy()
+    _bc['pct'] = _bc['pct_blackout'] * 100
+
+    fig = go.Figure()
+
+    # Area fill: % in blackout (teal/dark cyan)
+    fig.add_trace(go.Scatter(
+        x=_bc['date'], y=_bc['pct'],
+        mode='lines', fill='tozeroy',
+        fillcolor='rgba(45,212,191,0.25)',
+        line=dict(color='#2dd4bf', width=1.5),
+        name='% S&P 500 in Blackout',
+    ))
+
+    # Earnings reports/day as bars (if we have earnings data)
+    if earnings_df is not None and not earnings_df.empty:
+        earn_counts = (earnings_df['earn_dt'].dt.normalize()
+                       .value_counts().sort_index())
+        # Only keep dates in our range
+        mask = (earn_counts.index >= _bc['date'].min()) & (earn_counts.index <= _bc['date'].max())
+        earn_counts = earn_counts[mask]
+        if not earn_counts.empty:
+            # Scale to same y-axis range (earnings counts → percentage scale)
+            max_earn = earn_counts.max()
+            max_pct = _bc['pct'].max()
+            scale = max_pct / max_earn if max_earn > 0 else 1
+            fig.add_trace(go.Bar(
+                x=earn_counts.index, y=earn_counts.values * scale,
+                name='Earnings Reports/Day',
+                marker=dict(color='rgba(249,115,22,0.7)'),
+                yaxis='y2',
+            ))
+
+    # Mark "Hoje" (today)
+    _today = pd.Timestamp.now().normalize()
+    _today_row = _bc.loc[_bc['date'] == _today]
+    if not _today_row.empty:
+        today_pct = float(_today_row['pct'].iloc[0])
+        fig.add_vline(x=_today, line=dict(color='#dc2626', dash='dash', width=1.5))
+        fig.add_annotation(
+            x=_today, y=today_pct + 5,
+            text=f"<b>{today_pct:.1f}%</b> of S&P 500<br>In Blackout Period",
+            showarrow=True, arrowhead=2, arrowcolor='#dc2626',
+            font=dict(size=11, color='white'),
+            bgcolor='rgba(139,25,25,0.8)', bordercolor='#dc2626',
+            borderpad=5)
+        fig.add_trace(go.Scatter(
+            x=[_today], y=[today_pct],
+            mode='markers', showlegend=False,
+            marker=dict(size=8, color='#dc2626'),
+        ))
+
+    # Determine current quarter for title
+    q = (_today.month - 1) // 3 + 1
+    q_prev = q - 1 if q > 1 else 4
+    q_year = _today.year if q > 1 else _today.year - 1
+
+    fig.update_layout(
+        title=f"S&P 500 Q{q_prev} {q_year} Buyback Blackout vs. Earnings Dates",
+        template=DASH_TEMPLATE,
+        height=400,
+        margin=dict(l=50, r=30, t=45, b=40),
+        xaxis_title='', yaxis_title='Percent of tickers in blackout',
+        yaxis=dict(range=[0, 105]),
+        yaxis2=dict(title='Reports/Day', overlaying='y', side='right',
+                    showgrid=False) if earnings_df is not None else {},
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18,
+                    xanchor='center', x=0.5),
+    )
+    return go.FigureWidget(fig)
+
+
+def build_spy_intraday_candlestick(ticker='SPY US Equity', lookback_days=5):
+    """
+    SPY intraday candlestick chart via BQL OHLC data (estilo Tier1 Alpha).
+    Se OHLC intraday não disponível, usa barras diárias recentes.
+    """
+    bq_svc = bql.Service()
+    dt_rng = bq_svc.func.range(f'-{lookback_days}d', '0d')
+
+    ohlc = {}
+    for field_name, field_label in [
+        ('px_open', 'open'), ('px_high', 'high'),
+        ('px_low', 'low'), ('px_last', 'close')]:
+        try:
+            fld = getattr(bq_svc.data, field_name)
+            req = bql.Request(ticker, {field_label: fld(fill='PREV', dates=dt_rng)})
+            s = _bql_ts(bq_svc.execute(req)[0], field_label).dropna()
+            if not s.empty:
+                ohlc[field_label] = s
+        except Exception:
+            pass
+
+    if len(ohlc) < 4:
+        return wd.HTML(f'<p style="color:#8b949e;">Sem dados OHLC para {ticker}.</p>')
+
+    df = pd.DataFrame(ohlc).dropna()
+    if df.empty:
+        return wd.HTML(f'<p style="color:#8b949e;">OHLC vazio para {ticker}.</p>')
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'],
+        name=ticker.split(' ')[0],
+        increasing=dict(line=dict(color='#22c55e'), fillcolor='rgba(34,197,94,0.4)'),
+        decreasing=dict(line=dict(color='#dc2626'), fillcolor='rgba(220,38,38,0.4)'),
+    ))
+
+    fig.update_layout(
+        title=f'{ticker.split(" ")[0]} — Candlestick (Last {lookback_days}D)',
+        template=DASH_TEMPLATE,
+        height=350,
+        margin=dict(l=50, r=30, t=45, b=30),
+        xaxis_title='', yaxis_title='Price',
+        xaxis_rangeslider_visible=False,
+    )
+    return go.FigureWidget(fig)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 5H — SKEW MONITOR + TAIL ANALYTICS + DEALER BOOK MC + OPEX
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -7152,53 +7565,10 @@ def run_analysis(_):
                     f"</table></div></div>")
                 st_c_children.append(wd.HTML(bb_html))
 
-                # Blackout curve chart (Plotly)
+                # Blackout curve chart (Tier1 Alpha-style)
                 if not fp_blackout_curve.empty:
-                    _bc = fp_blackout_curve
-                    fig_blackout = go.FigureWidget()
-                    fig_blackout.add_trace(go.Scatter(
-                        x=_bc['date'], y=_bc['n_blackout'],
-                        mode='lines', fill='tozeroy',
-                        fillcolor='rgba(88,166,255,0.15)',
-                        line=dict(color=_C['accent'], width=2),
-                        name='# em Blackout'))
-                    # Mark today
-                    _today = pd.Timestamp.now().normalize()
-                    _today_row = _bc.loc[_bc['date'] == _today]
-                    if not _today_row.empty:
-                        fig_blackout.add_trace(go.Scatter(
-                            x=[_today], y=[int(_today_row['n_blackout'].iloc[0])],
-                            mode='markers+text',
-                            marker=dict(size=10, color=_C['red']),
-                            text=[f"{int(_today_row['pct_blackout'].iloc[0]*100)}%"],
-                            textposition='top center',
-                            textfont=dict(color=_C['text'], size=12),
-                            name='Hoje'))
-                    # Earnings season labels (Q1=Jan-Feb, Q2=Apr-May, Q3=Jul-Aug, Q4=Oct-Nov)
-                    _season_labels = [
-                        ('Q4 Earnings', 1, 2), ('Q1 Earnings', 4, 5),
-                        ('Q2 Earnings', 7, 8), ('Q3 Earnings', 10, 11)]
-                    _bc_min_dt = _bc['date'].min()
-                    _bc_max_dt = _bc['date'].max()
-                    for _sl, _sm1, _sm2 in _season_labels:
-                        for _yr in range(_bc_min_dt.year, _bc_max_dt.year + 1):
-                            _mid = pd.Timestamp(_yr, _sm1, 15) + pd.Timedelta(days=15)
-                            if _bc_min_dt <= _mid <= _bc_max_dt:
-                                fig_blackout.add_vline(
-                                    x=_mid.timestamp() * 1000,
-                                    line_dash='dot', line_color=_C['text_muted'],
-                                    opacity=0.3,
-                                    annotation_text=_sl,
-                                    annotation_position='top',
-                                    annotation_font=dict(
-                                        size=9, color=_C['text_muted']))
-                    fig_blackout.update_layout(
-                        title="Distribuição de Blackout Entries — S&P 500 (Projeção Trimestral)",
-                        yaxis_title="# de Empresas em Blackout",
-                        xaxis_title="",
-                        height=350, template=DASH_TEMPLATE,
-                        showlegend=False)
-                    st_c_children.append(fig_blackout)
+                    st_c_children.append(
+                        build_buyback_blackout_chart(fp_blackout_curve, fp_earnings_df))
 
                 try:
                     bb_df = estimate_index_buyback_flow(ticker, top_n=30)
@@ -7795,10 +8165,18 @@ def run_analysis(_):
                                 ml['accuracy'], ml['feature_importance'],
                                 ml['disp_prob'], ml['features']))
 
-                        # ── KDE return distribution ──
+                        # ── MBAD Summary Cards + KDE return distribution ──
                         _px_df = disp_result.get('prices_df', pd.DataFrame())
                         _wts = disp_result.get('weights', {})
                         if not _px_df.empty and len(_px_df) >= 2:
+                            # MBAD summary cards (Tier1 Alpha-style)
+                            try:
+                                st_g_children.append(
+                                    build_mbad_summary_cards(_px_df, _wts))
+                            except Exception:
+                                pass
+
+                            # KDE distribution
                             _kde_result = build_kde_distribution_chart(_px_df, _wts)
                             if isinstance(_kde_result, tuple):
                                 kde_chart, kde_interp = _kde_result
@@ -7807,6 +8185,13 @@ def run_analysis(_):
                                     st_g_children.append(wd.HTML(kde_interp))
                             else:
                                 st_g_children.append(_kde_result)
+
+                        # ── SPY Intraday Candlestick ──
+                        try:
+                            st_g_children.append(
+                                build_spy_intraday_candlestick('SPY US Equity', lookback_days=5))
+                        except Exception:
+                            pass
 
                     except Exception as _dsp_err:
                         st_g_children.append(wd.HTML(
@@ -8099,6 +8484,20 @@ def run_analysis(_):
                 # ── Row 11: Gamma Index + Walls time-series ──
                 if not gamma_hist.empty:
                     analytics_children.append(build_gamma_ts_chart(gamma_hist))
+
+                # ── Row 12: SPX vs Equal-Weight SPX Rolling Correlation ──
+                try:
+                    _ew_corr, _ew_chart = fetch_spx_eq_weight_correlation(lookback=2520)
+                    analytics_children.append(_ew_chart)
+                except Exception as _ew_err:
+                    print(f"⚠️ EW Correlation: {_ew_err}")
+
+                # ── Row 13: 0DTE Volume as % of Total ──
+                try:
+                    _odte_ratio, _odte_chart = fetch_odte_volume_pct(lookback=2000)
+                    analytics_children.append(_odte_chart)
+                except Exception as _odte_err:
+                    print(f"⚠️ 0DTE Volume: {_odte_err}")
 
                 if not analytics_children:
                     analytics_children.append(wd.HTML(
