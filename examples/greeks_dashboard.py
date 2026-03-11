@@ -511,9 +511,11 @@ def fetch_historical(ticker, period='-2Y'):
     """Busca preços históricos e retorna log-retornos."""
     hist_req = bql.Request(ticker, {'Value': bq.data.px_last(
         dates=bq.func.range(period, '0D'), fill='PREV')})
-    prices = pd.to_numeric(
-        bq.execute(hist_req)[0].df()['Value'], errors='coerce'
-    ).dropna()
+    _df_h = bq.execute(hist_req)[0].df()
+    if isinstance(_df_h.index, pd.MultiIndex):
+        _df_h.index = _df_h.index.droplevel(0)
+    _df_h.index = pd.to_datetime(_df_h.index)
+    prices = pd.to_numeric(_df_h['Value'], errors='coerce').dropna()
     if prices.empty:
         raise ValueError("Histórico de preços vazio.")
     log_returns = np.log(prices / prices.shift(1)).dropna()
@@ -2755,7 +2757,10 @@ def _bql_fetch_impl_corr(lookback_days=252):
             'px': bq.data.px_last(fill='PREV', dates=dt_range),
         })
         resp = bq.execute(req)
-        s = resp[0].df()['px']
+        _df_corr = resp[0].df()
+        if isinstance(_df_corr.index, pd.MultiIndex):
+            _df_corr.index = _df_corr.index.droplevel(0)
+        s = _df_corr['px']
         s.index = pd.to_datetime(s.index)
         return s
     except Exception:
@@ -3301,20 +3306,28 @@ def fetch_skew_metrics(ticker='SPX Index', lookback=252):
     dt_range = bq.func.range('-{}d'.format(lookback), '0d')
     try:
         req = bql.Request(ticker, {
-            'atm_iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
-            'put25d': bq.data.ivol_delta_put(delta=25, fill='PREV', dates=dt_range),
-            'call25d': bq.data.ivol_delta_call(delta=25, fill='PREV', dates=dt_range),
+            'atm_iv': bq.data.implied_volatility(
+                expiry='30D', pct_moneyness='100', fill='PREV', dates=dt_range),
+            'put25d': bq.data.implied_volatility(
+                expiry='30D', delta='25', put_call='PUT', fill='PREV', dates=dt_range),
+            'call25d': bq.data.implied_volatility(
+                expiry='30D', delta='25', put_call='CALL', fill='PREV', dates=dt_range),
         })
         resp = bq.execute(req)
         df = resp[0].df()
+        if isinstance(df.index, pd.MultiIndex):
+            df.index = df.index.droplevel(0)
         df.index = pd.to_datetime(df.index)
     except Exception:
         try:
             req = bql.Request(ticker, {
-                'atm_iv': bq.data.implied_volatility(fill='PREV', dates=dt_range),
+                'atm_iv': bq.data.implied_volatility(
+                    expiry='30D', pct_moneyness='100', fill='PREV', dates=dt_range),
             })
             resp = bq.execute(req)
             df = resp[0].df()
+            if isinstance(df.index, pd.MultiIndex):
+                df.index = df.index.droplevel(0)
             df.index = pd.to_datetime(df.index)
             df['put25d'] = np.nan
             df['call25d'] = np.nan
@@ -5254,8 +5267,8 @@ def run_analysis(_):
 
             # ─── ABA 8: SIMULADOR INTERATIVO ─────────────────────────────
             vol_slider = wd.FloatSlider(
-                value=0, min=-5, max=5, step=0.5,
-                description='Shift Vol (%):', continuous_update=False,
+                value=0, min=-10, max=10, step=1,
+                description='Shift Vol (pts):', continuous_update=False,
                 layout={'width': '350px'})
             dte_slider = wd.IntSlider(
                 value=0, min=0, max=20, step=1,
@@ -5403,7 +5416,7 @@ def run_analysis(_):
                 flip_str = '{:,.0f}'.format(_flip_level) if _flip_level else 'N/A'
                 sim_info.value = (
                     "<div class='mm-dash'><div class='mm-card'>"
-                    "<h4>Cenário: SPX {:+.1f}% → {:,.0f} | Vol {:+.1f}% | "
+                    "<h4>Cenário: SPX {:+.1f}% → {:,.0f} | Vol {:+.0f} pts | "
                     "{} dias à frente</h4>"
                     "<p>Gamma Flip: <b>{}</b> | Regime: <b>{}</b></p>"
                     "<p>Fluxo Total Estimado: <b style='color:{};'>${:+.1f}B</b> "
@@ -6370,34 +6383,115 @@ def run_analysis(_):
                     opex_widget = wd.HTML(
                         "<div class='mm-dash'><div class='mm-card'>"
                         "{}</div></div>".format(''.join(opex_parts)))
-                    analytics_children.append(opex_widget)
+
+                    # OPEX RV bar chart
+                    _opex_fig = go.FigureWidget()
+                    _opex_cats = ['RV 5d', 'RV 10d']
+                    _opex_fig.add_trace(go.Bar(
+                        x=_opex_cats,
+                        y=[opex.get('rv5_delta_into', 0), opex.get('rv10_delta_into', 0)],
+                        name='Into OPEX', marker_color=_C['accent']))
+                    _opex_fig.add_trace(go.Bar(
+                        x=_opex_cats,
+                        y=[opex.get('rv5_delta_out', 0), opex.get('rv10_delta_out', 0)],
+                        name='Out of OPEX', marker_color=_C['orange']))
+                    _opex_fig.update_layout(
+                        title='Realized Vol: Into vs Out of OPEX',
+                        yaxis_title='RV Anualizada (%)', barmode='group',
+                        height=300, template=DASH_TEMPLATE,
+                        margin=dict(t=35, b=25))
+                    analytics_children.append(wd.HBox([opex_widget, _opex_fig]))
 
                 # ── Row 5: Dealer Scenario Matrix ──
                 if not analytics['dealer_scenarios'].empty:
-                    ds_html = analytics['dealer_scenarios'].to_html(
+                    _ds_df = analytics['dealer_scenarios']
+                    ds_html = _ds_df.to_html(
                         classes='mm-table', index=False, border=0)
+
+                    # Dealer scenario bar chart
+                    _ds_fig = go.FigureWidget()
+                    _ds_fig.add_trace(go.Bar(
+                        x=_ds_df['Move'], y=_ds_df['Dealer Gamma ($B)'],
+                        name='Gamma', marker_color=_C['accent']))
+                    _ds_fig.add_trace(go.Bar(
+                        x=_ds_df['Move'], y=_ds_df['Vanna Flow ($B)'],
+                        name='Vanna', marker_color=_C['purple']))
+                    _ds_fig.add_trace(go.Scatter(
+                        x=_ds_df['Move'], y=_ds_df['Total ($B)'],
+                        name='Total', mode='lines+markers',
+                        line=dict(color=_C['red'], width=2)))
+                    _ds_fig.update_layout(
+                        title='Dealer Scenario: Gamma + Vanna Flow',
+                        yaxis_title='$B', barmode='group',
+                        height=340, template=DASH_TEMPLATE,
+                        margin=dict(t=35, b=25))
+
                     analytics_children.append(wd.HTML(
                         "<div class='mm-dash'><div class='mm-card'>"
                         "<h3>Dealer Scenario Matrix</h3>"
                         "{}</div></div>".format(ds_html)))
+                    analytics_children.append(_ds_fig)
 
                 # ── Row 6: Mag8 Rebalance Projection ──
                 if not analytics['mag8_scenarios'].empty:
-                    m8_html = analytics['mag8_scenarios'].to_html(
+                    _m8_df = analytics['mag8_scenarios']
+                    m8_html = _m8_df.to_html(
                         classes='mm-table', index=False, border=0)
+
+                    # Mag8 bar chart (stacked by stock)
+                    _m8_fig = go.FigureWidget()
+                    _m8_stocks = [c for c in _m8_df.columns if c not in ('Move', 'Total')]
+                    _m8_colors = ['#58a6ff', '#3fb950', '#f0883e', '#da3633',
+                                  '#d29922', '#bc8cff', '#8b949e', '#e6edf3']
+                    for _si, _stk in enumerate(_m8_stocks):
+                        _m8_fig.add_trace(go.Bar(
+                            x=_m8_df['Move'], y=_m8_df[_stk],
+                            name=_stk, marker_color=_m8_colors[_si % len(_m8_colors)]))
+                    _m8_fig.update_layout(
+                        title='Mag8 Dealer Rebalance by Stock ($B)',
+                        yaxis_title='$B', barmode='relative',
+                        height=340, template=DASH_TEMPLATE,
+                        margin=dict(t=35, b=25),
+                        legend=dict(font=dict(size=9), orientation='h', y=1.05))
+
                     analytics_children.append(wd.HTML(
                         "<div class='mm-dash'><div class='mm-card'>"
                         "<h3>Mag8 Dealer Rebalance Projection ($B)</h3>"
                         "{}</div></div>".format(m8_html)))
+                    analytics_children.append(_m8_fig)
 
                 # ── Row 7: Vol Control Rebalance Projection ──
                 if not analytics['vol_rebal'].empty:
-                    vr_html = analytics['vol_rebal'].to_html(
+                    _vr_df = analytics['vol_rebal']
+                    vr_html = _vr_df.to_html(
                         classes='mm-table', index=False, border=0)
+
+                    # Vol rebal stacked bar
+                    _vr_fig = go.FigureWidget()
+                    _vr_fig.add_trace(go.Bar(
+                        x=_vr_df['Move'], y=_vr_df['Vol Ctrl ($B)'],
+                        name='Vol Ctrl', marker_color=_C['accent']))
+                    _vr_fig.add_trace(go.Bar(
+                        x=_vr_df['Move'], y=_vr_df['Dealer ($B)'],
+                        name='Dealer', marker_color=_C['purple']))
+                    _vr_fig.add_trace(go.Bar(
+                        x=_vr_df['Move'], y=_vr_df['Lev ETF ($B)'],
+                        name='Lev ETF', marker_color=_C['orange']))
+                    _vr_fig.add_trace(go.Scatter(
+                        x=_vr_df['Move'], y=_vr_df['Total ($B)'],
+                        name='Total', mode='lines+markers',
+                        line=dict(color=_C['red'], width=2)))
+                    _vr_fig.update_layout(
+                        title='Vol Ctrl + Dealer + LevETF Rebalance',
+                        yaxis_title='$B', barmode='relative',
+                        height=340, template=DASH_TEMPLATE,
+                        margin=dict(t=35, b=25))
+
                     analytics_children.append(wd.HTML(
                         "<div class='mm-dash'><div class='mm-card'>"
                         "<h3>Vol Ctrl + Dealer + LevETF Rebalance Projection</h3>"
                         "{}</div></div>".format(vr_html)))
+                    analytics_children.append(_vr_fig)
 
                 if not analytics_children:
                     analytics_children.append(wd.HTML(
