@@ -7174,19 +7174,19 @@ def run_analysis(_):
             except Exception as _gh_err:
                 print(f"⚠️ Gamma History load: {_gh_err}")
             try:
-                # Save today's snapshot — usa APENAS opções 0DTE (vencem hoje)
-                _min_tte = 1.0 / float(TRADING_DAYS)  # threshold 1 dia útil
-                _mask_0dte = df.Tte.values < _min_tte
-                if _mask_0dte.sum() == 0:
-                    _mask_0dte = np.ones(len(df), dtype=bool)  # fallback: sem 0DTE hoje, usa tudo
-                    print(f"[GAMMA DB] ⚠️ Sem 0DTE hoje — usando todas as opções ({len(df)})")
-                else:
-                    print(f"[GAMMA DB] 0DTE: {_mask_0dte.sum()} opções")
-                _oi_snap = df.OI.values[_mask_0dte] * 100.0
-                _cs_snap = np.where(df.Type.values[_mask_0dte] == 'Call', 1, -1)
+                # Fetch dedicado 0DTE — independente do slider, sempre pega opções que vencem hoje
+                _df_0dte, _, _ = fetch_options_chain(ticker, spot, 0, 0, mny_low, mny_high)
+                if _df_0dte.empty:
+                    raise ValueError("Sem opções 0DTE disponíveis hoje")
+                _greeks_0dte = calculate_all_greeks(
+                    spot, _df_0dte.Strike.values, _df_0dte.IV.values,
+                    _df_0dte.Tte.values, _df_0dte.Type.values, r=rfr)
+                _oi_snap = _df_0dte.OI.values * 100.0
+                _cs_snap = np.where(_df_0dte.Type.values == 'Call', 1, -1)
                 _gex_bn = float(np.nansum(
-                    greeks_now['gamma'][_mask_0dte] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                _net_d = float(np.nansum(greeks_now['delta'][_mask_0dte] * _oi_snap)) / 1e9
+                    _greeks_0dte['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
+                _net_d = float(np.nansum(_greeks_0dte['delta'] * _oi_snap)) / 1e9
+                print(f"[GAMMA DB] 0DTE fetch: {len(_df_0dte)} opções | GEX={_gex_bn:.2f}Bn")
                 _cw = call_wall if call_wall is not None else 0
                 _pw = put_wall if put_wall is not None else 0
                 _vt = gamma_flip if gamma_flip is not None else 0
