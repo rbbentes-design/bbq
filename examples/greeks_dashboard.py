@@ -299,22 +299,27 @@ DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq v
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 DISP_EXCLUDE = {'BRK/B US Equity'}  # Tickers excluídos da análise de dispersão
 
-# Resolve path do CSV de gamma — busca subindo na árvore de diretórios
+# Resolve path do CSV de gamma — busca em cwd direto, data/, e subindo na árvore
 def _find_gamma_csv():
     base = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
     search = os.path.abspath(base)
     for _ in range(6):  # sobe até 6 níveis
-        candidate = os.path.join(search, 'data', 'gamma_history.csv')
-        if os.path.exists(candidate):
-            return os.path.normpath(candidate)
+        # tenta na raiz do diretório atual (ex: /gamma_history.csv no BQuant)
+        for candidate in [
+            os.path.join(search, 'gamma_history.csv'),
+            os.path.join(search, 'data', 'gamma_history.csv'),
+        ]:
+            if os.path.exists(candidate):
+                return os.path.normpath(candidate)
         parent = os.path.dirname(search)
         if parent == search:
             break
         search = parent
-    # fallback: cria no primeiro diretório que tiver 'data/' ou no cwd/data/
-    return os.path.normpath(os.path.join(base, 'data', 'gamma_history.csv'))
+    # fallback: usa cwd/data/ (será criado no append se não existir)
+    return os.path.normpath(os.path.join(os.getcwd(), 'data', 'gamma_history.csv'))
 
 GAMMA_HISTORY_PATH = _find_gamma_csv()
+print(f"[GAMMA DB] Path resolvido: {GAMMA_HISTORY_PATH} (exists={os.path.exists(GAMMA_HISTORY_PATH)})")
 # ...existing code...
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
