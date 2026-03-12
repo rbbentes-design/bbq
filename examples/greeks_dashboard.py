@@ -7183,13 +7183,18 @@ def run_analysis(_):
                     _df_0dte.Tte.values, _df_0dte.Type.values, r=rfr)
                 _oi_snap = _df_0dte.OI.values * 100.0
                 _cs_snap = np.where(_df_0dte.Type.values == 'Call', 1, -1)
+                # GEX em bilhões (mesma escala do histórico)
                 _gex_bn = float(np.nansum(
                     _greeks_0dte['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                _net_d = float(np.nansum(_greeks_0dte['delta'] * _oi_snap)) / 1e9
-                print(f"[GAMMA DB] 0DTE fetch: {len(_df_0dte)} opções | GEX={_gex_bn:.2f}Bn")
-                _cw = call_wall if call_wall is not None else 0
-                _pw = put_wall if put_wall is not None else 0
+                # Delta em dólar-delta (delta × OI × 100 × spot) — mesma escala do histórico
+                _net_d = float(np.nansum(_greeks_0dte['delta'] * _oi_snap * spot))
+                # Call Wall / Put Wall do 0DTE
+                _agg_0dte = compute_strike_exposures(_df_0dte.copy(), _greeks_0dte, spot)
+                _cw_0dte, _pw_0dte = compute_walls(_agg_0dte)
+                _cw = _cw_0dte if _cw_0dte is not None else (call_wall if call_wall is not None else 0)
+                _pw = _pw_0dte if _pw_0dte is not None else (put_wall if put_wall is not None else 0)
                 _vt = gamma_flip if gamma_flip is not None else 0
+                print(f"[GAMMA DB] 0DTE: {len(_df_0dte)} opções | GEX={_gex_bn:.2f}Bn | CW={_cw} | PW={_pw}")
                 append_gamma_snapshot(
                     spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
                     call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
