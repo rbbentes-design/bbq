@@ -299,15 +299,15 @@ DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq v
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 DISP_EXCLUDE = {'BRK/B US Equity'}  # Tickers excluídos da análise de dispersão
 
-# Resolve path relativo ao próprio script (independente de cwd)
-_script_dir = os.path.dirname(os.path.abspath(__file__))
+# Resolve path do CSV de gamma (funciona tanto em script quanto em notebook Jupyter)
+_script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
 _gamma_candidates = [
     os.path.join(_script_dir, '..', 'data', 'gamma_history.csv'),  # bbg/data/ (padrão)
     os.path.join(_script_dir, 'data', 'gamma_history.csv'),         # bbg/examples/data/
     os.path.join(os.getcwd(), 'data', 'gamma_history.csv'),         # fallback cwd
     os.path.join(os.getcwd(), '..', 'data', 'gamma_history.csv'),   # fallback cwd/..
 ]
-GAMMA_HISTORY_PATH = os.path.normpath(os.path.join(_script_dir, '..', 'data', 'gamma_history.csv'))
+GAMMA_HISTORY_PATH = os.path.normpath(os.path.join(_script_dir, 'data', 'gamma_history.csv'))
 for _p in _gamma_candidates:
     if os.path.exists(_p):
         GAMMA_HISTORY_PATH = os.path.normpath(_p)
