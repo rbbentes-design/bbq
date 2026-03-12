@@ -3493,6 +3493,11 @@ def load_gamma_history(path=None):
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.dropna(subset=['date'])
+    # Remove linhas corrompidas: px ou gamma não numérico (linhas mescladas no CSV)
+    for _col in ['px', 'gamma']:
+        if _col in df.columns:
+            df[_col] = pd.to_numeric(df[_col], errors='coerce')
+    df = df.dropna(subset=[c for c in ['px', 'gamma'] if c in df.columns])
     df = df.sort_values('date').reset_index(drop=True)
     # RV 21d (annualized) from Ref Px
     if 'px' in df.columns:
@@ -7158,12 +7163,16 @@ def run_analysis(_):
             except Exception as _gh_err:
                 print(f"⚠️ Gamma History load: {_gh_err}")
             try:
-                # Save today's snapshot (dedup if run multiple times)
-                _oi_snap = df.OI.values * 100.0
-                _cs_snap = np.where(df.Type.values == 'Call', 1, -1)
+                # Save today's snapshot — exclui 0DTE para evitar distorção em dias de expiração
+                _min_tte = 1.0 / float(TRADING_DAYS)  # pelo menos 1 dia útil
+                _mask = df.Tte.values >= _min_tte
+                if _mask.sum() == 0:
+                    _mask = np.ones(len(df), dtype=bool)  # fallback: usa tudo se só tiver 0DTE
+                _oi_snap = df.OI.values[_mask] * 100.0
+                _cs_snap = np.where(df.Type.values[_mask] == 'Call', 1, -1)
                 _gex_bn = float(np.nansum(
-                    greeks_now['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                _net_d = float(np.nansum(greeks_now['delta'] * _oi_snap)) / 1e9
+                    greeks_now['gamma'][_mask] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
+                _net_d = float(np.nansum(greeks_now['delta'][_mask] * _oi_snap)) / 1e9
                 _cw = call_wall if call_wall is not None else 0
                 _pw = put_wall if put_wall is not None else 0
                 _vt = gamma_flip if gamma_flip is not None else 0
