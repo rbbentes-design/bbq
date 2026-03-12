@@ -722,7 +722,17 @@ def compute_walls(agg):
 
 def fit_risk_model(log_returns):
     """Ajusta distribuição t-Student e calcula VaR/CVaR a 95% e 99%."""
-    tdf, tloc, tscale = student_t.fit(log_returns)
+    arr = np.asarray(log_returns, dtype=float)
+    tdf, tloc, tscale = student_t.fit(arr)
+    print(f"[RISK] t-Student fit: df={tdf:.2f}, loc={tloc:.6f}, scale={tscale:.6f}, n={len(arr)}")
+
+    # Sanity check: se tscale for degenerado, usa parâmetros empíricos
+    if tscale < 1e-6 or not np.isfinite(tscale):
+        print(f"[RISK] ⚠️ tscale degenerado ({tscale}), usando fallback empírico")
+        tloc = float(np.mean(arr))
+        tscale = float(np.std(arr))
+        tdf = 4.0  # fat-tail conservador
+
     var_95 = student_t.ppf(0.05, tdf, tloc, tscale)
     cvar_95 = student_t.expect(
         lambda x: x, args=(tdf,), loc=tloc, scale=tscale,
@@ -731,6 +741,7 @@ def fit_risk_model(log_returns):
     cvar_99 = student_t.expect(
         lambda x: x, args=(tdf,), loc=tloc, scale=tscale,
         lb=-np.inf, ub=var_99) / 0.01
+    print(f"[RISK] VaR 95%={var_95:.4f} ({var_95:.2%}), VaR 99%={var_99:.4f} ({var_99:.2%})")
     return {'tdf': tdf, 'tloc': tloc, 'tscale': tscale,
             'var_95': var_95, 'cvar_95': cvar_95,
             'var_99': var_99, 'cvar_99': cvar_99}
