@@ -21,6 +21,7 @@ Uso: Copie tudo para uma célula Jupyter no BQuant e execute.
 # SEÇÃO 0 — IMPORTS E CONFIGURAÇÃO
 # ═══════════════════════════════════════════════════════════════════════════════
 
+from IPython.display import display
 import ipywidgets as wd
 from IPython.display import display, clear_output, HTML
 import pandas as pd
@@ -298,22 +299,20 @@ DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq v
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 DISP_EXCLUDE = {'BRK/B US Equity'}  # Tickers excluídos da análise de dispersão
 
-# Historical gamma data (CSV database)
-try:
-    _base_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    _base_dir = os.getcwd()
-# Try multiple candidate paths for the CSV
+# Resolve path relativo ao próprio script (independente de cwd)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
 _gamma_candidates = [
-    os.path.join(_base_dir, '..', 'data', 'gamma_history.csv'),
-    os.path.join(_base_dir, 'data', 'gamma_history.csv'),
-    os.path.join(os.getcwd(), 'data', 'gamma_history.csv'),
-    os.path.join(os.getcwd(), '..', 'data', 'gamma_history.csv'),
+    os.path.join(_script_dir, '..', 'data', 'gamma_history.csv'),  # bbg/data/ (padrão)
+    os.path.join(_script_dir, 'data', 'gamma_history.csv'),         # bbg/examples/data/
+    os.path.join(os.getcwd(), 'data', 'gamma_history.csv'),         # fallback cwd
+    os.path.join(os.getcwd(), '..', 'data', 'gamma_history.csv'),   # fallback cwd/..
 ]
-GAMMA_HISTORY_PATH = next(
-    (p for p in _gamma_candidates if os.path.exists(p)),
-    os.path.join(_base_dir, '..', 'data', 'gamma_history.csv'),  # default
-)
+GAMMA_HISTORY_PATH = os.path.normpath(os.path.join(_script_dir, '..', 'data', 'gamma_history.csv'))
+for _p in _gamma_candidates:
+    if os.path.exists(_p):
+        GAMMA_HISTORY_PATH = os.path.normpath(_p)
+        break
+# ...existing code...
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
