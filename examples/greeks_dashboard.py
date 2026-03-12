@@ -7174,16 +7174,19 @@ def run_analysis(_):
             except Exception as _gh_err:
                 print(f"⚠️ Gamma History load: {_gh_err}")
             try:
-                # Save today's snapshot — exclui 0DTE para evitar distorção em dias de expiração
-                _min_tte = 1.0 / float(TRADING_DAYS)  # pelo menos 1 dia útil
-                _mask = df.Tte.values >= _min_tte
-                if _mask.sum() == 0:
-                    _mask = np.ones(len(df), dtype=bool)  # fallback: usa tudo se só tiver 0DTE
-                _oi_snap = df.OI.values[_mask] * 100.0
-                _cs_snap = np.where(df.Type.values[_mask] == 'Call', 1, -1)
+                # Save today's snapshot — usa APENAS opções 0DTE (vencem hoje)
+                _min_tte = 1.0 / float(TRADING_DAYS)  # threshold 1 dia útil
+                _mask_0dte = df.Tte.values < _min_tte
+                if _mask_0dte.sum() == 0:
+                    _mask_0dte = np.ones(len(df), dtype=bool)  # fallback: sem 0DTE hoje, usa tudo
+                    print(f"[GAMMA DB] ⚠️ Sem 0DTE hoje — usando todas as opções ({len(df)})")
+                else:
+                    print(f"[GAMMA DB] 0DTE: {_mask_0dte.sum()} opções")
+                _oi_snap = df.OI.values[_mask_0dte] * 100.0
+                _cs_snap = np.where(df.Type.values[_mask_0dte] == 'Call', 1, -1)
                 _gex_bn = float(np.nansum(
-                    greeks_now['gamma'][_mask] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                _net_d = float(np.nansum(greeks_now['delta'][_mask] * _oi_snap)) / 1e9
+                    greeks_now['gamma'][_mask_0dte] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
+                _net_d = float(np.nansum(greeks_now['delta'][_mask_0dte] * _oi_snap)) / 1e9
                 _cw = call_wall if call_wall is not None else 0
                 _pw = put_wall if put_wall is not None else 0
                 _vt = gamma_flip if gamma_flip is not None else 0
