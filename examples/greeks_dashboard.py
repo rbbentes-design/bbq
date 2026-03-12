@@ -303,7 +303,17 @@ try:
     _base_dir = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     _base_dir = os.getcwd()
-GAMMA_HISTORY_PATH = os.path.join(_base_dir, '..', 'data', 'gamma_history.csv')
+# Try multiple candidate paths for the CSV
+_gamma_candidates = [
+    os.path.join(_base_dir, '..', 'data', 'gamma_history.csv'),
+    os.path.join(_base_dir, 'data', 'gamma_history.csv'),
+    os.path.join(os.getcwd(), 'data', 'gamma_history.csv'),
+    os.path.join(os.getcwd(), '..', 'data', 'gamma_history.csv'),
+]
+GAMMA_HISTORY_PATH = next(
+    (p for p in _gamma_candidates if os.path.exists(p)),
+    os.path.join(_base_dir, '..', 'data', 'gamma_history.csv'),  # default
+)
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
 FLOW_FIG_LAYOUT = {
@@ -7086,7 +7096,17 @@ def run_analysis(_):
             # ── Gamma History (CSV database) ─────────────────────────────
             gamma_hist = pd.DataFrame()
             try:
-                # Compute gamma/delta inline (total_gex_val not available yet)
+                gamma_hist = load_gamma_history()
+                if not gamma_hist.empty:
+                    print(f"[GAMMA DB] {len(gamma_hist)} rows loaded "
+                          f"({gamma_hist['date'].iloc[0].strftime('%Y-%m-%d')} → "
+                          f"{gamma_hist['date'].iloc[-1].strftime('%Y-%m-%d')})")
+                else:
+                    print(f"[GAMMA DB] Empty — path={GAMMA_HISTORY_PATH}, exists={os.path.exists(GAMMA_HISTORY_PATH)}")
+            except Exception as _gh_err:
+                print(f"⚠️ Gamma History load: {_gh_err}")
+            try:
+                # Save today's snapshot (dedup if run multiple times)
                 _oi_snap = df.OI.values * 100.0
                 _cs_snap = np.where(df.Type.values == 'Call', 1, -1)
                 _gex_bn = float(np.nansum(
@@ -7100,14 +7120,6 @@ def run_analysis(_):
                     call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
             except Exception as _gs_err:
                 print(f"⚠️ Gamma snapshot save: {_gs_err}")
-            try:
-                gamma_hist = load_gamma_history()
-                if not gamma_hist.empty:
-                    print(f"[GAMMA DB] {len(gamma_hist)} rows loaded "
-                          f"({gamma_hist['date'].iloc[0].strftime('%Y-%m-%d')} → "
-                          f"{gamma_hist['date'].iloc[-1].strftime('%Y-%m-%d')})")
-            except Exception as _gh_err:
-                print(f"⚠️ Gamma History: {_gh_err}")
 
             clear_output(wait=True)
 
@@ -8975,7 +8987,7 @@ def run_analysis(_):
 
                 if not gamma_hist.empty:
                     # ── Scatter: RV 21d vs Gamma ──
-                    _cur_gex_12 = total_gex_val / 1e9 if 'total_gex_val' in dir() else None
+                    _cur_gex_12 = _gex_bn if '_gex_bn' in dir() else None
                     _cur_rv_12 = rv_30d if pd.notna(rv_30d) else None
                     _rv_gamma_children.append(
                         build_rv_gamma_chart(gamma_hist,
