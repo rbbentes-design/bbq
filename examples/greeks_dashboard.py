@@ -7671,8 +7671,8 @@ def run_analysis(_):
                 dealer_flow = -(_dex_new * ds + 0.5 * _gex_new * ds ** 2)
 
                 vanna_not = float(np.nansum(g_new['vanna'] * _oi_sim) * new_spot)
-                vol_chg_pts = (rv_shock - rv_now) * 100  # em pontos de vol
-                vanna_flow = -vanna_not * vol_chg_pts if vanna_not != 0 else 0
+                vol_chg_dec = rv_shock - rv_now  # decimal (0.02 = 2 pts)
+                vanna_flow = -vanna_not * vol_chg_dec if vanna_not != 0 else 0
 
                 flows = [vc_flow / 1e9, rp_flow / 1e9, cta_flow / 1e9,
                          dealer_flow / 1e9, vanna_flow / 1e9]
