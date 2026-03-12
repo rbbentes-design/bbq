@@ -3612,6 +3612,21 @@ def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
                           f'RV Prevista: {forecasted_rv:.1f}%<extra></extra>',
         ))
 
+    # Último dia histórico do CSV (marcador destacado)
+    last_row = df.iloc[-1]
+    fig.add_trace(go.Scatter(
+        x=[last_row['gamma']], y=[last_row['rv21d'] * 100],
+        mode='markers+text', name=f"Último ({last_row['date'].strftime('%Y-%m-%d')})",
+        marker=dict(color='#ffffff', size=13, symbol='circle',
+                    line=dict(width=2.5, color='#f0883e')),
+        text=[last_row['date'].strftime('%m/%d')],
+        textposition='top center',
+        textfont=dict(size=9, color='#f0883e'),
+        hovertemplate=(f"<b>ÚLTIMO HISTÓRICO</b><br>"
+                       f"Data: {last_row['date'].strftime('%Y-%m-%d')}<br>"
+                       f"Gamma: %{{x:.2f}}<br>RV21d: %{{y:.1f}}%<extra></extra>"),
+    ))
+
     # Current point
     if current_gamma is not None and current_rv is not None:
         fig.add_trace(go.Scatter(
@@ -4492,6 +4507,8 @@ def build_kde_distribution_chart(prices_df, weights=None):
 
     if len(rets) < 5:
         return wd.HTML('<p style="color:#8b949e;">Dados insuficientes para KDE.</p>'), ''
+    if rets.std() == 0:
+        return wd.HTML('<p style="color:#8b949e;">Retornos sem variação (possível feriado/dia sem pregão).</p>'), ''
 
     n_down = int((rets < 0).sum())
     n_up = int((rets >= 0).sum())
@@ -4537,15 +4554,18 @@ def build_kde_distribution_chart(prices_df, weights=None):
         w_arr = np.array([weights.get(t, 0) for t in rets.index])
         w_arr = w_arr / w_arr.sum() if w_arr.sum() > 0 else w_arr
         non_zero = w_arr > 0
-        if non_zero.sum() > 3:
-            kde_w = gaussian_kde(rets[non_zero], weights=w_arr[non_zero])
-            y_w = kde_w(x)
-            fig.add_trace(go.Scatter(
-                x=x, y=y_w,
-                line=dict(color='#fbbf24', width=2.5),
-                name='Weighted distribution',
-                opacity=0.95), secondary_y=True)
-            has_weighted = True
+        if non_zero.sum() > 3 and rets[non_zero].std() > 0:
+            try:
+                kde_w = gaussian_kde(rets[non_zero], weights=w_arr[non_zero])
+                y_w = kde_w(x)
+                fig.add_trace(go.Scatter(
+                    x=x, y=y_w,
+                    line=dict(color='#fbbf24', width=2.5),
+                    name='Weighted distribution',
+                    opacity=0.95), secondary_y=True)
+                has_weighted = True
+            except Exception:
+                pass
 
     # ── Average lines ──
     fig.add_vline(x=0, line=dict(color='#6b7280', dash='solid', width=1))
@@ -8749,7 +8769,13 @@ def run_analysis(_):
                     for key in ['atm_iv', 'put25d', 'call25d', 'risk_reversal', 'put_skew', 'call_skew']:
                         if key in sk:
                             pctile_key = '{}_pctile'.format(key)
-                            pctile_str = ' (pctile: {:.0f}%)'.format(sk[pctile_key]) if pctile_key in sk else ''
+                            if pctile_key in sk:
+                                raw_pct = sk[pctile_key]
+                                # call_skew: percentil invertido (baixo = calls baratas = extremo)
+                                disp_pct = 100 - raw_pct if key == 'call_skew' else raw_pct
+                                pctile_str = ' (pctile: {:.0f}%)'.format(disp_pct)
+                            else:
+                                pctile_str = ''
                             skew_summary_parts.append(
                                 '<p style="margin:2px 0;font-size:12px;">'
                                 '{}: <b>{}</b>{}</p>'.format(key.replace('_', ' ').title(), sk[key], pctile_str))
