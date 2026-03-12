@@ -3463,15 +3463,30 @@ def load_gamma_history(path=None):
 
 def append_gamma_snapshot(spot, gamma_idx, net_delta, call_wall, put_wall,
                           vol_trigger, trade_date=None, path=None):
-    """Append today's snapshot to the gamma history CSV."""
+    """Append today's snapshot to gamma history CSV.
+    If already run today, replaces the last entry for that date (keeps only latest)."""
     fpath = path or GAMMA_HISTORY_PATH
     dt = trade_date or datetime.now().strftime('%Y-%m-%d')
-    row = f"{dt},{spot},{gamma_idx},{net_delta},{call_wall},{put_wall},{vol_trigger},{dt}\n"
-    exists = os.path.exists(fpath)
-    with open(fpath, 'a') as f:
-        if not exists:
-            f.write("Trade Date,Ref Px,Net Gamma,Net Delta,Call Wall,Put Wall,Vol Trigger,Data Release\n")
-        f.write(row)
+    new_row = f"{dt},{spot},{gamma_idx},{net_delta},{call_wall},{put_wall},{vol_trigger},{dt}\n"
+    header = "Trade Date,Ref Px,Net Gamma,Net Delta,Call Wall,Put Wall,Vol Trigger,Data Release\n"
+
+    if os.path.exists(fpath):
+        with open(fpath, 'r') as f:
+            lines = f.readlines()
+        # Remove any existing rows for today's date (dedup)
+        kept = [lines[0]] if lines else [header]  # keep header
+        for line in lines[1:]:
+            if not line.startswith(dt + ','):
+                kept.append(line)
+        kept.append(new_row)
+        with open(fpath, 'w') as f:
+            f.writelines(kept)
+    else:
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, 'w') as f:
+            f.write(header)
+            f.write(new_row)
+    print(f"[GAMMA DB] Snapshot saved for {dt}")
 
 
 def build_rv_gamma_chart(gamma_hist, current_gamma=None, current_rv=None):
@@ -4580,15 +4595,21 @@ def build_kde_distribution_chart(prices_df, weights=None):
 
     title_text = ('1D% Return Distribution For SPX, Individual Constituents')
 
+    # Dynamic x range: pad by 2 or at least ±8%
+    _x_lo = min(rets.min() - 2, -8)
+    _x_hi = max(rets.max() + 2, 8)
+
     fig.update_layout(
         title=dict(text=title_text, font=dict(size=16, color='white')),
         template=DASH_TEMPLATE,
-        height=550,
+        height=650,
         margin=dict(l=50, r=50, t=50, b=60),
         xaxis=dict(
             title='', zeroline=False,
             tickformat='.1f', ticksuffix='%',
             gridcolor='rgba(128,128,128,0.2)', gridwidth=0.5,
+            range=[_x_lo, _x_hi],
+            dtick=2.5,
         ),
         yaxis=dict(showgrid=False, title='', showticklabels=True),
         yaxis2=dict(showgrid=False, title='', showticklabels=False),
@@ -7065,6 +7086,21 @@ def run_analysis(_):
             # ── Gamma History (CSV database) ─────────────────────────────
             gamma_hist = pd.DataFrame()
             try:
+                # Compute gamma/delta inline (total_gex_val not available yet)
+                _oi_snap = df.OI.values * 100.0
+                _cs_snap = np.where(df.Type.values == 'Call', 1, -1)
+                _gex_bn = float(np.nansum(
+                    greeks_now['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
+                _net_d = float(np.nansum(greeks_now['delta'] * _oi_snap)) / 1e9
+                _cw = call_wall if call_wall is not None else 0
+                _pw = put_wall if put_wall is not None else 0
+                _vt = gamma_flip if gamma_flip is not None else 0
+                append_gamma_snapshot(
+                    spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
+                    call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
+            except Exception as _gs_err:
+                print(f"⚠️ Gamma snapshot save: {_gs_err}")
+            try:
                 gamma_hist = load_gamma_history()
                 if not gamma_hist.empty:
                     print(f"[GAMMA DB] {len(gamma_hist)} rows loaded "
@@ -8927,15 +8963,67 @@ def run_analysis(_):
                     f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>"
                     f"{_an_tb}</pre>")])
 
+            # ─── ABA 12: RV × GAMMA INDEX ─────────────────────────────
+            try:
+                _rv_gamma_children = []
+                _rv_gamma_children.append(wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "<h3>RV Realizada 21d × Gamma Index</h3>"
+                    "<p>Scatter histórico com regressão OLS + time-series "
+                    "de gamma, walls e preço. Dados atualizados a cada execução.</p>"
+                    "</div></div>"))
+
+                if not gamma_hist.empty:
+                    # ── Scatter: RV 21d vs Gamma ──
+                    _cur_gex_12 = total_gex_val / 1e9 if 'total_gex_val' in dir() else None
+                    _cur_rv_12 = rv_30d if pd.notna(rv_30d) else None
+                    _rv_gamma_children.append(
+                        build_rv_gamma_chart(gamma_hist,
+                                             current_gamma=_cur_gex_12,
+                                             current_rv=_cur_rv_12))
+
+                    # ── Time-series: Gamma + Walls + Price ──
+                    _rv_gamma_children.append(
+                        build_gamma_ts_chart(gamma_hist))
+
+                    # ── Summary stats ──
+                    _last = gamma_hist.iloc[-1]
+                    _n_rows = len(gamma_hist)
+                    _date_range = (f"{gamma_hist['date'].iloc[0].strftime('%Y-%m-%d')} → "
+                                   f"{gamma_hist['date'].iloc[-1].strftime('%Y-%m-%d')}")
+                    _rv_gamma_children.append(wd.HTML(
+                        f"<div class='mm-dash'><div class='mm-card'>"
+                        f"<h4>📊 Banco de Dados Gamma</h4>"
+                        f"<p>{_n_rows} observações | {_date_range}</p>"
+                        f"<p>Último: Gamma = {_last.get('gamma', 0):.2f} Bn | "
+                        f"SPX = {_last.get('px', 0):,.0f} | "
+                        f"RV21d = {_last.get('rv21d', 0)*100:.1f}% | "
+                        f"Call Wall = {_last.get('call_wall', 0):,.0f} | "
+                        f"Put Wall = {_last.get('put_wall', 0):,.0f}</p>"
+                        f"</div></div>"))
+                else:
+                    _rv_gamma_children.append(wd.HTML(
+                        '<p style="color:#8b949e;">Sem dados históricos de gamma. '
+                        'Execute o dashboard diariamente para acumular dados.</p>'))
+
+                tab12 = wd.VBox(_rv_gamma_children)
+            except Exception as _rvg_err:
+                _rvg_tb = traceback.format_exc()
+                print(f"⚠️ RV×Gamma tab: {_rvg_err}")
+                tab12 = wd.VBox([wd.HTML(
+                    f"<h3>RV × Gamma</h3>"
+                    f"<p style='color:red;'>Erro: {_rvg_err}</p>")])
+
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
-            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11]
+            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
-                'Simulador', 'Relatório', 'Flow Predictor', 'Analytics'
+                'Simulador', 'Relatório', 'Flow Predictor', 'Analytics',
+                'RV × Gamma'
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
