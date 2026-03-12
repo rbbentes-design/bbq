@@ -3456,18 +3456,43 @@ def load_gamma_history(path=None):
     vol_trigger, rv21d.
     """
     fpath = path or GAMMA_HISTORY_PATH
+    print(f"[GAMMA DB] Loading from: {fpath} (exists={os.path.exists(fpath)})")
     if not os.path.exists(fpath):
         return pd.DataFrame()
-    df = pd.read_csv(fpath, parse_dates=['Trade Date'])
-    df = df.rename(columns={
-        'Trade Date': 'date', 'Ref Px': 'px', 'Net Gamma': 'gamma',
-        'Net Delta': 'delta', 'Call Wall': 'call_wall', 'Put Wall': 'put_wall',
-        'Vol Trigger': 'vol_trigger', 'Data Release': 'data_release',
-    })
+    df = pd.read_csv(fpath)
+    print(f"[GAMMA DB] CSV columns: {list(df.columns)}, shape={df.shape}")
+    # Normalize column names (strip whitespace, handle variations)
+    df.columns = [c.strip() for c in df.columns]
+    col_map = {}
+    for c in df.columns:
+        cl = c.lower().replace(' ', '_')
+        if cl in ('trade_date', 'date'):
+            col_map[c] = 'date'
+        elif cl in ('ref_px', 'price', 'px', 'spot'):
+            col_map[c] = 'px'
+        elif cl in ('net_gamma', 'gamma', 'gamma_index'):
+            col_map[c] = 'gamma'
+        elif cl in ('net_delta', 'delta'):
+            col_map[c] = 'delta'
+        elif cl in ('call_wall',):
+            col_map[c] = 'call_wall'
+        elif cl in ('put_wall',):
+            col_map[c] = 'put_wall'
+        elif cl in ('vol_trigger',):
+            col_map[c] = 'vol_trigger'
+        elif cl in ('data_release',):
+            col_map[c] = 'data_release'
+    df = df.rename(columns=col_map)
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
     df = df.sort_values('date').reset_index(drop=True)
     # RV 21d (annualized) from Ref Px
-    log_ret = np.log(df['px'] / df['px'].shift(1))
-    df['rv21d'] = log_ret.rolling(21).std() * np.sqrt(252)
+    if 'px' in df.columns:
+        df['px'] = pd.to_numeric(df['px'], errors='coerce')
+        log_ret = np.log(df['px'] / df['px'].shift(1))
+        df['rv21d'] = log_ret.rolling(21).std() * np.sqrt(252)
+    print(f"[GAMMA DB] After processing: {len(df)} rows, cols={list(df.columns)}")
     return df
 
 
