@@ -299,19 +299,22 @@ DISP_VIXEQ = 'VIXEQ Index'       # Single Stock Vol Premium (VIX - realized eq v
 DISP_TOP_N = 10                   # Top N members by weight for dispersion
 DISP_EXCLUDE = {'BRK/B US Equity'}  # Tickers excluídos da análise de dispersão
 
-# Resolve path do CSV de gamma (funciona tanto em script quanto em notebook Jupyter)
-_script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
-_gamma_candidates = [
-    os.path.join(_script_dir, '..', 'data', 'gamma_history.csv'),  # bbg/data/ (padrão)
-    os.path.join(_script_dir, 'data', 'gamma_history.csv'),         # bbg/examples/data/
-    os.path.join(os.getcwd(), 'data', 'gamma_history.csv'),         # fallback cwd
-    os.path.join(os.getcwd(), '..', 'data', 'gamma_history.csv'),   # fallback cwd/..
-]
-GAMMA_HISTORY_PATH = os.path.normpath(os.path.join(_script_dir, 'data', 'gamma_history.csv'))
-for _p in _gamma_candidates:
-    if os.path.exists(_p):
-        GAMMA_HISTORY_PATH = os.path.normpath(_p)
-        break
+# Resolve path do CSV de gamma — busca subindo na árvore de diretórios
+def _find_gamma_csv():
+    base = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+    search = os.path.abspath(base)
+    for _ in range(6):  # sobe até 6 níveis
+        candidate = os.path.join(search, 'data', 'gamma_history.csv')
+        if os.path.exists(candidate):
+            return os.path.normpath(candidate)
+        parent = os.path.dirname(search)
+        if parent == search:
+            break
+        search = parent
+    # fallback: cria no primeiro diretório que tiver 'data/' ou no cwd/data/
+    return os.path.normpath(os.path.join(base, 'data', 'gamma_history.csv'))
+
+GAMMA_HISTORY_PATH = _find_gamma_csv()
 # ...existing code...
 
 # Layout padrão Plotly (dark elegante para todos os gráficos)
