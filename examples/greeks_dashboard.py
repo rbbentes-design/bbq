@@ -2102,30 +2102,43 @@ def compute_risk_parity_flow(rv_equity, rv_equity_prev,
 CTA_AUM = 340e9
 CTA_EQUITY_ALLOC = 0.25  # ~25% da carteira em equities
 CTA_MA_PAIRS = [(5, 20), (5, 60), (10, 60), (20, 120), (20, 200)]
+# Pesos por janela: sinais longos movem mais notional (estilo GS/BofA)
+CTA_MA_WEIGHTS = {(5, 20): 0.10, (5, 60): 0.15, (10, 60): 0.20,
+                  (20, 120): 0.25, (20, 200): 0.30}
 
 
-def compute_cta_trend_strength(prices, ma_pairs=None):
+def compute_cta_trend_strength(prices, ma_pairs=None, use_weights=None):
     """
     Calcula trend strength usando cruzamentos de médias móveis.
-    Para cada par (curta, longa): +1 se MA curta > MA longa, -1 caso contrário.
-    Média ponderada pela volatilidade relativa → score contínuo em [-1, +1].
+    Para cada par (curta, longa): spread contínuo em [-1, +1].
+    use_weights=True → pesos por janela (sinais longos têm mais peso, estilo GS/BofA).
+    use_weights=False → média simples (igual peso por janela).
+    use_weights=None → lê o toggle cta_weight_w se disponível.
     Ref: BofA "Trends aren't going out of fashion" (2017).
     """
     if ma_pairs is None:
         ma_pairs = CTA_MA_PAIRS
+    if use_weights is None:
+        try:
+            use_weights = cta_weight_w.value
+        except NameError:
+            use_weights = False
     if len(prices) < max(p[1] for p in ma_pairs):
         return 0
-    scores = []
+    scores, weights = [], []
     for short_w, long_w in ma_pairs:
         ma_short = prices.rolling(short_w).mean().iloc[-1]
         ma_long = prices.rolling(long_w).mean().iloc[-1]
         if pd.isna(ma_short) or pd.isna(ma_long) or ma_long == 0:
             continue
-        # Prorate pelo spread relativo (torna mais contínuo)
         spread = (ma_short - ma_long) / ma_long
         scores.append(np.clip(spread * 100, -1, 1))
+        weights.append(CTA_MA_WEIGHTS.get((short_w, long_w), 1.0))
     if not scores:
         return 0
+    if use_weights and len(weights) > 0:
+        w = np.array(weights)
+        return float(np.average(scores, weights=w / w.sum()))
     return float(np.mean(scores))
 
 
@@ -2159,10 +2172,15 @@ def compute_cta_flow(prices, rv_current, target_vol=0.10):
         'pos_prev': pos_prev,
     }
 
-def _trend_from_array(vals):
+def _trend_from_array(vals, use_weights=None):
     """Fast trend strength from raw numpy array (no pandas overhead)."""
+    if use_weights is None:
+        try:
+            use_weights = cta_weight_w.value
+        except NameError:
+            use_weights = False
     n = len(vals)
-    scores = []
+    scores, weights = [], []
     for short_w, long_w in CTA_MA_PAIRS:
         if n < long_w:
             continue
@@ -2172,7 +2190,13 @@ def _trend_from_array(vals):
             continue
         spread = (ms - ml) / ml
         scores.append(np.clip(spread * 100, -1, 1))
-    return float(np.mean(scores)) if scores else 0.0
+        weights.append(CTA_MA_WEIGHTS.get((short_w, long_w), 1.0))
+    if not scores:
+        return 0.0
+    if use_weights:
+        w = np.array(weights)
+        return float(np.average(scores, weights=w / w.sum()))
+    return float(np.mean(scores))
 
 
 def compute_cta_scenario_flows(prices, rv_current, spot, horizon_days=5,
@@ -6539,6 +6563,11 @@ flow_pred_w = wd.Checkbox(value=True, description='Incluir Flow Predictor',
                           indent=False, layout={'width': '250px'})
 disp_w = wd.Checkbox(value=False, description='Incluir Dispersão',
                      indent=False, layout={'width': '250px'})
+cta_weight_w = wd.ToggleButton(value=False, description='CTA: Peso por Janela',
+                                tooltip='Ativo: sinais longos têm mais peso (estilo GS/BofA). '
+                                        'Inativo: peso igual entre todas as janelas.',
+                                button_style='info', icon='balance-scale',
+                                layout={'width': '220px'})
 cot_type_w = wd.Dropdown(
     options=list(COT_CONTRACTS.keys()),
     value='Equity Indices', description='COT Categoria:',
@@ -9223,7 +9252,7 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([ticker_w, dte_w]),
         mny_w,
-        wd.HBox([run_btn, spx_pred_w, flow_pred_w, disp_w, export_btn]),
+        wd.HBox([run_btn, spx_pred_w, flow_pred_w, disp_w, cta_weight_w, export_btn]),
         wd.HBox([rebal_date_w]),
     ], layout=_ctrl_box_layout),
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
