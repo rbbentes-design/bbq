@@ -7333,6 +7333,21 @@ def run_analysis(_):
             # ─── ABA 1: VISÃO GERAL ─────────────────────────────────────
             total_gex = gamma_curve[np.argmin(np.abs(levels - spot))]
             fragility = (abs(total_gex) / avg_vol) * 100 if pd.notna(avg_vol) and avg_vol > 0 else 0
+
+            # Diagnóstico GEX modelo completo (todos vencimentos)
+            _gc_is_call = df.Type.values == 'Call'
+            _gc_is_put  = df.Type.values == 'Put'
+            _gc_oi100   = df['OI'].values * 100.0
+            _gc_g       = greeks_now['gamma']
+            _gc_calls_abs = float(np.nansum(_gc_g[_gc_is_call] * _gc_oi100[_gc_is_call] * spot**2 * 0.01)) / 1e9
+            _gc_puts_abs  = float(np.nansum(_gc_g[_gc_is_put]  * _gc_oi100[_gc_is_put]  * spot**2 * 0.01)) / 1e9
+            print(f"[GEX FULL] OI calls: {df[_gc_is_call].OI.sum():,.0f} | OI puts: {df[_gc_is_put].OI.sum():,.0f} | "
+                  f"Expirations: {df['Tte'].nunique() if 'Tte' in df.columns else '?'} | "
+                  f"Options total: {len(df)}")
+            print(f"[GEX FULL] Gamma absoluto (bbg-like): {_gc_calls_abs + _gc_puts_abs:+.3f}Bn | "
+                  f"Calls: {_gc_calls_abs:+.3f}Bn | Puts: {_gc_puts_abs:+.3f}Bn | "
+                  f"NET (calls-puts): {_gc_calls_abs - _gc_puts_abs:+.3f}Bn | "
+                  f"Curva no spot: {total_gex/1e9:+.3f}Bn")
             daily_move = implied_move_pct(iv_30d) if pd.notna(iv_30d) else 0
             vol_premium = (iv_30d - rv_30d) * 100 if pd.notna(iv_30d) and pd.notna(rv_30d) else 0
 
