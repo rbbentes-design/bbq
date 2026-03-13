@@ -3546,18 +3546,23 @@ def load_gamma_history(path=None):
 def append_gamma_snapshot(spot, gamma_idx, net_delta, call_wall, put_wall,
                           vol_trigger, trade_date=None, path=None):
     """Append today's snapshot to gamma history CSV.
-    If already run today, replaces the last entry for that date (keeps only latest)."""
+    Same day → replaces last row for that date. New day → appends new row.
+    Numbers formatted with fixed decimal places to avoid CSV corruption."""
     fpath = path or GAMMA_HISTORY_PATH
     dt = trade_date or datetime.now().strftime('%Y-%m-%d')
-    new_row = f"{dt},{spot},{gamma_idx},{net_delta},{call_wall},{put_wall},{vol_trigger},{dt}\n"
+    new_row = (f"{dt},{int(round(spot))},{float(gamma_idx):.4f},"
+               f"{int(round(net_delta))},{int(round(call_wall))},"
+               f"{int(round(put_wall))},{int(round(vol_trigger))},{dt}\n")
     header = "Trade Date,Ref Px,Net Gamma,Net Delta,Call Wall,Put Wall,Vol Trigger,Data Release\n"
 
     if os.path.exists(fpath):
         with open(fpath, 'r') as f:
             lines = f.readlines()
-        # Remove any existing rows for today's date (dedup)
+        # Ensure every line ends with \n to prevent row merging on write
+        lines = [ln if ln.endswith('\n') else ln + '\n' for ln in lines]
         kept = [lines[0]] if lines else [header]  # keep header
         for line in lines[1:]:
+            # Keep only rows that are NOT today's date
             if not line.startswith(dt + ','):
                 kept.append(line)
         kept.append(new_row)
