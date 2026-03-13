@@ -7400,28 +7400,39 @@ def run_analysis(_):
             _gamma_lvl_chart = build_gamma_levels_chart(
                 prices, spot, call_wall, put_wall, gamma_flip, iv_30d)
 
-            # ── Tail Risk termômetro (home) ──
-            _home_tail = build_tail_gauge(
+            # ── Tail Risk completo (home): gauge + breakdown ──
+            _home_tail_gauge = build_tail_gauge(
                 analytics.get('tail_score', 50),
                 analytics.get('tail_interp', ''))
+            _tail_parts = ['<h3>TAIL RISK</h3>']
+            _tail_parts.append('<p><b>Score: {:.0f}/100</b> — {}</p>'.format(
+                analytics.get('tail_score', 50), analytics.get('tail_interp', '')))
+            for _ck, _cv in analytics.get('tail_components', {}).items():
+                _tail_parts.append(
+                    '<p style="margin:2px 0;font-size:12px;">'
+                    '{}: <b>{}</b> (contrib: {:.1f})</p>'.format(
+                        _cv.get('label', _ck), _cv.get('value', 0), _cv.get('score', 0)))
+            _home_tail_info = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card'>"
+                "{}</div></div>".format(''.join(_tail_parts)))
+            _home_tail_row = wd.HBox([_home_tail_gauge, _home_tail_info],
+                                     layout={'align_items': 'flex-start'})
 
-            # ── Flow Score resumido (home) ──
-            if fp_score is not None:
-                _dir_color = (_C['green'] if fp_score['direction'] == 'BULLISH'
-                              else _C['red'] if fp_score['direction'] == 'BEARISH'
-                              else _C['text_muted'])
-                _home_flow_html = wd.HTML(
-                    "<div class='mm-dash'><div class='mm-card' style='min-width:200px'>"
-                    "<h3>Flow Prediction</h3>"
-                    f"<p style='font-size:22px;font-weight:bold;color:{_dir_color}'>"
-                    f"{fp_score['direction']}</p>"
-                    f"<p>P(Up): <b>{fp_score['prob_up']:.1%}</b></p>"
-                    f"<p>Score: <b>{fp_score.get('combined_score', 0):.1f}</b></p>"
-                    "</div></div>")
+            # ── Flow Predictor completo (home): gauge + barras de componentes ──
+            if fp_ok and fp_score is not None:
+                try:
+                    _home_flow_row = wd.HBox(
+                        [fp_plot_score_gauge(fp_score),
+                         fp_plot_components_bar(fp_score)],
+                        layout={'align_items': 'flex-start'})
+                except Exception:
+                    _home_flow_row = wd.HTML(
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "<p style='color:#8b949e;'>Flow N/A</p></div></div>")
             else:
-                _home_flow_html = wd.HTML(
+                _home_flow_row = wd.HTML(
                     "<div class='mm-dash'><div class='mm-card'>"
-                    "<p style='color:#8b949e;'>Flow N/A</p></div></div>")
+                    "<p style='color:#8b949e;'>Flow: ative o Flow Predictor</p></div></div>")
 
             # ── CTA Chart (home) ──
             _home_cta = wd.HTML(
@@ -7443,8 +7454,8 @@ def run_analysis(_):
                         layout={'justify_content': 'space-around'}),
                 _gamma_lvl_chart,
                 wd.HBox([fig_gex, fig_dist]),
-                wd.HBox([_home_tail, _home_flow_html],
-                        layout={'align_items': 'flex-start'}),
+                _home_tail_row,
+                _home_flow_row,
                 _home_cta,
                 wd.HTML(summary_html)
             ])
