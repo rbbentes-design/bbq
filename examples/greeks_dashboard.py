@@ -7277,11 +7277,31 @@ def run_analysis(_):
                     spot, _df_0dte.Strike.values, _df_0dte.IV.values,
                     _df_0dte.Tte.values, _df_0dte.Type.values, r=rfr)
                 _oi_snap = _df_0dte.OI.values * 100.0
-                _cs_snap = np.where(_df_0dte.Type.values == 'Call', 1, -1)
-                # GEX em bilhões (mesma escala do histórico)
+                _types_snap = _df_0dte.Type.values
+                _cs_snap = np.where(_types_snap == 'Call', 1, -1)
+
+                # Diagnóstico: verificar classificação call/put e breakdown de GEX
+                _is_call_snap = _types_snap == 'Call'
+                _is_put_snap  = _types_snap == 'Put'
+                _n_unrecog    = int((~_is_call_snap & ~_is_put_snap).sum())
+                _gex_calls = float(np.nansum(
+                    _greeks_0dte['gamma'][_is_call_snap]
+                    * _oi_snap[_is_call_snap] * (spot**2) * 0.01)) / 1e9
+                _gex_puts  = float(np.nansum(
+                    _greeks_0dte['gamma'][_is_put_snap]
+                    * _oi_snap[_is_put_snap]  * (spot**2) * 0.01)) / 1e9
+                print(f"[GEX DEBUG] Tipos únicos: {np.unique(_types_snap).tolist()} | "
+                      f"Calls: {_is_call_snap.sum()} | Puts: {_is_put_snap.sum()} | "
+                      f"Não-reconhecidos: {_n_unrecog}")
+                print(f"[GEX DEBUG] GEX calls (bruto): {_gex_calls:+.3f}Bn | "
+                      f"GEX puts (bruto): {_gex_puts:+.3f}Bn")
+                print(f"[GEX DEBUG] OI calls: {_df_0dte[_is_call_snap].OI.sum():,.0f} | "
+                      f"OI puts: {_df_0dte[_is_put_snap].OI.sum():,.0f}")
+
+                # GEX líquido: calls − puts (= soma com sinal via _cs_snap)
                 _gex_bn = float(np.nansum(
                     _greeks_0dte['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                # Delta em dólar-delta (delta × OI × 100 × spot) — mesma escala do histórico
+                # Delta em dólar-delta (delta já tem sinal negativo para puts no BS)
                 _net_d = float(np.nansum(_greeks_0dte['delta'] * _oi_snap * spot))
                 # Call Wall / Put Wall do 0DTE
                 _agg_0dte = compute_strike_exposures(_df_0dte.copy(), _greeks_0dte, spot)
@@ -7289,7 +7309,8 @@ def run_analysis(_):
                 _cw = _cw_0dte if _cw_0dte is not None else (call_wall if call_wall is not None else 0)
                 _pw = _pw_0dte if _pw_0dte is not None else (put_wall if put_wall is not None else 0)
                 _vt = gamma_flip if gamma_flip is not None else 0
-                print(f"[GAMMA DB] 0DTE: {len(_df_0dte)} opções | GEX={_gex_bn:.2f}Bn | CW={_cw} | PW={_pw}")
+                print(f"[GAMMA DB] 0DTE: {len(_df_0dte)} opções | GEX net={_gex_bn:.3f}Bn "
+                      f"(calls={_gex_calls:+.3f} − puts={_gex_puts:+.3f}) | CW={_cw} | PW={_pw}")
                 append_gamma_snapshot(
                     spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
                     call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
