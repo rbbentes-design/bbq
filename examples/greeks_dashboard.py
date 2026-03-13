@@ -7411,7 +7411,7 @@ def run_analysis(_):
                     f"<p style='font-size:22px;font-weight:bold;color:{_dir_color}'>"
                     f"{fp_score['direction']}</p>"
                     f"<p>P(Up): <b>{fp_score['prob_up']:.1%}</b></p>"
-                    f"<p>Score: <b>{fp_score['score']:.1f}</b></p>"
+                    f"<p>Score: <b>{fp_score.get('combined_score', 0):.1f}</b></p>"
                     "</div></div>")
             else:
                 _home_flow_html = wd.HTML(
