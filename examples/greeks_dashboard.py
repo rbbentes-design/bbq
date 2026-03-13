@@ -6784,7 +6784,7 @@ def run_analysis(_):
 
             # ── 2. Histórico + Modelo de Risco ───────────────────────────
             loading.value = "<h4>2/16: Modelagem de risco (t-Student)...</h4>"
-            _, log_returns = fetch_historical(ticker)
+            prices, log_returns = fetch_historical(ticker)
             risk = fit_risk_model(log_returns)
 
             # ── 3. Cadeia de Opções ──────────────────────────────────────
