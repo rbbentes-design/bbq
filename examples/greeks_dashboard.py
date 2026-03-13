@@ -6253,6 +6253,67 @@ def compute_tail_risk_gauge(log_returns, iv_30d=None, rv_30d=None,
     return round(total, 1), components, interp
 
 
+def build_gamma_levels_chart(prices, spot, call_wall, put_wall, gamma_flip,
+                              iv_30d, lookback=30):
+    """
+    Gráfico diário de preço (últimos N dias) com linhas horizontais dos
+    níveis de gamma: Call Wall, Put Wall, Vol Trigger, Est Move 1d/5d.
+    Estilo similar ao TradingView com linhas de referência coloridas.
+    """
+    px_tail = prices.iloc[-lookback:] if len(prices) >= lookback else prices
+    dates = px_tail.index
+    vals  = px_tail.values
+
+    fig = go.Figure()
+
+    # Linha de preço
+    fig.add_trace(go.Scatter(
+        x=dates, y=vals, mode='lines', name='SPX',
+        line=dict(color='#c9d1d9', width=1.5)))
+
+    # Ponto atual
+    fig.add_trace(go.Scatter(
+        x=[dates[-1]], y=[spot], mode='markers', name=f'Spot {spot:,.0f}',
+        marker=dict(color='#f0883e', size=8, symbol='circle')))
+
+    # Níveis de gamma — linhas horizontais
+    _levels = []
+    if call_wall:
+        _levels.append(('Call Wall', call_wall, _C['green'], 'dash'))
+    if put_wall:
+        _levels.append(('Put Wall', put_wall, _C['red'], 'dash'))
+    if gamma_flip:
+        _levels.append(('Vol Trigger / Zero Gamma', gamma_flip, _C['yellow'], 'dot'))
+
+    # Est Move 1d e 5d
+    if pd.notna(iv_30d) and iv_30d > 0:
+        move_1d = spot * iv_30d * math.sqrt(1 / TRADING_DAYS)
+        move_5d = spot * iv_30d * math.sqrt(5 / TRADING_DAYS)
+        _levels.append((f'1D Est Move + ({move_1d:+.0f})', spot + move_1d, '#58a6ff', 'dashdot'))
+        _levels.append((f'1D Est Move - ({-move_1d:+.0f})', spot - move_1d, '#da3633', 'dashdot'))
+        _levels.append((f'5D Est Move - ({-move_5d:+.0f})', spot - move_5d, '#f85149', 'dot'))
+        _levels.append((f'5D Est Move + ({move_5d:+.0f})', spot + move_5d, '#3fb950', 'dot'))
+
+    for name, level, color, dash in _levels:
+        fig.add_hline(y=level, line=dict(color=color, dash=dash, width=1.2),
+                      annotation_text=name,
+                      annotation_font=dict(color=color, size=10),
+                      annotation_position='right')
+
+    fig.update_layout(
+        title=f'Níveis de Gamma — SPX (últimos {lookback} dias)',
+        template=DASH_TEMPLATE,
+        height=360,
+        margin=dict(l=50, r=140, t=40, b=30),
+        xaxis=dict(showgrid=False),
+        yaxis_title='SPX Level',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.25,
+                    xanchor='center', x=0.5),
+        showlegend=True,
+    )
+    return go.FigureWidget(fig)
+
+
 def build_tail_gauge(score, interpretation):
     """Cria gauge widget para tail risk score."""
     color = '#3fb950' if score < 25 else '#d29922' if score < 50 else '#f0883e' if score < 75 else '#da3633'
@@ -7330,10 +7391,53 @@ def run_analysis(_):
                 </div>
             </div></div>"""
 
+            # ── Gamma Levels Chart (home) ──
+            _gamma_lvl_chart = build_gamma_levels_chart(
+                prices, spot, call_wall, put_wall, gamma_flip, iv_30d)
+
+            # ── Tail Risk termômetro (home) ──
+            _home_tail = build_tail_gauge(
+                analytics.get('tail_score', 50),
+                analytics.get('tail_interp', ''))
+
+            # ── Flow Score resumido (home) ──
+            if fp_score is not None:
+                _dir_color = (_C['green'] if fp_score['direction'] == 'BULLISH'
+                              else _C['red'] if fp_score['direction'] == 'BEARISH'
+                              else _C['text_muted'])
+                _home_flow_html = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card' style='min-width:200px'>"
+                    "<h3>Flow Prediction</h3>"
+                    f"<p style='font-size:22px;font-weight:bold;color:{_dir_color}'>"
+                    f"{fp_score['direction']}</p>"
+                    f"<p>P(Up): <b>{fp_score['prob_up']:.1%}</b></p>"
+                    f"<p>Score: <b>{fp_score['score']:.1f}</b></p>"
+                    "</div></div>")
+            else:
+                _home_flow_html = wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "<p style='color:#8b949e;'>Flow N/A</p></div></div>")
+
+            # ── CTA Chart (home) ──
+            _home_cta = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card'>"
+                "<p style='color:#8b949e;'>CTA: ative o Flow Predictor</p>"
+                "</div></div>")
+            if fp_ok and not fp_cta_hist.empty:
+                try:
+                    _home_cta = build_cta_gs_chart(
+                        fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m, spot)
+                except Exception:
+                    pass
+
             tab1 = wd.VBox([
                 wd.HBox([g_frag, g_vol, g_skew, g_move],
                         layout={'justify_content': 'space-around'}),
+                _gamma_lvl_chart,
                 wd.HBox([fig_gex, fig_dist]),
+                wd.HBox([_home_tail, _home_flow_html],
+                        layout={'align_items': 'flex-start'}),
+                _home_cta,
                 wd.HTML(summary_html)
             ])
 
