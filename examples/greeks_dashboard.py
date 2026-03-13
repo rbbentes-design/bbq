@@ -7425,8 +7425,11 @@ def run_analysis(_):
                 "</div></div>")
             if fp_ok and not fp_cta_hist.empty:
                 try:
-                    _home_cta = build_cta_gs_chart(
+                    _cta_fig = build_cta_gs_chart(
                         fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m, spot)
+                    _home_cta = wd.Output()
+                    with _home_cta:
+                        _cta_fig.show()
                 except Exception:
                     pass
 
