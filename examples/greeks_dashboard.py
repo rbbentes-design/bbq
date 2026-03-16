@@ -8645,19 +8645,20 @@ def run_analysis(_):
                                 f"<td style='text-align:right;color:{_color}'>{_pval:.4f} {_sig}</td>"
                                 f"</tr>")
                     if _reg_rows:
+                        _card2_c = _C['card2']
+                        _reg_body = ''.join(_reg_rows)
                         _reg_html = (
-                            f"<div class='mm-dash'><div class='mm-card'>"
-                            f"<table class='mm-table' style='width:100%;font-size:12px;'>"
-                            f"<tr style='background:{_C[\"card2\"]};'>"
-                            f"<th>Variável X (fluxo)</th><th>N obs</th>"
-                            f"<th>R²</th><th>β (slope)</th><th>α (intercept)</th>"
-                            f"<th>t-stat</th><th>p-valor</th></tr>"
-                            + ''.join(_reg_rows) +
-                            f"</table>"
-                            f"<p><small>* p&lt;10% | ** p&lt;5% | *** p&lt;1%. "
-                            f"β interpretado como: variação de {'+β'} pp no retorno "
-                            f"para +1 desvio padrão no fluxo.</small></p>"
-                            f"</div></div>")
+                            "<div class='mm-dash'><div class='mm-card'>"
+                            "<table class='mm-table' style='width:100%;font-size:12px;'>"
+                            f"<tr style='background:{_card2_c};'>"
+                            "<th>Variável X (fluxo)</th><th>N obs</th>"
+                            "<th>R²</th><th>β (slope)</th><th>α (intercept)</th>"
+                            "<th>t-stat</th><th>p-valor</th></tr>"
+                            + _reg_body +
+                            "</table>"
+                            "<p><small>* p&lt;10% | ** p&lt;5% | *** p&lt;1%. "
+                            "β: variação em pp no retorno para +1 desvio padrão no fluxo.</small></p>"
+                            "</div></div>")
                         st_e_children.append(wd.HTML(_reg_html))
                     else:
                         st_e_children.append(wd.HTML(
