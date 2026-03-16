@@ -6363,19 +6363,257 @@ def compute_sensitivity_matrices(df, spot, r=0.0):
             oi_100 = ois * 100.0
             is_call = types == 'Call'
 
-            matrices['delta'].iloc[i, j] = np.nansum(greeks['delta'] * oi_100 * s)
+            # Todas as matrizes em $ Mn (÷1e6) para escala comparável
+            matrices['delta'].iloc[i, j] = np.nansum(greeks['delta'] * oi_100 * s) / 1e6
             matrices['gamma'].iloc[i, j] = np.nansum(
-                greeks['gamma'] * np.where(is_call, 1, -1) * oi_100 * (s**2) * 0.01)
-            matrices['vega'].iloc[i, j] = np.nansum(greeks['vega'] * oi_100)
-            matrices['vanna'].iloc[i, j] = np.nansum(greeks['vanna'] * oi_100)
-            matrices['theta'].iloc[i, j] = np.nansum(greeks['theta'] * oi_100)
-            matrices['zomma'].iloc[i, j] = np.nansum(greeks['zomma'] * oi_100)
-            matrices['speed'].iloc[i, j] = np.nansum(greeks['speed'] * oi_100)
+                greeks['gamma'] * np.where(is_call, 1, -1) * oi_100 * (s**2) * 0.01) / 1e6
+            matrices['vega'].iloc[i, j] = np.nansum(greeks['vega'] * oi_100) / 1e6
+            matrices['vanna'].iloc[i, j] = np.nansum(greeks['vanna'] * oi_100 * s) / 1e6
+            matrices['theta'].iloc[i, j] = np.nansum(greeks['theta'] * oi_100) / 1e6
+            matrices['zomma'].iloc[i, j] = np.nansum(greeks['zomma'] * oi_100 * (s**2) * 0.01) / 1e6
+            matrices['speed'].iloc[i, j] = np.nansum(greeks['speed'] * oi_100 * s) / 1e6
 
     for k in matrices:
         matrices[k].index.name = 'Vol Shift'
 
     return matrices
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 6B — MODELO GAMMA SQUEEZE / SHORT SQUEEZE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Eventos históricos que desencadearam squeezes (mercado pessimista → rali abrupto)
+GAMMA_SQUEEZE_EVENTS = [
+    {'date': '2020-03-23', 'label': 'COVID Bottom', 'type': 'bottom',
+     'desc': 'Mínima do COVID (-34% em 33 dias). GEX profundamente negativo. '
+             'Reversão de 70% em 5 meses.'},
+    {'date': '2021-01-27', 'label': 'GME Squeeze', 'type': 'squeeze',
+     'desc': 'Short squeeze massivo (GME +1.700%). Contágio para SPX: '
+             'dealers cobertos em calls OTM forçaram delta-hedge buy.'},
+    {'date': '2022-10-13', 'label': 'CPI Reversal Oct22', 'type': 'reversal',
+     'desc': 'CPI acima do esperado → SPX abriu -3%, fechou +2.6% (+5.6% intraday). '
+             'GEX fortemente negativo amplificou o rali pós-cobertura de puts.'},
+    {'date': '2023-03-13', 'label': 'SVB Crisis', 'type': 'bottom',
+     'desc': 'Crise SVB/Signature. SPX caiu 5% em 3 dias. GEX negativo. '
+             'Reversão de 9% em 2 semanas após Fed backstop.'},
+    {'date': '2018-02-05', 'label': 'VolPocalypse', 'type': 'vix_spike',
+     'desc': 'XIV implodiu, VIX saltou de 13 para 37. GEX negativo forçou '
+             'dealers a vender → queda acelerada de 12% em 10 dias.'},
+    {'date': '2024-08-05', 'label': 'Yen Carry Unwind', 'type': 'squeeze',
+     'desc': 'Unwind do carry trade iene. VIX atingiu 65 intraday. SPX caiu 3% '
+             'e recuperou 90% em 10 pregões. GEX extremamente negativo.'},
+]
+
+
+def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip,
+                                spot, skew, put_wall, call_wall):
+    """
+    Calcula o Gamma Squeeze Score (0–100).
+
+    Score alto = condições favoráveis para um short squeeze induzido por gamma:
+    - Dealers SHORT gamma (GEX muito negativo) → compram quando mercado sobe
+    - Posicionamento bearish excessivo (P/C ratio alto, skew alto)
+    - Mercado próximo ao gamma flip → qualquer alta cruza o flip e acelera
+    - Vol realizada bem abaixo da implícita (mais espaço para rali surpresa)
+
+    Retorna dict com score total, sub-scores, interpretação e nível de alerta.
+    """
+    components = {}
+
+    # 1. GEX negativity (0–30): quanto mais negativo, maior o score
+    # Normalizado por -20Bn como referência de mercado muito short gamma
+    _gex_score = min(30, max(0, abs(min(0, net_gex_bn)) / 20.0 * 30))
+    components['gex'] = {
+        'label': 'GEX Negatividade',
+        'value': f'{net_gex_bn:+.2f}B',
+        'score': round(_gex_score, 1),
+        'max': 30,
+        'desc': 'Dealers SHORT gamma → amplificam movimentos de alta',
+    }
+
+    # 2. Put/Call ratio (0–25): >1.5 = bearish extremo
+    _pc_score = min(25, max(0, (pc_ratio - 1.0) / 1.5 * 25)) if pc_ratio > 1.0 else 0
+    components['pc_ratio'] = {
+        'label': 'P/C OI Ratio',
+        'value': f'{pc_ratio:.2f}x',
+        'score': round(_pc_score, 1),
+        'max': 25,
+        'desc': 'Posicionamento muito pessimista → squeeze mais intenso se mercado subir',
+    }
+
+    # 3. Proximidade ao gamma flip (0–25): quanto mais perto, mais perigoso
+    _flip_dist = abs(gamma_flip - spot) / spot if (gamma_flip and spot) else 0.05
+    _flip_score = min(25, max(0, (1 - _flip_dist / 0.05) * 25))  # max score se dist < 0.5%
+    _flip_side = 'ACIMA' if (gamma_flip and gamma_flip > spot) else 'ABAIXO'
+    components['flip_proximity'] = {
+        'label': 'Distância Gamma Flip',
+        'value': f'{gamma_flip:,.0f} ({_flip_dist:.1%} do spot) — Flip {_flip_side}',
+        'score': round(_flip_score, 1),
+        'max': 25,
+        'desc': 'Próximo ao flip → qualquer rali pode cruzar e virar auto-reforçado',
+    }
+
+    # 4. Vol premium invertida (0–20): IV muito > RV = mercado pagando por proteção
+    # Mas para squeeze, queremos IV alta (medo) + mercado que ainda não se moveu
+    _vol_gap = (iv_30d - rv_30d) if (pd.notna(iv_30d) and pd.notna(rv_30d)) else 0
+    _vol_score = min(20, max(0, _vol_gap * 100 * 4))  # 5 vol pts gap → score 20
+    components['vol_premium'] = {
+        'label': 'Prêmio de Vol (IV−RV)',
+        'value': f'{_vol_gap*100:+.1f} vol pts',
+        'score': round(_vol_score, 1),
+        'max': 20,
+        'desc': 'IV > RV = medo embutido → mais proteção para ser revertida',
+    }
+
+    total = sum(c['score'] for c in components.values())
+
+    # Interpretação
+    if total >= 75:
+        interp = 'RISCO MUITO ALTO de Gamma Squeeze — condições extremas'
+        alert = 'critical'
+    elif total >= 55:
+        interp = 'RISCO ELEVADO — monitorar flip + call OTM'
+        alert = 'warning'
+    elif total >= 35:
+        interp = 'Risco moderado — mercado sensível a surpresas positivas'
+        alert = 'moderate'
+    else:
+        interp = 'Risco baixo — posicionamento não sugere squeeze iminente'
+        alert = 'low'
+
+    # Estimativa de magnitude do squeeze se o flip for cruzado
+    _squeeze_mag = abs(net_gex_bn) * 0.15 * (pc_ratio / 1.5)  # rough: 15% do GEX por 1% de alta
+    _squeeze_mag_pct = min(15, _squeeze_mag / (spot * 0.01))   # % de alta esperado
+
+    return {
+        'score': round(total, 1),
+        'alert': alert,
+        'interp': interp,
+        'components': components,
+        'squeeze_mag_pct': round(_squeeze_mag_pct, 1),
+        'flip_above': gamma_flip is not None and gamma_flip > spot,
+        'flip_dist_pct': round(_flip_dist * 100, 2),
+    }
+
+
+def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
+                      iv_30d, rv_30d, pc_ratio, _C):
+    """Monta widget da aba Gamma Squeeze."""
+    import plotly.graph_objects as go
+
+    score = squeeze_result['score']
+    alert = squeeze_result['alert']
+    interp = squeeze_result['interp']
+    comps = squeeze_result['components']
+
+    alert_colors = {
+        'critical': '#ff4444',
+        'warning': '#ffaa00',
+        'moderate': '#88aaff',
+        'low': '#3fb950',
+    }
+    alert_color = alert_colors.get(alert, _C['text'])
+
+    # ── Gauge do score ──
+    gauge_fig = go.FigureWidget(go.Indicator(
+        mode='gauge+number',
+        value=score,
+        number={'font': {'color': alert_color, 'size': 36}},
+        title={'text': 'Gamma Squeeze Risk', 'font': {'color': _C['text'], 'size': 14}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickcolor': _C['text_muted'],
+                     'tickfont': {'color': _C['text_muted'], 'size': 9}},
+            'bar': {'color': alert_color, 'thickness': 0.3},
+            'bgcolor': _C['card2'],
+            'steps': [
+                {'range': [0, 35],  'color': '#1a3a2a'},
+                {'range': [35, 55], 'color': '#3a3020'},
+                {'range': [55, 75], 'color': '#3a2510'},
+                {'range': [75, 100], 'color': '#3a1a1a'},
+            ],
+            'threshold': {'line': {'color': alert_color, 'width': 3},
+                          'thickness': 0.75, 'value': score},
+        }
+    ))
+    gauge_fig.update_layout(
+        height=250, width=280, template='plotly_dark',
+        margin=dict(t=40, b=10, l=20, r=20),
+        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'])
+
+    # ── Barra de componentes ──
+    bar_labels = [c['label'] for c in comps.values()]
+    bar_scores = [c['score'] for c in comps.values()]
+    bar_maxes  = [c['max']   for c in comps.values()]
+    bar_colors = [alert_color if s / m > 0.6 else _C['accent']
+                  for s, m in zip(bar_scores, bar_maxes)]
+
+    bar_fig = go.FigureWidget()
+    bar_fig.add_trace(go.Bar(
+        y=bar_labels, x=bar_scores, orientation='h',
+        marker_color=bar_colors, name='Score',
+        text=[f"{s:.0f}/{m}" for s, m in zip(bar_scores, bar_maxes)],
+        textposition='outside'))
+    bar_fig.update_layout(
+        title='Componentes do Score',
+        xaxis=dict(range=[0, 30], title='Score'),
+        height=220, template='plotly_dark',
+        margin=dict(t=35, b=20, l=5, r=60),
+        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'], showlegend=False)
+
+    # ── Resumo textual ──
+    _sq_mag = squeeze_result['squeeze_mag_pct']
+    _fd = squeeze_result['flip_dist_pct']
+    _flip_dir = 'ACIMA' if squeeze_result['flip_above'] else 'ABAIXO'
+    summary_html = (
+        f"<div class='mm-dash'><div class='mm-card'>"
+        f"<h3 style='color:{alert_color}'>Gamma Squeeze Score: {score:.0f}/100</h3>"
+        f"<p><b style='color:{alert_color}'>{interp}</b></p>"
+        f"<table class='mm-table' style='width:auto;font-size:12px;'>"
+        f"<tr><td>GEX NET</td><td><b>{net_gex_bn:+.2f}B</b></td></tr>"
+        f"<tr><td>Gamma Flip</td><td><b>{gamma_flip:,.0f}</b> ({_fd:.1f}% {_flip_dir} do spot)</td></tr>"
+        f"<tr><td>P/C OI Ratio</td><td><b>{pc_ratio:.2f}x</b></td></tr>"
+        f"<tr><td>IV−RV Gap</td><td><b>{(iv_30d-rv_30d)*100:+.1f} vol pts</b></td></tr>"
+        f"<tr><td>Magnitude estimada</td><td><b>~{_sq_mag:.1f}%</b> se flip cruzado</td></tr>"
+        f"</table>"
+    )
+    # Componentes detalhados
+    for _k, _cv in comps.items():
+        _pct = _cv['score'] / _cv['max'] * 100
+        _bar = '█' * int(_pct / 10) + '░' * (10 - int(_pct / 10))
+        summary_html += (
+            f"<p style='margin:4px 0;font-size:12px;'>"
+            f"<b>{_cv['label']}</b>: {_cv['value']} "
+            f"[{_bar}] {_cv['score']:.0f}/{_cv['max']} — "
+            f"<i>{_cv['desc']}</i></p>")
+    summary_html += "</div></div>"
+
+    # ── Eventos históricos ──
+    _evts_html = (
+        "<div class='mm-dash'><div class='mm-card'>"
+        "<h3>Eventos Históricos — Gamma Squeeze Triggers</h3>"
+        "<table class='mm-table' style='width:100%;font-size:12px;'>"
+        "<tr style='background:#161b22;'>"
+        "<th>Data</th><th>Evento</th><th>Tipo</th><th>Descrição</th></tr>")
+    _type_colors = {
+        'squeeze': '#ffaa00', 'bottom': '#3fb950',
+        'reversal': '#58a6ff', 'vix_spike': '#ff6b6b'}
+    for ev in GAMMA_SQUEEZE_EVENTS:
+        _tc = _type_colors.get(ev['type'], '#8b949e')
+        _evts_html += (
+            f"<tr><td>{ev['date']}</td>"
+            f"<td><b>{ev['label']}</b></td>"
+            f"<td style='color:{_tc}'>{ev['type'].upper()}</td>"
+            f"<td style='font-size:11px;'>{ev['desc']}</td></tr>")
+    _evts_html += "</table></div></div>"
+
+    children = [
+        wd.HTML(summary_html),
+        wd.HBox([gauge_fig, bar_fig],
+                layout={'align_items': 'flex-start'}),
+        wd.HTML(_evts_html),
+    ]
+    return wd.VBox(children)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -7311,9 +7549,10 @@ def run_analysis(_):
                 _vt = gamma_flip if gamma_flip is not None else 0
                 print(f"[GAMMA DB] 0DTE: {len(_df_0dte)} opções | GEX net={_gex_bn:.3f}Bn "
                       f"(calls={_gex_calls:+.3f} − puts={_gex_puts:+.3f}) | CW={_cw} | PW={_pw}")
-                append_gamma_snapshot(
-                    spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
-                    call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
+                # append_gamma_snapshot desativado — atualização manual
+                # append_gamma_snapshot(
+                #     spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
+                #     call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
             except Exception as _gs_err:
                 print(f"⚠️ Gamma snapshot save: {_gs_err}")
 
@@ -7332,7 +7571,17 @@ def run_analysis(_):
 
             # ─── ABA 1: VISÃO GERAL ─────────────────────────────────────
             total_gex = gamma_curve[np.argmin(np.abs(levels - spot))]
-            fragility = (abs(total_gex) / avg_vol) * 100 if pd.notna(avg_vol) and avg_vol > 0 else 0
+            # Fragilidade = GEX / (notional diário de opções SPX + futuros ES)
+            # Opções: total de contratos ADV × 100 shares × spot
+            _opt_adc = fp_vol_data.get('total_adc', OPTIONS_TOTAL_ADC)
+            # options_notional: volume ADC em lotes × spot (sem ×100 — ADC já em unidades de share equiv.)
+            _opt_notional = _opt_adc * spot                  # ~$145B @ SPX=6700, ADC=21.7M
+            # Futuros ES: ADV ~400k contratos × $50/ponto × spot = ~$134B @ SPX=6700
+            _fut_notional = 400_000 * 50 * spot
+            _daily_flow_cap = _opt_notional + _fut_notional
+            # Fragilidade = GEX ($ / 1%move) como % do fluxo diário total (opções + futuros)
+            fragility = (abs(total_gex) / _daily_flow_cap * 100
+                         if _daily_flow_cap > 0 else 0)
 
             # Diagnóstico GEX modelo completo (todos vencimentos)
             _gc_is_call = df.Type.values == 'Call'
@@ -7351,11 +7600,11 @@ def run_analysis(_):
             daily_move = implied_move_pct(iv_30d) if pd.notna(iv_30d) else 0
             vol_premium = (iv_30d - rv_30d) * 100 if pd.notna(iv_30d) and pd.notna(rv_30d) else 0
 
-            g_frag = create_gauge(fragility, "Fragilidade (GEX/Vol)",
-                                  0, 20, _C['red'], "%",
-                                  steps=[{'range': [0, 5], 'color': '#1a3a2a'},
-                                         {'range': [5, 12], 'color': '#3a3520'},
-                                         {'range': [12, 20], 'color': '#3a1a1a'}])
+            g_frag = create_gauge(fragility, "Fragilidade GEX/Fluxo",
+                                  0, 10, _C['red'], "%",
+                                  steps=[{'range': [0, 2], 'color': '#1a3a2a'},
+                                         {'range': [2, 5], 'color': '#3a3520'},
+                                         {'range': [5, 10], 'color': '#3a1a1a'}])
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
                                  -5, 5, _C['orange'], "%")
             _skew_val = skew * 100
@@ -7512,9 +7761,13 @@ def run_analysis(_):
                 'speed': 'coolwarm'
             }
             titles_map = {
-                'delta': 'Delta Nocional', 'gamma': 'Gamma (GEX)',
-                'vega': 'Vega', 'vanna': 'Vanna',
-                'theta': 'Theta (Decaimento)', 'zomma': 'Zomma', 'speed': 'Speed'
+                'delta': 'Delta Nocional ($ Mn)',
+                'gamma': 'Gamma — GEX NET ($ Mn / 1% move)',
+                'vega': 'Vega ($ Mn / 1 vol pt)',
+                'vanna': 'Vanna ($ Mn / 1pt × 1 vol pt)',
+                'theta': 'Theta — Decaimento ($ Mn / dia)',
+                'zomma': 'Zomma ($ Mn / 1% move²)',
+                'speed': 'Speed ($ Mn / 1pt)',
             }
             sens_html_parts = []
             for key in ['delta', 'gamma', 'vega', 'vanna', 'theta', 'zomma', 'speed']:
@@ -8340,20 +8593,78 @@ def run_analysis(_):
                     ]))
                 st_d = wd.VBox(st_d_children)
 
-                # Sub-tab E: Correlação
-                st_e_children = [wd.HTML("<div class='mm-dash'><div class='mm-card'><h3>Análise de Correlação</h3></div></div>")]
-                if not fp_flow_hist.empty:
-                    df_test = fp_flow_hist.copy()
-                    df_test['flow_signal'] = np.sign(df_test['LevETF_Flow'])
-                    df_test['next_ret'] = df_test['Return'].shift(-1)
-                    df_test['hit'] = (np.sign(df_test['flow_signal'])
-                                      == np.sign(df_test['next_ret']))
-                    hit_rate = df_test['hit'].mean()
+                # Sub-tab E: Regressão OLS — Flows vs Retorno
+                from scipy import stats as _scipy_stats
+                st_e_children = [wd.HTML(
+                    "<div class='mm-dash'><div class='mm-card'>"
+                    "<h3>Regressão OLS: Fluxos → Retorno SPX</h3>"
+                    "<p><small>Y = retorno SPX no dia seguinte (%) | "
+                    "X = variável de fluxo normalizada (z-score). "
+                    "R² mede % da variância do retorno explicada pelo fluxo. "
+                    "p-valor &lt; 0.05 indica significância estatística.</small></p>"
+                    "</div></div>")]
+                if not fp_flow_hist.empty and len(fp_flow_hist) >= 20:
+                    _df_reg = fp_flow_hist.copy().dropna()
+                    _ret_col = 'Return'
+                    if _ret_col not in _df_reg.columns:
+                        _ret_col = [c for c in _df_reg.columns if 'ret' in c.lower()]
+                        _ret_col = _ret_col[0] if _ret_col else None
+                    _reg_rows = []
+                    if _ret_col:
+                        _y_raw = _df_reg[_ret_col].shift(-1) * 100  # next-day return %
+                        _flow_candidates = {
+                            'LevETF Flow ($B)': _df_reg.get('LevETF_Flow', pd.Series(dtype=float)),
+                            'Dealer Flow ($B)': _df_reg.get('Dealer_Flow', pd.Series(dtype=float)),
+                            'Vol Control Flow ($B)': _df_reg.get('VolCtrl_Flow', pd.Series(dtype=float)),
+                            'CTA Flow ($B)': _df_reg.get('CTA_Flow', pd.Series(dtype=float)),
+                        }
+                        for _fname, _xraw in _flow_candidates.items():
+                            if _xraw is None or _xraw.dropna().empty:
+                                continue
+                            _xraw = _xraw / 1e9  # to $B
+                            _mask = _y_raw.notna() & _xraw.notna()
+                            _x = _xraw[_mask].values
+                            _y = _y_raw[_mask].values
+                            if len(_x) < 15:
+                                continue
+                            # Normalize X to z-score
+                            _xz = (_x - _x.mean()) / (_x.std() + 1e-10)
+                            _slope, _intc, _r, _pval, _se = _scipy_stats.linregress(_xz, _y)
+                            _r2 = _r ** 2
+                            _tstat = _slope / (_se + 1e-10)
+                            _sig = '***' if _pval < 0.01 else '**' if _pval < 0.05 else '*' if _pval < 0.10 else ''
+                            _color = _C['green'] if _pval < 0.05 else _C['text_muted']
+                            _reg_rows.append(
+                                f"<tr>"
+                                f"<td>{_fname}</td>"
+                                f"<td style='text-align:right'>{len(_x)}</td>"
+                                f"<td style='text-align:right;color:{_color}'>{_r2:.3f}</td>"
+                                f"<td style='text-align:right'>{_slope:+.4f}</td>"
+                                f"<td style='text-align:right'>{_intc:+.4f}</td>"
+                                f"<td style='text-align:right'>{_tstat:+.2f}</td>"
+                                f"<td style='text-align:right;color:{_color}'>{_pval:.4f} {_sig}</td>"
+                                f"</tr>")
+                    if _reg_rows:
+                        _reg_html = (
+                            f"<div class='mm-dash'><div class='mm-card'>"
+                            f"<table class='mm-table' style='width:100%;font-size:12px;'>"
+                            f"<tr style='background:{_C[\"card2\"]};'>"
+                            f"<th>Variável X (fluxo)</th><th>N obs</th>"
+                            f"<th>R²</th><th>β (slope)</th><th>α (intercept)</th>"
+                            f"<th>t-stat</th><th>p-valor</th></tr>"
+                            + ''.join(_reg_rows) +
+                            f"</table>"
+                            f"<p><small>* p&lt;10% | ** p&lt;5% | *** p&lt;1%. "
+                            f"β interpretado como: variação de {'+β'} pp no retorno "
+                            f"para +1 desvio padrão no fluxo.</small></p>"
+                            f"</div></div>")
+                        st_e_children.append(wd.HTML(_reg_html))
+                    else:
+                        st_e_children.append(wd.HTML(
+                            "<p style='color:#8b949e;'>Colunas de fluxo não encontradas no histórico.</p>"))
+                else:
                     st_e_children.append(wd.HTML(
-                        f"<p><b>Hit Rate (flow signal vs next-day return):"
-                        f"</b> {hit_rate:.1%} ({len(df_test)} obs)</p>"
-                        f"<p><i>Nota: fluxo de rebalanceamento é contra-tendência"
-                        f" (mean-reverting). Hit rate &lt; 50% é esperado.</i></p>"))
+                        "<p style='color:#8b949e;'>Histórico insuficiente (&lt;20 obs) para regressão.</p>"))
                 st_e = wd.VBox(st_e_children)
 
                 # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control + Risk Parity)
@@ -9249,56 +9560,30 @@ def run_analysis(_):
                     f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>"
                     f"{_an_tb}</pre>")])
 
-            # ─── ABA 12: RV × GAMMA INDEX ─────────────────────────────
+            # ─── ABA 12: GAMMA SQUEEZE MODEL ──────────────────────────
             try:
-                _rv_gamma_children = []
-                _rv_gamma_children.append(wd.HTML(
-                    "<div class='mm-dash'><div class='mm-card'>"
-                    "<h3>RV Realizada 21d × Gamma Index</h3>"
-                    "<p>Scatter histórico com regressão OLS + time-series "
-                    "de gamma, walls e preço. Dados atualizados a cada execução.</p>"
-                    "</div></div>"))
-
-                if not gamma_hist.empty:
-                    # ── Scatter: RV 21d vs Gamma ──
-                    _cur_gex_12 = _gex_bn if '_gex_bn' in dir() else None
-                    _cur_rv_12 = rv_30d if pd.notna(rv_30d) else None
-                    _rv_gamma_children.append(
-                        build_rv_gamma_chart(gamma_hist,
-                                             current_gamma=_cur_gex_12,
-                                             current_rv=_cur_rv_12))
-
-                    # ── Time-series: Gamma + Walls + Price ──
-                    _rv_gamma_children.append(
-                        build_gamma_ts_chart(gamma_hist))
-
-                    # ── Summary stats ──
-                    _last = gamma_hist.iloc[-1]
-                    _n_rows = len(gamma_hist)
-                    _date_range = (f"{gamma_hist['date'].iloc[0].strftime('%Y-%m-%d')} → "
-                                   f"{gamma_hist['date'].iloc[-1].strftime('%Y-%m-%d')}")
-                    _rv_gamma_children.append(wd.HTML(
-                        f"<div class='mm-dash'><div class='mm-card'>"
-                        f"<h4>📊 Banco de Dados Gamma</h4>"
-                        f"<p>{_n_rows} observações | {_date_range}</p>"
-                        f"<p>Último: Gamma = {_last.get('gamma', 0):.2f} Bn | "
-                        f"SPX = {_last.get('px', 0):,.0f} | "
-                        f"RV21d = {_last.get('rv21d', 0)*100:.1f}% | "
-                        f"Call Wall = {_last.get('call_wall', 0):,.0f} | "
-                        f"Put Wall = {_last.get('put_wall', 0):,.0f}</p>"
-                        f"</div></div>"))
-                else:
-                    _rv_gamma_children.append(wd.HTML(
-                        '<p style="color:#8b949e;">Sem dados históricos de gamma. '
-                        'Execute o dashboard diariamente para acumular dados.</p>'))
-
-                tab12 = wd.VBox(_rv_gamma_children)
-            except Exception as _rvg_err:
-                _rvg_tb = traceback.format_exc()
-                print(f"⚠️ RV×Gamma tab: {_rvg_err}")
+                _sq_pc = fp_vol_data.get('pc_ratio', 1.5) or 1.5
+                _sq_gex_bn = total_gex_val / 1e9 if 'total_gex_val' in dir() else (
+                    total_gex / 1e9 if 'total_gex' in dir() else 0)
+                _sq_result = compute_gamma_squeeze_score(
+                    net_gex_bn=_sq_gex_bn,
+                    pc_ratio=_sq_pc,
+                    iv_30d=iv_30d,
+                    rv_30d=rv_30d,
+                    gamma_flip=gamma_flip,
+                    spot=spot,
+                    skew=skew,
+                    put_wall=put_wall,
+                    call_wall=call_wall)
+                tab12 = build_squeeze_tab(
+                    _sq_result, _sq_gex_bn, spot, gamma_flip,
+                    iv_30d, rv_30d, _sq_pc, _C)
+            except Exception as _sq_err:
+                _sq_tb = traceback.format_exc()
+                print(f"⚠️ Gamma Squeeze tab: {_sq_err}\n{_sq_tb}")
                 tab12 = wd.VBox([wd.HTML(
-                    f"<h3>RV × Gamma</h3>"
-                    f"<p style='color:red;'>Erro: {_rvg_err}</p>")])
+                    f"<h3>Gamma Squeeze</h3>"
+                    f"<p style='color:red;'>Erro: {_sq_err}</p>")])
 
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
@@ -9309,7 +9594,7 @@ def run_analysis(_):
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
                 'Simulador', 'Relatório', 'Flow Predictor', 'Analytics',
-                'RV × Gamma'
+                'Gamma Squeeze',
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
