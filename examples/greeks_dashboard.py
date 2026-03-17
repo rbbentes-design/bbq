@@ -7953,24 +7953,21 @@ def run_analysis(_):
             _home_tail_info = wd.HTML(
                 "<div class='mm-dash'><div class='mm-card'>"
                 "{}</div></div>".format(''.join(_tail_parts)))
-            _home_tail_row = wd.HBox([_home_tail_gauge, _home_tail_info],
-                                     layout={'align_items': 'flex-start'})
-
-            # ── Flow Predictor completo (home): gauge + barras de componentes ──
+            # ── Flow Predictor: gauge e barra de componentes separados ──
+            _fp_gauge_w = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card' style='width:220px;height:190px;"
+                "display:flex;align-items:center;justify-content:center;'>"
+                "<p style='color:#8b949e;font-size:12px;'>Flow N/A</p></div></div>")
+            _fp_comps_w = wd.HTML(
+                "<div class='mm-dash'><div class='mm-card'>"
+                "<p style='color:#8b949e;font-size:12px;'>Flow: ative o Flow Predictor</p>"
+                "</div></div>")
             if fp_ok and fp_score is not None:
                 try:
-                    _home_flow_row = wd.HBox(
-                        [fp_plot_score_gauge(fp_score),
-                         fp_plot_components_bar(fp_score)],
-                        layout={'align_items': 'flex-start'})
+                    _fp_gauge_w = fp_plot_score_gauge(fp_score)
+                    _fp_comps_w = fp_plot_components_bar(fp_score)
                 except Exception:
-                    _home_flow_row = wd.HTML(
-                        "<div class='mm-dash'><div class='mm-card'>"
-                        "<p style='color:#8b949e;'>Flow N/A</p></div></div>")
-            else:
-                _home_flow_row = wd.HTML(
-                    "<div class='mm-dash'><div class='mm-card'>"
-                    "<p style='color:#8b949e;'>Flow: ative o Flow Predictor</p></div></div>")
+                    pass
 
             # ── CTA Chart (home) ──
             _home_cta = wd.HTML(
@@ -8055,10 +8052,16 @@ def run_analysis(_):
             tab1 = wd.VBox([
                 # ─ Cabeçalho ─────────────────────────────────────────────
                 _status_bar,
-                # ─ Condições de mercado ───────────────────────────────────
-                _sh('Condições de Mercado', 'Fragmentação · Vol Premium · Skew · Move esperado'),
-                wd.HBox([g_frag, g_vol, g_skew, g_move],
-                        layout={'justify_content': 'space-around'}),
+                # ─ Todos os gauges numa linha ─────────────────────────────
+                _sh('Condições de Mercado · Tail Risk · Flow Score',
+                    'Fragmentação · Vol · Skew · Move · Tail · Flow'),
+                wd.HBox(
+                    [g_frag, g_vol, g_skew, g_move, _home_tail_gauge, _fp_gauge_w],
+                    layout={'justify_content': 'space-around', 'flex_wrap': 'wrap',
+                            'align_items': 'flex-end'}),
+                # ─ Detalhes: Tail breakdown + Flow componentes ────────────
+                wd.HBox([_home_tail_info, _fp_comps_w],
+                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
                 # ─ Exposição das gregas + Gamma Squeeze ──────────────────
                 _sh('Exposição das Gregas & Gamma Squeeze Risk'),
                 wd.HBox([_greek_overview, _sq_mini],
@@ -8067,13 +8070,9 @@ def run_analysis(_):
                 _sh('Estrutura de Mercado', 'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
                 wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
                         layout={'flex_wrap': 'wrap', 'align_items': 'flex-start'}),
-                # ─ Fluxo direcional ───────────────────────────────────────
-                _sh('Posicionamento & Fluxo Direcional', 'Tail Risk · Flow Score · CTA estimado'),
-                wd.HBox([_home_tail_row, _home_flow_row],
-                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
+                # ─ CTA + Resumo ───────────────────────────────────────────
+                _sh('CTA Estimado & Resumo Narrativo'),
                 _home_cta,
-                # ─ Resumo narrativo ───────────────────────────────────────
-                _sh('Resumo Narrativo'),
                 wd.HTML(summary_html),
             ])
 
