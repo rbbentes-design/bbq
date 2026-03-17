@@ -1,4 +1,4 @@
-"""
+me"""
 MARKET MAKER DASHBOARD — Versão Unificada v1.0
 Consolidação completa de todas as análises anteriores de gregas, risco e posicionamento.
 
@@ -156,6 +156,7 @@ GREEK_CONFIGS = [
     {'name': 'Vega',   'key': 'vega',   'unit': '$ Mn / 1% vol',   'scale': lambda L: 1,              'div': 1e6, 'op': np.add},
     {'name': 'Vanna',  'key': 'vanna',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
     {'name': 'Theta',  'key': 'theta',  'unit': '$ Mn / dia',      'scale': lambda L: 1.0/TRADING_DAYS, 'div': 1e6, 'op': np.add},
+    {'name': 'Charm',  'key': 'charm',  'unit': '$ Mn / dia',      'scale': lambda L: L / 365.0,      'div': 1e6, 'op': np.add},
     {'name': 'Zomma',  'key': 'zomma',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
     {'name': 'Speed',  'key': 'speed',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
 ]
@@ -1962,12 +1963,14 @@ def compute_vol_control_scenarios(rv_current, target_vols=None):
 
 
 def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0,
-                                    spot=0, vanna_notional=0, vega_notional=0):
+                                    spot=0, vanna_notional=0, vega_notional=0,
+                                    charm_notional=0):
     """
     Cenários combinados: para cada nível de vol shock, estima fluxo de
-    Vol Control + Risk Parity + CTA + Dealer + Vanna.
+    Vol Control + Risk Parity + CTA + Dealer + Vanna + Charm.
     vanna_notional = sum(vanna * OI * 100) * spot  ($ de delta por 1% vol)
     vega_notional = sum(vega * OI * 100)           ($ por 1% vol)
+    charm_notional = sum(charm * OI * 100) * spot / 365  ($ de delta decay diário)
     """
     if pd.isna(rv_current) or rv_current < 1e-6:
         return []
@@ -2019,11 +2022,15 @@ def compute_combined_flow_scenarios(rv_current, prices=None, gex_per_pt=0,
         vol_chg_pts = (rv_shock - rv_current) * 100  # em pontos de vol
         vanna = -vanna_notional * vol_chg_pts if vanna_notional != 0 else 0
 
-        total = vc + rp + cta + dealer + vanna
+        # Charm flow: decay diário do delta — dealers precisam rebalancear overnight.
+        # charm_notional já é em $ de delta por dia (positivo = dealers precisam vender)
+        charm = -charm_notional if charm_notional != 0 else 0
+
+        total = vc + rp + cta + dealer + vanna + charm
         results.append({
             'name': name, 'spx_move': spx_move, 'rv_shock': rv_shock,
             'vol_ctrl': vc, 'risk_parity': rp, 'cta': cta,
-            'dealer': dealer, 'vanna': vanna, 'total': total,
+            'dealer': dealer, 'vanna': vanna, 'charm': charm, 'total': total,
         })
     return results
 
@@ -5951,6 +5958,8 @@ def compute_dealer_scenario_matrix(spot, df, greeks_now):
     gex_per_pt = (greeks_now['gamma'] * call_sign * oi100).sum()
     dex = (greeks_now['delta'] * oi100).sum()
     vanna_not = np.nansum(greeks_now['vanna'] * oi100) * spot
+    # Charm: daily $ delta decay — dealers need to unwind this delta overnight
+    charm_daily = np.nansum(greeks_now['charm'] * oi100) * spot / 365.0
 
     moves = [0.20, 0.15, 0.10, 0.05, 0.03, -0.03, -0.05, -0.10, -0.15, -0.20]
     rows = []
@@ -5959,12 +5968,14 @@ def compute_dealer_scenario_matrix(spot, df, greeks_now):
         dealer_flow = -(dex * ds + 0.5 * gex_per_pt * ds ** 2)
         vol_chg = max(0, -m) * 150
         vanna_flow = -vanna_not * vol_chg / 100.0
-        total = dealer_flow + vanna_flow
+        charm_flow = -charm_daily  # dealers unwind decayed delta
+        total = dealer_flow + vanna_flow + charm_flow
         rows.append({
             'Move': '{:+.0%}'.format(m),
             'SPX Level': round(spot * (1 + m), 0),
             'Dealer Gamma ($B)': round(dealer_flow / 1e9, 1),
             'Vanna Flow ($B)': round(vanna_flow / 1e9, 1),
+            'Charm Flow ($B)': round(charm_flow / 1e9, 1),
             'Total ($B)': round(total / 1e9, 1),
         })
     return pd.DataFrame(rows)
@@ -6347,7 +6358,7 @@ def compute_sensitivity_matrices(df, spot, r=0.0):
     cols = [f"{s:,.0f}" for s in spot_range]
     idx = [f"{vs:+.1%}" for vs in vol_shifts]
 
-    greek_keys = ['delta', 'gamma', 'vega', 'vanna', 'theta', 'zomma', 'speed']
+    greek_keys = ['delta', 'gamma', 'vega', 'vanna', 'theta', 'charm', 'zomma', 'speed']
     matrices = {k: pd.DataFrame(np.nan, index=idx, columns=cols, dtype=float) for k in greek_keys}
 
     strikes = df['Strike'].values
@@ -6370,6 +6381,7 @@ def compute_sensitivity_matrices(df, spot, r=0.0):
             matrices['vega'].iloc[i, j] = np.nansum(greeks['vega'] * oi_100) / 1e6
             matrices['vanna'].iloc[i, j] = np.nansum(greeks['vanna'] * oi_100 * s) / 1e6
             matrices['theta'].iloc[i, j] = np.nansum(greeks['theta'] * oi_100) / 1e6
+            matrices['charm'].iloc[i, j] = np.nansum(greeks['charm'] * oi_100 * s / 365.0) / 1e6
             matrices['zomma'].iloc[i, j] = np.nansum(greeks['zomma'] * oi_100 * (s**2) * 0.01) / 1e6
             matrices['speed'].iloc[i, j] = np.nansum(greeks['speed'] * oi_100 * s) / 1e6
 
@@ -7344,9 +7356,11 @@ def run_analysis(_):
                     _oi_100 = df['OI'].values * 100.0
                     _vanna_not = np.nansum(greeks_now['vanna'] * _oi_100) * spot
                     _vega_not = np.nansum(greeks_now['vega'] * _oi_100)
+                    _charm_not = np.nansum(greeks_now['charm'] * _oi_100) * spot / 365.0
                     fp_combined_scenarios = compute_combined_flow_scenarios(
                         _rv_cur, prices=_px_s, gex_per_pt=_gex, spot=spot,
-                        vanna_notional=_vanna_not, vega_notional=_vega_not)
+                        vanna_notional=_vanna_not, vega_notional=_vega_not,
+                        charm_notional=_charm_not)
                 except Exception as e:
                     print(f"⚠️ Combined scenarios: {e}")
 
@@ -7506,55 +7520,7 @@ def run_analysis(_):
                     print(f"[GAMMA DB] Empty — path={GAMMA_HISTORY_PATH}, exists={os.path.exists(GAMMA_HISTORY_PATH)}")
             except Exception as _gh_err:
                 print(f"⚠️ Gamma History load: {_gh_err}")
-            try:
-                # Fetch dedicado 0DTE — independente do slider, sempre pega opções que vencem hoje
-                _df_0dte, _, _ = fetch_options_chain(ticker, spot, 0, 0, mny_low, mny_high)
-                if _df_0dte.empty:
-                    raise ValueError("Sem opções 0DTE disponíveis hoje")
-                _greeks_0dte = calculate_all_greeks(
-                    spot, _df_0dte.Strike.values, _df_0dte.IV.values,
-                    _df_0dte.Tte.values, _df_0dte.Type.values, r=rfr)
-                _oi_snap = _df_0dte.OI.values * 100.0
-                _types_snap = _df_0dte.Type.values
-                _cs_snap = np.where(_types_snap == 'Call', 1, -1)
-
-                # Diagnóstico: verificar classificação call/put e breakdown de GEX
-                _is_call_snap = _types_snap == 'Call'
-                _is_put_snap  = _types_snap == 'Put'
-                _n_unrecog    = int((~_is_call_snap & ~_is_put_snap).sum())
-                _gex_calls = float(np.nansum(
-                    _greeks_0dte['gamma'][_is_call_snap]
-                    * _oi_snap[_is_call_snap] * (spot**2) * 0.01)) / 1e9
-                _gex_puts  = float(np.nansum(
-                    _greeks_0dte['gamma'][_is_put_snap]
-                    * _oi_snap[_is_put_snap]  * (spot**2) * 0.01)) / 1e9
-                print(f"[GEX DEBUG] Tipos únicos: {np.unique(_types_snap).tolist()} | "
-                      f"Calls: {_is_call_snap.sum()} | Puts: {_is_put_snap.sum()} | "
-                      f"Não-reconhecidos: {_n_unrecog}")
-                print(f"[GEX DEBUG] GEX calls (bruto): {_gex_calls:+.3f}Bn | "
-                      f"GEX puts (bruto): {_gex_puts:+.3f}Bn")
-                print(f"[GEX DEBUG] OI calls: {_df_0dte[_is_call_snap].OI.sum():,.0f} | "
-                      f"OI puts: {_df_0dte[_is_put_snap].OI.sum():,.0f}")
-
-                # GEX líquido: calls − puts (= soma com sinal via _cs_snap)
-                _gex_bn = float(np.nansum(
-                    _greeks_0dte['gamma'] * _cs_snap * _oi_snap * (spot ** 2) * 0.01)) / 1e9
-                # Delta em dólar-delta (delta já tem sinal negativo para puts no BS)
-                _net_d = float(np.nansum(_greeks_0dte['delta'] * _oi_snap * spot))
-                # Call Wall / Put Wall do 0DTE
-                _agg_0dte = compute_strike_exposures(_df_0dte.copy(), _greeks_0dte, spot)
-                _cw_0dte, _pw_0dte = compute_walls(_agg_0dte)
-                _cw = _cw_0dte if _cw_0dte is not None else (call_wall if call_wall is not None else 0)
-                _pw = _pw_0dte if _pw_0dte is not None else (put_wall if put_wall is not None else 0)
-                _vt = gamma_flip if gamma_flip is not None else 0
-                print(f"[GAMMA DB] 0DTE: {len(_df_0dte)} opções | GEX net={_gex_bn:.3f}Bn "
-                      f"(calls={_gex_calls:+.3f} − puts={_gex_puts:+.3f}) | CW={_cw} | PW={_pw}")
-                # append_gamma_snapshot desativado — atualização manual
-                # append_gamma_snapshot(
-                #     spot=spot, gamma_idx=_gex_bn, net_delta=_net_d,
-                #     call_wall=_cw, put_wall=_pw, vol_trigger=_vt)
-            except Exception as _gs_err:
-                print(f"⚠️ Gamma snapshot save: {_gs_err}")
+            # Atualização do banco de dados desativada — preencher manualmente no CSV.
 
             clear_output(wait=True)
 
@@ -7760,8 +7726,8 @@ def run_analysis(_):
             # ─── ABA 3: SENSIBILIDADE ────────────────────────────────────
             cmap_map = {
                 'delta': 'RdBu_r', 'gamma': 'viridis', 'vega': 'YlGnBu',
-                'vanna': 'PuOr', 'theta': 'Greens', 'zomma': 'plasma',
-                'speed': 'coolwarm'
+                'vanna': 'PuOr', 'theta': 'Greens', 'charm': 'RdYlGn',
+                'zomma': 'plasma', 'speed': 'coolwarm'
             }
             titles_map = {
                 'delta': 'Delta Nocional ($ Mn)',
@@ -7769,11 +7735,12 @@ def run_analysis(_):
                 'vega': 'Vega ($ Mn / 1 vol pt)',
                 'vanna': 'Vanna ($ Mn / 1pt × 1 vol pt)',
                 'theta': 'Theta — Decaimento ($ Mn / dia)',
+                'charm': 'Charm — Decay do Delta ($ Mn / dia)',
                 'zomma': 'Zomma ($ Mn / 1% move²)',
                 'speed': 'Speed ($ Mn / 1pt)',
             }
             sens_html_parts = []
-            for key in ['delta', 'gamma', 'vega', 'vanna', 'theta', 'zomma', 'speed']:
+            for key in ['delta', 'gamma', 'vega', 'vanna', 'theta', 'charm', 'zomma', 'speed']:
                 styled = style_sensitivity_matrix(sens_matrices[key], cmap_map[key])
                 sens_html_parts.append(f"<h4>{titles_map[key]}</h4>{styled}<br>")
             tab3 = wd.VBox([
@@ -8150,10 +8117,10 @@ def run_analysis(_):
 
             # Flow adjustment chart (how vol ctrl / RP / CTA / dealer adjust)
             fig_sim_flows = go.FigureWidget()
-            fig_sim_flows.add_trace(go.Bar(x=['Vol Ctrl', 'Risk Parity', 'CTA', 'Dealer', 'Vanna'],
-                                           y=[0, 0, 0, 0, 0],
+            fig_sim_flows.add_trace(go.Bar(x=['Vol Ctrl', 'Risk Parity', 'CTA', 'Dealer', 'Vanna', 'Charm'],
+                                           y=[0, 0, 0, 0, 0, 0],
                                            marker_color=[_C['accent'], _C['teal'], _C['orange'],
-                                                         _C['purple'], _C['pink']],
+                                                         _C['purple'], _C['pink'], _C['yellow']],
                                            name='Flow ($B)'))
             fig_sim_flows.update_layout(
                 title="Fluxo Estimado por Componente ($B)",
@@ -8246,8 +8213,11 @@ def run_analysis(_):
                 vol_chg_dec = rv_shock - rv_now  # decimal (0.02 = 2 pts)
                 vanna_flow = -vanna_not * vol_chg_dec if vanna_not != 0 else 0
 
+                charm_not_sim = float(np.nansum(g_new['charm'] * _oi_sim) * new_spot / 365.0)
+                charm_flow = -charm_not_sim  # dealers unwind decayed delta overnight
+
                 flows = [vc_flow / 1e9, rp_flow / 1e9, cta_flow / 1e9,
-                         dealer_flow / 1e9, vanna_flow / 1e9]
+                         dealer_flow / 1e9, vanna_flow / 1e9, charm_flow / 1e9]
                 total_flow = sum(flows)
 
                 with fig_sim_flows.batch_update():
@@ -8263,12 +8233,12 @@ def run_analysis(_):
                     "<p>Gamma Flip: <b>{}</b> | Regime: <b>{}</b></p>"
                     "<p>Fluxo Total Estimado: <b style='color:{};'>${:+.1f}B</b> "
                     "(VC: ${:.1f}B, RP: ${:.1f}B, CTA: ${:.1f}B, "
-                    "Dealer: ${:.1f}B, Vanna: ${:.1f}B)</p>"
+                    "Dealer: ${:.1f}B, Vanna: ${:.1f}B, Charm: ${:.1f}B)</p>"
                     "</div></div>".format(
                         s_move * 100, new_spot, vol_slider.value, d_shift,
                         flip_str, regime,
                         '#3fb950' if total_flow > 0 else '#da3633', total_flow,
-                        flows[0], flows[1], flows[2], flows[3], flows[4]))
+                        flows[0], flows[1], flows[2], flows[3], flows[4], flows[5]))
 
             vol_slider.observe(_update_simulator, names='value')
             dte_slider.observe(_update_simulator, names='value')
@@ -8991,6 +8961,7 @@ def run_analysis(_):
                     for cs in fp_combined_scenarios:
                         _cs_color = _C['red'] if cs['total'] < 0 else _C['green']
                         _cs_vanna = cs.get('vanna', 0)
+                        _cs_charm = cs.get('charm', 0)
                         cs_rows += (
                             f"<tr>"
                             f"<td>{cs['name']}</td>"
@@ -9006,6 +8977,8 @@ def run_analysis(_):
                             f"${cs['dealer']/1e9:,.1f}B</td>"
                             f"<td style='text-align:right;color:{_C['red'] if _cs_vanna < 0 else _C['text_muted']}'>"
                             f"${_cs_vanna/1e9:,.1f}B</td>"
+                            f"<td style='text-align:right;color:{_C['red'] if _cs_charm < 0 else _C['text_muted']}'>"
+                            f"${_cs_charm/1e9:,.1f}B</td>"
                             f"<td style='text-align:right;color:{_cs_color};font-weight:bold'>"
                             f"${cs['total']/1e9:,.1f}B</td>"
                             f"</tr>")
@@ -9017,11 +8990,12 @@ def run_analysis(_):
                         f"<table class='mm-table'>"
                         f"<tr><th>Cenário</th><th>SPX</th><th>RV</th>"
                         f"<th>Vol Ctrl</th><th>Risk Parity</th>"
-                        f"<th>CTA</th><th>Dealer</th><th>Vanna</th>"
+                        f"<th>CTA</th><th>Dealer</th><th>Vanna</th><th>Charm</th>"
                         f"<th>TOTAL</th></tr>"
                         f"{cs_rows}</table>"
                         f"<p><small>Vol Ctrl/RP: ajuste ~25%/dia (~4d). CTA: ajustam diariamente. "
                         f"Dealer: instantâneo (delta hedge). Vanna: -vanna_notional × ΔVol. "
+                        f"Charm: -charm_notional (decay diário do delta, constante). "
                         f"Valores estimados, não garantidos.</small></p>"
                         f"</div></div>"))
 
@@ -9419,6 +9393,9 @@ def run_analysis(_):
                     _ds_fig.add_trace(go.Bar(
                         x=_ds_df['Move'], y=_ds_df['Vanna Flow ($B)'],
                         name='Vanna', marker_color=_C['purple']))
+                    _ds_fig.add_trace(go.Bar(
+                        x=_ds_df['Move'], y=_ds_df['Charm Flow ($B)'],
+                        name='Charm', marker_color=_C['yellow']))
                     _ds_fig.add_trace(go.Scatter(
                         x=_ds_df['Move'], y=_ds_df['Total ($B)'],
                         name='Total', mode='lines+markers',
