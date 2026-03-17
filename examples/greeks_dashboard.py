@@ -222,68 +222,75 @@ DASH_CSS = (
 "\n"
 "/* -- Card (legacy compatibility) -- */\n"
 ".mm-card { position:relative; overflow:hidden;\n"
-"  background:linear-gradient(145deg,rgba(2,15,30,0.96) 0%,rgba(5,20,40,0.92) 100%);\n"
-"  border:1px solid rgba(0,212,255,0.2);\n"
+"  background:linear-gradient(145deg,rgba(1,8,20,0.97) 0%,rgba(2,12,30,0.93) 100%);\n"
+"  border:1px solid rgba(0,200,255,0.15);\n"
+"  border-top:2px solid rgba(255,140,0,0.65);\n"
 "  padding:12px 14px; margin:3px;\n"
 "  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%);\n"
 "}\n"
 ".mm-card::before { content:''; position:absolute; top:0; left:0; right:0; height:1px;\n"
-"  background:linear-gradient(90deg,transparent,rgba(0,212,255,0.7) 50%,transparent); }\n"
-".mm-card h3 { margin:0 0 8px; font-size:10px; font-weight:700; color:#00d4ff;\n"
-"  text-transform:uppercase; letter-spacing:2px; }\n"
-".mm-card h4 { margin:6px 0 4px; font-size:9px; font-weight:700; color:#00d4aa; letter-spacing:1px; }\n"
-".mm-card p, .mm-card span { font-size:11px; color:#8b949e; line-height:1.6; }\n"
-".mm-card b { color:#e6edf3; }\n"
+"  background:linear-gradient(90deg,transparent,rgba(255,140,0,0.7) 50%,transparent); }\n"
+".mm-card h3 { margin:0 0 8px; font-size:10px; font-weight:700; color:#ff8c00;\n"
+"  text-transform:uppercase; letter-spacing:2px;\n"
+"  font-family:'Orbitron','Courier New',monospace; }\n"
+".mm-card h4 { margin:6px 0 4px; font-size:9px; font-weight:700; color:#00c8ff; letter-spacing:1px; }\n"
+".mm-card p, .mm-card span { font-size:11px; color:rgba(180,210,255,0.75); line-height:1.6; }\n"
+".mm-card b { color:#cce8ff; }\n"
 "\n"
 "/* -- Badges -- */\n"
-".mm-badge { display:inline-block; padding:1px 7px; font-size:9px; font-weight:700;\n"
-"  letter-spacing:1px; text-transform:uppercase;\n"
+".mm-badge { display:inline-block; padding:1px 8px; font-size:9px; font-weight:700;\n"
+"  letter-spacing:1.5px; text-transform:uppercase;\n"
+"  font-family:'Orbitron','Courier New',monospace;\n"
 "  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
-".mm-badge-green  { background:rgba(63,185,80,0.15);  color:#3fb950; border:1px solid rgba(63,185,80,0.4); }\n"
-".mm-badge-red    { background:rgba(248,81,73,0.15);  color:#f85149; border:1px solid rgba(248,81,73,0.4); }\n"
-".mm-badge-yellow { background:rgba(210,153,34,0.15); color:#d29922; border:1px solid rgba(210,153,34,0.4); }\n"
-".mm-badge-blue   { background:rgba(0,212,255,0.12);  color:#00d4ff; border:1px solid rgba(0,212,255,0.4); }\n"
+".mm-badge-green  { background:rgba(0,255,136,0.10); color:#00ff88; border:1px solid rgba(0,255,136,0.4); }\n"
+".mm-badge-red    { background:rgba(255,71,87,0.12);  color:#ff4757; border:1px solid rgba(255,71,87,0.4); }\n"
+".mm-badge-yellow { background:rgba(255,140,0,0.12);  color:#ff8c00; border:1px solid rgba(255,140,0,0.45); }\n"
+".mm-badge-blue   { background:rgba(0,200,255,0.10);  color:#00c8ff; border:1px solid rgba(0,200,255,0.4); }\n"
 "\n"
 "/* -- Tables -- */\n"
 ".mm-table { width:100%; border-collapse:separate; border-spacing:0;\n"
-"  font-size:11px; font-family:'Courier New',monospace; }\n"
-".mm-table th { background:rgba(0,212,255,0.07); color:rgba(0,212,255,0.6);\n"
+"  font-size:11px; font-family:'Orbitron','Courier New',monospace; }\n"
+".mm-table th { background:rgba(255,140,0,0.06); color:rgba(255,140,0,0.7);\n"
 "  font-weight:700; text-transform:uppercase; font-size:8px; letter-spacing:1.5px;\n"
-"  padding:7px 10px; border-bottom:1px solid rgba(0,212,255,0.2); text-align:left; }\n"
-".mm-table td { padding:6px 10px; border-bottom:1px solid rgba(0,212,255,0.06); color:#e6edf3; }\n"
-".mm-table tr:hover td { background:rgba(0,212,255,0.04); }\n"
+"  padding:7px 10px; border-bottom:1px solid rgba(255,140,0,0.2); text-align:left; }\n"
+".mm-table td { padding:6px 10px; border-bottom:1px solid rgba(0,200,255,0.06); color:#cce8ff; }\n"
+".mm-table tr:hover td { background:rgba(255,140,0,0.04); }\n"
 "\n"
 "/* -- KPI -- */\n"
 ".mm-kpi-row { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }\n"
 ".mm-kpi { flex:1; min-width:130px;\n"
-"  background:linear-gradient(135deg,rgba(2,15,30,0.96) 0%,rgba(0,212,255,0.04) 100%);\n"
-"  border:1px solid rgba(0,212,255,0.18); border-top:1px solid rgba(0,212,255,0.45);\n"
+"  background:linear-gradient(135deg,rgba(1,8,20,0.97) 0%,rgba(255,140,0,0.04) 100%);\n"
+"  border:1px solid rgba(0,200,255,0.15); border-top:2px solid rgba(255,140,0,0.5);\n"
 "  padding:8px 12px; text-align:center;\n"
 "  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 0);\n"
 "}\n"
-".mm-kpi .kpi-label { font-size:7px; color:rgba(0,212,255,0.45); text-transform:uppercase;\n"
-"  letter-spacing:2px; font-weight:700; }\n"
+".mm-kpi .kpi-label { font-size:7px; color:rgba(255,140,0,0.5); text-transform:uppercase;\n"
+"  letter-spacing:2px; font-weight:700; font-family:'Orbitron','Courier New',monospace; }\n"
 ".mm-kpi .kpi-value { font-size:17px; font-weight:700; margin:3px 0;\n"
-"  font-family:'Courier New',monospace; text-shadow:0 0 8px currentColor; }\n"
+"  font-family:'Orbitron','Courier New',monospace; text-shadow:0 0 10px currentColor; }\n"
 "\n"
-"/* -- Legacy compatibility -- */\n"
-".mm-title { font-size:16px; font-weight:700; color:#00d4ff; padding:8px 0 4px;\n"
-"  border-bottom:1px solid rgba(0,212,255,0.3); margin-bottom:8px;\n"
-"  letter-spacing:2.5px; text-transform:uppercase; font-family:'Courier New',monospace;\n"
-"  text-shadow:0 0 12px rgba(0,212,255,0.5); }\n"
-".mm-title small { font-size:10px; color:#8b949e; font-weight:400; margin-left:12px; }\n"
-".mm-section-label { font-size:9px; font-weight:700; color:rgba(0,212,255,0.45);\n"
+"/* -- Legacy compatibility: Stark palette -- */\n"
+".mm-title { font-size:14px; font-weight:700; color:#ff8c00; padding:8px 0 4px;\n"
+"  border-bottom:1px solid rgba(255,140,0,0.3); margin-bottom:8px;\n"
+"  letter-spacing:3px; text-transform:uppercase;\n"
+"  font-family:'Orbitron','Courier New',monospace;\n"
+"  text-shadow:0 0 12px rgba(255,140,0,0.5); }\n"
+".mm-title small { font-size:9px; color:rgba(0,200,255,0.5); font-weight:400; margin-left:12px; }\n"
+".mm-section-label { font-size:9px; font-weight:700; color:rgba(255,140,0,0.5);\n"
 "  text-transform:uppercase; letter-spacing:2px; margin:12px 0 5px;\n"
-"  padding-bottom:3px; border-bottom:1px solid rgba(0,212,255,0.12); }\n"
+"  font-family:'Orbitron','Courier New',monospace;\n"
+"  padding-bottom:3px; border-bottom:1px solid rgba(255,140,0,0.15); }\n"
 ".mm-metric { display:inline-block; margin:0 12px 8px 0; }\n"
-".mm-metric .label { font-size:8px; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px; }\n"
-".mm-metric .value { font-size:14px; font-weight:700; color:#e6edf3; font-family:'Courier New',monospace; }\n"
-".mm-loading { color:#00d4ff; font-size:12px; font-weight:600; padding:12px;\n"
-"  letter-spacing:1.5px; text-shadow:0 0 8px rgba(0,212,255,0.6); }\n"
-".mm-loading .step { color:#8b949e; font-size:10px; }\n"
-".mm-cot-label { background:rgba(0,212,255,0.06); border:1px solid rgba(0,212,255,0.2);\n"
-"  padding:3px 7px; font-size:10px; display:inline-block; margin:2px;\n"
-"  font-family:'Courier New',monospace;\n"
+".mm-metric .label { font-size:8px; color:rgba(0,200,255,0.45); text-transform:uppercase; letter-spacing:0.5px; }\n"
+".mm-metric .value { font-size:14px; font-weight:700; color:#cce8ff;\n"
+"  font-family:'Orbitron','Courier New',monospace; text-shadow:0 0 6px currentColor; }\n"
+".mm-loading { color:#00c8ff; font-size:12px; font-weight:600; padding:12px;\n"
+"  letter-spacing:1.5px; font-family:'Orbitron','Courier New',monospace;\n"
+"  text-shadow:0 0 8px rgba(0,200,255,0.6); }\n"
+".mm-loading .step { color:rgba(0,200,255,0.45); font-size:10px; }\n"
+".mm-cot-label { background:rgba(255,140,0,0.07); border:1px solid rgba(255,140,0,0.25);\n"
+"  padding:3px 7px; font-size:9px; display:inline-block; margin:2px;\n"
+"  font-family:'Orbitron','Courier New',monospace; color:#ff8c00;\n"
 "  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
 "</style>\n"
 )
@@ -449,19 +456,25 @@ def _svg_ring_html(value, vmin, vmax, label, unit='',
     )
 
 
-# Template Plotly unificado (dark, elegante)
+# Template Plotly -- Stark Industries Iron Man palette
 _PLOTLY_DARK = go.layout.Template()
 _PLOTLY_DARK.layout = go.Layout(
-    paper_bgcolor=_C['card'],
-    plot_bgcolor=_C['bg'],
-    font=dict(family='-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica', size=12, color=_C['text']),
-    title=dict(font=dict(size=15, color=_C['text'])),
-    xaxis=dict(gridcolor=_C['border_light'], zerolinecolor=_C['border'], linecolor=_C['border']),
-    yaxis=dict(gridcolor=_C['border_light'], zerolinecolor=_C['border'], linecolor=_C['border']),
-    legend=dict(bgcolor='rgba(0,0,0,0)', font=dict(size=11, color=_C['text_muted'])),
-    colorway=[_C['accent'], _C['teal'], _C['orange'], _C['green'], _C['red'],
-              _C['purple'], _C['yellow'], _C['pink']],
-    hoverlabel=dict(bgcolor=_C['card2'], font_size=12, font_color=_C['text']),
+    paper_bgcolor='#010810',
+    plot_bgcolor='#020d1f',
+    font=dict(family="'Orbitron','Courier New',monospace", size=11, color='#cce8ff'),
+    title=dict(font=dict(size=13, color='#ff8c00', family="'Orbitron','Courier New',monospace")),
+    xaxis=dict(gridcolor='rgba(0,200,255,0.08)', zerolinecolor='rgba(0,200,255,0.2)',
+               linecolor='rgba(0,200,255,0.15)', tickcolor='rgba(0,200,255,0.4)',
+               tickfont=dict(color='rgba(0,200,255,0.55)', size=10)),
+    yaxis=dict(gridcolor='rgba(0,200,255,0.08)', zerolinecolor='rgba(0,200,255,0.2)',
+               linecolor='rgba(0,200,255,0.15)', tickcolor='rgba(0,200,255,0.4)',
+               tickfont=dict(color='rgba(0,200,255,0.55)', size=10)),
+    legend=dict(bgcolor='rgba(1,8,20,0.8)', font=dict(size=10, color='#cce8ff'),
+                bordercolor='rgba(0,200,255,0.2)', borderwidth=1),
+    colorway=['#00c8ff', '#ff8c00', '#00ff88', '#ff4757', '#b44aff',
+              '#ffd32a', '#ff6b9d', '#7efff5'],
+    hoverlabel=dict(bgcolor='#010810', font_size=11, font_color='#cce8ff',
+                    bordercolor='rgba(0,200,255,0.4)'),
 )
 DASH_TEMPLATE = _PLOTLY_DARK
 BQL_PARAMS = {'fill': 'prev'}
@@ -7036,23 +7049,29 @@ def create_gauge(value, title, range_min, range_max, bar_color, suffix,
         value = 0
     gauge_cfg = {
         'axis': {'range': [range_min, range_max],
-                 'tickcolor': _C['text_muted'], 'tickfont': {'color': _C['text_muted'], 'size': 10}},
+                 'tickcolor': 'rgba(0,200,255,0.4)',
+                 'tickfont': {'color': 'rgba(0,200,255,0.5)', 'size': 9,
+                              'family': "'Orbitron','Courier New',monospace"}},
         'bar': {'color': bar_color, 'thickness': 0.3},
-        'bgcolor': _C['card2'],
+        'bgcolor': '#020d1f',
         'borderwidth': 1,
-        'bordercolor': _C['border'],
+        'bordercolor': 'rgba(0,200,255,0.25)',
     }
     if steps:
         gauge_cfg['steps'] = steps
     return go.FigureWidget(
         go.Indicator(
             mode="gauge+number", value=value,
-            title={'text': title, 'font': {'size': 13, 'color': _C['text_muted']}},
-            number={'suffix': suffix, 'font': {'size': 20, 'color': _C['text']}, 'valueformat': '.2f'},
+            title={'text': title, 'font': {'size': 11, 'color': 'rgba(0,200,255,0.55)',
+                                           'family': "'Orbitron','Courier New',monospace"}},
+            number={'suffix': suffix, 'font': {'size': 18, 'color': '#ff8c00',
+                                               'family': "'Orbitron','Courier New',monospace"},
+                    'valueformat': '.2f'},
             gauge=gauge_cfg),
         layout=go.Layout(width=width, height=height,
-                         paper_bgcolor=_C['card'],
-                         font=dict(color=_C['text']),
+                         paper_bgcolor='#010810',
+                         font=dict(color='#cce8ff',
+                                   family="'Orbitron','Courier New',monospace"),
                          margin=dict(l=18, r=18, t=42, b=12)))
 
 
@@ -7079,26 +7098,29 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
         go.Indicator(
             mode="gauge",
             value=value,
-            title={'text': title, 'font': {'size': 12, 'color': _C['text_muted']}},
+            title={'text': title, 'font': {'size': 11, 'color': 'rgba(0,200,255,0.55)',
+                                           'family': "'Orbitron','Courier New',monospace"}},
             domain={'x': [0, 1], 'y': [0.25, 1.0]},
             gauge={
                 'axis': {'range': [-rng, rng],
                          'tickvals': [-rng, 0, rng],
                          'ticktext': [tick_lo, '0', tick_hi],
-                         'tickcolor': _C['text_dim'],
-                         'tickfont': {'color': _C['text_dim'], 'size': 9}},
+                         'tickcolor': 'rgba(0,200,255,0.4)',
+                         'tickfont': {'color': 'rgba(0,200,255,0.5)', 'size': 9,
+                                      'family': "'Orbitron','Courier New',monospace"}},
                 'bar': {'color': bar_color, 'thickness': 0.30},
-                'bgcolor': _C['card2'],
+                'bgcolor': '#020d1f',
                 'borderwidth': 1,
-                'bordercolor': _C['border'],
+                'bordercolor': 'rgba(0,200,255,0.25)',
                 'steps': steps,
                 'threshold': {'line': {'color': '#8b949e', 'width': 2},
                               'thickness': 0.80, 'value': 0},
             }),
         layout=go.Layout(
             width=width, height=height,
-            paper_bgcolor=_C['card'],
-            font=dict(color=_C['text']),
+            paper_bgcolor='#010810',
+            font=dict(color='#cce8ff',
+                      family="'Orbitron','Courier New',monospace"),
             margin=dict(l=20, r=20, t=44, b=12),
             annotations=[dict(
                 text=num_text,
