@@ -8075,42 +8075,63 @@ def run_analysis(_):
             _gamma_lvl_chart = build_gamma_levels_chart(
                 prices, spot, call_wall, put_wall, gamma_flip, iv_30d)
 
-            # ── Tail Risk completo (home): gauge + breakdown ──
+            # ══ Gauge uniforme: 210×190 para todos ════════════════════
+            _GW, _GH = 210, 190
+
+            # ── Tail Risk ──────────────────────────────────────────────
             _home_tail_gauge = build_tail_gauge(
                 analytics.get('tail_score', 50),
                 analytics.get('tail_interp', ''))
-            _tail_parts = ['<h3>TAIL RISK</h3>']
-            _tail_parts.append('<p><b>Score: {:.0f}/100</b> — {}</p>'.format(
-                analytics.get('tail_score', 50), analytics.get('tail_interp', '')))
+            _home_tail_gauge.update_layout(width=_GW, height=_GH)
+            _tail_score_val = analytics.get('tail_score', 50)
+            _tail_interp    = analytics.get('tail_interp', '')
+            _tail_rows = []
             for _ck, _cv in analytics.get('tail_components', {}).items():
-                _tail_parts.append(
-                    '<p style="margin:2px 0;font-size:12px;">'
-                    '{}: <b>{}</b> (contrib: {:.1f})</p>'.format(
-                        _cv.get('label', _ck), _cv.get('value', 0), _cv.get('score', 0)))
-            _home_tail_info = wd.HTML(
-                "<div class='mm-dash'><div class='mm-card'>"
-                "{}</div></div>".format(''.join(_tail_parts)))
-            # ── Flow Predictor: gauge e barra de componentes separados ──
+                _tail_rows.append(
+                    f"<tr><td style='color:{_C['text_muted']};padding:3px 8px;font-size:11px;'>"
+                    f"{_cv.get('label', _ck)}</td>"
+                    f"<td style='color:{_C['text']};padding:3px 8px;font-size:11px;font-weight:700;'>"
+                    f"{_cv.get('value', 0)}</td>"
+                    f"<td style='color:{_C['yellow']};padding:3px 8px;font-size:11px;'>"
+                    f"{_cv.get('score', 0):.1f}</td></tr>")
+            _tail_detail_html = (
+                f"<div class='mm-dash'><div class='mm-card' style='min-width:280px;'>"
+                f"<h3>Tail Risk — {_tail_score_val:.0f}/100</h3>"
+                f"<p style='margin:0 0 8px;'>{_tail_interp}</p>"
+                f"<table style='width:100%;border-collapse:collapse;'>"
+                f"<tr><th style='font-size:9px;color:{_C['text_dim']};padding:3px 8px;"
+                f"text-align:left;border-bottom:1px solid {_C['border']};'>Componente</th>"
+                f"<th style='font-size:9px;color:{_C['text_dim']};padding:3px 8px;"
+                f"border-bottom:1px solid {_C['border']};'>Valor</th>"
+                f"<th style='font-size:9px;color:{_C['text_dim']};padding:3px 8px;"
+                f"border-bottom:1px solid {_C['border']};'>Score</th></tr>"
+                + ''.join(_tail_rows)
+                + f"</table></div></div>")
+
+            # ── Flow Predictor ─────────────────────────────────────────
             _fp_gauge_w = wd.HTML(
-                "<div class='mm-dash'><div class='mm-card' style='width:220px;height:190px;"
-                "display:flex;align-items:center;justify-content:center;'>"
-                "<p style='color:#8b949e;font-size:12px;'>Flow N/A</p></div></div>")
+                f"<div class='mm-dash'><div class='mm-card' style='width:{_GW}px;height:{_GH}px;"
+                f"display:flex;align-items:center;justify-content:center;'>"
+                f"<p style='color:{_C['text_muted']};font-size:11px;'>Flow N/A</p></div></div>")
             _fp_comps_w = wd.HTML(
-                "<div class='mm-dash'><div class='mm-card'>"
-                "<p style='color:#8b949e;font-size:12px;'>Flow: ative o Flow Predictor</p>"
-                "</div></div>")
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<p style='color:{_C['text_muted']};font-size:11px;'>Ative o Flow Predictor</p>"
+                f"</div></div>")
             if fp_ok and fp_score is not None:
                 try:
                     _fp_gauge_w = fp_plot_score_gauge(fp_score)
+                    _fp_gauge_w.update_layout(width=_GW, height=_GH,
+                                              margin=dict(t=40, b=10, l=15, r=15))
                     _fp_comps_w = fp_plot_components_bar(fp_score)
+                    _fp_comps_w.update_layout(height=240, margin=dict(t=32, b=40, l=10, r=20))
                 except Exception:
                     pass
 
-            # ── CTA Chart (home) ──
+            # ── CTA Chart ─────────────────────────────────────────────
             _home_cta = wd.HTML(
-                "<div class='mm-dash'><div class='mm-card'>"
-                "<p style='color:#8b949e;'>CTA: ative o Flow Predictor</p>"
-                "</div></div>")
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<p style='color:{_C['text_muted']};'>CTA: ative o Flow Predictor</p>"
+                f"</div></div>")
             if fp_ok and not fp_cta_hist.empty:
                 try:
                     _cta_fig = build_cta_gs_chart(
@@ -8121,7 +8142,7 @@ def run_analysis(_):
                 except Exception:
                     pass
 
-            # ── Termômetros das gregas + stock flow ──
+            # ── Gregas + ETF flow ──────────────────────────────────────
             try:
                 _greek_overview = build_greek_overview(
                     greeks_now, df, spot,
@@ -8130,12 +8151,12 @@ def run_analysis(_):
                 print(f"⚠️ Greek overview: {_go_err}")
                 _greek_overview = wd.HTML('')
 
-            # ── Gamma Squeeze mini panel ──
-            _sq_gauge_w  = wd.HTML('')
-            _sq_comps_w  = wd.HTML('')
-            _sq_badge_w  = wd.HTML('')
+            # ── Gamma Squeeze ──────────────────────────────────────────
+            _sq_gauge_w    = wd.HTML('')
+            _sq_comps_w    = wd.HTML('')
+            _sq_badge_w    = wd.HTML('')
             _sq_score_disp = 'N/A'
-            _sq_ac = _C['text_muted']
+            _sq_ac         = _C['text_muted']
             try:
                 _sq_pc_v1  = (fp_vol_data.get('pc_ratio', 1.5) or 1.5) if fp_ok else 1.5
                 _sq_gex_v1 = total_gex_val / 1e9 if 'total_gex_val' in dir() else (
@@ -8146,16 +8167,19 @@ def run_analysis(_):
                     spot=spot, skew=skew, put_wall=put_wall, call_wall=call_wall)
                 _sq_gauge_w, _sq_comps_w, _sq_badge_str, _sq_ac = \
                     build_squeeze_mini_panel(_sq_result_v1, _C)
-                _sq_badge_w = wd.HTML(_sq_badge_str)
+                _sq_gauge_w.update_layout(width=_GW, height=_GH,
+                                          margin=dict(t=38, b=8, l=18, r=18))
+                _sq_comps_w.update_layout(height=240, margin=dict(t=30, b=20, l=5, r=60))
+                _sq_badge_w    = wd.HTML(_sq_badge_str)
                 _sq_score_disp = f"{_sq_result_v1['score']:.0f}"
             except Exception as _sqm_err:
                 print(f"⚠️ Squeeze mini: {_sqm_err}")
 
-            # ── Status bar — barra de comando topo ──
-            _flip_str  = f"{gamma_flip:,.0f}"   if gamma_flip      else "N/A"
-            _gex_str   = f"{_sq_gex_v1:+.1f}B"  if '_sq_gex_v1' in dir() else "N/A"
-            _pc_str    = f"{_sq_pc_v1:.2f}×"    if '_sq_pc_v1'  in dir() else "N/A"
-            _ivrv_str  = f"{(iv_30d - rv_30d)*100:+.1f}pp"
+            # ── Status bar ─────────────────────────────────────────────
+            _flip_str = f"{gamma_flip:,.0f}"  if gamma_flip      else "N/A"
+            _gex_str  = f"{_sq_gex_v1:+.1f}B" if '_sq_gex_v1' in dir() else "N/A"
+            _pc_str   = f"{_sq_pc_v1:.2f}×"   if '_sq_pc_v1'  in dir() else "N/A"
+            _ivrv_str = f"{(iv_30d - rv_30d)*100:+.1f}pp"
 
             def _stat(label, value, color):
                 return (f"<div class='mm-stat-item'>"
@@ -8167,49 +8191,52 @@ def run_analysis(_):
                 f"<div class='mm-dash mm-statusbar'>"
                 f"<span class='mm-cmd-title'>⬡ SPX&nbsp;MARKET&nbsp;COMMAND</span>"
                 f"<div style='display:flex;flex-wrap:wrap;align-items:stretch;'>"
-                + _stat('Spot',         f"{spot:,.0f}",  _C['text'])
-                + _stat('Gamma&nbsp;Flip', _flip_str,    _C['orange'])
-                + _stat('GEX&nbsp;Net',  _gex_str,       _C['accent'])
-                + _stat('P/C&nbsp;Ratio', _pc_str,       _C['purple'])
-                + _stat('IV−RV',         _ivrv_str,      _C['yellow'])
+                + _stat('Spot',            f"{spot:,.0f}",        _C['text'])
+                + _stat('Gamma&nbsp;Flip', _flip_str,             _C['orange'])
+                + _stat('GEX&nbsp;Net',    _gex_str,              _C['accent'])
+                + _stat('P/C&nbsp;Ratio',  _pc_str,               _C['purple'])
+                + _stat('IV−RV',           _ivrv_str,             _C['yellow'])
                 + _stat('Squeeze&nbsp;Risk', f"{_sq_score_disp}/100", _sq_ac)
                 + f"</div></div>")
 
-            # ── Section header helper ──
+            # ── Section header helper ──────────────────────────────────
             def _sh(title, sub=''):
-                _s = (f"<span class='mm-hdr-sub'>· {sub}</span>") if sub else ''
+                _s = f"<span class='mm-hdr-sub'>· {sub}</span>" if sub else ''
                 return wd.HTML(
                     f"<div class='mm-dash mm-section-hdr'>"
                     f"<div class='mm-dot'></div>"
                     f"<span class='mm-hdr-title'>{title}</span>{_s}"
                     f"</div>")
 
-            # ── Stacks verticais: gauge + detalhe ──────────────────────
-            _tail_stack = wd.VBox([_home_tail_gauge, _home_tail_info],
-                                  layout={'align_items': 'center'})
-            _flow_stack = wd.VBox([_fp_gauge_w, _fp_comps_w],
-                                  layout={'align_items': 'center'})
-            _sq_stack   = wd.VBox([_sq_gauge_w, _sq_badge_w, _sq_comps_w],
-                                  layout={'align_items': 'center'})
+            # ══ LAYOUT TAB 1 ═══════════════════════════════════════════
+            # Linha 1: 7 gauges idênticos (210×190)
+            _gauge_row = wd.HBox(
+                [g_frag, g_vol, g_skew, g_move,
+                 _home_tail_gauge, _fp_gauge_w, _sq_gauge_w],
+                layout={'justify_content': 'space-around',
+                        'align_items':     'flex-end',
+                        'flex_wrap':       'wrap'})
+
+            # Linha 2: 3 painéis de detalhe (flex igual)
+            _detail_row = wd.HBox(
+                [wd.HTML(_tail_detail_html), _fp_comps_w,
+                 wd.VBox([_sq_badge_w, _sq_comps_w])],
+                layout={'align_items': 'flex-start',
+                        'flex_wrap':  'wrap'})
 
             tab1 = wd.VBox([
-                # ─ Cabeçalho ─────────────────────────────────────────────
                 _status_bar,
-                # ─ Linha de gauges: mercado + tail + flow + squeeze ───────
                 _sh('Painel de Controle',
-                    'Fragmentação · Vol · Skew · Move · Tail Risk · Flow Score · Gamma Squeeze'),
-                wd.HBox(
-                    [g_frag, g_vol, g_skew, g_move, _tail_stack, _flow_stack, _sq_stack],
-                    layout={'justify_content': 'space-around', 'flex_wrap': 'wrap',
-                            'align_items': 'flex-start'}),
-                # ─ Exposição das gregas ───────────────────────────────────
-                _sh('Exposição das Gregas', 'Delta · Gamma · Vanna · Charm + Rebalanceamento ETF'),
+                    'Fragilidade · Vol · Skew · Move · Tail Risk · Flow Score · Gamma Squeeze'),
+                _gauge_row,
+                _detail_row,
+                _sh('Exposição das Gregas',
+                    'Delta · Gamma · Vanna · Charm + Rebalanceamento ETF Passivo'),
                 _greek_overview,
-                # ─ Estrutura de mercado ───────────────────────────────────
-                _sh('Estrutura de Mercado', 'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
+                _sh('Estrutura de Mercado',
+                    'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
                 wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
                         layout={'flex_wrap': 'wrap', 'align_items': 'flex-start'}),
-                # ─ CTA + Resumo ───────────────────────────────────────────
                 _sh('CTA Estimado & Resumo Narrativo'),
                 _home_cta,
                 wd.HTML(summary_html),
