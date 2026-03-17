@@ -1,4 +1,4 @@
-me"""
+"""
 MARKET MAKER DASHBOARD — Versão Unificada v1.0
 Consolidação completa de todas as análises anteriores de gregas, risco e posicionamento.
 
