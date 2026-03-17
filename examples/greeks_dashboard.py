@@ -301,6 +301,109 @@ def _hud_panel(content, title='', scan=True, glow=False):
         f"</div>")
 
 
+def _svg_ring_html(value, vmin, vmax, label, unit='', color='#00d4ff',
+                   w=200, h=205, label2=''):
+    """SVG circular ring gauge -- HUD style, 270-degree arc, no external dependencies."""
+    import math as _m
+    cx  = w // 2
+    cy  = (h - 22) // 2          # ring centre; leave room at bottom for label
+    r   = min(cx - 14, cy - 14)  # radius with margin for ticks + corners
+    circ  = 2 * _m.pi * r
+    a_len = circ * 0.75           # 270 deg arc
+    g_len = circ - a_len          # 90 deg gap
+    pct   = (max(0., min(1., (value - vmin) / (vmax - vmin)))
+             if vmax != vmin else 0.5)
+    fill  = a_len * pct
+
+    # 9 tick marks every 33.75 deg
+    ticks = ''
+    for i in range(9):
+        ang = _m.radians(-225 + i * 33.75)
+        x1 = cx + (r + 3) * _m.cos(ang)
+        y1 = cy + (r + 3) * _m.sin(ang)
+        x2 = cx + (r + 9) * _m.cos(ang)
+        y2 = cy + (r + 9) * _m.sin(ang)
+        op = '0.55' if i in (0, 4, 8) else '0.18'
+        ticks += (f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' "
+                  f"stroke='rgba(0,212,255,{op})' stroke-width='1.5'/>")
+
+    # Min/max labels at arc endpoints
+    def _ep(deg):
+        a = _m.radians(deg)
+        return cx + (r + 17) * _m.cos(a), cy + (r + 17) * _m.sin(a)
+    mx, my = _ep(-225)
+    Mx, My = _ep(45)
+    vmin_s = f'{vmin:.0f}' if abs(vmin) >= 1 else f'{vmin:.1f}'
+    vmax_s = f'{vmax:.0f}' if abs(vmax) >= 1 else f'{vmax:.1f}'
+
+    # Value display string
+    av = abs(value)
+    vs = (f'{value:.0f}' if av >= 100 else f'{value:.1f}' if av >= 10 else f'{value:.2f}')
+    if unit:
+        vs += unit
+
+    # Corner L-brackets
+    bk = 11
+    br = (f"<path d='M 2,{bk+2} L 2,2 L {bk+2},2' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
+          f"<path d='M {w-bk-2},2 L {w-2},2 L {w-2},{bk+2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
+          f"<path d='M 2,{h-bk-2} L 2,{h-2} L {bk+2},{h-2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
+          f"<path d='M {w-bk-2},{h-2} L {w-2},{h-2} L {w-2},{h-bk-2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>")
+
+    # Unique glow filter id
+    gid = str(abs(hash(label + str(round(value, 1)))) % 99999)
+    sub = (f"<text x='{cx}' y='{cy+17}' text-anchor='middle' "
+           f"font-family=\"'Courier New',monospace\" font-size='9' "
+           f"fill='rgba(255,255,255,0.38)'>{str(label2)[:14]}</text>" if label2 else '')
+
+    _track = (
+        f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' "
+        f"stroke='rgba(0,212,255,0.10)' stroke-width='9' "
+        f"stroke-dasharray='{a_len:.2f} {g_len:.2f}' "
+        f"transform='rotate(-225 {cx} {cy})' stroke-linecap='round'/>"
+    )
+    _varc = (
+        f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' "
+        f"stroke='{color}' stroke-width='9' "
+        f"stroke-dasharray='{fill:.2f} {circ - fill:.2f}' "
+        f"transform='rotate(-225 {cx} {cy})' stroke-linecap='round' "
+        f"filter='url(#rg{gid})'/>"
+    )
+    _inner = (
+        f"<circle cx='{cx}' cy='{cy}' r='{r - 15}' "
+        f"fill='rgba(1,8,20,0.88)' stroke='rgba(0,212,255,0.07)' stroke-width='1'/>"
+    )
+    _val_txt = (
+        f"<text x='{cx}' y='{cy + 4}' text-anchor='middle' dominant-baseline='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='18' font-weight='700' "
+        f"fill='{color}' filter='url(#rg{gid})'>{vs}</text>"
+    )
+    _minmax = (
+        f"<text x='{mx:.1f}' y='{my + 4:.1f}' text-anchor='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='8' "
+        f"fill='rgba(0,212,255,0.30)'>{vmin_s}</text>"
+        f"<text x='{Mx:.1f}' y='{My + 4:.1f}' text-anchor='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='8' "
+        f"fill='rgba(0,212,255,0.30)'>{vmax_s}</text>"
+    )
+    _lbl_txt = (
+        f"<text x='{cx}' y='{h - 6}' text-anchor='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='8' font-weight='700' "
+        f"letter-spacing='1.5' fill='rgba(0,212,255,0.45)'>{label[:20].upper()}</text>"
+    )
+    _defs = (
+        f"<defs><filter id='rg{gid}' x='-60%' y='-60%' width='220%' height='220%'>"
+        f"<feGaussianBlur stdDeviation='3.5' result='b'/>"
+        f"<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>"
+        f"</filter></defs>"
+    )
+    return (
+        f"<svg viewBox='0 0 {w} {h}' width='{w}' height='{h}' "
+        f"style='background:rgba(2,12,28,0.92);display:block;'>"
+        + _defs + _track + _varc + _inner + ticks + _val_txt + sub + _minmax + _lbl_txt + br +
+        f"</svg>"
+    )
+
+
 # Template Plotly unificado (dark, elegante)
 _PLOTLY_DARK = go.layout.Template()
 _PLOTLY_DARK.layout = go.Layout(
@@ -8262,25 +8365,69 @@ def run_analysis(_):
                     f"</div>")
 
             # ══ LAYOUT TAB 1 ═══════════════════════════════════════════
-            # ── Linha 1: 7 gauges em GridBox com colunas fixas ─────────
-            # Também força os 4 gauges do mercado (g_frag etc.)
-            for _gf in [g_frag, g_vol, g_skew, g_move]:
-                _gf.update_layout(width=_GW, height=_GH,
-                                  margin=dict(t=40, b=8, l=15, r=15))
+            # ── Linha 1: 7 SVG ring gauges HUD-style ───────────────────
+            _GW, _GH = 200, 205   # SVG ring cell size
+
+            # Tail Risk ring color
+            _tail_svg_color = ('#3fb950' if _tail_score_val < 30 else
+                               '#d29922' if _tail_score_val < 60 else
+                               '#f0883e' if _tail_score_val < 80 else '#f85149')
+            _tail_svg_lbl2 = (_tail_interp.split('—')[0].strip()[:14]
+                              if _tail_interp else '')
+
+            # Flow Score numeric extraction
+            _fp_svg_val   = 50.0
+            _fp_svg_lbl2  = ''
+            _fp_svg_color = _C['accent']
+            if fp_ok and fp_score is not None:
+                try:
+                    _fp_svg_val  = float(fp_score.get('score', 50)
+                                         if isinstance(fp_score, dict) else 50)
+                    _fp_svg_lbl2 = (str(fp_score.get('interpretation', '')).split()[0][:12]
+                                    if isinstance(fp_score, dict) else '')
+                    _fp_svg_color = ('#3fb950' if _fp_svg_val >= 60 else
+                                     '#f85149' if _fp_svg_val <= 40 else '#d29922')
+                except Exception:
+                    pass
+
+            # Gamma Squeeze numeric extraction
+            _sq_svg_val  = 50.0
+            _sq_svg_lbl2 = ''
+            try:
+                _sq_svg_val  = float(_sq_result_v1.get('score', 50))
+                _sq_svg_lbl2 = str(_sq_result_v1.get('label', ''))[:14]
+            except Exception:
+                pass
+
+            # Build 7 SVG ring HTML widgets
+            _r_frag = wd.HTML(_svg_ring_html(
+                fragility,        0,         _frag_max,  'Fragilidade',   '%', _C['red']))
+            _r_vol  = wd.HTML(_svg_ring_html(
+                vol_premium,     -_vol_hi,   _vol_hi,    'Premio Vol',    '%', _C['orange']))
+            _r_skew = wd.HTML(_svg_ring_html(
+                _skew_val,       -_skew_hi,  _skew_hi,   'Skew P25-C25', '%', _C['teal']))
+            _r_move = wd.HTML(_svg_ring_html(
+                daily_move,       0,          _move_hi,   'Mov Esp 1D',   '%', _C['green']))
+            _r_tail = wd.HTML(_svg_ring_html(
+                _tail_score_val,  0,          100,        'Tail Risk',    '',
+                _tail_svg_color, label2=_tail_svg_lbl2))
+            _r_fp   = wd.HTML(_svg_ring_html(
+                _fp_svg_val,      0,          100,        'Flow Score',   '',
+                _fp_svg_color,   label2=_fp_svg_lbl2))
+            _r_sq   = wd.HTML(_svg_ring_html(
+                _sq_svg_val,      0,          100,        'Gamma Squeeze', '',
+                _sq_ac,          label2=_sq_svg_lbl2))
 
             _N_GAUGES = 7
             _gauge_grid = wd.GridBox(
-                [_cell(g_frag,           _GW, _GH),
-                 _cell(g_vol,            _GW, _GH),
-                 _cell(g_skew,           _GW, _GH),
-                 _cell(g_move,           _GW, _GH),
-                 _cell(_home_tail_gauge, _GW, _GH),
-                 _cell(_fp_gauge_w,      _GW, _GH),
-                 _cell(_sq_gauge_w,      _GW, _GH)],
+                [_cell(_r_frag, _GW, _GH), _cell(_r_vol,  _GW, _GH),
+                 _cell(_r_skew, _GW, _GH), _cell(_r_move, _GW, _GH),
+                 _cell(_r_tail, _GW, _GH), _cell(_r_fp,   _GW, _GH),
+                 _cell(_r_sq,   _GW, _GH)],
                 layout=wd.Layout(
                     grid_template_columns=f'repeat({_N_GAUGES}, {_GW}px)',
                     grid_template_rows=f'{_GH}px',
-                    gap='6px',
+                    gap='4px',
                     width='100%',
                     justify_content='space-around'))
 
