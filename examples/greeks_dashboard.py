@@ -6712,18 +6712,26 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
                          margin=dict(l=20, r=20, t=44, b=12)))
 
 
-def build_greek_overview(greeks_now, df, spot):
+def build_greek_overview(greeks_now, df, spot, etf_flows=None):
     """
     Seção de termômetros das gregas + fluxo por ação (Mag8) para a Visão Geral.
-    Gregas em $Bn. Fluxo de ações usa delta + charm + rebalanceamento SPX por beta.
+    Gregas em $Bn usando a mesma escala das abas de exposição (GREEK_CONFIGS).
+    etf_flows: dict de DataFrames com Flow_$ e PctADV por ação (compute_full_etf_flows).
     """
-    oi_100 = df['OI'].values * 100.0
-    cs     = np.where(df['Type'].values == 'Call', 1, -1)
+    oi_100  = df['OI'].values * 100.0
+    is_call = df['Type'].values == 'Call'
+    is_put  = df['Type'].values == 'Put'
 
-    # ── Gregas em $Bn ─────────────────────────────────────────────
+    # ── Gregas em $Bn — mesma escala do GREEK_CONFIGS ─────────────
+    # Delta:  op=add,      scale=L (spot)
     delta_bn = float(np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9)
-    gamma_bn = float(np.nansum(greeks_now['gamma'] * cs * oi_100 * spot**2 * 0.01) / 1e9)
-    vanna_bn = float(np.nansum(greeks_now['vanna'] * oi_100) * spot / 1e9)
+    # Gamma:  op=subtract, scale=L²×0.01
+    gamma_bn = float((np.nansum(greeks_now['gamma'][is_call] * oi_100[is_call]) -
+                      np.nansum(greeks_now['gamma'][is_put]  * oi_100[is_put])) * spot**2 * 0.01 / 1e9)
+    # Vanna:  op=subtract, scale=1  (sem spot)
+    vanna_bn = float((np.nansum(greeks_now['vanna'][is_call] * oi_100[is_call]) -
+                      np.nansum(greeks_now['vanna'][is_put]  * oi_100[is_put])) / 1e9)
+    # Charm:  op=add,      scale=L/365
     charm_bn = float(np.nansum(greeks_now['charm'] * oi_100) * spot / 365.0 / 1e9)
 
     # Escala dinâmica mínima por grega (SPX típico)
@@ -6758,95 +6766,98 @@ def build_greek_overview(greeks_now, df, spot):
         [g_delta, g_gamma, g_vanna, g_charm, wd.HTML(interp_html)],
         layout={'justify_content': 'flex-start', 'align_items': 'center', 'flex_wrap': 'wrap'})
 
-    # ── Fluxo por ação — Mag8 com beta e rebalanceamento SPX ──────
-    # beta aproximado (vs SPX): usado para escalar a exposição de cada ação
-    # Rebalanceamento SPX: ETF passivo precisa comprar/vender proporcionalmente
-    # ao desvio de cada ação vs índice — ações de beta alto desviam mais
-    mag8 = {
-        #  stock    weight   beta
-        'AAPL':  (0.070, 1.10),
-        'MSFT':  (0.065, 0.90),
-        'NVDA':  (0.060, 1.80),
-        'AMZN':  (0.050, 1.20),
-        'GOOGL': (0.045, 1.10),
-        'META':  (0.040, 1.30),
-        'TSLA':  (0.035, 2.00),
-        'AVGO':  (0.030, 1.40),
-    }
+    # ── Fluxo por ação — dados reais do ETF rebalanceamento ────────
+    combo = pd.DataFrame()
+    if etf_flows and 'Combined' in etf_flows:
+        combo = etf_flows['Combined'].copy()
+        # Normalizar ticker: 'AAPL US Equity' → 'AAPL'
+        combo.index = combo.index.str.split().str[0]
 
-    stock_flows = {}
-    for s, (w, beta) in mag8.items():
-        # 1) Dealer hedge: proporcional a weight × beta (ações de alto beta
-        #    têm opções com delta mais sensível → mais rebalanceamento)
-        dealer = -w * beta * (delta_bn + charm_bn)
-
-        # 2) Rebalanceamento do índice SPX: ETFs precisam reequilibrar quando
-        #    ações de beta alto desviam mais do índice.
-        #    Se delta_bn < 0 (mercado caiu): ações beta>1 caíram mais → ETF COMPRA
-        #    Se delta_bn > 0 (mercado subiu): ações beta>1 subiram mais → ETF VENDE
-        rebal = w * (beta - 1.0) * (-delta_bn) * 0.40  # fator 40% do rebalanceamento passivo
-
-        # 3) Vanna: ações de beta alto são mais sensíveis à vol
-        vanna_contrib = -w * (beta - 1.0) * vanna_bn * 0.20
-
-        stock_flows[s] = dealer + rebal + vanna_contrib
-
-    # Separar buy (>0) e sell (<0) ordenados por magnitude
-    buys  = sorted([(s, v) for s, v in stock_flows.items() if v >= 0],
-                   key=lambda x: x[1], reverse=True)
-    sells = sorted([(s, v) for s, v in stock_flows.items() if v < 0],
-                   key=lambda x: x[1])
-
-    # Se todos do mesmo lado, forçar split pelo sinal do flow global
-    if not buys or not sells:
-        all_sorted = sorted(stock_flows.items(), key=lambda x: x[1], reverse=True)
-        buys  = all_sorted[:4]
-        sells = all_sorted[4:]
-
-    # Garante exatamente 4 em cada lado
-    buys  = buys[:4]
-    sells = sells[:4]
-
-    flow_max = max((abs(v) for _, v in list(buys) + list(sells)), default=1.0) * 1.5 or 1.0
-
-    def _stock_bar(name, val, flow_max):
-        pct   = min(abs(val) / flow_max * 100, 100)
-        color = _C['green'] if val >= 0 else _C['red']
-        arrow = '▲' if val >= 0 else '▼'
+    def _stock_bar(name, val_bn, pct_adv, flow_max_bn):
+        pct_bar = min(abs(val_bn) / flow_max_bn * 100, 100) if flow_max_bn > 0 else 0
+        color   = _C['green'] if val_bn >= 0 else _C['red']
+        arrow   = '▲' if val_bn >= 0 else '▼'
+        adv_str = f' | {pct_adv:.1f}% ADV' if pd.notna(pct_adv) else ''
         return (
             f"<div style='display:flex;align-items:center;gap:8px;margin:4px 0;'>"
-            f"<span style='font-size:12px;font-weight:700;color:{_C['text']};width:44px;'>{name}</span>"
+            f"<span style='font-size:12px;font-weight:700;color:{_C['text']};width:48px;'>{name}</span>"
             f"<div style='flex:1;background:{_C['card2']};border-radius:3px;height:14px;'>"
-            f"<div style='width:{pct:.0f}%;height:100%;background:{color};border-radius:3px;opacity:0.75;'></div></div>"
-            f"<span style='font-size:11px;color:{color};width:70px;text-align:right;'>"
-            f"{arrow} ${val*1000:.0f}M</span>"
+            f"<div style='width:{pct_bar:.0f}%;height:100%;background:{color};"
+            f"border-radius:3px;opacity:0.75;'></div></div>"
+            f"<span style='font-size:11px;color:{color};min-width:110px;text-align:right;'>"
+            f"{arrow} ${val_bn:.2f}Bn{adv_str}</span>"
             f"</div>"
         )
 
-    buy_rows  = ''.join(_stock_bar(s, v, flow_max) for s, v in buys)
-    sell_rows = ''.join(_stock_bar(s, v, flow_max) for s, v in sells)
+    if not combo.empty and 'Flow_$' in combo.columns:
+        combo['Flow_Bn'] = combo['Flow_$'] / 1e9
+        buys_df  = combo[combo['Flow_Bn'] >= 0].nlargest(4, 'Flow_Bn')
+        sells_df = combo[combo['Flow_Bn'] <  0].nsmallest(4, 'Flow_Bn')
+        flow_max = max(combo['Flow_Bn'].abs().max(), 1.0)
+
+        buy_rows  = ''.join(_stock_bar(s, row['Flow_Bn'],
+                            row.get('PctADV', np.nan), flow_max)
+                            for s, row in buys_df.iterrows())
+        sell_rows = ''.join(_stock_bar(s, row['Flow_Bn'],
+                            row.get('PctADV', np.nan), flow_max)
+                            for s, row in sells_df.iterrows())
+        data_note = 'Dados reais do rebalanceamento de ETFs passivos (VOO/SPY/IVV).'
+
+        # ── Overhang — top 2 maior e menor %ADV ──────────────────
+        if 'PctADV' in combo.columns:
+            adv_clean = combo['PctADV'].replace([np.inf, -np.inf], np.nan).dropna()
+            top2_buy  = adv_clean.nlargest(2)
+            top2_sell = adv_clean.nsmallest(2)
+            adv_max   = max(adv_clean.abs().max(), 1.0)
+
+            overhang_gauges = []
+            for tkr, pct in list(top2_buy.items()) + list(top2_sell.items()):
+                flow_dir = combo.loc[tkr, 'Flow_Bn'] if tkr in combo.index else 0
+                overhang_gauges.append(
+                    create_symmetric_gauge(
+                        round(float(pct), 2),
+                        f'{tkr}',
+                        max(adv_max * 1.1, 5.0),
+                        unit='% ADV',
+                        width=195, height=175))
+
+            overhang_row = wd.HBox(overhang_gauges,
+                                   layout={'justify_content': 'flex-start',
+                                           'flex_wrap': 'wrap'})
+            overhang_title = wd.HTML(
+                f"<div class='mm-section-label' style='margin:10px 0 4px;padding:0 8px;'>"
+                f"Overhang — Impacto do Rebalanceamento (% do Volume Médio Diário)</div>"
+                f"<div style='font-size:11px;color:{_C['text_dim']};padding:0 8px 6px;'>"
+                f"Top 2 maiores (verde) e Top 2 menores (vermelho) — quanto do ADV do ativo "
+                f"o rebalanceamento representa.</div>")
+            overhang_section = wd.VBox([overhang_title, overhang_row])
+        else:
+            overhang_section = wd.HTML('')
+    else:
+        # Fallback sem dados ETF
+        buy_rows = sell_rows = "<p style='color:#8b949e;font-size:12px;'>Dados ETF não disponíveis.</p>"
+        data_note = 'Execute com ETF rebalancing ativo para ver dados reais.'
+        overhang_section = wd.HTML('')
 
     flow_html = (
         f"<div class='mm-dash'><div class='mm-card' style='padding:12px 16px;'>"
         f"<div class='mm-section-label' style='margin:0 0 8px;'>"
-        f"Fluxo Dealer Estimado — Mag8 (delta hedge + rebalanceamento SPX + charm diário)</div>"
-        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;'>"
+        f"Rebalanceamento ETF Passivo (VOO / SPY / IVV) — Top 4 Compra + Top 4 Venda</div>"
+        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:20px;'>"
         f"<div>"
         f"<div style='font-size:11px;font-weight:700;color:{_C['green']};margin-bottom:6px;"
-        f"text-transform:uppercase;letter-spacing:0.8px;'>▲ Pressão de Compra</div>"
+        f"text-transform:uppercase;letter-spacing:0.8px;'>▲ Fluxo de Compra</div>"
         f"{buy_rows}</div>"
         f"<div>"
         f"<div style='font-size:11px;font-weight:700;color:{_C['red']};margin-bottom:6px;"
-        f"text-transform:uppercase;letter-spacing:0.8px;'>▼ Pressão de Venda</div>"
+        f"text-transform:uppercase;letter-spacing:0.8px;'>▼ Fluxo de Venda</div>"
         f"{sell_rows}</div>"
         f"</div>"
-        f"<p style='font-size:10px;color:{_C['text_dim']};margin:8px 0 0;'>"
-        f"Compra = dealers vendidos precisam rebalancear. Venda = dealers comprados desfazem hedge. "
-        f"Beta-adjusted + rebalanceamento passivo SPX (40%). Estimativa — não inclui fluxo individual de opções por ação.</p>"
+        f"<p style='font-size:10px;color:{_C['text_dim']};margin:8px 0 0;'>{data_note}</p>"
         f"</div></div>"
     )
 
-    return wd.VBox([row_gauges, wd.HTML(flow_html)])
+    return wd.VBox([row_gauges, wd.HTML(flow_html), overhang_section])
 
 
 def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
@@ -7898,7 +7909,9 @@ def run_analysis(_):
 
             # ── Termômetros das gregas + stock flow ──
             try:
-                _greek_overview = build_greek_overview(greeks_now, df, spot)
+                _greek_overview = build_greek_overview(
+                    greeks_now, df, spot,
+                    etf_flows=etf_flows if etf_ok else {})
             except Exception as _go_err:
                 print(f"⚠️ Greek overview: {_go_err}")
                 _greek_overview = wd.HTML('')
