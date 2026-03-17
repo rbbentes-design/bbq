@@ -5732,23 +5732,32 @@ def build_skew_chart(skew_df):
                         ],
                         vertical_spacing=0.12, horizontal_spacing=0.08)
 
+    def _winsor(s, n_sigma=4):
+        """Remove outliers além de n_sigma desvios-padrão (dados ruins do BQL)."""
+        if len(s) < 10:
+            return s
+        mu, sd = s.mean(), s.std()
+        if sd == 0:
+            return s
+        return s.where((s - mu).abs() <= n_sigma * sd)
+
     if 'risk_reversal' in skew_df.columns:
-        rr = skew_df['risk_reversal'].dropna()
+        rr = _winsor(skew_df['risk_reversal'].dropna())
         fig.add_trace(go.Scatter(x=rr.index, y=rr, name='Risk Reversal',
                                  line=dict(color='#da3633', width=1.5)), row=1, col=1)
 
     if 'atm_iv' in skew_df.columns:
-        atm = skew_df['atm_iv'].dropna()
+        atm = _winsor(skew_df['atm_iv'].dropna())
         fig.add_trace(go.Scatter(x=atm.index, y=atm, name='ATM IV',
                                  line=dict(color='#8b949e', width=1.5)), row=1, col=2)
 
     if 'call_skew' in skew_df.columns:
-        cs = skew_df['call_skew'].dropna()
+        cs = _winsor(skew_df['call_skew'].dropna())
         fig.add_trace(go.Scatter(x=cs.index, y=cs, name='Call Skew 25dC/ATM',
                                  line=dict(color='#3fb950', width=1.5)), row=2, col=1)
 
     if 'put_skew' in skew_df.columns:
-        ps = skew_df['put_skew'].dropna()
+        ps = _winsor(skew_df['put_skew'].dropna())
         fig.add_trace(go.Scatter(x=ps.index, y=ps, name='Put Skew 25dP/ATM',
                                  line=dict(color='#f0883e', width=1.5)), row=2, col=2)
 
@@ -7576,7 +7585,9 @@ def run_analysis(_):
                                   ])
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
                                  -5, 5, _C['orange'], "%")
-            _skew_val = skew * 100
+            _skew_raw = skew * 100
+            # Clamp outliers de BQL (dados anômalos excedem ±25pp)
+            _skew_val = float(np.clip(_skew_raw, -25, 25))
             _skew_hi = max(15, abs(_skew_val) * 1.3)
             g_skew = create_gauge(_skew_val, "Skew (P25-C25)",
                                   -_skew_hi, _skew_hi, _C['teal'], "%")
@@ -9495,8 +9506,18 @@ def run_analysis(_):
                 # ── Row 10: RV 21d vs Gamma Index (scatter) ──
                 if not gamma_hist.empty:
                     _cur_rv = rv_30d if pd.notna(rv_30d) else None
-                    # Net GEX in billions for current snapshot
-                    _cur_gex_bn = total_gex_val / 1e9 if 'total_gex_val' in dir() else None
+                    # Net GEX em bilhões — clamp ao range do histórico CSV para
+                    # evitar que o ponto apareça fora do scatter quando o CSV foi
+                    # construído com 0DTE (escala menor que o GEX full-chain)
+                    if 'total_gex_val' in dir() and total_gex_val is not None:
+                        _cur_gex_bn = total_gex_val / 1e9
+                        _hist_gex = gamma_hist['gamma'].dropna()
+                        if not _hist_gex.empty:
+                            _gex_lo = _hist_gex.quantile(0.02)
+                            _gex_hi = _hist_gex.quantile(0.98)
+                            _cur_gex_bn = float(np.clip(_cur_gex_bn, _gex_lo, _gex_hi))
+                    else:
+                        _cur_gex_bn = None
                     analytics_children.append(
                         build_rv_gamma_chart(gamma_hist,
                                              current_gamma=_cur_gex_bn,
