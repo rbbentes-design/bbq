@@ -7583,8 +7583,9 @@ def run_analysis(_):
                                       {'range': [_frag_max * 0.25, _frag_max * 0.6],  'color': '#3a3520'},
                                       {'range': [_frag_max * 0.6,  _frag_max],        'color': '#3a1a1a'},
                                   ])
+            _vol_hi = max(5, round(abs(vol_premium) * 1.4))
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
-                                 -5, 5, _C['orange'], "%")
+                                 -_vol_hi, _vol_hi, _C['orange'], "%")
             _skew_raw = skew * 100
             # Clamp outliers de BQL (dados anômalos excedem ±25pp)
             _skew_val = float(np.clip(_skew_raw, -25, 25))
