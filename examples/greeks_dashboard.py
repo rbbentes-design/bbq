@@ -6637,6 +6637,72 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
     return wd.VBox(children)
 
 
+def build_squeeze_mini_panel(squeeze_result, _C):
+    """Painel compacto do Gamma Squeeze para a Visão Geral (sem eventos históricos)."""
+    score  = squeeze_result['score']
+    alert  = squeeze_result['alert']
+    interp = squeeze_result['interp']
+    comps  = squeeze_result['components']
+    alert_colors = {'critical': '#ff4444', 'warning': '#ffaa00',
+                    'moderate': '#88aaff', 'low': '#3fb950'}
+    ac = alert_colors.get(alert, _C['text'])
+    alert_labels = {'critical': '🔴 CRÍTICO', 'warning': '🟡 ALERTA',
+                    'moderate': '🔵 MODERADO', 'low': '🟢 BAIXO'}
+
+    gauge_fig = go.FigureWidget(go.Indicator(
+        mode='gauge+number', value=score,
+        number={'font': {'color': ac, 'size': 30}, 'valueformat': '.0f'},
+        title={'text': 'Gamma Squeeze Risk', 'font': {'color': _C['text_muted'], 'size': 12}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickcolor': _C['text_muted'],
+                     'tickfont': {'color': _C['text_muted'], 'size': 8}},
+            'bar': {'color': ac, 'thickness': 0.3},
+            'bgcolor': _C['card2'],
+            'steps': [
+                {'range': [0, 35],   'color': '#1a3a2a'},
+                {'range': [35, 55],  'color': '#3a3020'},
+                {'range': [55, 75],  'color': '#3a2510'},
+                {'range': [75, 100], 'color': '#3a1a1a'},
+            ],
+            'threshold': {'line': {'color': ac, 'width': 3},
+                          'thickness': 0.75, 'value': score},
+        }))
+    gauge_fig.update_layout(
+        height=210, width=240, template='plotly_dark',
+        margin=dict(t=40, b=10, l=20, r=20),
+        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'])
+
+    bar_labels = [c['label'] for c in comps.values()]
+    bar_scores = [c['score'] for c in comps.values()]
+    bar_maxes  = [c['max']   for c in comps.values()]
+    bar_colors = [ac if s / m > 0.6 else _C['accent']
+                  for s, m in zip(bar_scores, bar_maxes)]
+    bar_fig = go.FigureWidget()
+    bar_fig.add_trace(go.Bar(
+        y=bar_labels, x=bar_scores, orientation='h',
+        marker_color=bar_colors,
+        text=[f"{s:.0f}/{m}" for s, m in zip(bar_scores, bar_maxes)],
+        textposition='outside'))
+    bar_fig.update_layout(
+        title=dict(text='Componentes do Score', font=dict(size=11, color=_C['text_muted'])),
+        xaxis=dict(range=[0, 30], title='Score', tickfont=dict(size=9)),
+        yaxis=dict(tickfont=dict(size=9)),
+        height=210, template='plotly_dark',
+        margin=dict(t=30, b=20, l=5, r=60),
+        paper_bgcolor=_C['card'], plot_bgcolor=_C['card'], showlegend=False)
+
+    badge_html = (
+        f"<div style='text-align:center;padding:4px 0 2px;'>"
+        f"<span style='font-size:13px;font-weight:700;color:{ac};'>"
+        f"{alert_labels.get(alert,'⚪')} — {score:.0f}/100</span><br>"
+        f"<span style='font-size:11px;color:{_C['text_muted']};'>{interp}</span>"
+        f"</div>")
+    return wd.VBox([
+        wd.HTML(badge_html),
+        wd.HBox([gauge_fig, bar_fig], layout={'align_items': 'center'}),
+    ])
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 7 — VISUALIZAÇÃO (Gauges, Gráficos, Tabelas)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -7930,16 +7996,85 @@ def run_analysis(_):
                 print(f"⚠️ Greek overview: {_go_err}")
                 _greek_overview = wd.HTML('')
 
+            # ── Gamma Squeeze mini panel ──
+            _sq_mini = wd.HTML('')
+            _sq_score_disp = 'N/A'
+            _sq_ac = _C['text_muted']
+            try:
+                _sq_pc_v1  = (fp_vol_data.get('pc_ratio', 1.5) or 1.5) if fp_ok else 1.5
+                _sq_gex_v1 = total_gex_val / 1e9 if 'total_gex_val' in dir() else (
+                              total_gex / 1e9    if 'total_gex'     in dir() else 0)
+                _sq_result_v1 = compute_gamma_squeeze_score(
+                    net_gex_bn=_sq_gex_v1, pc_ratio=_sq_pc_v1,
+                    iv_30d=iv_30d, rv_30d=rv_30d, gamma_flip=gamma_flip,
+                    spot=spot, skew=skew, put_wall=put_wall, call_wall=call_wall)
+                _sq_mini = build_squeeze_mini_panel(_sq_result_v1, _C)
+                _sq_score_disp = f"{_sq_result_v1['score']:.0f}"
+                _sq_ac = {'critical': '#ff4444', 'warning': '#ffaa00',
+                           'moderate': '#88aaff', 'low': '#3fb950'}.get(
+                           _sq_result_v1['alert'], _C['text_muted'])
+            except Exception as _sqm_err:
+                print(f"⚠️ Squeeze mini: {_sqm_err}")
+
+            # ── Status bar — barra de comando topo ──
+            _flip_str  = f"{gamma_flip:,.0f}"  if gamma_flip else "N/A"
+            _gex_str   = f"{_sq_gex_v1:+.1f}B" if '_sq_gex_v1' in dir() else "N/A"
+            _pc_str    = f"{_sq_pc_v1:.2f}x"   if '_sq_pc_v1'  in dir() else "N/A"
+            _ivrv_str  = f"{(iv_30d - rv_30d)*100:+.1f}pp"
+            _status_bar = wd.HTML(
+                f"<div style='background:{_C['card2']};border:1px solid {_C['border']};"
+                f"border-radius:6px;padding:10px 20px;margin:4px 0 2px;"
+                f"display:flex;gap:0;flex-wrap:wrap;align-items:center;'>"
+                f"<div style='font-size:15px;font-weight:800;color:{_C['accent']};"
+                f"letter-spacing:1.5px;margin-right:28px;'>⬡ SPX MARKET COMMAND</div>"
+                f"<div style='display:flex;gap:28px;flex-wrap:wrap;align-items:baseline;'>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Spot"
+                f"<b style='color:{_C['text']};font-size:16px;margin-left:6px;'>{spot:,.0f}</b></span>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Gamma Flip"
+                f"<b style='color:{_C['orange']};font-size:14px;margin-left:6px;'>{_flip_str}</b></span>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>GEX Net"
+                f"<b style='color:{_C['accent']};font-size:14px;margin-left:6px;'>{_gex_str}</b></span>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>P/C Ratio"
+                f"<b style='color:{_C['purple']};font-size:14px;margin-left:6px;'>{_pc_str}</b></span>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>IV−RV"
+                f"<b style='color:{_C['yellow']};font-size:14px;margin-left:6px;'>{_ivrv_str}</b></span>"
+                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Squeeze Risk"
+                f"<b style='color:{_sq_ac};font-size:16px;margin-left:6px;'>{_sq_score_disp}/100</b></span>"
+                f"</div></div>")
+
+            # ── Section header helper ──
+            def _sh(title, sub=''):
+                _s = (f"<span style='font-size:10px;color:{_C['text_dim']};margin-left:12px;"
+                      f"font-weight:400;text-transform:none;letter-spacing:0;'>{sub}</span>") if sub else ''
+                return wd.HTML(
+                    f"<div style='background:{_C['card2']};border-left:3px solid {_C['accent']};"
+                    f"padding:5px 14px;margin:10px 0 3px;border-radius:0 4px 4px 0;'>"
+                    f"<span style='font-size:11px;font-weight:700;color:{_C['accent']};"
+                    f"text-transform:uppercase;letter-spacing:1.2px;'>{title}</span>{_s}</div>")
+
             tab1 = wd.VBox([
+                # ─ Cabeçalho ─────────────────────────────────────────────
+                _status_bar,
+                # ─ Condições de mercado ───────────────────────────────────
+                _sh('Condições de Mercado', 'Fragmentação · Vol Premium · Skew · Move esperado'),
                 wd.HBox([g_frag, g_vol, g_skew, g_move],
                         layout={'justify_content': 'space-around'}),
-                _greek_overview,
-                _gamma_lvl_chart,
-                wd.HBox([fig_gex, fig_dist]),
-                _home_tail_row,
-                _home_flow_row,
+                # ─ Exposição das gregas + Gamma Squeeze ──────────────────
+                _sh('Exposição das Gregas & Gamma Squeeze Risk'),
+                wd.HBox([_greek_overview, _sq_mini],
+                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap', 'gap': '4px'}),
+                # ─ Estrutura de mercado ───────────────────────────────────
+                _sh('Estrutura de Mercado', 'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
+                wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
+                        layout={'flex_wrap': 'wrap', 'align_items': 'flex-start'}),
+                # ─ Fluxo direcional ───────────────────────────────────────
+                _sh('Posicionamento & Fluxo Direcional', 'Tail Risk · Flow Score · CTA estimado'),
+                wd.HBox([_home_tail_row, _home_flow_row],
+                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
                 _home_cta,
-                wd.HTML(summary_html)
+                # ─ Resumo narrativo ───────────────────────────────────────
+                _sh('Resumo Narrativo'),
+                wd.HTML(summary_html),
             ])
 
             # ─── ABA 2: EXPOSIÇÕES POR STRIKE ───────────────────────────
