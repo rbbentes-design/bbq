@@ -6803,36 +6803,41 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
                             for s, row in sells_df.iterrows())
         data_note = 'Dados reais do rebalanceamento de ETFs passivos (VOO/SPY/IVV).'
 
-        # ── Overhang — top 2 maior e menor %ADV ──────────────────
+        # ── Overhang — mesmos dados das barras, top 2 por %ADV ───
+        # Usa buys_df/sells_df (já filtrados e normalizados) para
+        # garantir que os valores batam exatamente com as barras acima.
+        overhang_section = wd.HTML('')
         if 'PctADV' in combo.columns:
-            adv_clean = combo['PctADV'].replace([np.inf, -np.inf], np.nan).dropna()
-            top2_buy  = adv_clean.nlargest(2)
-            top2_sell = adv_clean.nsmallest(2)
-            adv_max   = max(adv_clean.abs().max(), 1.0)
+            # Limpa inf/nan nas colunas PctADV das mesmas tabelas usadas acima
+            buys_adv  = buys_df[buys_df['PctADV'].replace([np.inf,-np.inf],np.nan).notna()].copy()
+            sells_adv = sells_df[sells_df['PctADV'].replace([np.inf,-np.inf],np.nan).notna()].copy()
+
+            top2_buy  = buys_adv.nlargest(2, 'PctADV')   # maior %ADV positivo
+            top2_sell = sells_adv.nsmallest(2, 'PctADV') # menor %ADV (mais negativo)
+
+            all_adv_vals = (list(top2_buy['PctADV']) + list(top2_sell['PctADV']))
+            adv_scale = max((abs(v) for v in all_adv_vals if pd.notna(v)), default=5.0) * 1.15
 
             overhang_gauges = []
-            for tkr, pct in list(top2_buy.items()) + list(top2_sell.items()):
-                flow_dir = combo.loc[tkr, 'Flow_Bn'] if tkr in combo.index else 0
+            for tkr, row in list(top2_buy.iterrows()) + list(top2_sell.iterrows()):
+                pct = float(row['PctADV'])
                 overhang_gauges.append(
                     create_symmetric_gauge(
-                        round(float(pct), 2),
-                        f'{tkr}',
-                        max(adv_max * 1.1, 5.0),
-                        unit='% ADV',
-                        width=195, height=175))
+                        round(pct, 2), tkr,
+                        adv_scale, unit='% ADV',
+                        width=200, height=178))
 
-            overhang_row = wd.HBox(overhang_gauges,
-                                   layout={'justify_content': 'flex-start',
-                                           'flex_wrap': 'wrap'})
+            overhang_row   = wd.HBox(overhang_gauges,
+                                     layout={'justify_content': 'flex-start',
+                                             'flex_wrap': 'wrap'})
             overhang_title = wd.HTML(
                 f"<div class='mm-section-label' style='margin:10px 0 4px;padding:0 8px;'>"
-                f"Overhang — Impacto do Rebalanceamento (% do Volume Médio Diário)</div>"
+                f"Overhang — Impacto do Rebalanceamento (% ADV)</div>"
                 f"<div style='font-size:11px;color:{_C['text_dim']};padding:0 8px 6px;'>"
-                f"Top 2 maiores (verde) e Top 2 menores (vermelho) — quanto do ADV do ativo "
-                f"o rebalanceamento representa.</div>")
+                f"Top 2 maiores compra e Top 2 maiores venda — "
+                f"quanto o flow representa do volume médio diário do ativo (5d ADV). "
+                f"Mesmo dado das barras acima (BQL).</div>")
             overhang_section = wd.VBox([overhang_title, overhang_row])
-        else:
-            overhang_section = wd.HTML('')
     else:
         # Fallback sem dados ETF
         buy_rows = sell_rows = "<p style='color:#8b949e;font-size:12px;'>Dados ETF não disponíveis.</p>"
