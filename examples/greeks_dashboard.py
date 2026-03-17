@@ -6686,12 +6686,13 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
     # Ticks: só 3 (min, 0, max) — evita poluição visual
     tick_lo = f'{-rng:.1f}'
     tick_hi = f'{rng:.1f}'
+    num_text = f'{value:.2f} {unit}'
     return go.FigureWidget(
         go.Indicator(
-            mode="gauge+number", value=value,
+            mode="gauge",
+            value=value,
             title={'text': title, 'font': {'size': 12, 'color': _C['text_muted']}},
-            number={'suffix': f' {unit}', 'font': {'size': 18, 'color': bar_color},
-                    'valueformat': '.2f'},
+            domain={'x': [0, 1], 'y': [0.25, 1.0]},
             gauge={
                 'axis': {'range': [-rng, rng],
                          'tickvals': [-rng, 0, rng],
@@ -6706,10 +6707,18 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
                 'threshold': {'line': {'color': '#8b949e', 'width': 2},
                               'thickness': 0.80, 'value': 0},
             }),
-        layout=go.Layout(width=width, height=height,
-                         paper_bgcolor=_C['card'],
-                         font=dict(color=_C['text']),
-                         margin=dict(l=20, r=20, t=44, b=12)))
+        layout=go.Layout(
+            width=width, height=height,
+            paper_bgcolor=_C['card'],
+            font=dict(color=_C['text']),
+            margin=dict(l=20, r=20, t=44, b=12),
+            annotations=[dict(
+                text=num_text,
+                x=0.5, y=0.08, xref='paper', yref='paper',
+                showarrow=False,
+                font=dict(size=16, color=bar_color),
+                xanchor='center', yanchor='bottom',
+            )]))
 
 
 def build_greek_overview(greeks_now, df, spot, etf_flows=None):
