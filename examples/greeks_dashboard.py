@@ -114,7 +114,7 @@ DASH_CSS = (
 "\n"
 "/* -- Circuit board background -- */\n"
 ".hud-circuit {\n"
-"  background-color:#020c16;\n"
+"  background-color:#040818;\n"
 "  background-image:\n"
 "    repeating-linear-gradient(0deg,transparent,transparent 29px,rgba(0,212,255,0.07) 29px,rgba(0,212,255,0.07) 30px),\n"
 "    repeating-linear-gradient(90deg,transparent,transparent 29px,rgba(0,212,255,0.07) 29px,rgba(0,212,255,0.07) 30px),\n"
@@ -301,105 +301,131 @@ def _hud_panel(content, title='', scan=True, glow=False):
         f"</div>")
 
 
-def _svg_ring_html(value, vmin, vmax, label, unit='', color='#00d4ff',
-                   w=200, h=205, label2=''):
-    """SVG circular ring gauge -- HUD style, 270-degree arc, no external dependencies."""
+def _svg_ring_html(value, vmin, vmax, label, unit='',
+                   color1='#00d4ff', color2=None,
+                   w=240, h=255, label2=''):
+    """SVG circular ring gauge -- HUD neon style, 270-degree arc with gradient stroke."""
     import math as _m
+    if color2 is None:
+        color2 = color1
     cx  = w // 2
-    cy  = (h - 22) // 2          # ring centre; leave room at bottom for label
-    r   = min(cx - 14, cy - 14)  # radius with margin for ticks + corners
+    cy  = (h - 26) // 2
+    r   = min(cx - 16, cy - 16)
     circ  = 2 * _m.pi * r
-    a_len = circ * 0.75           # 270 deg arc
-    g_len = circ - a_len          # 90 deg gap
+    a_len = circ * 0.75
+    g_len = circ - a_len
     pct   = (max(0., min(1., (value - vmin) / (vmax - vmin)))
              if vmax != vmin else 0.5)
     fill  = a_len * pct
+
+    # Gradient coordinates (diagonal across ring bounding box)
+    gx1, gy1 = cx - r, cy - r
+    gx2, gy2 = cx + r, cy + r
 
     # 9 tick marks every 33.75 deg
     ticks = ''
     for i in range(9):
         ang = _m.radians(-225 + i * 33.75)
-        x1 = cx + (r + 3) * _m.cos(ang)
-        y1 = cy + (r + 3) * _m.sin(ang)
-        x2 = cx + (r + 9) * _m.cos(ang)
-        y2 = cy + (r + 9) * _m.sin(ang)
-        op = '0.55' if i in (0, 4, 8) else '0.18'
+        x1 = cx + (r + 4) * _m.cos(ang)
+        y1 = cy + (r + 4) * _m.sin(ang)
+        x2 = cx + (r + 11) * _m.cos(ang)
+        y2 = cy + (r + 11) * _m.sin(ang)
+        op = '0.7' if i in (0, 4, 8) else '0.22'
         ticks += (f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' "
                   f"stroke='rgba(0,212,255,{op})' stroke-width='1.5'/>")
 
-    # Min/max labels at arc endpoints
+    # Arc endpoint labels
     def _ep(deg):
         a = _m.radians(deg)
-        return cx + (r + 17) * _m.cos(a), cy + (r + 17) * _m.sin(a)
+        return cx + (r + 20) * _m.cos(a), cy + (r + 20) * _m.sin(a)
     mx, my = _ep(-225)
     Mx, My = _ep(45)
     vmin_s = f'{vmin:.0f}' if abs(vmin) >= 1 else f'{vmin:.1f}'
     vmax_s = f'{vmax:.0f}' if abs(vmax) >= 1 else f'{vmax:.1f}'
 
-    # Value display string
+    # Value display
     av = abs(value)
     vs = (f'{value:.0f}' if av >= 100 else f'{value:.1f}' if av >= 10 else f'{value:.2f}')
     if unit:
         vs += unit
 
-    # Corner L-brackets
-    bk = 11
-    br = (f"<path d='M 2,{bk+2} L 2,2 L {bk+2},2' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
-          f"<path d='M {w-bk-2},2 L {w-2},2 L {w-2},{bk+2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
-          f"<path d='M 2,{h-bk-2} L 2,{h-2} L {bk+2},{h-2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>"
-          f"<path d='M {w-bk-2},{h-2} L {w-2},{h-2} L {w-2},{h-bk-2}' fill='none' stroke='#00d4ff' stroke-width='1.5'/>")
+    # Corner L-brackets (colored with color1)
+    bk = 13
+    br = (f"<path d='M 2,{bk+2} L 2,2 L {bk+2},2' fill='none' stroke='{color1}' stroke-width='2' opacity='0.8'/>"
+          f"<path d='M {w-bk-2},2 L {w-2},2 L {w-2},{bk+2}' fill='none' stroke='{color1}' stroke-width='2' opacity='0.8'/>"
+          f"<path d='M 2,{h-bk-2} L 2,{h-2} L {bk+2},{h-2}' fill='none' stroke='{color2}' stroke-width='2' opacity='0.8'/>"
+          f"<path d='M {w-bk-2},{h-2} L {w-2},{h-2} L {w-2},{h-bk-2}' fill='none' stroke='{color2}' stroke-width='2' opacity='0.8'/>")
 
-    # Unique glow filter id
-    gid = str(abs(hash(label + str(round(value, 1)))) % 99999)
-    sub = (f"<text x='{cx}' y='{cy+17}' text-anchor='middle' "
-           f"font-family=\"'Courier New',monospace\" font-size='9' "
-           f"fill='rgba(255,255,255,0.38)'>{str(label2)[:14]}</text>" if label2 else '')
+    gid = str(abs(hash(label + str(round(value, 2)))) % 99999)
+    sub = (f"<text x='{cx}' y='{cy+20}' text-anchor='middle' "
+           f"font-family=\"'Courier New',monospace\" font-size='10' "
+           f"fill='rgba(200,220,255,0.45)'>{str(label2)[:16]}</text>" if label2 else '')
 
+    _defs = (
+        f"<defs>"
+        f"<linearGradient id='g{gid}' gradientUnits='userSpaceOnUse' "
+        f"x1='{gx1:.0f}' y1='{gy1:.0f}' x2='{gx2:.0f}' y2='{gy2:.0f}'>"
+        f"<stop offset='0%' stop-color='{color1}'/>"
+        f"<stop offset='100%' stop-color='{color2}'/>"
+        f"</linearGradient>"
+        f"<filter id='f{gid}' x='-60%' y='-60%' width='220%' height='220%'>"
+        f"<feGaussianBlur stdDeviation='4' result='b'/>"
+        f"<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>"
+        f"</filter>"
+        f"<filter id='tv{gid}' x='-60%' y='-60%' width='220%' height='220%'>"
+        f"<feGaussianBlur stdDeviation='2.5' result='b'/>"
+        f"<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>"
+        f"</filter>"
+        f"</defs>"
+    )
     _track = (
         f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' "
-        f"stroke='rgba(0,212,255,0.10)' stroke-width='9' "
+        f"stroke='rgba(0,212,255,0.08)' stroke-width='12' "
         f"stroke-dasharray='{a_len:.2f} {g_len:.2f}' "
         f"transform='rotate(-225 {cx} {cy})' stroke-linecap='round'/>"
     )
     _varc = (
         f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' "
-        f"stroke='{color}' stroke-width='9' "
+        f"stroke='url(#g{gid})' stroke-width='12' "
         f"stroke-dasharray='{fill:.2f} {circ - fill:.2f}' "
         f"transform='rotate(-225 {cx} {cy})' stroke-linecap='round' "
-        f"filter='url(#rg{gid})'/>"
+        f"filter='url(#f{gid})'/>"
+    )
+    # Second thinner arc on top for sheen effect
+    _sheen = (
+        f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' "
+        f"stroke='rgba(255,255,255,0.12)' stroke-width='4' "
+        f"stroke-dasharray='{fill:.2f} {circ - fill:.2f}' "
+        f"transform='rotate(-225 {cx} {cy})' stroke-linecap='round'/>"
     )
     _inner = (
-        f"<circle cx='{cx}' cy='{cy}' r='{r - 15}' "
-        f"fill='rgba(1,8,20,0.88)' stroke='rgba(0,212,255,0.07)' stroke-width='1'/>"
+        f"<circle cx='{cx}' cy='{cy}' r='{r - 18}' "
+        f"fill='rgba(4,10,30,0.92)' stroke='rgba(0,212,255,0.06)' stroke-width='1'/>"
+        f"<circle cx='{cx}' cy='{cy}' r='{r - 19}' fill='none' "
+        f"stroke='rgba(255,255,255,0.03)' stroke-width='4'/>"
     )
     _val_txt = (
-        f"<text x='{cx}' y='{cy + 4}' text-anchor='middle' dominant-baseline='middle' "
-        f"font-family=\"'Courier New',monospace\" font-size='18' font-weight='700' "
-        f"fill='{color}' filter='url(#rg{gid})'>{vs}</text>"
+        f"<text x='{cx}' y='{cy + 5}' text-anchor='middle' dominant-baseline='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='24' font-weight='700' "
+        f"fill='{color1}' filter='url(#tv{gid})'>{vs}</text>"
     )
     _minmax = (
-        f"<text x='{mx:.1f}' y='{my + 4:.1f}' text-anchor='middle' "
+        f"<text x='{mx:.1f}' y='{my + 5:.1f}' text-anchor='middle' "
         f"font-family=\"'Courier New',monospace\" font-size='8' "
-        f"fill='rgba(0,212,255,0.30)'>{vmin_s}</text>"
-        f"<text x='{Mx:.1f}' y='{My + 4:.1f}' text-anchor='middle' "
+        f"fill='rgba(0,212,255,0.28)'>{vmin_s}</text>"
+        f"<text x='{Mx:.1f}' y='{My + 5:.1f}' text-anchor='middle' "
         f"font-family=\"'Courier New',monospace\" font-size='8' "
-        f"fill='rgba(0,212,255,0.30)'>{vmax_s}</text>"
+        f"fill='rgba(0,212,255,0.28)'>{vmax_s}</text>"
     )
-    _lbl_txt = (
-        f"<text x='{cx}' y='{h - 6}' text-anchor='middle' "
-        f"font-family=\"'Courier New',monospace\" font-size='8' font-weight='700' "
-        f"letter-spacing='1.5' fill='rgba(0,212,255,0.45)'>{label[:20].upper()}</text>"
-    )
-    _defs = (
-        f"<defs><filter id='rg{gid}' x='-60%' y='-60%' width='220%' height='220%'>"
-        f"<feGaussianBlur stdDeviation='3.5' result='b'/>"
-        f"<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>"
-        f"</filter></defs>"
+    _lbl = (
+        f"<text x='{cx}' y='{h - 8}' text-anchor='middle' "
+        f"font-family=\"'Courier New',monospace\" font-size='9' font-weight='700' "
+        f"letter-spacing='2' fill='rgba(0,212,255,0.5)'>{label[:20].upper()}</text>"
     )
     return (
         f"<svg viewBox='0 0 {w} {h}' width='{w}' height='{h}' "
-        f"style='background:rgba(2,12,28,0.92);display:block;'>"
-        + _defs + _track + _varc + _inner + ticks + _val_txt + sub + _minmax + _lbl_txt + br +
+        f"style='background:linear-gradient(145deg,#04081e,#080c28);display:block;'>"
+        + _defs + _track + _varc + _sheen + _inner + ticks + _val_txt + sub + _minmax + _lbl + br +
         f"</svg>"
     )
 
@@ -8365,71 +8391,110 @@ def run_analysis(_):
                     f"</div>")
 
             # ══ LAYOUT TAB 1 ═══════════════════════════════════════════
-            # ── Linha 1: 7 SVG ring gauges HUD-style ───────────────────
-            _GW, _GH = 200, 205   # SVG ring cell size
+            # ── 4-column symmetric ring grid (2 rows × 4 cols) ─────────
+            _GW, _GH = 240, 255   # ring cell size
 
-            # Tail Risk ring color
-            _tail_svg_color = ('#3fb950' if _tail_score_val < 30 else
-                               '#d29922' if _tail_score_val < 60 else
-                               '#f0883e' if _tail_score_val < 80 else '#f85149')
-            _tail_svg_lbl2 = (_tail_interp.split('—')[0].strip()[:14]
+            # -- Dynamic gradient colors per ring --
+            def _risk_grad(score):
+                """Return (color1, color2) based on 0-100 risk score."""
+                if score < 30:   return '#2ed573', '#00d4ff'
+                if score < 60:   return '#ffd32a', '#ffa502'
+                if score < 80:   return '#ffa502', '#ff6b35'
+                return '#ff4757', '#b84040'
+
+            _tail_g1, _tail_g2 = _risk_grad(_tail_score_val)
+            _tail_svg_lbl2 = (_tail_interp.split('—')[0].strip()[:16]
                               if _tail_interp else '')
 
-            # Flow Score numeric extraction
             _fp_svg_val   = 50.0
             _fp_svg_lbl2  = ''
-            _fp_svg_color = _C['accent']
+            _fp_g1, _fp_g2 = '#00d4ff', '#7efff5'
             if fp_ok and fp_score is not None:
                 try:
                     _fp_svg_val  = float(fp_score.get('score', 50)
                                          if isinstance(fp_score, dict) else 50)
-                    _fp_svg_lbl2 = (str(fp_score.get('interpretation', '')).split()[0][:12]
+                    _fp_svg_lbl2 = (str(fp_score.get('interpretation', '')).split()[0][:14]
                                     if isinstance(fp_score, dict) else '')
-                    _fp_svg_color = ('#3fb950' if _fp_svg_val >= 60 else
-                                     '#f85149' if _fp_svg_val <= 40 else '#d29922')
+                    _fp_g1, _fp_g2 = _risk_grad(100 - _fp_svg_val)  # invert: high flow = good
                 except Exception:
                     pass
 
-            # Gamma Squeeze numeric extraction
             _sq_svg_val  = 50.0
             _sq_svg_lbl2 = ''
+            _sq_g1, _sq_g2 = '#b44aff', '#ff6b9d'
             try:
                 _sq_svg_val  = float(_sq_result_v1.get('score', 50))
-                _sq_svg_lbl2 = str(_sq_result_v1.get('label', ''))[:14]
+                _sq_svg_lbl2 = str(_sq_result_v1.get('label', ''))[:16]
+                _sq_g1, _sq_g2 = _risk_grad(_sq_svg_val)
             except Exception:
                 pass
 
-            # Build 7 SVG ring HTML widgets
+            # Row 1: 4 market metric rings
             _r_frag = wd.HTML(_svg_ring_html(
-                fragility,        0,         _frag_max,  'Fragilidade',   '%', _C['red']))
+                fragility,    0, _frag_max,  'Fragilidade',   '%', '#ff4757', '#ff7843', _GW, _GH))
             _r_vol  = wd.HTML(_svg_ring_html(
-                vol_premium,     -_vol_hi,   _vol_hi,    'Premio Vol',    '%', _C['orange']))
+                vol_premium, -_vol_hi, _vol_hi, 'Premio Vol', '%', '#ffa502', '#ff6b81', _GW, _GH))
             _r_skew = wd.HTML(_svg_ring_html(
-                _skew_val,       -_skew_hi,  _skew_hi,   'Skew P25-C25', '%', _C['teal']))
+                _skew_val,   -_skew_hi, _skew_hi, 'Skew P25-C25','%','#00d4ff','#7efff5',_GW,_GH))
             _r_move = wd.HTML(_svg_ring_html(
-                daily_move,       0,          _move_hi,   'Mov Esp 1D',   '%', _C['green']))
-            _r_tail = wd.HTML(_svg_ring_html(
-                _tail_score_val,  0,          100,        'Tail Risk',    '',
-                _tail_svg_color, label2=_tail_svg_lbl2))
-            _r_fp   = wd.HTML(_svg_ring_html(
-                _fp_svg_val,      0,          100,        'Flow Score',   '',
-                _fp_svg_color,   label2=_fp_svg_lbl2))
-            _r_sq   = wd.HTML(_svg_ring_html(
-                _sq_svg_val,      0,          100,        'Gamma Squeeze', '',
-                _sq_ac,          label2=_sq_svg_lbl2))
+                daily_move,  0, _move_hi,   'Mov Esp 1D',    '%', '#2ed573', '#00d4ff', _GW, _GH))
 
-            _N_GAUGES = 7
+            # Row 2: 3 risk score rings + 1 compact KPI panel
+            _r_tail = wd.HTML(_svg_ring_html(
+                _tail_score_val, 0, 100, 'Tail Risk', '',
+                _tail_g1, _tail_g2, _GW, _GH, label2=_tail_svg_lbl2))
+            _r_fp   = wd.HTML(_svg_ring_html(
+                _fp_svg_val, 0, 100, 'Flow Score', '',
+                _fp_g1, _fp_g2, _GW, _GH, label2=_fp_svg_lbl2))
+            _r_sq   = wd.HTML(_svg_ring_html(
+                _sq_svg_val, 0, 100, 'Gamma Squeeze', '',
+                _sq_g1, _sq_g2, _GW, _GH, label2=_sq_svg_lbl2))
+
+            # 4th slot row 2: compact KPI status card (pure SVG)
+            _kpi_svg = (
+                f"<svg viewBox='0 0 {_GW} {_GH}' width='{_GW}' height='{_GH}' "
+                f"style='background:linear-gradient(145deg,#04081e,#080c28);display:block;'>"
+                # corner brackets
+                f"<path d='M 2,15 L 2,2 L 15,2' fill='none' stroke='#00d4ff' stroke-width='2' opacity='0.7'/>"
+                f"<path d='M {_GW-15},2 L {_GW-2},2 L {_GW-2},15' fill='none' stroke='#00d4ff' stroke-width='2' opacity='0.7'/>"
+                f"<path d='M 2,{_GH-15} L 2,{_GH-2} L 15,{_GH-2}' fill='none' stroke='#00d4ff' stroke-width='2' opacity='0.7'/>"
+                f"<path d='M {_GW-15},{_GH-2} L {_GW-2},{_GH-2} L {_GW-2},{_GH-15}' fill='none' stroke='#00d4ff' stroke-width='2' opacity='0.7'/>"
+                # title
+                f"<text x='{_GW//2}' y='28' text-anchor='middle' "
+                f"font-family=\"'Courier New',monospace\" font-size='9' font-weight='700' "
+                f"letter-spacing='2.5' fill='rgba(0,212,255,0.55)'>MARKET STATUS</text>"
+                f"<line x1='20' y1='38' x2='{_GW-20}' y2='38' stroke='rgba(0,212,255,0.18)' stroke-width='1'/>"
+                # Row A: SPOT | GAMMA FLIP
+                f"<text x='62' y='68' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>SPOT</text>"
+                f"<text x='62' y='90' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='#e0f0ff'>{spot:,.0f}</text>"
+                f"<text x='{_GW-62}' y='68' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>GAMMA FLIP</text>"
+                f"<text x='{_GW-62}' y='90' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='#ffa502'>{_flip_str}</text>"
+                f"<line x1='20' y1='104' x2='{_GW-20}' y2='104' stroke='rgba(0,212,255,0.08)' stroke-width='1'/>"
+                # Row B: IV-RV | P/C RATIO
+                f"<text x='62' y='130' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>IV-RV</text>"
+                f"<text x='62' y='152' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='#ffd32a'>{_ivrv_str}</text>"
+                f"<text x='{_GW-62}' y='130' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>P/C RATIO</text>"
+                f"<text x='{_GW-62}' y='152' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='#b44aff'>{_pc_str}</text>"
+                f"<line x1='20' y1='166' x2='{_GW-20}' y2='166' stroke='rgba(0,212,255,0.08)' stroke-width='1'/>"
+                # Row C: GEX NET | SQUEEZE
+                f"<text x='62' y='193' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>GEX NET</text>"
+                f"<text x='62' y='215' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='#00d4ff'>{_gex_str}</text>"
+                f"<text x='{_GW-62}' y='193' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='8' fill='rgba(0,212,255,0.4)' letter-spacing='1'>SQUEEZE</text>"
+                f"<text x='{_GW-62}' y='215' text-anchor='middle' font-family=\"'Courier New',monospace\" font-size='20' font-weight='700' fill='{_sq_g1}'>{_sq_score_disp}/100</text>"
+                f"</svg>"
+            )
+            _r_kpi = wd.HTML(_kpi_svg)
+
+            # 4×2 grid: wraps naturally into 2 rows of 4
             _gauge_grid = wd.GridBox(
                 [_cell(_r_frag, _GW, _GH), _cell(_r_vol,  _GW, _GH),
                  _cell(_r_skew, _GW, _GH), _cell(_r_move, _GW, _GH),
                  _cell(_r_tail, _GW, _GH), _cell(_r_fp,   _GW, _GH),
-                 _cell(_r_sq,   _GW, _GH)],
+                 _cell(_r_sq,   _GW, _GH), _cell(_r_kpi,  _GW, _GH)],
                 layout=wd.Layout(
-                    grid_template_columns=f'repeat({_N_GAUGES}, {_GW}px)',
-                    grid_template_rows=f'{_GH}px',
-                    gap='4px',
-                    width='100%',
-                    justify_content='space-around'))
+                    grid_template_columns=f'repeat(4, {_GW}px)',
+                    gap='6px',
+                    width='fit-content'))
 
             # ── Linha 2: 3 painéis de detalhe em GridBox ───────────────
             _tail_html_w  = wd.HTML(_tail_detail_html)
