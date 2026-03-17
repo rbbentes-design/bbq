@@ -6692,15 +6692,11 @@ def build_squeeze_mini_panel(squeeze_result, _C):
         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'], showlegend=False)
 
     badge_html = (
-        f"<div style='text-align:center;padding:4px 0 2px;'>"
-        f"<span style='font-size:13px;font-weight:700;color:{ac};'>"
-        f"{alert_labels.get(alert,'⚪')} — {score:.0f}/100</span><br>"
+        f"<div style='text-align:center;padding:2px 0 0;'>"
         f"<span style='font-size:11px;color:{_C['text_muted']};'>{interp}</span>"
         f"</div>")
-    return wd.VBox([
-        wd.HTML(badge_html),
-        wd.HBox([gauge_fig, bar_fig], layout={'align_items': 'center'}),
-    ])
+    # Retorna tupla: (gauge_widget, components_widget, badge_html_str, alert_color)
+    return gauge_fig, bar_fig, badge_html, ac
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6937,7 +6933,11 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
         f"</div></div>"
     )
 
-    return wd.VBox([row_gauges, wd.HTML(flow_html), overhang_section])
+    return wd.VBox([
+        row_gauges,
+        wd.HBox([wd.HTML(flow_html), overhang_section],
+                layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
+    ])
 
 
 def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
@@ -7994,7 +7994,9 @@ def run_analysis(_):
                 _greek_overview = wd.HTML('')
 
             # ── Gamma Squeeze mini panel ──
-            _sq_mini = wd.HTML('')
+            _sq_gauge_w  = wd.HTML('')
+            _sq_comps_w  = wd.HTML('')
+            _sq_badge_w  = wd.HTML('')
             _sq_score_disp = 'N/A'
             _sq_ac = _C['text_muted']
             try:
@@ -8005,11 +8007,10 @@ def run_analysis(_):
                     net_gex_bn=_sq_gex_v1, pc_ratio=_sq_pc_v1,
                     iv_30d=iv_30d, rv_30d=rv_30d, gamma_flip=gamma_flip,
                     spot=spot, skew=skew, put_wall=put_wall, call_wall=call_wall)
-                _sq_mini = build_squeeze_mini_panel(_sq_result_v1, _C)
+                _sq_gauge_w, _sq_comps_w, _sq_badge_str, _sq_ac = \
+                    build_squeeze_mini_panel(_sq_result_v1, _C)
+                _sq_badge_w = wd.HTML(_sq_badge_str)
                 _sq_score_disp = f"{_sq_result_v1['score']:.0f}"
-                _sq_ac = {'critical': '#ff4444', 'warning': '#ffaa00',
-                           'moderate': '#88aaff', 'low': '#3fb950'}.get(
-                           _sq_result_v1['alert'], _C['text_muted'])
             except Exception as _sqm_err:
                 print(f"⚠️ Squeeze mini: {_sqm_err}")
 
@@ -8049,23 +8050,27 @@ def run_analysis(_):
                     f"<span style='font-size:11px;font-weight:700;color:{_C['accent']};"
                     f"text-transform:uppercase;letter-spacing:1.2px;'>{title}</span>{_s}</div>")
 
+            # ── Stacks verticais: gauge + detalhe ──────────────────────
+            _tail_stack = wd.VBox([_home_tail_gauge, _home_tail_info],
+                                  layout={'align_items': 'center'})
+            _flow_stack = wd.VBox([_fp_gauge_w, _fp_comps_w],
+                                  layout={'align_items': 'center'})
+            _sq_stack   = wd.VBox([_sq_gauge_w, _sq_badge_w, _sq_comps_w],
+                                  layout={'align_items': 'center'})
+
             tab1 = wd.VBox([
                 # ─ Cabeçalho ─────────────────────────────────────────────
                 _status_bar,
-                # ─ Todos os gauges numa linha ─────────────────────────────
-                _sh('Condições de Mercado · Tail Risk · Flow Score',
-                    'Fragmentação · Vol · Skew · Move · Tail · Flow'),
+                # ─ Linha de gauges: mercado + tail + flow + squeeze ───────
+                _sh('Painel de Controle',
+                    'Fragmentação · Vol · Skew · Move · Tail Risk · Flow Score · Gamma Squeeze'),
                 wd.HBox(
-                    [g_frag, g_vol, g_skew, g_move, _home_tail_gauge, _fp_gauge_w],
+                    [g_frag, g_vol, g_skew, g_move, _tail_stack, _flow_stack, _sq_stack],
                     layout={'justify_content': 'space-around', 'flex_wrap': 'wrap',
-                            'align_items': 'flex-end'}),
-                # ─ Detalhes: Tail breakdown + Flow componentes ────────────
-                wd.HBox([_home_tail_info, _fp_comps_w],
-                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
-                # ─ Exposição das gregas + Gamma Squeeze ──────────────────
-                _sh('Exposição das Gregas & Gamma Squeeze Risk'),
-                wd.HBox([_greek_overview, _sq_mini],
-                        layout={'align_items': 'flex-start', 'flex_wrap': 'wrap', 'gap': '4px'}),
+                            'align_items': 'flex-start'}),
+                # ─ Exposição das gregas ───────────────────────────────────
+                _sh('Exposição das Gregas', 'Delta · Gamma · Vanna · Charm + Rebalanceamento ETF'),
+                _greek_overview,
                 # ─ Estrutura de mercado ───────────────────────────────────
                 _sh('Estrutura de Mercado', 'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
                 wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
