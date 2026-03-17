@@ -7600,11 +7600,14 @@ def run_analysis(_):
             daily_move = implied_move_pct(iv_30d) if pd.notna(iv_30d) else 0
             vol_premium = (iv_30d - rv_30d) * 100 if pd.notna(iv_30d) and pd.notna(rv_30d) else 0
 
+            _frag_max = max(20, round(fragility * 1.5 / 5) * 5)  # arredonda p/ múltiplo de 5
             g_frag = create_gauge(fragility, "Fragilidade GEX/Fluxo",
-                                  0, 10, _C['red'], "%",
-                                  steps=[{'range': [0, 2], 'color': '#1a3a2a'},
-                                         {'range': [2, 5], 'color': '#3a3520'},
-                                         {'range': [5, 10], 'color': '#3a1a1a'}])
+                                  0, _frag_max, _C['red'], "%",
+                                  steps=[
+                                      {'range': [0,           _frag_max * 0.25], 'color': '#1a3a2a'},
+                                      {'range': [_frag_max * 0.25, _frag_max * 0.6],  'color': '#3a3520'},
+                                      {'range': [_frag_max * 0.6,  _frag_max],        'color': '#3a1a1a'},
+                                  ])
             g_vol = create_gauge(vol_premium, "Prêmio Vol (IV-RV)",
                                  -5, 5, _C['orange'], "%")
             _skew_val = skew * 100
@@ -8593,79 +8596,73 @@ def run_analysis(_):
                     ]))
                 st_d = wd.VBox(st_d_children)
 
-                # Sub-tab E: Regressão OLS — Flows vs Retorno
+                # Sub-tab E: Regressão OLS — LevETF Flow vs Retorno D+1
                 from scipy import stats as _scipy_stats
-                st_e_children = [wd.HTML(
-                    "<div class='mm-dash'><div class='mm-card'>"
-                    "<h3>Regressão OLS: Fluxos → Retorno SPX</h3>"
-                    "<p><small>Y = retorno SPX no dia seguinte (%) | "
-                    "X = variável de fluxo normalizada (z-score). "
-                    "R² mede % da variância do retorno explicada pelo fluxo. "
-                    "p-valor &lt; 0.05 indica significância estatística.</small></p>"
-                    "</div></div>")]
+                st_e_children = []
                 if not fp_flow_hist.empty and len(fp_flow_hist) >= 20:
-                    _df_reg = fp_flow_hist.copy().dropna()
-                    _ret_col = 'Return'
-                    if _ret_col not in _df_reg.columns:
-                        _ret_col = [c for c in _df_reg.columns if 'ret' in c.lower()]
-                        _ret_col = _ret_col[0] if _ret_col else None
-                    _reg_rows = []
-                    if _ret_col:
-                        _y_raw = _df_reg[_ret_col].shift(-1) * 100  # next-day return %
-                        _flow_candidates = {
-                            'LevETF Flow ($B)': _df_reg.get('LevETF_Flow', pd.Series(dtype=float)),
-                            'Dealer Flow ($B)': _df_reg.get('Dealer_Flow', pd.Series(dtype=float)),
-                            'Vol Control Flow ($B)': _df_reg.get('VolCtrl_Flow', pd.Series(dtype=float)),
-                            'CTA Flow ($B)': _df_reg.get('CTA_Flow', pd.Series(dtype=float)),
-                        }
-                        for _fname, _xraw in _flow_candidates.items():
-                            if _xraw is None or _xraw.dropna().empty:
-                                continue
-                            _xraw = _xraw / 1e9  # to $B
-                            _mask = _y_raw.notna() & _xraw.notna()
-                            _x = _xraw[_mask].values
-                            _y = _y_raw[_mask].values
-                            if len(_x) < 15:
-                                continue
-                            # Normalize X to z-score
-                            _xz = (_x - _x.mean()) / (_x.std() + 1e-10)
-                            _slope, _intc, _r, _pval, _se = _scipy_stats.linregress(_xz, _y)
-                            _r2 = _r ** 2
-                            _tstat = _slope / (_se + 1e-10)
-                            _sig = '***' if _pval < 0.01 else '**' if _pval < 0.05 else '*' if _pval < 0.10 else ''
-                            _color = _C['green'] if _pval < 0.05 else _C['text_muted']
-                            _reg_rows.append(
-                                f"<tr>"
-                                f"<td>{_fname}</td>"
-                                f"<td style='text-align:right'>{len(_x)}</td>"
-                                f"<td style='text-align:right;color:{_color}'>{_r2:.3f}</td>"
-                                f"<td style='text-align:right'>{_slope:+.4f}</td>"
-                                f"<td style='text-align:right'>{_intc:+.4f}</td>"
-                                f"<td style='text-align:right'>{_tstat:+.2f}</td>"
-                                f"<td style='text-align:right;color:{_color}'>{_pval:.4f} {_sig}</td>"
-                                f"</tr>")
-                    if _reg_rows:
-                        _card2_c = _C['card2']
-                        _reg_body = ''.join(_reg_rows)
-                        _reg_html = (
-                            "<div class='mm-dash'><div class='mm-card'>"
-                            "<table class='mm-table' style='width:100%;font-size:12px;'>"
-                            f"<tr style='background:{_card2_c};'>"
-                            "<th>Variável X (fluxo)</th><th>N obs</th>"
-                            "<th>R²</th><th>β (slope)</th><th>α (intercept)</th>"
-                            "<th>t-stat</th><th>p-valor</th></tr>"
-                            + _reg_body +
-                            "</table>"
-                            "<p><small>* p&lt;10% | ** p&lt;5% | *** p&lt;1%. "
-                            "β: variação em pp no retorno para +1 desvio padrão no fluxo.</small></p>"
-                            "</div></div>")
-                        st_e_children.append(wd.HTML(_reg_html))
-                    else:
-                        st_e_children.append(wd.HTML(
-                            "<p style='color:#8b949e;'>Colunas de fluxo não encontradas no histórico.</p>"))
+                    _df_reg = fp_flow_hist[['Return', 'LevETF_Flow']].dropna().copy()
+                    _y_all = _df_reg['Return'].shift(-1) * 100   # next-day return %
+                    _x_all = _df_reg['LevETF_Flow'] / 1e9         # $B
+                    _mask  = _y_all.notna() & _x_all.notna()
+                    _x_reg = _x_all[_mask].values
+                    _y_reg = _y_all[_mask].values
+
+                    _slope, _intc, _r, _pval, _se = _scipy_stats.linregress(_x_reg, _y_reg)
+                    _r2    = _r ** 2
+                    _tstat = _slope / (_se + 1e-10)
+                    _sig   = '***' if _pval < 0.01 else '**' if _pval < 0.05 else '*' if _pval < 0.10 else 'n.s.'
+                    _sig_color = _C['green'] if _pval < 0.05 else _C['orange'] if _pval < 0.10 else _C['text_muted']
+
+                    # Scatter + regression line
+                    _x_line = np.linspace(_x_reg.min(), _x_reg.max(), 100)
+                    _y_line = _slope * _x_line + _intc
+                    _scatter_fig = go.FigureWidget()
+                    _scatter_fig.add_trace(go.Scatter(
+                        x=_x_reg, y=_y_reg, mode='markers',
+                        marker=dict(color=_C['accent'], size=4, opacity=0.5),
+                        name='Observações'))
+                    _scatter_fig.add_trace(go.Scatter(
+                        x=_x_line, y=_y_line, mode='lines',
+                        line=dict(color=_C['red'], width=2),
+                        name=f'OLS fit (R²={_r2:.3f})'))
+                    _scatter_fig.add_hline(y=0, line_color=_C['border'], line_width=1)
+                    _scatter_fig.add_vline(x=0, line_color=_C['border'], line_width=1)
+                    _scatter_fig.update_layout(
+                        title='LevETF Flow ($B) [t] vs Retorno SPX D+1 (%)',
+                        xaxis_title='Fluxo LevETF ($B) — dia t',
+                        yaxis_title='Retorno SPX (%) — dia t+1',
+                        height=380, template=DASH_TEMPLATE,
+                        margin=dict(t=40, b=30),
+                        legend=dict(font=dict(size=10)))
+
+                    # Stats card
+                    _stats_html = (
+                        "<div class='mm-dash'><div class='mm-card'>"
+                        "<h3>Regressão OLS: LevETF Flow → Retorno SPX D+1</h3>"
+                        "<p><b>Variáveis:</b> "
+                        "X = fluxo estimado de ETFs alavancados no dia t ($B) | "
+                        "Y = retorno do SPX no dia seguinte t+1 (%)</p>"
+                        "<table class='mm-table' style='width:auto;font-size:13px;'>"
+                        f"<tr><td>N observações</td><td><b>{len(_x_reg)}</b></td></tr>"
+                        f"<tr><td>R²</td><td><b>{_r2:.4f}</b> "
+                        f"({_r2*100:.1f}% da variância explicada)</td></tr>"
+                        f"<tr><td>Coeficiente β (slope)</td><td><b>{_slope:+.4f}</b> "
+                        f"pp por $B de fluxo</td></tr>"
+                        f"<tr><td>Intercepto α</td><td><b>{_intc:+.4f}%</b></td></tr>"
+                        f"<tr><td>t-estatístico</td><td><b>{_tstat:+.2f}</b></td></tr>"
+                        f"<tr><td>p-valor</td>"
+                        f"<td><b style='color:{_sig_color}'>{_pval:.4f} ({_sig})</b></td></tr>"
+                        f"<tr><td>Correlação (r)</td><td><b>{_r:+.3f}</b></td></tr>"
+                        "</table>"
+                        "<p><small>Sinal negativo no β é esperado: fluxo de LevETF é "
+                        "contra-tendência (mean-reverting). ETF compra quando mercado caiu "
+                        "→ retorno D+1 tende a ser positivo.</small></p>"
+                        "</div></div>")
+                    st_e_children.append(wd.HTML(_stats_html))
+                    st_e_children.append(_scatter_fig)
                 else:
                     st_e_children.append(wd.HTML(
-                        "<p style='color:#8b949e;'>Histórico insuficiente (&lt;20 obs) para regressão.</p>"))
+                        "<p style='color:#8b949e;'>Histórico insuficiente (&lt;20 obs).</p>"))
                 st_e = wd.VBox(st_e_children)
 
                 # Sub-tab F: Fluxos Sistemáticos (CTA + Dealer + Vol Control + Risk Parity)
