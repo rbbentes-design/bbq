@@ -8075,14 +8075,24 @@ def run_analysis(_):
             _gamma_lvl_chart = build_gamma_levels_chart(
                 prices, spot, call_wall, put_wall, gamma_flip, iv_30d)
 
-            # ══ Gauge uniforme: 210×190 para todos ════════════════════
-            _GW, _GH = 210, 190
+            # ══ Dimensões fixas — NUNCA alterar sem redesign completo ═
+            _GW, _GH   = 210, 190   # gauge  width × height
+            _DH        = 250        # detail panel height
+
+            # Helper: envolve qualquer widget numa célula de tamanho fixo
+            def _cell(widget, w, h=None):
+                kw = dict(width=f'{w}px', min_width=f'{w}px', max_width=f'{w}px',
+                          overflow='hidden')
+                if h:
+                    kw.update(height=f'{h}px', min_height=f'{h}px', max_height=f'{h}px')
+                return wd.Box([widget], layout=wd.Layout(**kw))
 
             # ── Tail Risk ──────────────────────────────────────────────
             _home_tail_gauge = build_tail_gauge(
                 analytics.get('tail_score', 50),
                 analytics.get('tail_interp', ''))
-            _home_tail_gauge.update_layout(width=_GW, height=_GH)
+            _home_tail_gauge.update_layout(width=_GW, height=_GH,
+                                           margin=dict(t=40, b=8, l=15, r=15))
             _tail_score_val = analytics.get('tail_score', 50)
             _tail_interp    = analytics.get('tail_interp', '')
             _tail_rows = []
@@ -8121,9 +8131,10 @@ def run_analysis(_):
                 try:
                     _fp_gauge_w = fp_plot_score_gauge(fp_score)
                     _fp_gauge_w.update_layout(width=_GW, height=_GH,
-                                              margin=dict(t=40, b=10, l=15, r=15))
+                                              margin=dict(t=40, b=8, l=15, r=15))
                     _fp_comps_w = fp_plot_components_bar(fp_score)
-                    _fp_comps_w.update_layout(height=240, margin=dict(t=32, b=40, l=10, r=20))
+                    _fp_comps_w.update_layout(height=_DH,
+                                              margin=dict(t=32, b=40, l=10, r=20))
                 except Exception:
                     pass
 
@@ -8169,7 +8180,8 @@ def run_analysis(_):
                     build_squeeze_mini_panel(_sq_result_v1, _C)
                 _sq_gauge_w.update_layout(width=_GW, height=_GH,
                                           margin=dict(t=38, b=8, l=18, r=18))
-                _sq_comps_w.update_layout(height=240, margin=dict(t=30, b=20, l=5, r=60))
+                _sq_comps_w.update_layout(height=_DH,
+                                          margin=dict(t=30, b=20, l=5, r=60))
                 _sq_badge_w    = wd.HTML(_sq_badge_str)
                 _sq_score_disp = f"{_sq_result_v1['score']:.0f}"
             except Exception as _sqm_err:
@@ -8209,27 +8221,47 @@ def run_analysis(_):
                     f"</div>")
 
             # ══ LAYOUT TAB 1 ═══════════════════════════════════════════
-            # Linha 1: 7 gauges idênticos (210×190)
-            _gauge_row = wd.HBox(
-                [g_frag, g_vol, g_skew, g_move,
-                 _home_tail_gauge, _fp_gauge_w, _sq_gauge_w],
-                layout={'justify_content': 'space-around',
-                        'align_items':     'flex-end',
-                        'flex_wrap':       'wrap'})
+            # ── Linha 1: 7 gauges em GridBox com colunas fixas ─────────
+            # Também força os 4 gauges do mercado (g_frag etc.)
+            for _gf in [g_frag, g_vol, g_skew, g_move]:
+                _gf.update_layout(width=_GW, height=_GH,
+                                  margin=dict(t=40, b=8, l=15, r=15))
 
-            # Linha 2: 3 painéis de detalhe (flex igual)
-            _detail_row = wd.HBox(
-                [wd.HTML(_tail_detail_html), _fp_comps_w,
-                 wd.VBox([_sq_badge_w, _sq_comps_w])],
-                layout={'align_items': 'flex-start',
-                        'flex_wrap':  'wrap'})
+            _N_GAUGES = 7
+            _gauge_grid = wd.GridBox(
+                [_cell(g_frag,           _GW, _GH),
+                 _cell(g_vol,            _GW, _GH),
+                 _cell(g_skew,           _GW, _GH),
+                 _cell(g_move,           _GW, _GH),
+                 _cell(_home_tail_gauge, _GW, _GH),
+                 _cell(_fp_gauge_w,      _GW, _GH),
+                 _cell(_sq_gauge_w,      _GW, _GH)],
+                layout=wd.Layout(
+                    grid_template_columns=f'repeat({_N_GAUGES}, {_GW}px)',
+                    grid_template_rows=f'{_GH}px',
+                    gap='6px',
+                    width='100%',
+                    justify_content='space-around'))
+
+            # ── Linha 2: 3 painéis de detalhe em GridBox ───────────────
+            _tail_html_w  = wd.HTML(_tail_detail_html)
+            _sq_detail_vb = wd.VBox([_sq_badge_w, _sq_comps_w])
+            _detail_grid  = wd.GridBox(
+                [_cell(_tail_html_w,  None, _DH),
+                 _cell(_fp_comps_w,   None, _DH),
+                 _cell(_sq_detail_vb, None, _DH)],
+                layout=wd.Layout(
+                    grid_template_columns='repeat(3, 1fr)',
+                    grid_template_rows=f'{_DH}px',
+                    gap='6px',
+                    width='100%'))
 
             tab1 = wd.VBox([
                 _status_bar,
                 _sh('Painel de Controle',
                     'Fragilidade · Vol · Skew · Move · Tail Risk · Flow Score · Gamma Squeeze'),
-                _gauge_row,
-                _detail_row,
+                _gauge_grid,
+                _detail_grid,
                 _sh('Exposição das Gregas',
                     'Delta · Gamma · Vanna · Charm + Rebalanceamento ETF Passivo'),
                 _greek_overview,
