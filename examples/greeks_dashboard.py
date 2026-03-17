@@ -90,461 +90,203 @@ _C = {
     'yellow': '#d29922', 'pink': '#f778ba',
 }
 
-DASH_CSS = f"""
-<style>
-/* ═══════════════════════════════════════════════════════════════════════
-   SPX MARKET COMMAND — HUD STYLESHEET
-   Inspiração: cockpit aeroespacial / terminal de missão
-   Pure CSS — sem dependências externas
-   ═══════════════════════════════════════════════════════════════════════ */
+DASH_CSS = (
+"<style>\n"
+"/* =========================================================================\n"
+"   SPX MARKET COMMAND -- HUD STYLESHEET v2\n"
+"   Pure CSS -- ASCII only -- no external dependencies\n"
+"   ========================================================================= */\n"
+"\n"
+"/* -- Base font -- */\n"
+".mm-dash { font-family: 'Courier New','Lucida Console',monospace; color:#e6edf3; }\n"
+"\n"
+"/* -- Keyframe animations -- */\n"
+"@keyframes hud-pulse-glow {\n"
+"  0%,100% { box-shadow:0 0 6px 1px rgba(0,212,255,0.55),0 0 18px 4px rgba(0,212,255,0.2); }\n"
+"  50%      { box-shadow:0 0 8px 2px rgba(0,212,255,0.7), 0 0 28px 8px rgba(0,212,255,0.3); }\n"
+"}\n"
+"@keyframes hud-dot-blink { 0%,100%{opacity:1;} 50%{opacity:0.2;} }\n"
+"@keyframes hud-scan-sweep {\n"
+"  0%   { top:-4px;  opacity:0.8; }\n"
+"  95%  { opacity:0.6; }\n"
+"  100% { top:100%;  opacity:0; }\n"
+"}\n"
+"\n"
+"/* -- Circuit board background -- */\n"
+".hud-circuit {\n"
+"  background-color:#020c16;\n"
+"  background-image:\n"
+"    repeating-linear-gradient(0deg,transparent,transparent 29px,rgba(0,212,255,0.07) 29px,rgba(0,212,255,0.07) 30px),\n"
+"    repeating-linear-gradient(90deg,transparent,transparent 29px,rgba(0,212,255,0.07) 29px,rgba(0,212,255,0.07) 30px),\n"
+"    repeating-linear-gradient(0deg,transparent,transparent 149px,rgba(0,212,255,0.13) 149px,rgba(0,212,255,0.13) 150px),\n"
+"    repeating-linear-gradient(90deg,transparent,transparent 149px,rgba(0,212,255,0.13) 149px,rgba(0,212,255,0.13) 150px);\n"
+"  background-size:30px 30px,30px 30px,150px 150px,150px 150px;\n"
+"}\n"
+"\n"
+"/* -- HUD panel -- */\n"
+".hud-panel {\n"
+"  position:relative;\n"
+"  background:linear-gradient(145deg,rgba(2,15,30,0.96) 0%,rgba(5,20,40,0.92) 100%);\n"
+"  border:1px solid rgba(0,212,255,0.25);\n"
+"  padding:14px 16px; margin:3px; overflow:hidden;\n"
+"  clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%);\n"
+"}\n"
+".hud-panel::before {\n"
+"  content:''; position:absolute; top:0; left:0; right:0; height:1px;\n"
+"  background:linear-gradient(90deg,rgba(0,212,255,0) 0%,rgba(0,212,255,0.9) 40%,rgba(0,255,200,0.9) 60%,rgba(0,212,255,0) 100%);\n"
+"}\n"
+".hud-panel::after {\n"
+"  content:''; position:absolute; inset:0; pointer-events:none;\n"
+"  background:radial-gradient(ellipse at 50% -20%,rgba(0,212,255,0.07) 0%,transparent 65%);\n"
+"}\n"
+".hud-panel-glow {\n"
+"  box-shadow:0 0 6px 1px rgba(0,212,255,0.55),0 0 18px 4px rgba(0,212,255,0.2),inset 0 0 30px rgba(0,212,255,0.04);\n"
+"  animation:hud-pulse-glow 3s ease-in-out infinite;\n"
+"}\n"
+"\n"
+"/* -- L-corner brackets -- */\n"
+".hud-c { position:absolute; width:14px; height:14px; z-index:5; }\n"
+".hud-c.tl { top:-1px; left:-1px;   border-top:2px solid #00d4ff; border-left:2px solid #00d4ff; }\n"
+".hud-c.tr { top:-1px; right:-1px;  border-top:2px solid #00d4ff; border-right:2px solid #00d4ff; }\n"
+".hud-c.bl { bottom:-1px; left:-1px; border-bottom:2px solid #00d4ff; border-left:2px solid #00d4ff; }\n"
+".hud-c.br { bottom:-1px; right:-1px; border-bottom:2px solid #00d4ff; border-right:2px solid #00d4ff; }\n"
+"\n"
+"/* -- Scan line -- */\n"
+".hud-scanlines { position:relative; overflow:hidden; }\n"
+".hud-scanlines::after {\n"
+"  content:''; position:absolute; inset:0; pointer-events:none; z-index:3;\n"
+"  background:repeating-linear-gradient(to bottom,transparent 0px,transparent 3px,rgba(0,0,0,0.14) 3px,rgba(0,0,0,0.14) 4px);\n"
+"}\n"
+".hud-scan-bar {\n"
+"  position:absolute; left:0; right:0; height:3px; z-index:4; pointer-events:none;\n"
+"  background:linear-gradient(to bottom,transparent,rgba(0,212,255,0.5) 50%,transparent);\n"
+"  animation:hud-scan-sweep 5s linear infinite;\n"
+"}\n"
+"\n"
+"/* -- Panel label -- */\n"
+".hud-label { font-size:9px; font-weight:700; letter-spacing:2.5px;\n"
+"  text-transform:uppercase; color:rgba(0,212,255,0.6); margin-bottom:6px; display:block; }\n"
+"\n"
+"/* -- Live dot -- */\n"
+".hud-dot-live { display:inline-block; width:7px; height:7px; border-radius:50%;\n"
+"  background:#00d4ff; box-shadow:0 0 6px 2px rgba(0,212,255,0.8);\n"
+"  animation:hud-dot-blink 1.8s ease-in-out infinite; vertical-align:middle; margin-right:6px; }\n"
+"\n"
+"/* -- Section header -- */\n"
+".mm-section-hdr {\n"
+"  display:flex; align-items:center; gap:10px;\n"
+"  background:linear-gradient(90deg,rgba(0,212,255,0.10) 0%,rgba(0,212,255,0.03) 55%,transparent 100%);\n"
+"  border-left:3px solid #00d4ff;\n"
+"  padding:5px 14px 5px 10px; margin:10px 0 3px; position:relative;\n"
+"  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 50%,calc(100% - 10px) 100%,0 100%);\n"
+"}\n"
+".mm-section-hdr::before {\n"
+"  content:''; position:absolute; inset:0; pointer-events:none;\n"
+"  background:repeating-linear-gradient(90deg,transparent 0px,transparent 5px,rgba(0,212,255,0.04) 5px,rgba(0,212,255,0.04) 6px);\n"
+"}\n"
+".mm-dot { width:7px; height:7px; border-radius:50%; background:#00d4ff;\n"
+"  box-shadow:0 0 5px 2px rgba(0,212,255,0.7);\n"
+"  animation:hud-dot-blink 2s ease-in-out infinite; flex-shrink:0; }\n"
+".mm-hdr-title { font-size:9px; font-weight:700; color:#00d4ff;\n"
+"  text-transform:uppercase; letter-spacing:2.5px; }\n"
+".mm-hdr-sub { font-size:8px; color:rgba(0,212,255,0.4); letter-spacing:0.5px; }\n"
+"\n"
+"/* -- Status bar -- */\n"
+".mm-statusbar {\n"
+"  display:flex; flex-wrap:wrap; align-items:center;\n"
+"  padding:10px 20px; margin:0 0 2px; position:relative; overflow:hidden;\n"
+"  background:linear-gradient(90deg,#010d1a 0%,#020f1f 50%,#010d1a 100%);\n"
+"  border:1px solid rgba(0,212,255,0.3);\n"
+"  clip-path:polygon(0 0,calc(100% - 20px) 0,100% 20px,100% 100%,0 100%);\n"
+"  box-shadow:0 0 20px rgba(0,212,255,0.12),inset 0 0 40px rgba(0,212,255,0.04);\n"
+"}\n"
+".mm-statusbar::before {\n"
+"  content:''; position:absolute; top:0; left:0; right:0; height:1px;\n"
+"  background:linear-gradient(90deg,transparent,#00d4ff 30%,#00ffcc 60%,transparent);\n"
+"}\n"
+".mm-statusbar::after {\n"
+"  content:''; position:absolute; inset:0; pointer-events:none;\n"
+"  background:repeating-linear-gradient(0deg,transparent 0px,transparent 3px,rgba(0,0,0,0.08) 3px,rgba(0,0,0,0.08) 4px);\n"
+"}\n"
+".mm-cmd-title { font-size:13px; font-weight:800; color:#00d4ff; letter-spacing:3.5px;\n"
+"  text-transform:uppercase; margin-right:28px; font-family:'Courier New',monospace;\n"
+"  text-shadow:0 0 10px rgba(0,212,255,0.7); }\n"
+".mm-stat-item { display:flex; flex-direction:column; align-items:center;\n"
+"  padding:2px 16px; border-right:1px solid rgba(0,212,255,0.15); position:relative; z-index:1; }\n"
+".mm-stat-item:last-child { border-right:none; }\n"
+".mm-stat-label { font-size:7px; color:rgba(0,212,255,0.45); text-transform:uppercase;\n"
+"  letter-spacing:1.8px; font-weight:700; }\n"
+".mm-stat-value { font-size:14px; font-weight:700; font-family:'Courier New',monospace;\n"
+"  line-height:1.2; text-shadow:0 0 8px currentColor; }\n"
+"\n"
+"/* -- Card (legacy compatibility) -- */\n"
+".mm-card { position:relative; overflow:hidden;\n"
+"  background:linear-gradient(145deg,rgba(2,15,30,0.96) 0%,rgba(5,20,40,0.92) 100%);\n"
+"  border:1px solid rgba(0,212,255,0.2);\n"
+"  padding:12px 14px; margin:3px;\n"
+"  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%);\n"
+"}\n"
+".mm-card::before { content:''; position:absolute; top:0; left:0; right:0; height:1px;\n"
+"  background:linear-gradient(90deg,transparent,rgba(0,212,255,0.7) 50%,transparent); }\n"
+".mm-card h3 { margin:0 0 8px; font-size:10px; font-weight:700; color:#00d4ff;\n"
+"  text-transform:uppercase; letter-spacing:2px; }\n"
+".mm-card h4 { margin:6px 0 4px; font-size:9px; font-weight:700; color:#00d4aa; letter-spacing:1px; }\n"
+".mm-card p, .mm-card span { font-size:11px; color:#8b949e; line-height:1.6; }\n"
+".mm-card b { color:#e6edf3; }\n"
+"\n"
+"/* -- Badges -- */\n"
+".mm-badge { display:inline-block; padding:1px 7px; font-size:9px; font-weight:700;\n"
+"  letter-spacing:1px; text-transform:uppercase;\n"
+"  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
+".mm-badge-green  { background:rgba(63,185,80,0.15);  color:#3fb950; border:1px solid rgba(63,185,80,0.4); }\n"
+".mm-badge-red    { background:rgba(248,81,73,0.15);  color:#f85149; border:1px solid rgba(248,81,73,0.4); }\n"
+".mm-badge-yellow { background:rgba(210,153,34,0.15); color:#d29922; border:1px solid rgba(210,153,34,0.4); }\n"
+".mm-badge-blue   { background:rgba(0,212,255,0.12);  color:#00d4ff; border:1px solid rgba(0,212,255,0.4); }\n"
+"\n"
+"/* -- Tables -- */\n"
+".mm-table { width:100%; border-collapse:separate; border-spacing:0;\n"
+"  font-size:11px; font-family:'Courier New',monospace; }\n"
+".mm-table th { background:rgba(0,212,255,0.07); color:rgba(0,212,255,0.6);\n"
+"  font-weight:700; text-transform:uppercase; font-size:8px; letter-spacing:1.5px;\n"
+"  padding:7px 10px; border-bottom:1px solid rgba(0,212,255,0.2); text-align:left; }\n"
+".mm-table td { padding:6px 10px; border-bottom:1px solid rgba(0,212,255,0.06); color:#e6edf3; }\n"
+".mm-table tr:hover td { background:rgba(0,212,255,0.04); }\n"
+"\n"
+"/* -- KPI -- */\n"
+".mm-kpi-row { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }\n"
+".mm-kpi { flex:1; min-width:130px;\n"
+"  background:linear-gradient(135deg,rgba(2,15,30,0.96) 0%,rgba(0,212,255,0.04) 100%);\n"
+"  border:1px solid rgba(0,212,255,0.18); border-top:1px solid rgba(0,212,255,0.45);\n"
+"  padding:8px 12px; text-align:center;\n"
+"  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 0);\n"
+"}\n"
+".mm-kpi .kpi-label { font-size:7px; color:rgba(0,212,255,0.45); text-transform:uppercase;\n"
+"  letter-spacing:2px; font-weight:700; }\n"
+".mm-kpi .kpi-value { font-size:17px; font-weight:700; margin:3px 0;\n"
+"  font-family:'Courier New',monospace; text-shadow:0 0 8px currentColor; }\n"
+"\n"
+"/* -- Legacy compatibility -- */\n"
+".mm-title { font-size:16px; font-weight:700; color:#00d4ff; padding:8px 0 4px;\n"
+"  border-bottom:1px solid rgba(0,212,255,0.3); margin-bottom:8px;\n"
+"  letter-spacing:2.5px; text-transform:uppercase; font-family:'Courier New',monospace;\n"
+"  text-shadow:0 0 12px rgba(0,212,255,0.5); }\n"
+".mm-title small { font-size:10px; color:#8b949e; font-weight:400; margin-left:12px; }\n"
+".mm-section-label { font-size:9px; font-weight:700; color:rgba(0,212,255,0.45);\n"
+"  text-transform:uppercase; letter-spacing:2px; margin:12px 0 5px;\n"
+"  padding-bottom:3px; border-bottom:1px solid rgba(0,212,255,0.12); }\n"
+".mm-metric { display:inline-block; margin:0 12px 8px 0; }\n"
+".mm-metric .label { font-size:8px; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px; }\n"
+".mm-metric .value { font-size:14px; font-weight:700; color:#e6edf3; font-family:'Courier New',monospace; }\n"
+".mm-loading { color:#00d4ff; font-size:12px; font-weight:600; padding:12px;\n"
+"  letter-spacing:1.5px; text-shadow:0 0 8px rgba(0,212,255,0.6); }\n"
+".mm-loading .step { color:#8b949e; font-size:10px; }\n"
+".mm-cot-label { background:rgba(0,212,255,0.06); border:1px solid rgba(0,212,255,0.2);\n"
+"  padding:3px 7px; font-size:10px; display:inline-block; margin:2px;\n"
+"  font-family:'Courier New',monospace;\n"
+"  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
+"</style>\n"
+)
 
-/* ── Variáveis e base ──────────────────────────────────────────────────── */
-.mm-dash {{
-  font-family: 'Courier New', 'Lucida Console', monospace;
-  color: {_C['text']};
-  background: transparent;
-  --hud-cyan:    #00d4ff;
-  --hud-teal:    {_C['teal']};
-  --hud-green:   {_C['green']};
-  --hud-red:     {_C['red']};
-  --hud-orange:  {_C['orange']};
-  --hud-purple:  {_C['purple']};
-  --hud-yellow:  {_C['yellow']};
-  --hud-dark:    #020d18;
-  --hud-card:    {_C['card']};
-  --hud-border:  rgba(0,212,255,0.25);
-  --hud-glow-sm: 0 0 6px 1px rgba(0,212,255,0.55), 0 0 18px 4px rgba(0,212,255,0.2);
-  --hud-glow-md: 0 0 8px 2px rgba(0,212,255,0.7),  0 0 28px 8px rgba(0,212,255,0.3);
-}}
-
-/* ── Animações ─────────────────────────────────────────────────────────── */
-@keyframes hud-pulse-glow {{
-  0%,100% {{ box-shadow: var(--hud-glow-sm); }}
-  50%      {{ box-shadow: var(--hud-glow-md); }}
-}}
-@keyframes hud-dot-blink {{
-  0%,100% {{ opacity:1; }}
-  50%      {{ opacity:0.2; }}
-}}
-@keyframes hud-scan-sweep {{
-  0%   {{ top: -4px; opacity:0.8; }}
-  95%  {{ opacity:0.6; }}
-  100% {{ top: 100%;  opacity:0; }}
-}}
-@keyframes hud-ring-expand {{
-  0%   {{ transform:scale(0.4); opacity:0.9; }}
-  80%  {{ opacity:0.3; }}
-  100% {{ transform:scale(2.8); opacity:0; }}
-}}
-@keyframes hud-shimmer {{
-  0%   {{ background-position: -200% 0; }}
-  100% {{ background-position:  200% 0; }}
-}}
-
-/* ── Fundo circuit board (usado no status bar e sections) ─────────────── */
-.hud-circuit {{
-  background-color: #020c16;
-  background-image:
-    repeating-linear-gradient(0deg,
-      transparent, transparent 29px,
-      rgba(0,212,255,0.07) 29px, rgba(0,212,255,0.07) 30px),
-    repeating-linear-gradient(90deg,
-      transparent, transparent 29px,
-      rgba(0,212,255,0.07) 29px, rgba(0,212,255,0.07) 30px),
-    repeating-linear-gradient(0deg,
-      transparent, transparent 149px,
-      rgba(0,212,255,0.13) 149px, rgba(0,212,255,0.13) 150px),
-    repeating-linear-gradient(90deg,
-      transparent, transparent 149px,
-      rgba(0,212,255,0.13) 149px, rgba(0,212,255,0.13) 150px);
-  background-size: 30px 30px, 30px 30px, 150px 150px, 150px 150px;
-}}
-
-/* ── Painel HUD principal ──────────────────────────────────────────────── */
-.hud-panel {{
-  position: relative;
-  background: linear-gradient(145deg,rgba(2,15,30,0.96) 0%,rgba(5,20,40,0.92) 100%);
-  border: 1px solid var(--hud-border);
-  padding: 14px 16px;
-  margin: 3px;
-  overflow: hidden;
-  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
-}}
-/* Borda superior com gradiente luminoso */
-.hud-panel::before {{
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; height: 1px;
-  background: linear-gradient(90deg,
-    rgba(0,212,255,0.0) 0%,
-    rgba(0,212,255,0.9) 40%,
-    rgba(0,255,200,0.9) 60%,
-    rgba(0,212,255,0.0) 100%);
-}}
-/* Brilho interno */
-.hud-panel::after {{
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse at 50% -20%,
-    rgba(0,212,255,0.07) 0%, transparent 65%);
-}}
-.hud-panel-glow {{
-  box-shadow: var(--hud-glow-sm), inset 0 0 30px rgba(0,212,255,0.04);
-  animation: hud-pulse-glow 3s ease-in-out infinite;
-}}
-
-/* ── Cantos em L (corner brackets) ───────────────────────────────────────*/
-.hud-c {{ position:absolute; width:14px; height:14px; z-index:5; }}
-.hud-c.tl {{ top:-1px;    left:-1px;
-  border-top:2px solid #00d4ff; border-left:2px solid #00d4ff; }}
-.hud-c.tr {{ top:-1px;    right:-1px;
-  border-top:2px solid #00d4ff; border-right:2px solid #00d4ff; }}
-.hud-c.bl {{ bottom:-1px; left:-1px;
-  border-bottom:2px solid #00d4ff; border-left:2px solid #00d4ff; }}
-.hud-c.br {{ bottom:-1px; right:-1px;
-  border-bottom:2px solid #00d4ff; border-right:2px solid #00d4ff; }}
-
-/* ── Scan line animada ─────────────────────────────────────────────────── */
-.hud-scanlines {{ position:relative; overflow:hidden; }}
-.hud-scanlines::after {{
-  content:''; position:absolute; inset:0; pointer-events:none; z-index:3;
-  background: repeating-linear-gradient(to bottom,
-    transparent 0px, transparent 3px,
-    rgba(0,0,0,0.14) 3px, rgba(0,0,0,0.14) 4px);
-}}
-.hud-scan-bar {{
-  position:absolute; left:0; right:0; height:3px; z-index:4;
-  pointer-events:none;
-  background: linear-gradient(to bottom,
-    transparent, rgba(0,212,255,0.5) 50%, transparent);
-  animation: hud-scan-sweep 5s linear infinite;
-}}
-
-/* ── Título de painel ─────────────────────────────────────────────────── */
-.hud-label {{
-  font-size:9px; font-weight:700; letter-spacing:2.5px;
-  text-transform:uppercase; color:rgba(0,212,255,0.6);
-  margin-bottom:6px; display:block;
-}}
-
-/* ── Ponto radar pulsante ─────────────────────────────────────────────── */
-.hud-dot-live {{
-  display:inline-block; width:7px; height:7px; border-radius:50%;
-  background:#00d4ff;
-  box-shadow: 0 0 6px 2px rgba(0,212,255,0.8);
-  animation: hud-dot-blink 1.8s ease-in-out infinite;
-  vertical-align:middle;
-  margin-right:6px;
-}}
-
-/* ── Header de seção ──────────────────────────────────────────────────── */
-.mm-section-hdr {{
-  display:flex; align-items:center; gap:10px;
-  background: linear-gradient(90deg,
-    rgba(0,212,255,0.10) 0%,
-    rgba(0,212,255,0.03) 55%,
-    transparent 100%);
-  border-left: 3px solid #00d4ff;
-  padding: 5px 14px 5px 10px;
-  margin: 10px 0 3px;
-  position:relative;
-  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
-}}
-.mm-section-hdr::before {{
-  content:''; position:absolute; inset:0; pointer-events:none;
-  background: repeating-linear-gradient(90deg,
-    transparent 0px, transparent 5px,
-    rgba(0,212,255,0.04) 5px, rgba(0,212,255,0.04) 6px);
-}}
-.mm-dot {{ width:7px; height:7px; border-radius:50%; background:#00d4ff;
-  box-shadow:0 0 5px 2px rgba(0,212,255,0.7);
-  animation:hud-dot-blink 2s ease-in-out infinite; flex-shrink:0; }}
-.mm-hdr-title {{ font-size:9px; font-weight:700; color:#00d4ff;
-  text-transform:uppercase; letter-spacing:2.5px; }}
-.mm-hdr-sub   {{ font-size:8px; color:rgba(0,212,255,0.4); letter-spacing:0.5px; }}
-
-/* ── Status bar ───────────────────────────────────────────────────────── */
-.mm-statusbar {{
-  display:flex; flex-wrap:wrap; align-items:center;
-  padding:10px 20px; margin:0 0 2px;
-  position:relative; overflow:hidden;
-  background:linear-gradient(90deg,#010d1a 0%,#020f1f 50%,#010d1a 100%);
-  border:1px solid rgba(0,212,255,0.3);
-  clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%);
-  box-shadow: 0 0 20px rgba(0,212,255,0.12), inset 0 0 40px rgba(0,212,255,0.04);
-}}
-.mm-statusbar::before {{
-  content:''; position:absolute; top:0; left:0; right:0; height:1px;
-  background:linear-gradient(90deg,transparent,#00d4ff 30%,#00ffcc 60%,transparent);
-}}
-/* Shimmer de dados */
-.mm-statusbar::after {{
-  content:''; position:absolute; inset:0; pointer-events:none;
-  background: repeating-linear-gradient(0deg,
-    transparent 0px, transparent 3px,
-    rgba(0,0,0,0.08) 3px, rgba(0,0,0,0.08) 4px);
-}}
-.mm-cmd-title {{
-  font-size:13px; font-weight:800; color:#00d4ff;
-  letter-spacing:3.5px; text-transform:uppercase;
-  margin-right:28px; font-family:'Courier New',monospace;
-  text-shadow: 0 0 10px rgba(0,212,255,0.7);
-}}
-.mm-stat-item {{
-  display:flex; flex-direction:column; align-items:center;
-  padding:2px 16px; border-right:1px solid rgba(0,212,255,0.15);
-  position:relative; z-index:1;
-}}
-.mm-stat-item:last-child {{ border-right:none; }}
-.mm-stat-label {{ font-size:7px; color:rgba(0,212,255,0.45);
-  text-transform:uppercase; letter-spacing:1.8px; font-weight:700; }}
-.mm-stat-value {{ font-size:14px; font-weight:700;
-  font-family:'Courier New',monospace; line-height:1.2;
-  text-shadow:0 0 8px currentColor; }}
-
-/* ── Card (compatibilidade legada — mantém aparência HUD) ─────────────── */
-.mm-card {{
-  position:relative; overflow:hidden;
-  background:linear-gradient(145deg,rgba(2,15,30,0.96) 0%,rgba(5,20,40,0.92) 100%);
-  border:1px solid rgba(0,212,255,0.2);
-  padding:12px 14px; margin:3px;
-  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%);
-}}
-.mm-card::before {{
-  content:''; position:absolute;
-  top:0; left:0; right:0; height:1px;
-  background:linear-gradient(90deg,transparent,rgba(0,212,255,0.7) 50%,transparent);
-}}
-.mm-card h3 {{ margin:0 0 8px; font-size:10px; font-weight:700; color:#00d4ff;
-  text-transform:uppercase; letter-spacing:2px; }}
-.mm-card h4 {{ margin:6px 0 4px; font-size:9px; font-weight:700;
-  color:var(--hud-teal); letter-spacing:1px; }}
-.mm-card p,
-.mm-card span {{ font-size:11px; color:{_C['text_muted']}; line-height:1.6; }}
-.mm-card b {{ color:{_C['text']}; }}
-
-/* ── Badges ──────────────────────────────────────────────────────────── */
-.mm-badge {{ display:inline-block; padding:1px 7px; font-size:9px;
-  font-weight:700; letter-spacing:1px; text-transform:uppercase;
-  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }}
-.mm-badge-green  {{ background:rgba(63,185,80,0.15);  color:{_C['green']};  border:1px solid rgba(63,185,80,0.4); }}
-.mm-badge-red    {{ background:rgba(248,81,73,0.15);   color:{_C['red']};   border:1px solid rgba(248,81,73,0.4); }}
-.mm-badge-yellow {{ background:rgba(210,153,34,0.15);  color:{_C['yellow']}; border:1px solid rgba(210,153,34,0.4); }}
-.mm-badge-blue   {{ background:rgba(0,212,255,0.12);   color:#00d4ff;       border:1px solid rgba(0,212,255,0.4); }}
-
-/* ── Tabelas ─────────────────────────────────────────────────────────── */
-.mm-table {{ width:100%; border-collapse:separate; border-spacing:0;
-  font-size:11px; font-family:'Courier New',monospace; }}
-.mm-table th {{ background:rgba(0,212,255,0.07); color:rgba(0,212,255,0.6);
-  font-weight:700; text-transform:uppercase; font-size:8px; letter-spacing:1.5px;
-  padding:7px 10px; border-bottom:1px solid rgba(0,212,255,0.2); text-align:left; }}
-.mm-table td {{ padding:6px 10px; border-bottom:1px solid rgba(0,212,255,0.06);
-  color:{_C['text']}; }}
-.mm-table tr:hover td {{ background:rgba(0,212,255,0.04); }}
-
-/* ── KPI ─────────────────────────────────────────────────────────────── */
-.mm-kpi-row {{ display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }}
-.mm-kpi {{
-  flex:1; min-width:130px;
-  background:linear-gradient(135deg,rgba(2,15,30,0.96) 0%,rgba(0,212,255,0.04) 100%);
-  border:1px solid rgba(0,212,255,0.18);
-  border-top:1px solid rgba(0,212,255,0.45);
-  padding:8px 12px; text-align:center;
-  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 0);
-}}
-.mm-kpi .kpi-label {{ font-size:7px; color:rgba(0,212,255,0.45);
-  text-transform:uppercase; letter-spacing:2px; font-weight:700; }}
-.mm-kpi .kpi-value {{ font-size:17px; font-weight:700; margin:3px 0;
-  font-family:'Courier New',monospace; text-shadow:0 0 8px currentColor; }}
-
-/* ── Legado ──────────────────────────────────────────────────────────── */
-.mm-title {{ font-size:16px; font-weight:700; color:#00d4ff; padding:8px 0 4px;
-  border-bottom:1px solid rgba(0,212,255,0.3); margin-bottom:8px;
-  letter-spacing:2.5px; text-transform:uppercase; font-family:'Courier New',monospace;
-  text-shadow:0 0 12px rgba(0,212,255,0.5); }}
-.mm-title small {{ font-size:10px; color:{_C['text_muted']}; font-weight:400;
-  margin-left:12px; letter-spacing:0; }}
-.mm-section-label {{ font-size:9px; font-weight:700; color:rgba(0,212,255,0.45);
-  text-transform:uppercase; letter-spacing:2px; margin:12px 0 5px;
-  padding-bottom:3px; border-bottom:1px solid rgba(0,212,255,0.12); }}
-.mm-metric {{ display:inline-block; margin:0 12px 8px 0; }}
-.mm-metric .label {{ font-size:8px; color:{_C['text_muted']};
-  text-transform:uppercase; letter-spacing:0.5px; }}
-.mm-metric .value {{ font-size:14px; font-weight:700; color:{_C['text']};
-  font-family:'Courier New',monospace; }}
-.mm-loading {{ color:#00d4ff; font-size:12px; font-weight:600;
-  padding:12px; letter-spacing:1.5px;
-  text-shadow:0 0 8px rgba(0,212,255,0.6); }}
-.mm-loading .step {{ color:{_C['text_muted']}; font-size:10px; }}
-.mm-cot-label {{ background:rgba(0,212,255,0.06); border:1px solid rgba(0,212,255,0.2);
-  padding:3px 7px; font-size:10px; display:inline-block; margin:2px;
-  font-family:'Courier New',monospace;
-  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }}
-</style>
-"""
-
-/* ── Animações ─────────────────────────────────────────────────────────── */
-@keyframes mm-pulse {{
-  0%, 100% {{ opacity: 1; }}
-  50% {{ opacity: 0.35; }}
-}}
-@keyframes mm-glow {{
-  0%, 100% {{ box-shadow: 0 0 6px rgba(88,166,255,0.25); }}
-  50%       {{ box-shadow: 0 0 14px rgba(88,166,255,0.55); }}
-}}
-
-/* ── Painel principal (substitui mm-card) ─────────────────────────────── */
-.mm-panel {{
-  background: linear-gradient(160deg, {_C['card']} 0%, {_C['card2']} 100%);
-  border: 1px solid {_C['border']};
-  border-top: 2px solid {_C['accent']};
-  border-radius: 2px 8px 8px 8px;
-  padding: 14px 16px;
-  margin: 4px 2px;
-  position: relative;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(88,166,255,0.08);
-}}
-.mm-panel::before {{
-  content: '';
-  position: absolute;
-  top: -1px; left: 0; right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, {_C['accent']}, {_C['teal']}, transparent);
-  border-radius: 2px 8px 0 0;
-}}
-
-/* ── Card legado (compatibilidade) ────────────────────────────────────── */
-.mm-card {{
-  background: linear-gradient(160deg, {_C['card']} 0%, {_C['card2']} 100%);
-  border: 1px solid {_C['border']};
-  border-top: 2px solid {_C['accent']};
-  border-radius: 2px 8px 8px 8px;
-  padding: 14px 16px;
-  margin: 4px 2px;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(88,166,255,0.08);
-}}
-.mm-card h3 {{ margin: 0 0 10px; font-size: 13px; font-weight: 700; color: {_C['accent']};
-  text-transform: uppercase; letter-spacing: 1.5px; }}
-.mm-card h4 {{ margin: 8px 0 6px; font-size: 12px; font-weight: 600; color: {_C['teal']}; letter-spacing: 0.8px; }}
-.mm-card p, .mm-card span {{ font-size: 12px; color: {_C['text_muted']}; line-height: 1.6; }}
-.mm-card b {{ color: {_C['text']}; }}
-
-/* ── Cabeçalho de seção ────────────────────────────────────────────────── */
-.mm-section-hdr {{
-  display: flex; align-items: center; gap: 10px;
-  background: linear-gradient(90deg, rgba(88,166,255,0.12) 0%, rgba(88,166,255,0.03) 60%, transparent 100%);
-  border-left: 3px solid {_C['accent']};
-  border-bottom: 1px solid rgba(88,166,255,0.15);
-  padding: 6px 14px 6px 12px;
-  margin: 10px 0 3px;
-  border-radius: 0 4px 4px 0;
-}}
-.mm-section-hdr .mm-dot {{
-  width: 7px; height: 7px; border-radius: 50%;
-  background: {_C['teal']};
-  animation: mm-pulse 2.4s ease-in-out infinite;
-  flex-shrink: 0;
-}}
-.mm-section-hdr .mm-hdr-title {{
-  font-size: 10px; font-weight: 700; color: {_C['accent']};
-  text-transform: uppercase; letter-spacing: 2px;
-}}
-.mm-section-hdr .mm-hdr-sub {{
-  font-size: 9px; color: {_C['text_dim']}; letter-spacing: 0.5px;
-  margin-left: 4px;
-}}
-
-/* ── Status bar topo ──────────────────────────────────────────────────── */
-.mm-statusbar {{
-  background: linear-gradient(90deg, rgba(13,17,23,0.97) 0%, rgba(22,27,34,0.97) 100%);
-  border: 1px solid {_C['border']};
-  border-top: 2px solid {_C['accent']};
-  border-radius: 2px 8px 8px 8px;
-  padding: 10px 20px;
-  margin: 0 0 2px;
-  display: flex; gap: 0; flex-wrap: wrap; align-items: center;
-  box-shadow: 0 0 24px rgba(88,166,255,0.12), 0 2px 8px rgba(0,0,0,0.5);
-}}
-.mm-statusbar::before {{
-  content: '';
-  position: absolute; top: 0; left: 0; right: 0; height: 2px;
-  background: linear-gradient(90deg, {_C['accent']}, {_C['teal']}, {_C['purple']}, transparent);
-}}
-.mm-cmd-title {{
-  font-size: 14px; font-weight: 800; color: {_C['accent']};
-  letter-spacing: 3px; text-transform: uppercase;
-  margin-right: 28px; font-family: 'Courier New', monospace;
-}}
-.mm-stat-item {{
-  display: flex; flex-direction: column; align-items: center;
-  padding: 2px 18px; border-right: 1px solid {_C['border']};
-}}
-.mm-stat-item:last-child {{ border-right: none; }}
-.mm-stat-label {{
-  font-size: 8px; color: {_C['text_dim']}; text-transform: uppercase;
-  letter-spacing: 1.5px; font-weight: 600;
-}}
-.mm-stat-value {{
-  font-size: 15px; font-weight: 700; font-family: 'Courier New', monospace;
-  line-height: 1.2;
-}}
-
-/* ── Badges ──────────────────────────────────────────────────────────── */
-.mm-badge {{ display: inline-block; padding: 2px 8px; border-radius: 2px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; }}
-.mm-badge-green {{ background: rgba(63,185,80,0.12); color: {_C['green']};
-  border: 1px solid rgba(63,185,80,0.3); }}
-.mm-badge-red   {{ background: rgba(248,81,73,0.12);  color: {_C['red']};
-  border: 1px solid rgba(248,81,73,0.3); }}
-.mm-badge-yellow {{ background: rgba(210,153,34,0.12); color: {_C['yellow']};
-  border: 1px solid rgba(210,153,34,0.3); }}
-.mm-badge-blue  {{ background: rgba(88,166,255,0.12); color: {_C['accent']};
-  border: 1px solid rgba(88,166,255,0.3); }}
-
-/* ── Tabelas ─────────────────────────────────────────────────────────── */
-.mm-table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px;
-  font-family: 'Courier New', monospace; }}
-.mm-table th {{ background: rgba(88,166,255,0.06); color: {_C['text_muted']};
-  font-weight: 700; text-transform: uppercase; font-size: 9px; letter-spacing: 1.2px;
-  padding: 8px 12px; border-bottom: 1px solid rgba(88,166,255,0.2); text-align: left; }}
-.mm-table td {{ padding: 7px 12px; border-bottom: 1px solid {_C['border_light']};
-  color: {_C['text']}; }}
-.mm-table tr:hover td {{ background: rgba(88,166,255,0.05); }}
-
-/* ── Métricas KPI ────────────────────────────────────────────────────── */
-.mm-kpi-row {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }}
-.mm-kpi {{
-  flex: 1; min-width: 130px;
-  background: linear-gradient(135deg, {_C['card2']} 0%, rgba(13,17,23,0.8) 100%);
-  border: 1px solid {_C['border']};
-  border-top: 1px solid rgba(88,166,255,0.3);
-  border-radius: 4px; padding: 8px 12px; text-align: center;
-}}
-.mm-kpi .kpi-label {{ font-size: 8px; color: {_C['text_dim']}; text-transform: uppercase;
-  letter-spacing: 1.5px; font-weight: 700; }}
-.mm-kpi .kpi-value {{ font-size: 18px; font-weight: 700; margin: 3px 0;
-  font-family: 'Courier New', monospace; }}
-
-/* ── Seção legado ───────────────────────────────────────────────────── */
-.mm-title {{ font-size: 18px; font-weight: 700; color: {_C['text']}; padding: 10px 0 4px;
-  border-bottom: 1px solid rgba(88,166,255,0.3); margin-bottom: 8px;
-  letter-spacing: 2px; text-transform: uppercase; font-family: 'Courier New', monospace; }}
-.mm-title small {{ font-size: 11px; color: {_C['text_muted']}; font-weight: 400; margin-left: 12px; letter-spacing: 0; }}
-.mm-section-label {{ font-size: 10px; font-weight: 700; color: {_C['text_dim']}; text-transform: uppercase;
-  letter-spacing: 1.5px; margin: 14px 0 6px; padding-bottom: 4px;
-  border-bottom: 1px solid {_C['border_light']}; }}
-.mm-metric {{ display: inline-block; margin: 0 14px 8px 0; }}
-.mm-metric .label {{ font-size: 9px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.5px; }}
-.mm-metric .value {{ font-size: 15px; font-weight: 700; color: {_C['text']}; font-family: 'Courier New', monospace; }}
-.mm-loading {{ color: {_C['accent']}; font-size: 13px; font-weight: 600; padding: 12px; letter-spacing: 1px; }}
-.mm-loading .step {{ color: {_C['text_muted']}; font-size: 11px; }}
-.mm-cot-label {{ background: {_C['card2']}; border: 1px solid {_C['border']};
-  padding: 4px 8px; border-radius: 3px; font-size: 11px; display: inline-block; margin: 2px;
-  font-family: 'Courier New', monospace; }}
-</style>
-"""
 
 def _hud_panel(content, title='', scan=True, glow=False):
     """Wrap HTML content in a HUD panel with L-corner brackets, glow border and scan line."""
