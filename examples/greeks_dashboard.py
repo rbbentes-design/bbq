@@ -92,34 +92,171 @@ _C = {
 
 DASH_CSS = f"""
 <style>
-.mm-dash {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: {_C['text']}; }}
-.mm-title {{ font-size: 22px; font-weight: 600; color: {_C['text']}; padding: 12px 0 4px; border-bottom: 2px solid {_C['accent']}; margin-bottom: 8px; letter-spacing: -0.3px; }}
-.mm-title small {{ font-size: 13px; color: {_C['text_muted']}; font-weight: 400; margin-left: 12px; }}
-.mm-card {{ background: {_C['card']}; border: 1px solid {_C['border']}; border-radius: 8px; padding: 16px; margin: 6px 0; }}
-.mm-card h3 {{ margin: 0 0 10px; font-size: 15px; font-weight: 600; color: {_C['accent']}; text-transform: uppercase; letter-spacing: 0.5px; }}
-.mm-card h4 {{ margin: 8px 0 6px; font-size: 13px; font-weight: 600; color: {_C['teal']}; }}
-.mm-card p, .mm-card span {{ font-size: 13px; color: {_C['text_muted']}; line-height: 1.6; }}
+/* ── Fonte técnica ─────────────────────────────────────────────────────── */
+.mm-dash {{
+  font-family: 'Courier New', 'Lucida Console', monospace;
+  color: {_C['text']};
+  background: transparent;
+}}
+
+/* ── Animações ─────────────────────────────────────────────────────────── */
+@keyframes mm-pulse {{
+  0%, 100% {{ opacity: 1; }}
+  50% {{ opacity: 0.35; }}
+}}
+@keyframes mm-glow {{
+  0%, 100% {{ box-shadow: 0 0 6px rgba(88,166,255,0.25); }}
+  50%       {{ box-shadow: 0 0 14px rgba(88,166,255,0.55); }}
+}}
+
+/* ── Painel principal (substitui mm-card) ─────────────────────────────── */
+.mm-panel {{
+  background: linear-gradient(160deg, {_C['card']} 0%, {_C['card2']} 100%);
+  border: 1px solid {_C['border']};
+  border-top: 2px solid {_C['accent']};
+  border-radius: 2px 8px 8px 8px;
+  padding: 14px 16px;
+  margin: 4px 2px;
+  position: relative;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(88,166,255,0.08);
+}}
+.mm-panel::before {{
+  content: '';
+  position: absolute;
+  top: -1px; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, {_C['accent']}, {_C['teal']}, transparent);
+  border-radius: 2px 8px 0 0;
+}}
+
+/* ── Card legado (compatibilidade) ────────────────────────────────────── */
+.mm-card {{
+  background: linear-gradient(160deg, {_C['card']} 0%, {_C['card2']} 100%);
+  border: 1px solid {_C['border']};
+  border-top: 2px solid {_C['accent']};
+  border-radius: 2px 8px 8px 8px;
+  padding: 14px 16px;
+  margin: 4px 2px;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(88,166,255,0.08);
+}}
+.mm-card h3 {{ margin: 0 0 10px; font-size: 13px; font-weight: 700; color: {_C['accent']};
+  text-transform: uppercase; letter-spacing: 1.5px; }}
+.mm-card h4 {{ margin: 8px 0 6px; font-size: 12px; font-weight: 600; color: {_C['teal']}; letter-spacing: 0.8px; }}
+.mm-card p, .mm-card span {{ font-size: 12px; color: {_C['text_muted']}; line-height: 1.6; }}
 .mm-card b {{ color: {_C['text']}; }}
-.mm-badge {{ display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }}
-.mm-badge-green {{ background: rgba(63,185,80,0.15); color: {_C['green']}; }}
-.mm-badge-red {{ background: rgba(248,81,73,0.15); color: {_C['red']}; }}
-.mm-badge-yellow {{ background: rgba(210,153,34,0.15); color: {_C['yellow']}; }}
-.mm-badge-blue {{ background: rgba(88,166,255,0.15); color: {_C['accent']}; }}
-.mm-table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }}
-.mm-table th {{ background: {_C['card2']}; color: {_C['text_muted']}; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; padding: 10px 12px; border-bottom: 2px solid {_C['border']}; text-align: left; }}
-.mm-table td {{ padding: 8px 12px; border-bottom: 1px solid {_C['border_light']}; color: {_C['text']}; }}
-.mm-table tr:hover td {{ background: rgba(88,166,255,0.04); }}
-.mm-metric {{ display: inline-block; margin: 0 16px 8px 0; }}
-.mm-metric .label {{ font-size: 11px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.3px; }}
-.mm-metric .value {{ font-size: 16px; font-weight: 600; color: {_C['text']}; }}
-.mm-section-label {{ font-size: 11px; font-weight: 700; color: {_C['text_dim']}; text-transform: uppercase; letter-spacing: 1px; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid {_C['border_light']}; }}
-.mm-kpi-row {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }}
-.mm-kpi {{ flex: 1; min-width: 140px; background: {_C['card2']}; border: 1px solid {_C['border']}; border-radius: 6px; padding: 10px 14px; text-align: center; }}
-.mm-kpi .kpi-label {{ font-size: 10px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.5px; }}
-.mm-kpi .kpi-value {{ font-size: 20px; font-weight: 700; margin: 4px 0; }}
-.mm-loading {{ color: {_C['accent']}; font-size: 14px; font-weight: 500; padding: 12px; }}
-.mm-loading .step {{ color: {_C['text_muted']}; font-size: 12px; }}
-.mm-cot-label {{ background: {_C['card2']}; padding: 6px 10px; border-radius: 4px; font-size: 12px; display: inline-block; margin: 2px; }}
+
+/* ── Cabeçalho de seção ────────────────────────────────────────────────── */
+.mm-section-hdr {{
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(90deg, rgba(88,166,255,0.12) 0%, rgba(88,166,255,0.03) 60%, transparent 100%);
+  border-left: 3px solid {_C['accent']};
+  border-bottom: 1px solid rgba(88,166,255,0.15);
+  padding: 6px 14px 6px 12px;
+  margin: 10px 0 3px;
+  border-radius: 0 4px 4px 0;
+}}
+.mm-section-hdr .mm-dot {{
+  width: 7px; height: 7px; border-radius: 50%;
+  background: {_C['teal']};
+  animation: mm-pulse 2.4s ease-in-out infinite;
+  flex-shrink: 0;
+}}
+.mm-section-hdr .mm-hdr-title {{
+  font-size: 10px; font-weight: 700; color: {_C['accent']};
+  text-transform: uppercase; letter-spacing: 2px;
+}}
+.mm-section-hdr .mm-hdr-sub {{
+  font-size: 9px; color: {_C['text_dim']}; letter-spacing: 0.5px;
+  margin-left: 4px;
+}}
+
+/* ── Status bar topo ──────────────────────────────────────────────────── */
+.mm-statusbar {{
+  background: linear-gradient(90deg, rgba(13,17,23,0.97) 0%, rgba(22,27,34,0.97) 100%);
+  border: 1px solid {_C['border']};
+  border-top: 2px solid {_C['accent']};
+  border-radius: 2px 8px 8px 8px;
+  padding: 10px 20px;
+  margin: 0 0 2px;
+  display: flex; gap: 0; flex-wrap: wrap; align-items: center;
+  box-shadow: 0 0 24px rgba(88,166,255,0.12), 0 2px 8px rgba(0,0,0,0.5);
+}}
+.mm-statusbar::before {{
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, {_C['accent']}, {_C['teal']}, {_C['purple']}, transparent);
+}}
+.mm-cmd-title {{
+  font-size: 14px; font-weight: 800; color: {_C['accent']};
+  letter-spacing: 3px; text-transform: uppercase;
+  margin-right: 28px; font-family: 'Courier New', monospace;
+}}
+.mm-stat-item {{
+  display: flex; flex-direction: column; align-items: center;
+  padding: 2px 18px; border-right: 1px solid {_C['border']};
+}}
+.mm-stat-item:last-child {{ border-right: none; }}
+.mm-stat-label {{
+  font-size: 8px; color: {_C['text_dim']}; text-transform: uppercase;
+  letter-spacing: 1.5px; font-weight: 600;
+}}
+.mm-stat-value {{
+  font-size: 15px; font-weight: 700; font-family: 'Courier New', monospace;
+  line-height: 1.2;
+}}
+
+/* ── Badges ──────────────────────────────────────────────────────────── */
+.mm-badge {{ display: inline-block; padding: 2px 8px; border-radius: 2px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; }}
+.mm-badge-green {{ background: rgba(63,185,80,0.12); color: {_C['green']};
+  border: 1px solid rgba(63,185,80,0.3); }}
+.mm-badge-red   {{ background: rgba(248,81,73,0.12);  color: {_C['red']};
+  border: 1px solid rgba(248,81,73,0.3); }}
+.mm-badge-yellow {{ background: rgba(210,153,34,0.12); color: {_C['yellow']};
+  border: 1px solid rgba(210,153,34,0.3); }}
+.mm-badge-blue  {{ background: rgba(88,166,255,0.12); color: {_C['accent']};
+  border: 1px solid rgba(88,166,255,0.3); }}
+
+/* ── Tabelas ─────────────────────────────────────────────────────────── */
+.mm-table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px;
+  font-family: 'Courier New', monospace; }}
+.mm-table th {{ background: rgba(88,166,255,0.06); color: {_C['text_muted']};
+  font-weight: 700; text-transform: uppercase; font-size: 9px; letter-spacing: 1.2px;
+  padding: 8px 12px; border-bottom: 1px solid rgba(88,166,255,0.2); text-align: left; }}
+.mm-table td {{ padding: 7px 12px; border-bottom: 1px solid {_C['border_light']};
+  color: {_C['text']}; }}
+.mm-table tr:hover td {{ background: rgba(88,166,255,0.05); }}
+
+/* ── Métricas KPI ────────────────────────────────────────────────────── */
+.mm-kpi-row {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }}
+.mm-kpi {{
+  flex: 1; min-width: 130px;
+  background: linear-gradient(135deg, {_C['card2']} 0%, rgba(13,17,23,0.8) 100%);
+  border: 1px solid {_C['border']};
+  border-top: 1px solid rgba(88,166,255,0.3);
+  border-radius: 4px; padding: 8px 12px; text-align: center;
+}}
+.mm-kpi .kpi-label {{ font-size: 8px; color: {_C['text_dim']}; text-transform: uppercase;
+  letter-spacing: 1.5px; font-weight: 700; }}
+.mm-kpi .kpi-value {{ font-size: 18px; font-weight: 700; margin: 3px 0;
+  font-family: 'Courier New', monospace; }}
+
+/* ── Seção legado ───────────────────────────────────────────────────── */
+.mm-title {{ font-size: 18px; font-weight: 700; color: {_C['text']}; padding: 10px 0 4px;
+  border-bottom: 1px solid rgba(88,166,255,0.3); margin-bottom: 8px;
+  letter-spacing: 2px; text-transform: uppercase; font-family: 'Courier New', monospace; }}
+.mm-title small {{ font-size: 11px; color: {_C['text_muted']}; font-weight: 400; margin-left: 12px; letter-spacing: 0; }}
+.mm-section-label {{ font-size: 10px; font-weight: 700; color: {_C['text_dim']}; text-transform: uppercase;
+  letter-spacing: 1.5px; margin: 14px 0 6px; padding-bottom: 4px;
+  border-bottom: 1px solid {_C['border_light']}; }}
+.mm-metric {{ display: inline-block; margin: 0 14px 8px 0; }}
+.mm-metric .label {{ font-size: 9px; color: {_C['text_muted']}; text-transform: uppercase; letter-spacing: 0.5px; }}
+.mm-metric .value {{ font-size: 15px; font-weight: 700; color: {_C['text']}; font-family: 'Courier New', monospace; }}
+.mm-loading {{ color: {_C['accent']}; font-size: 13px; font-weight: 600; padding: 12px; letter-spacing: 1px; }}
+.mm-loading .step {{ color: {_C['text_muted']}; font-size: 11px; }}
+.mm-cot-label {{ background: {_C['card2']}; border: 1px solid {_C['border']};
+  padding: 4px 8px; border-radius: 3px; font-size: 11px; display: inline-block; margin: 2px;
+  font-family: 'Courier New', monospace; }}
 </style>
 """
 
@@ -8015,40 +8152,37 @@ def run_analysis(_):
                 print(f"⚠️ Squeeze mini: {_sqm_err}")
 
             # ── Status bar — barra de comando topo ──
-            _flip_str  = f"{gamma_flip:,.0f}"  if gamma_flip else "N/A"
-            _gex_str   = f"{_sq_gex_v1:+.1f}B" if '_sq_gex_v1' in dir() else "N/A"
-            _pc_str    = f"{_sq_pc_v1:.2f}x"   if '_sq_pc_v1'  in dir() else "N/A"
+            _flip_str  = f"{gamma_flip:,.0f}"   if gamma_flip      else "N/A"
+            _gex_str   = f"{_sq_gex_v1:+.1f}B"  if '_sq_gex_v1' in dir() else "N/A"
+            _pc_str    = f"{_sq_pc_v1:.2f}×"    if '_sq_pc_v1'  in dir() else "N/A"
             _ivrv_str  = f"{(iv_30d - rv_30d)*100:+.1f}pp"
+
+            def _stat(label, value, color):
+                return (f"<div class='mm-stat-item'>"
+                        f"<span class='mm-stat-label'>{label}</span>"
+                        f"<span class='mm-stat-value' style='color:{color};'>{value}</span>"
+                        f"</div>")
+
             _status_bar = wd.HTML(
-                f"<div style='background:{_C['card2']};border:1px solid {_C['border']};"
-                f"border-radius:6px;padding:10px 20px;margin:4px 0 2px;"
-                f"display:flex;gap:0;flex-wrap:wrap;align-items:center;'>"
-                f"<div style='font-size:15px;font-weight:800;color:{_C['accent']};"
-                f"letter-spacing:1.5px;margin-right:28px;'>⬡ SPX MARKET COMMAND</div>"
-                f"<div style='display:flex;gap:28px;flex-wrap:wrap;align-items:baseline;'>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Spot"
-                f"<b style='color:{_C['text']};font-size:16px;margin-left:6px;'>{spot:,.0f}</b></span>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Gamma Flip"
-                f"<b style='color:{_C['orange']};font-size:14px;margin-left:6px;'>{_flip_str}</b></span>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>GEX Net"
-                f"<b style='color:{_C['accent']};font-size:14px;margin-left:6px;'>{_gex_str}</b></span>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>P/C Ratio"
-                f"<b style='color:{_C['purple']};font-size:14px;margin-left:6px;'>{_pc_str}</b></span>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>IV−RV"
-                f"<b style='color:{_C['yellow']};font-size:14px;margin-left:6px;'>{_ivrv_str}</b></span>"
-                f"<span style='color:{_C['text_dim']};font-size:10px;text-transform:uppercase;'>Squeeze Risk"
-                f"<b style='color:{_sq_ac};font-size:16px;margin-left:6px;'>{_sq_score_disp}/100</b></span>"
-                f"</div></div>")
+                f"<div class='mm-dash mm-statusbar'>"
+                f"<span class='mm-cmd-title'>⬡ SPX&nbsp;MARKET&nbsp;COMMAND</span>"
+                f"<div style='display:flex;flex-wrap:wrap;align-items:stretch;'>"
+                + _stat('Spot',         f"{spot:,.0f}",  _C['text'])
+                + _stat('Gamma&nbsp;Flip', _flip_str,    _C['orange'])
+                + _stat('GEX&nbsp;Net',  _gex_str,       _C['accent'])
+                + _stat('P/C&nbsp;Ratio', _pc_str,       _C['purple'])
+                + _stat('IV−RV',         _ivrv_str,      _C['yellow'])
+                + _stat('Squeeze&nbsp;Risk', f"{_sq_score_disp}/100", _sq_ac)
+                + f"</div></div>")
 
             # ── Section header helper ──
             def _sh(title, sub=''):
-                _s = (f"<span style='font-size:10px;color:{_C['text_dim']};margin-left:12px;"
-                      f"font-weight:400;text-transform:none;letter-spacing:0;'>{sub}</span>") if sub else ''
+                _s = (f"<span class='mm-hdr-sub'>· {sub}</span>") if sub else ''
                 return wd.HTML(
-                    f"<div style='background:{_C['card2']};border-left:3px solid {_C['accent']};"
-                    f"padding:5px 14px;margin:10px 0 3px;border-radius:0 4px 4px 0;'>"
-                    f"<span style='font-size:11px;font-weight:700;color:{_C['accent']};"
-                    f"text-transform:uppercase;letter-spacing:1.2px;'>{title}</span>{_s}</div>")
+                    f"<div class='mm-dash mm-section-hdr'>"
+                    f"<div class='mm-dot'></div>"
+                    f"<span class='mm-hdr-title'>{title}</span>{_s}"
+                    f"</div>")
 
             # ── Stacks verticais: gauge + detalhe ──────────────────────
             _tail_stack = wd.VBox([_home_tail_gauge, _home_tail_info],
