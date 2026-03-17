@@ -6668,6 +6668,155 @@ def create_gauge(value, title, range_min, range_max, bar_color, suffix,
                          margin=dict(l=18, r=18, t=42, b=12)))
 
 
+def create_symmetric_gauge(value, title, scale, unit='$Bn', width=210, height=185):
+    """
+    Gauge simétrico: zero no centro, vermelho à esquerda (negativo), verde à direita (positivo).
+    scale = metade do range total (ex: 10 → vai de -10 a +10).
+    """
+    if pd.isna(value):
+        value = 0.0
+    rng = max(abs(value) * 1.25, scale)
+    bar_color = _C['green'] if value >= 0 else _C['red']
+    steps = [
+        {'range': [-rng, 0],   'color': 'rgba(248,81,73,0.18)'},
+        {'range': [0,    rng], 'color': 'rgba(63,185,80,0.18)'},
+    ]
+    return go.FigureWidget(
+        go.Indicator(
+            mode="gauge+number", value=value,
+            title={'text': title, 'font': {'size': 12, 'color': _C['text_muted']}},
+            number={'suffix': unit, 'font': {'size': 17, 'color': bar_color},
+                    'valueformat': '+.1f'},
+            gauge={
+                'axis': {'range': [-rng, rng],
+                         'tickvals': [-rng, -rng/2, 0, rng/2, rng],
+                         'ticktext': [f'{-rng:.0f}', '', '0', '', f'{rng:.0f}'],
+                         'tickcolor': _C['text_dim'],
+                         'tickfont': {'color': _C['text_dim'], 'size': 9}},
+                'bar': {'color': bar_color, 'thickness': 0.28},
+                'bgcolor': _C['card2'],
+                'borderwidth': 1,
+                'bordercolor': _C['border'],
+                'steps': steps,
+                'threshold': {'line': {'color': _C['text_muted'], 'width': 2},
+                              'thickness': 0.75, 'value': 0},
+            }),
+        layout=go.Layout(width=width, height=height,
+                         paper_bgcolor=_C['card'],
+                         font=dict(color=_C['text']),
+                         margin=dict(l=16, r=16, t=40, b=10)))
+
+
+def build_greek_overview(greeks_now, df, spot):
+    """
+    Seção de termômetros das gregas para a Visão Geral.
+    Retorna VBox com:
+      - Linha 1: gauges simétricos de Delta, Gamma, Vanna, Charm
+      - Linha 2: 8 mini-gauges de stock flow (Mag8) — 4 buy + 4 sell
+    """
+    oi_100 = df['OI'].values * 100.0
+    cs = np.where(df['Type'].values == 'Call', 1, -1)
+
+    # ── Valores das gregas em $Bn ──────────────────────────────────
+    delta_bn   = np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9
+    gamma_bn   = np.nansum(greeks_now['gamma'] * cs * oi_100 * spot**2 * 0.01) / 1e9
+    vanna_bn   = np.nansum(greeks_now['vanna'] * oi_100) * spot / 1e9
+    charm_bn   = np.nansum(greeks_now['charm'] * oi_100) * spot / 365.0 / 1e9  # diário
+
+    # Escalas (mínimo razoável para SPX, abre se valor ultrapassar)
+    g_delta = create_symmetric_gauge(delta_bn,  'Delta Nocional',  max(10, abs(delta_bn)*1.5), '$Bn')
+    g_gamma = create_symmetric_gauge(gamma_bn,  'Gamma (GEX Net)', max(5,  abs(gamma_bn)*1.5), '$Bn')
+    g_vanna = create_symmetric_gauge(vanna_bn,  'Vanna',           max(3,  abs(vanna_bn)*1.5), '$Bn')
+    g_charm = create_symmetric_gauge(charm_bn,  'Charm (diário)',  max(1,  abs(charm_bn)*1.5), '$Bn')
+
+    # Leituras textuais contextuais ──────────────────────────────
+    def _interp(val, greek):
+        if greek == 'delta':
+            if abs(val) < 1: return '⚪ Neutro — sem pressão direcional'
+            return ('🔴 Dealers COMPRADOS → pressão de VENDA' if val > 0
+                    else '🟢 Dealers VENDIDOS → pressão de COMPRA')
+        if greek == 'gamma':
+            if abs(val) < 0.5: return '⚪ Gamma neutro'
+            return ('🟢 GEX Positivo — mercado tende a ESTABILIZAR' if val > 0
+                    else '🔴 GEX Negativo — mercado tende a ACELERAR movimentos')
+        if greek == 'vanna':
+            if abs(val) < 0.3: return '⚪ Vanna neutro'
+            return ('🔴 Vanna+: se vol subir, dealers VENDEM spot' if val > 0
+                    else '🟢 Vanna−: se vol subir, dealers COMPRAM spot')
+        if greek == 'charm':
+            if abs(val) < 0.05: return '⚪ Decay mínimo'
+            return ('🔴 Dealers DESFAZEM hedge (+delta decaindo)' if val > 0
+                    else '🟢 Dealers REFORÇAM hedge (−delta decaindo)')
+        return ''
+
+    interp_html = (
+        "<div class='mm-dash'><div class='mm-card' style='padding:10px 14px;'>"
+        "<div class='mm-section-label' style='margin-top:4px;'>Leitura das Gregas</div>"
+        f"<p style='margin:3px 0;font-size:12px;'><b>Δ Delta:</b> {_interp(delta_bn,'delta')}</p>"
+        f"<p style='margin:3px 0;font-size:12px;'><b>Γ Gamma:</b> {_interp(gamma_bn,'gamma')}</p>"
+        f"<p style='margin:3px 0;font-size:12px;'><b>V Vanna:</b> {_interp(vanna_bn,'vanna')}</p>"
+        f"<p style='margin:3px 0;font-size:12px;'><b>C Charm:</b> {_interp(charm_bn,'charm')}</p>"
+        "</div></div>"
+    )
+
+    row_gauges = wd.HBox(
+        [g_delta, g_gamma, g_vanna, g_charm, wd.HTML(interp_html)],
+        layout={'justify_content': 'flex-start', 'align_items': 'center',
+                'flex_wrap': 'wrap'})
+
+    # ── Flow por ação (Mag8 ponderado) ─────────────────────────────
+    mag8_weights = {
+        'AAPL': 0.070, 'MSFT': 0.065, 'NVDA': 0.060, 'AMZN': 0.050,
+        'GOOGL': 0.045, 'META': 0.040, 'TSLA': 0.035, 'AVGO': 0.030,
+    }
+    charm_notional_bn = charm_bn  # já em $Bn/dia
+
+    # flow > 0 = pressão de COMPRA; flow < 0 = pressão de VENDA
+    stock_flows = {
+        s: w * (-delta_bn - charm_notional_bn)
+        for s, w in mag8_weights.items()
+    }
+    sorted_flows = sorted(stock_flows.items(), key=lambda x: x[1], reverse=True)
+    buys  = [(s, v) for s, v in sorted_flows if v >= 0][:4]
+    sells = [(s, v) for s, v in sorted_flows if v < 0][-4:][::-1]  # mais negativo primeiro
+
+    # Garantir 4 de cada lado (caso todos positivos ou todos negativos)
+    if len(buys) < 4:
+        buys  = sorted_flows[:4]
+    if len(sells) < 4:
+        sells = sorted_flows[-4:][::-1]
+
+    flow_scale = max(abs(v) for _, v in sorted_flows) * 1.4 or 1.0
+
+    buy_gauges  = [create_symmetric_gauge(v, s, flow_scale, '$Bn', width=170, height=160)
+                   for s, v in buys]
+    sell_gauges = [create_symmetric_gauge(v, s, flow_scale, '$Bn', width=170, height=160)
+                   for s, v in sells]
+
+    buy_label  = wd.HTML("<div style='text-align:center;font-size:11px;font-weight:700;"
+                         f"color:{_C['green']};text-transform:uppercase;letter-spacing:1px;"
+                         "padding:4px 0;'>▲ Fluxo de Compra</div>")
+    sell_label = wd.HTML("<div style='text-align:center;font-size:11px;font-weight:700;"
+                         f"color:{_C['red']};text-transform:uppercase;letter-spacing:1px;"
+                         "padding:4px 0;'>▼ Fluxo de Venda</div>")
+
+    row_stocks = wd.VBox([
+        wd.HTML("<div class='mm-section-label' style='margin:10px 0 4px;padding:0 8px;'>"
+                "Fluxo Estimado de Dealers — Mag8 (delta hedge + charm diário)</div>"),
+        wd.HBox([
+            wd.VBox([buy_label,
+                     wd.HBox(buy_gauges, layout={'flex_wrap': 'wrap'})]),
+            wd.VBox([sell_label,
+                     wd.HBox(sell_gauges, layout={'flex_wrap': 'wrap'})]),
+        ], layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
+        wd.HTML("<div style='font-size:11px;color:#484f58;padding:2px 8px;'>"
+                "Pressão de compra = dealers estão vendidos e precisam rebalancear. "
+                "Pressão de venda = dealers estão comprados. Baseado em delta nocional + charm diário.</div>"),
+    ])
+
+    return wd.VBox([row_gauges, row_stocks])
+
+
 def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
                          levels, model_curves, flip_points,
                          call_wall, put_wall):
@@ -7715,9 +7864,17 @@ def run_analysis(_):
                 except Exception:
                     pass
 
+            # ── Termômetros das gregas + stock flow ──
+            try:
+                _greek_overview = build_greek_overview(greeks_now, df, spot)
+            except Exception as _go_err:
+                print(f"⚠️ Greek overview: {_go_err}")
+                _greek_overview = wd.HTML('')
+
             tab1 = wd.VBox([
                 wd.HBox([g_frag, g_vol, g_skew, g_move],
                         layout={'justify_content': 'space-around'}),
+                _greek_overview,
                 _gamma_lvl_chart,
                 wd.HBox([fig_gex, fig_dist]),
                 _home_tail_row,
