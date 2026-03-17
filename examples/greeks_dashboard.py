@@ -6668,153 +6668,185 @@ def create_gauge(value, title, range_min, range_max, bar_color, suffix,
                          margin=dict(l=18, r=18, t=42, b=12)))
 
 
-def create_symmetric_gauge(value, title, scale, unit='$Bn', width=210, height=185):
+def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=195):
     """
     Gauge simétrico: zero no centro, vermelho à esquerda (negativo), verde à direita (positivo).
     scale = metade do range total (ex: 10 → vai de -10 a +10).
+    value deve estar em $Bn já arredondado.
     """
     if pd.isna(value):
         value = 0.0
-    rng = max(abs(value) * 1.25, scale)
+    value = round(float(value), 2)
+    rng   = round(max(abs(value) * 1.35, float(scale)), 1)
     bar_color = _C['green'] if value >= 0 else _C['red']
     steps = [
-        {'range': [-rng, 0],   'color': 'rgba(248,81,73,0.18)'},
-        {'range': [0,    rng], 'color': 'rgba(63,185,80,0.18)'},
+        {'range': [-rng, 0],   'color': 'rgba(248,81,73,0.15)'},
+        {'range': [0,    rng], 'color': 'rgba(63,185,80,0.15)'},
     ]
+    # Ticks: só 3 (min, 0, max) — evita poluição visual
+    tick_lo = f'{-rng:.1f}'
+    tick_hi = f'{rng:.1f}'
     return go.FigureWidget(
         go.Indicator(
             mode="gauge+number", value=value,
             title={'text': title, 'font': {'size': 12, 'color': _C['text_muted']}},
-            number={'suffix': unit, 'font': {'size': 17, 'color': bar_color},
-                    'valueformat': '+.1f'},
+            number={'suffix': f' {unit}', 'font': {'size': 18, 'color': bar_color},
+                    'valueformat': '.2f'},
             gauge={
                 'axis': {'range': [-rng, rng],
-                         'tickvals': [-rng, -rng/2, 0, rng/2, rng],
-                         'ticktext': [f'{-rng:.0f}', '', '0', '', f'{rng:.0f}'],
+                         'tickvals': [-rng, 0, rng],
+                         'ticktext': [tick_lo, '0', tick_hi],
                          'tickcolor': _C['text_dim'],
                          'tickfont': {'color': _C['text_dim'], 'size': 9}},
-                'bar': {'color': bar_color, 'thickness': 0.28},
+                'bar': {'color': bar_color, 'thickness': 0.30},
                 'bgcolor': _C['card2'],
                 'borderwidth': 1,
                 'bordercolor': _C['border'],
                 'steps': steps,
-                'threshold': {'line': {'color': _C['text_muted'], 'width': 2},
-                              'thickness': 0.75, 'value': 0},
+                'threshold': {'line': {'color': '#8b949e', 'width': 2},
+                              'thickness': 0.80, 'value': 0},
             }),
         layout=go.Layout(width=width, height=height,
                          paper_bgcolor=_C['card'],
                          font=dict(color=_C['text']),
-                         margin=dict(l=16, r=16, t=40, b=10)))
+                         margin=dict(l=20, r=20, t=44, b=12)))
 
 
 def build_greek_overview(greeks_now, df, spot):
     """
-    Seção de termômetros das gregas para a Visão Geral.
-    Retorna VBox com:
-      - Linha 1: gauges simétricos de Delta, Gamma, Vanna, Charm
-      - Linha 2: 8 mini-gauges de stock flow (Mag8) — 4 buy + 4 sell
+    Seção de termômetros das gregas + fluxo por ação (Mag8) para a Visão Geral.
+    Gregas em $Bn. Fluxo de ações usa delta + charm + rebalanceamento SPX por beta.
     """
     oi_100 = df['OI'].values * 100.0
-    cs = np.where(df['Type'].values == 'Call', 1, -1)
+    cs     = np.where(df['Type'].values == 'Call', 1, -1)
 
-    # ── Valores das gregas em $Bn ──────────────────────────────────
-    delta_bn   = np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9
-    gamma_bn   = np.nansum(greeks_now['gamma'] * cs * oi_100 * spot**2 * 0.01) / 1e9
-    vanna_bn   = np.nansum(greeks_now['vanna'] * oi_100) * spot / 1e9
-    charm_bn   = np.nansum(greeks_now['charm'] * oi_100) * spot / 365.0 / 1e9  # diário
+    # ── Gregas em $Bn ─────────────────────────────────────────────
+    delta_bn = float(np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9)
+    gamma_bn = float(np.nansum(greeks_now['gamma'] * cs * oi_100 * spot**2 * 0.01) / 1e9)
+    vanna_bn = float(np.nansum(greeks_now['vanna'] * oi_100) * spot / 1e9)
+    charm_bn = float(np.nansum(greeks_now['charm'] * oi_100) * spot / 365.0 / 1e9)
 
-    # Escalas (mínimo razoável para SPX, abre se valor ultrapassar)
-    g_delta = create_symmetric_gauge(delta_bn,  'Delta Nocional',  max(10, abs(delta_bn)*1.5), '$Bn')
-    g_gamma = create_symmetric_gauge(gamma_bn,  'Gamma (GEX Net)', max(5,  abs(gamma_bn)*1.5), '$Bn')
-    g_vanna = create_symmetric_gauge(vanna_bn,  'Vanna',           max(3,  abs(vanna_bn)*1.5), '$Bn')
-    g_charm = create_symmetric_gauge(charm_bn,  'Charm (diário)',  max(1,  abs(charm_bn)*1.5), '$Bn')
+    # Escala dinâmica mínima por grega (SPX típico)
+    g_delta = create_symmetric_gauge(delta_bn, 'Δ Delta Nocional',  max(5.0,  abs(delta_bn) * 1.5))
+    g_gamma = create_symmetric_gauge(gamma_bn, 'Γ Gamma (GEX Net)', max(3.0,  abs(gamma_bn) * 1.5))
+    g_vanna = create_symmetric_gauge(vanna_bn, 'V Vanna',           max(2.0,  abs(vanna_bn) * 1.5))
+    g_charm = create_symmetric_gauge(charm_bn, 'C Charm (diário)',  max(0.5,  abs(charm_bn) * 1.5))
 
-    # Leituras textuais contextuais ──────────────────────────────
-    def _interp(val, greek):
-        if greek == 'delta':
-            if abs(val) < 1: return '⚪ Neutro — sem pressão direcional'
-            return ('🔴 Dealers COMPRADOS → pressão de VENDA' if val > 0
-                    else '🟢 Dealers VENDIDOS → pressão de COMPRA')
-        if greek == 'gamma':
-            if abs(val) < 0.5: return '⚪ Gamma neutro'
-            return ('🟢 GEX Positivo — mercado tende a ESTABILIZAR' if val > 0
-                    else '🔴 GEX Negativo — mercado tende a ACELERAR movimentos')
-        if greek == 'vanna':
-            if abs(val) < 0.3: return '⚪ Vanna neutro'
-            return ('🔴 Vanna+: se vol subir, dealers VENDEM spot' if val > 0
-                    else '🟢 Vanna−: se vol subir, dealers COMPRAM spot')
-        if greek == 'charm':
-            if abs(val) < 0.05: return '⚪ Decay mínimo'
-            return ('🔴 Dealers DESFAZEM hedge (+delta decaindo)' if val > 0
-                    else '🟢 Dealers REFORÇAM hedge (−delta decaindo)')
-        return ''
+    # ── Interpretação textual ──────────────────────────────────────
+    def _badge(positive, txt_pos, txt_neg, val, thr=0.1):
+        if abs(val) < thr:
+            return f"<span style='color:#8b949e;'>⚪ Neutro</span>"
+        color = _C['green'] if (val > 0) == positive else _C['red']
+        txt   = txt_pos if val > 0 else txt_neg
+        return f"<span style='color:{color};'>{txt}</span>"
 
     interp_html = (
-        "<div class='mm-dash'><div class='mm-card' style='padding:10px 14px;'>"
-        "<div class='mm-section-label' style='margin-top:4px;'>Leitura das Gregas</div>"
-        f"<p style='margin:3px 0;font-size:12px;'><b>Δ Delta:</b> {_interp(delta_bn,'delta')}</p>"
-        f"<p style='margin:3px 0;font-size:12px;'><b>Γ Gamma:</b> {_interp(gamma_bn,'gamma')}</p>"
-        f"<p style='margin:3px 0;font-size:12px;'><b>V Vanna:</b> {_interp(vanna_bn,'vanna')}</p>"
-        f"<p style='margin:3px 0;font-size:12px;'><b>C Charm:</b> {_interp(charm_bn,'charm')}</p>"
-        "</div></div>"
+        f"<div class='mm-dash'><div class='mm-card' style='padding:10px 16px;min-width:280px;'>"
+        f"<div class='mm-section-label' style='margin-top:0;'>Leitura das Gregas</div>"
+        f"<p style='margin:4px 0;font-size:12px;'><b>Δ Delta:</b> "
+        + _badge(False, '🔴 Dealers comprados → venda', '🟢 Dealers vendidos → compra', delta_bn, 0.5)
+        + f"</p><p style='margin:4px 0;font-size:12px;'><b>Γ Gamma:</b> "
+        + _badge(True, '🟢 GEX+ estabiliza mercado', '🔴 GEX− acelera movimentos', gamma_bn, 0.3)
+        + f"</p><p style='margin:4px 0;font-size:12px;'><b>V Vanna:</b> "
+        + _badge(False, '🔴 Vol↑ → dealers vendem', '🟢 Vol↑ → dealers compram', vanna_bn, 0.2)
+        + f"</p><p style='margin:4px 0;font-size:12px;'><b>C Charm:</b> "
+        + _badge(False, '🔴 Delta decai → desfaz hedge', '🟢 Delta decai → reforça hedge', charm_bn, 0.05)
+        + "</p></div></div>"
     )
 
     row_gauges = wd.HBox(
         [g_delta, g_gamma, g_vanna, g_charm, wd.HTML(interp_html)],
-        layout={'justify_content': 'flex-start', 'align_items': 'center',
-                'flex_wrap': 'wrap'})
+        layout={'justify_content': 'flex-start', 'align_items': 'center', 'flex_wrap': 'wrap'})
 
-    # ── Flow por ação (Mag8 ponderado) ─────────────────────────────
-    mag8_weights = {
-        'AAPL': 0.070, 'MSFT': 0.065, 'NVDA': 0.060, 'AMZN': 0.050,
-        'GOOGL': 0.045, 'META': 0.040, 'TSLA': 0.035, 'AVGO': 0.030,
+    # ── Fluxo por ação — Mag8 com beta e rebalanceamento SPX ──────
+    # beta aproximado (vs SPX): usado para escalar a exposição de cada ação
+    # Rebalanceamento SPX: ETF passivo precisa comprar/vender proporcionalmente
+    # ao desvio de cada ação vs índice — ações de beta alto desviam mais
+    mag8 = {
+        #  stock    weight   beta
+        'AAPL':  (0.070, 1.10),
+        'MSFT':  (0.065, 0.90),
+        'NVDA':  (0.060, 1.80),
+        'AMZN':  (0.050, 1.20),
+        'GOOGL': (0.045, 1.10),
+        'META':  (0.040, 1.30),
+        'TSLA':  (0.035, 2.00),
+        'AVGO':  (0.030, 1.40),
     }
-    charm_notional_bn = charm_bn  # já em $Bn/dia
 
-    # flow > 0 = pressão de COMPRA; flow < 0 = pressão de VENDA
-    stock_flows = {
-        s: w * (-delta_bn - charm_notional_bn)
-        for s, w in mag8_weights.items()
-    }
-    sorted_flows = sorted(stock_flows.items(), key=lambda x: x[1], reverse=True)
-    buys  = [(s, v) for s, v in sorted_flows if v >= 0][:4]
-    sells = [(s, v) for s, v in sorted_flows if v < 0][-4:][::-1]  # mais negativo primeiro
+    stock_flows = {}
+    for s, (w, beta) in mag8.items():
+        # 1) Dealer hedge: proporcional a weight × beta (ações de alto beta
+        #    têm opções com delta mais sensível → mais rebalanceamento)
+        dealer = -w * beta * (delta_bn + charm_bn)
 
-    # Garantir 4 de cada lado (caso todos positivos ou todos negativos)
-    if len(buys) < 4:
-        buys  = sorted_flows[:4]
-    if len(sells) < 4:
-        sells = sorted_flows[-4:][::-1]
+        # 2) Rebalanceamento do índice SPX: ETFs precisam reequilibrar quando
+        #    ações de beta alto desviam mais do índice.
+        #    Se delta_bn < 0 (mercado caiu): ações beta>1 caíram mais → ETF COMPRA
+        #    Se delta_bn > 0 (mercado subiu): ações beta>1 subiram mais → ETF VENDE
+        rebal = w * (beta - 1.0) * (-delta_bn) * 0.40  # fator 40% do rebalanceamento passivo
 
-    flow_scale = max(abs(v) for _, v in sorted_flows) * 1.4 or 1.0
+        # 3) Vanna: ações de beta alto são mais sensíveis à vol
+        vanna_contrib = -w * (beta - 1.0) * vanna_bn * 0.20
 
-    buy_gauges  = [create_symmetric_gauge(v, s, flow_scale, '$Bn', width=170, height=160)
-                   for s, v in buys]
-    sell_gauges = [create_symmetric_gauge(v, s, flow_scale, '$Bn', width=170, height=160)
-                   for s, v in sells]
+        stock_flows[s] = dealer + rebal + vanna_contrib
 
-    buy_label  = wd.HTML("<div style='text-align:center;font-size:11px;font-weight:700;"
-                         f"color:{_C['green']};text-transform:uppercase;letter-spacing:1px;"
-                         "padding:4px 0;'>▲ Fluxo de Compra</div>")
-    sell_label = wd.HTML("<div style='text-align:center;font-size:11px;font-weight:700;"
-                         f"color:{_C['red']};text-transform:uppercase;letter-spacing:1px;"
-                         "padding:4px 0;'>▼ Fluxo de Venda</div>")
+    # Separar buy (>0) e sell (<0) ordenados por magnitude
+    buys  = sorted([(s, v) for s, v in stock_flows.items() if v >= 0],
+                   key=lambda x: x[1], reverse=True)
+    sells = sorted([(s, v) for s, v in stock_flows.items() if v < 0],
+                   key=lambda x: x[1])
 
-    row_stocks = wd.VBox([
-        wd.HTML("<div class='mm-section-label' style='margin:10px 0 4px;padding:0 8px;'>"
-                "Fluxo Estimado de Dealers — Mag8 (delta hedge + charm diário)</div>"),
-        wd.HBox([
-            wd.VBox([buy_label,
-                     wd.HBox(buy_gauges, layout={'flex_wrap': 'wrap'})]),
-            wd.VBox([sell_label,
-                     wd.HBox(sell_gauges, layout={'flex_wrap': 'wrap'})]),
-        ], layout={'align_items': 'flex-start', 'flex_wrap': 'wrap'}),
-        wd.HTML("<div style='font-size:11px;color:#484f58;padding:2px 8px;'>"
-                "Pressão de compra = dealers estão vendidos e precisam rebalancear. "
-                "Pressão de venda = dealers estão comprados. Baseado em delta nocional + charm diário.</div>"),
-    ])
+    # Se todos do mesmo lado, forçar split pelo sinal do flow global
+    if not buys or not sells:
+        all_sorted = sorted(stock_flows.items(), key=lambda x: x[1], reverse=True)
+        buys  = all_sorted[:4]
+        sells = all_sorted[4:]
 
-    return wd.VBox([row_gauges, row_stocks])
+    # Garante exatamente 4 em cada lado
+    buys  = buys[:4]
+    sells = sells[:4]
+
+    flow_max = max((abs(v) for _, v in list(buys) + list(sells)), default=1.0) * 1.5 or 1.0
+
+    def _stock_bar(name, val, flow_max):
+        pct   = min(abs(val) / flow_max * 100, 100)
+        color = _C['green'] if val >= 0 else _C['red']
+        arrow = '▲' if val >= 0 else '▼'
+        return (
+            f"<div style='display:flex;align-items:center;gap:8px;margin:4px 0;'>"
+            f"<span style='font-size:12px;font-weight:700;color:{_C['text']};width:44px;'>{name}</span>"
+            f"<div style='flex:1;background:{_C['card2']};border-radius:3px;height:14px;'>"
+            f"<div style='width:{pct:.0f}%;height:100%;background:{color};border-radius:3px;opacity:0.75;'></div></div>"
+            f"<span style='font-size:11px;color:{color};width:70px;text-align:right;'>"
+            f"{arrow} ${val*1000:.0f}M</span>"
+            f"</div>"
+        )
+
+    buy_rows  = ''.join(_stock_bar(s, v, flow_max) for s, v in buys)
+    sell_rows = ''.join(_stock_bar(s, v, flow_max) for s, v in sells)
+
+    flow_html = (
+        f"<div class='mm-dash'><div class='mm-card' style='padding:12px 16px;'>"
+        f"<div class='mm-section-label' style='margin:0 0 8px;'>"
+        f"Fluxo Dealer Estimado — Mag8 (delta hedge + rebalanceamento SPX + charm diário)</div>"
+        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;'>"
+        f"<div>"
+        f"<div style='font-size:11px;font-weight:700;color:{_C['green']};margin-bottom:6px;"
+        f"text-transform:uppercase;letter-spacing:0.8px;'>▲ Pressão de Compra</div>"
+        f"{buy_rows}</div>"
+        f"<div>"
+        f"<div style='font-size:11px;font-weight:700;color:{_C['red']};margin-bottom:6px;"
+        f"text-transform:uppercase;letter-spacing:0.8px;'>▼ Pressão de Venda</div>"
+        f"{sell_rows}</div>"
+        f"</div>"
+        f"<p style='font-size:10px;color:{_C['text_dim']};margin:8px 0 0;'>"
+        f"Compra = dealers vendidos precisam rebalancear. Venda = dealers comprados desfazem hedge. "
+        f"Beta-adjusted + rebalanceamento passivo SPX (40%). Estimativa — não inclui fluxo individual de opções por ação.</p>"
+        f"</div></div>"
+    )
+
+    return wd.VBox([row_gauges, wd.HTML(flow_html)])
 
 
 def plot_exposure_charts(agg, df, spot, from_strike, to_strike,
