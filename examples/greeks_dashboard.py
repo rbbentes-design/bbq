@@ -2706,40 +2706,37 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
             row=1, col=1)
 
         # Scenario fan from last date
-        last_date = pd.Timestamp(hist_dates.iloc[-1])
-        last_notional = hist_notional.iloc[-1]
+        try:
+            last_date = pd.Timestamp(hist_dates.iloc[-1])
+        except Exception:
+            last_date = pd.Timestamp.now()
+        last_notional = float(hist_notional.iloc[-1])
+        d1w = (last_date + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+        d1m = (last_date + pd.Timedelta(days=30)).strftime('%Y-%m-%d')
+        last_date_s = last_date.strftime('%Y-%m-%d')
 
-        # Build forward points for 1W and 1M scenarios
         scenario_colors = {
-            'Flat': '#AAAAAA',
-            'Up 1\u03c3': '#00C853',
-            'Up 2\u03c3': '#00E676',
-            'Down 1\u03c3': '#FF5252',
-            'Down 2\u03c3': '#FF1744',
-            'Down 2.5\u03c3': '#D50000',
+            'Flat':        'rgba(180,180,180,0.7)',
+            'Up 1\u03c3':  'rgba(0,212,232,1)',
+            'Up 2\u03c3':  'rgba(0,212,232,0.6)',
+            'Down 1\u03c3': 'rgba(248,81,73,0.9)',
+            'Down 2\u03c3': 'rgba(248,81,73,0.6)',
+            'Down 2.5\u03c3': 'rgba(248,81,73,0.4)',
         }
 
         for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
             name = s1w['name']
-            end_notional_1w = CTA_AUM * CTA_EQUITY_ALLOC * s1w['pos_end'] / 1e9
-            end_notional_1m = CTA_AUM * CTA_EQUITY_ALLOC * s1m['pos_end'] / 1e9
-            color = scenario_colors.get(name, '#888888')
-
-            try:
-                d1w = last_date + pd.Timedelta(days=7)
-                d1m = last_date + pd.Timedelta(days=30)
-            except Exception:
-                d1w = last_date + pd.Timedelta(days=5)
-                d1m = last_date + pd.Timedelta(days=21)
+            end_1w = last_notional + s1w['flow_total'] / 1e9
+            end_1m = last_notional + s1m['flow_total'] / 1e9
+            color  = scenario_colors.get(name, 'rgba(180,180,180,0.5)')
 
             fig.add_trace(go.Scatter(
-                x=[last_date, d1w, d1m],
-                y=[last_notional, end_notional_1w, end_notional_1m],
+                x=[last_date_s, d1w, d1m],
+                y=[last_notional, end_1w, end_1m],
                 name=name,
                 mode='lines+markers',
                 line=dict(color=color, width=2.5, dash='dot'),
-                marker=dict(size=8, color=color),
-                visible=True,
+                marker=dict(size=7, color=color),
                 showlegend=True),
                 row=1, col=1)
 
