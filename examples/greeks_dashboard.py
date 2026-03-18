@@ -578,6 +578,7 @@ FUTURES_TICKER = 'ES1 Index'
 FUTURES_MULTIPLIER = 50
 
 # ── Snapshot state (usado pelo botão de export) ────────────────────────────
+_greek_cache = {}  # populated by build_greek_overview()
 _snapshot = {'sections': [], 'ticker': '', 'spot': 0, 'ts': '', 'metrics': {}}
 
 # Configuração dos 7 greeks para gráficos de exposição.
@@ -7248,6 +7249,11 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
     # Charm:  op=add,      scale=L/365
     charm_bn = float(np.nansum(greeks_now['charm'] * oi_100) * spot / 365.0 / 1e9)
 
+    # Cache module-level para exportação JARVIS (div/10 = escala BBG)
+    _greek_cache['delta_bn'] = delta_bn / 10
+    _greek_cache['vanna_bn'] = vanna_bn
+    _greek_cache['charm_bn'] = charm_bn / 10
+
     # Escala dinâmica mínima por grega (SPX típico)
     g_delta = create_symmetric_gauge(delta_bn, 'Δ Delta Nocional',  max(5.0,  abs(delta_bn) * 1.5))
     g_gamma = create_symmetric_gauge(gamma_bn, 'Γ Gamma (GEX Net)', max(0.5,  abs(gamma_bn) * 1.5))
@@ -8104,10 +8110,10 @@ function buildAll(){
   new Chart(document.getElementById('flowChart'),{
     type:'bar',
     data:{
-      labels:['CTA','Dealer/MM','Vol Ctrl','Risk Parity','ETFs Alav.'],
+      labels:['CTA','Dealer/MM','Vol Ctrl','Risk Parity','ETFs Alav.','ETFs Pass.','Buyback','COT'],
       datasets:[{
         label:'Z-Score',
-        data:[-2.1,0.0,3.0,3.0,0.37],
+        data:[__JV_FLOW_DATA__],
         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.35)':'rgba(0,212,232,.15)',
         borderColor:d=>d.raw>=0?'rgba(0,212,232,.9)':'rgba(0,212,232,.4)',
         borderWidth:1,borderRadius:2
@@ -8420,6 +8426,19 @@ def _export_dashboard_html():
     _html = _html.replace('__JV_V_CHARM__',      str(_charm_v))
     _html = _html.replace('__JV_V_CHARM_MIN__',  str(_charm_min))
     _html = _html.replace('__JV_V_CHARM_MAX__',  str(_charm_max))
+    # Flow score — 8 real BBG components
+    import json as _json
+    _flow_data = _json.dumps([
+        round(_f('z_cta'), 2),
+        round(_f('z_dealer'), 2),
+        round(_f('z_volctrl'), 2),
+        round(_f('z_rp'), 2),
+        round(_f('z_leveraged'), 2),
+        round(_f('z_passive_etf'), 2),
+        round(_f('z_buyback'), 2),
+        round(_f('z_cot'), 2),
+    ])
+    _html = _html.replace('[__JV_FLOW_DATA__]', _flow_data)
 
     return _html
 
@@ -11448,9 +11467,18 @@ def run_analysis(_):
                 'put_wall':      put_wall,
                 'daily_move':    daily_move if 'daily_move' in dir() else 0,
                 'fragility':     fragility  if 'fragility'  in dir() else 0,
-                'delta_bn':      delta_bn   if 'delta_bn'   in dir() else 0,
-                'vanna_bn':      vanna_bn   if 'vanna_bn'   in dir() else 0,
-                'charm_bn':      charm_bn   if 'charm_bn'   in dir() else 0,
+                'delta_bn':      _greek_cache.get('delta_bn', 0),
+                'vanna_bn':      _greek_cache.get('vanna_bn', 0),
+                'charm_bn':      _greek_cache.get('charm_bn', 0),
+                # Flow score z-components (real BBG)
+                'z_cta':         fp_score.get('z_cta', 0)        if isinstance(fp_score, dict) else 0,
+                'z_dealer':      fp_score.get('z_dealer', 0)     if isinstance(fp_score, dict) else 0,
+                'z_volctrl':     fp_score.get('z_volctrl', 0)    if isinstance(fp_score, dict) else 0,
+                'z_rp':          fp_score.get('z_rp', 0)         if isinstance(fp_score, dict) else 0,
+                'z_leveraged':   fp_score.get('z_leveraged', 0)  if isinstance(fp_score, dict) else 0,
+                'z_passive_etf': fp_score.get('z_passive_etf', 0) if isinstance(fp_score, dict) else 0,
+                'z_buyback':     fp_score.get('z_buyback', 0)    if isinstance(fp_score, dict) else 0,
+                'z_cot':         fp_score.get('z_cot', 0)        if isinstance(fp_score, dict) else 0,
             }
 
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
