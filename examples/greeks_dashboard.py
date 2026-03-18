@@ -2737,9 +2737,10 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
                 y=[last_notional, end_notional_1w, end_notional_1m],
                 name=name,
                 mode='lines+markers',
-                line=dict(color=color, width=2, dash='dot'),
-                marker=dict(size=6, color=color),
-                legendgroup=name),
+                line=dict(color=color, width=2.5, dash='dot'),
+                marker=dict(size=8, color=color),
+                visible=True,
+                showlegend=True),
                 row=1, col=1)
 
         fig.add_hline(y=0, line_dash='dash', line_color='rgba(150,150,150,0.5)',
@@ -2755,19 +2756,21 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         bar_colors_1m = ['#00E676' if f > 0 else '#FF1744' for f in flows_1m]
 
         fig.add_trace(go.Bar(
-            x=names, y=flows_1w, name='1 Week Flow',
+            x=names, y=flows_1w, name='1 Semana',
             marker_color=bar_colors_1w,
             text=[f'${f:+.1f}B' for f in flows_1w],
-            textposition='outside',
-            textfont=dict(size=10)),
+            textposition='auto',
+            textfont=dict(size=10, color='white'),
+            cliponaxis=False),
             row=2, col=1)
 
         fig.add_trace(go.Bar(
-            x=names, y=flows_1m, name='1 Month Flow',
+            x=names, y=flows_1m, name='1 Mês',
             marker_color=bar_colors_1m,
             text=[f'${f:+.1f}B' for f in flows_1m],
-            textposition='outside',
-            textfont=dict(size=10),
+            textposition='auto',
+            textfont=dict(size=10, color='white'),
+            cliponaxis=False,
             opacity=0.7),
             row=2, col=1)
 
@@ -2785,6 +2788,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         fig.update_layout(**{ax: dict(
             gridcolor=_C['border'], zerolinecolor=_C['border'],
             tickfont=dict(color=_C['text_muted']))})
+    fig.update_layout(yaxis2=dict(autorange=True))
     # Make subplot titles use theme color
     for ann in fig.layout.annotations:
         ann.font.color = _C['text']
