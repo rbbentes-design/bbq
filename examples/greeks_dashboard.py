@@ -7690,6 +7690,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
 .up{color:var(--c)}.dn{color:var(--c40)}
 @keyframes tck{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 </style>
+<script src="https://unpkg.com/zdog@1/dist/zdog.dist.min.js"></script>
 </head>
 <body>
 <canvas id="bg"></canvas>
@@ -7697,10 +7698,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
 
 <!-- BOOT -->
 <div id="boot">
-  <div class="brw">
-    <div class="bri bri1"></div><div class="bri bri2"></div><div class="bri bri3"></div>
-    <div class="bcore"></div>
-  </div>
+  <canvas id="boot-reactor" width="80" height="80" style="display:block;margin-bottom:16px"></canvas>
   <div class="btitle">INICIALIZANDO J.A.R.V.I.S</div>
   <div id="blog"></div>
 </div>
@@ -7729,10 +7727,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
 
   <!-- HEADER -->
   <div class="hdr">
-    <div class="reactor">
-      <div class="ri ri1"></div><div class="ri ri2"></div><div class="ri ri3"></div>
-      <div class="rcore"></div>
-    </div>
+    <canvas id="hdr-reactor" width="32" height="32" style="flex-shrink:0;cursor:grab"></canvas>
     <div class="brand">
       <div class="bn">J.A.R.V.I.S</div>
       <div class="bs">JUST A RATHER VERY INTELLIGENT SYSTEM  ·  OPTIONS CORE  ·  v4.2</div>
@@ -7815,7 +7810,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
         <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>COMPONENTES FLOW SCORE — Z-SCORE</div>
-          <div class="cw" style="flex:1;min-height:280px"><canvas id="flowChart"></canvas></div>
+          <div class="cw" style="flex:1;min-height:360px"><canvas id="flowChart"></canvas></div>
         </div>
 
         <!-- Gamma Squeeze -->
@@ -7964,12 +7959,44 @@ document.querySelectorAll('.tb').forEach(b=>b.addEventListener('click',()=>{
   document.getElementById('tab-'+b.dataset.t).classList.add('act');
 }));
 
+// ── ZDOG REACTORS ──────────────────────────────────────────────────────────
+(function(){
+  if(typeof Zdog==='undefined') return;
+  function mkR(id,sz,drag){
+    const cvs=document.getElementById(id); if(!cvs) return;
+    cvs.width=sz; cvs.height=sz;
+    const illo=new Zdog.Illustration({element:'#'+id,resize:false,zoom:sz/90,dragRotate:!!drag});
+    const c1='rgba(0,212,232,.95)',c2='rgba(0,212,232,.55)',c3='rgba(0,212,232,.22)';
+    new Zdog.Ellipse({addTo:illo,diameter:62,stroke:3,color:c1,fill:false,rotate:{x:Zdog.TAU/4}});
+    new Zdog.Ellipse({addTo:illo,diameter:44,stroke:2.2,color:c2,fill:false,rotate:{x:Zdog.TAU/6,y:Zdog.TAU/8}});
+    new Zdog.Ellipse({addTo:illo,diameter:26,stroke:1.5,color:c3,fill:false,rotate:{x:-Zdog.TAU/5,y:-Zdog.TAU/6}});
+    new Zdog.Shape({addTo:illo,stroke:10,color:'rgba(0,212,232,1)',translate:{z:5}});
+    new Zdog.Shape({addTo:illo,stroke:20,color:'rgba(0,212,232,.1)',translate:{z:3}});
+    let t=0;
+    (function anim(){t+=0.007;illo.rotate.y=t;illo.updateRenderGraph();requestAnimationFrame(anim)})();
+  }
+  mkR('boot-reactor',80,false);
+  mkR('hdr-reactor',32,true);
+})();
+
+// ── BOOT VOICE ────────────────────────────────────────────────────────────────
+function _jvSpeak(txt){
+  if(!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(txt);
+  u.lang='en-US'; u.pitch=0.72; u.rate=0.88; u.volume=0.72;
+  function go(){speechSynthesis.speak(u);}
+  if(speechSynthesis.getVoices().length>0) go();
+  else { speechSynthesis.onvoiceschanged=function(){speechSynthesis.onvoiceschanged=null;go();};
+         setTimeout(go,250); }
+}
+
 // ── BOOT
 const BL=['Inicializando núcleo de risco...','Carregando superfície de vol...','Conectando feed OI...','Compilando GEX matrix...','Calibrando modelos de cauda...','Sincronizando posicionamento CTA...','Sistema operacional — ONLINE'];
 let bi=0;const bel=document.getElementById('blog');
 (function nb(){if(bi<BL.length){bel.innerHTML+=BL[bi++]+'<br>';setTimeout(nb,260)}
  else setTimeout(()=>{document.getElementById('boot').classList.add('gone');
-   document.getElementById('app').classList.add('on');buildAll()},500);})();
+   document.getElementById('app').classList.add('on');buildAll();_jvSpeak('Welcome trader. J A R V I S online.')},500);})();
 
 // ── ARC GAUGE — intensity via opacity only (monochromatic)
 function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=110}){
@@ -8047,7 +8074,7 @@ function buildAll(){
   // PAINEL gauges row 1
   const g1=document.getElementById('gr1');
   [{v:__JV_V_FRAG__,mn:0,mx:20,label:'FRAGILIDADE',unit:'%',state:'ALTO',intensity:0.95},
-   {v:__JV_V_IVRV__,mn:0,mx:10,label:'PRÊMIO VOL',unit:'%',intensity:0.55},
+   {v:__JV_V_IVRV__,mn:0,mx:10,label:'PRÊMIO VOL',state:'pp',intensity:0.55},
    {v:8.42,mn:-15,mx:15,label:'SKEW P25-C25',unit:'%',intensity:0.65},
    {v:__JV_V_MOVE__,mn:0,mx:5,label:'MOV ESP 10',unit:'%',intensity:0.35}
   ].forEach(g=>arcGauge(g1,g));
@@ -8087,10 +8114,11 @@ function buildAll(){
       }]
     },
     options:{responsive:true,maintainAspectRatio:false,
+      layout:{padding:{bottom:20}},
       plugins:{legend:{display:false},tooltip:TT},
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.6)'}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.6)'},min:-3.5,max:4,
+        x:{grid:{color:G},ticks:{color:'rgba(0,200,220,.9)',font:{size:10,family:"'Orbitron',sans-serif"},maxRotation:45,minRotation:45},border:{color:'rgba(0,80,100,.2)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,180,200,.7)'},min:-3.5,max:4,
           title:{display:true,text:'Z-Score',color:'rgba(0,120,150,.5)',font:{size:8}}}
       }
     }
@@ -8098,10 +8126,10 @@ function buildAll(){
 
   // GREGAS — semis
   const sg=document.getElementById('sgr');
-  [{v:-514.42,mn:-800,mx:0,label:'Δ DELTA NOCIONAL',intensity:1},
-   {v:-23.02,mn:-40,mx:0,label:'Γ GAMMA (GEX NET)',intensity:0.4},
-   {v:0.03,mn:-1,mx:1,label:'V VANNA',intensity:0.25},
-   {v:-12.15,mn:-20,mx:0,label:'C CHARM (DIÁRIO)',intensity:0.8}
+  [{v:__JV_V_DELTA__,mn:__JV_V_DELTA_MIN__,mx:__JV_V_DELTA_MAX__,label:'Δ DELTA NOCIONAL',intensity:1},
+   {v:__JV_V_GEX_SEMI__,mn:-40,mx:40,label:'Γ GAMMA (GEX NET)',intensity:0.4},
+   {v:__JV_V_VANNA__,mn:__JV_V_VANNA_MIN__,mx:__JV_V_VANNA_MAX__,label:'V VANNA',intensity:0.25},
+   {v:__JV_V_CHARM__,mn:__JV_V_CHARM_MIN__,mx:__JV_V_CHARM_MAX__,label:'C CHARM (DIÁRIO)',intensity:0.8}
   ].forEach(g=>semiGauge(sg,g));
 
   // GREGAS — overhang
@@ -8277,61 +8305,79 @@ document.getElementById('ti').innerHTML=th+th;
 """
 
 def _export_dashboard_html():
-    """Exporta JARVIS HUD HTML standalone — 100% fiel ao jarvis_final design."""
+    """Exporta JARVIS HUD HTML standalone — 100% fiel ao jarvis_final v2."""
     if not _snapshot.get('ts'):
         return None
 
-    m = _snapshot.get('metrics', {})
+    m    = _snapshot.get('metrics', {})
     spot = _snapshot['spot']
-    import math as _math
 
-    # ── Compute display values ────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def _f(k, default=0):
+        v = m.get(k, default)
+        return float(v) if isinstance(v, (int, float)) else default
+
+    def _sym_range(v, factor=1.5, min_abs=1.0):
+        """Symmetric range centred on 0 for semi-gauges."""
+        mag = max(min_abs, abs(v) * factor)
+        return round(-mag, 1), round(mag, 1)
+
+    # ── Metric strings ────────────────────────────────────────────────────────
     _spot_s      = f"{spot:,.0f}"
-    _flip_raw    = float(m.get('gamma_flip', 0) or 0)
+    _flip_raw    = _f('gamma_flip')
     _flip_s      = f"{_flip_raw:,.0f}" if _flip_raw else "N/A"
     _flip_num    = round(_flip_raw)
     _spot_r10    = round(spot / 10) * 10
     _flip_r10    = round(_flip_num / 10) * 10
 
-    _gex_raw     = float(m.get('gex_net_bn', 0) or 0)
+    _gex_raw     = _f('gex_net_bn')
     _gex_sign    = "\u2212" if _gex_raw < 0 else "+"
     _gex_s       = f"{_gex_sign}{abs(_gex_raw):.1f}B"
     _gex_t       = f"{_gex_sign}${abs(_gex_raw):.1f}B"
 
-    _pc_raw      = float(m.get('pc_ratio', 0) or 0)
+    _pc_raw      = _f('pc_ratio')
     _pc_s        = f"{_pc_raw:.2f}\u00d7"
 
-    _ivrv_raw    = float(m.get('iv_rv_pp', 0) or 0)
+    _ivrv_raw    = _f('iv_rv_pp')
     _ivrv_s      = f"{_ivrv_raw:+.1f}pp"
     _ivrv_prem_s = f"{_ivrv_raw:+.2f}%"
 
-    _sq_raw      = m.get('squeeze_score', 0)
-    _sq_num      = float(_sq_raw) if isinstance(_sq_raw, (int, float)) else 0.0
-    _sq_s        = f"{_sq_num:.0f}/100"
-    _sq_int_s    = f"{_sq_num:.0f}"
+    _sq_raw      = _f('squeeze_score')
+    _sq_s        = f"{_sq_raw:.0f}/100"
+    _sq_int_s    = f"{_sq_raw:.0f}"
 
-    _tail_raw    = float(m.get('tail_score', 0) or 0)
+    _tail_raw    = _f('tail_score')
     _tail_s      = f"{_tail_raw:.1f}/100"
     _tail_num_s  = f"{_tail_raw:.1f}"
     _tail_int_s  = f"{_tail_raw:.0f}"
 
-    _iv30_raw    = float(m.get('iv_30d', 0) or 0)
-    _rv30_raw    = float(m.get('rv_30d', 0) or 0)
+    _iv30_raw    = _f('iv_30d')
+    _rv30_raw    = _f('rv_30d')
     _iv30_s      = f"{_iv30_raw*100:.2f}%"
     _rv30_s      = f"{_rv30_raw*100:.2f}%"
 
-    _cw_raw      = float(m.get('call_wall', 0) or 0)
-    _pw_raw      = float(m.get('put_wall',  0) or 0)
+    _cw_raw      = _f('call_wall')
+    _pw_raw      = _f('put_wall')
     _cw_s        = f"{_cw_raw:,.0f}" if _cw_raw else "N/A"
     _pw_s        = f"{_pw_raw:,.0f}" if _pw_raw else "N/A"
 
-    _frag_raw    = float(m.get('fragility', 0) or 0)
+    # ── JS gauge values ───────────────────────────────────────────────────────
+    _frag_raw    = _f('fragility')
     _frag_v      = round(_frag_raw * 100, 2) if abs(_frag_raw) <= 1.0 else round(abs(_frag_raw), 2)
-    _move_raw    = float(m.get('daily_move', 0) or 0)
+    _move_raw    = _f('daily_move')
     _move_v      = round(abs(_move_raw) * 100, 2) if abs(_move_raw) <= 1.0 else round(abs(_move_raw), 2)
     _ivrv_v      = round(abs(_ivrv_raw), 2)
-    _sq_v        = round(_sq_num, 1)
+    _sq_v        = round(_sq_raw, 1)
     _tail_v      = round(_tail_raw, 1)
+
+    # ── Greek semi-gauge values (real BBG) ────────────────────────────────────
+    _delta_v     = round(_f('delta_bn'), 2)
+    _delta_min, _delta_max = _sym_range(_delta_v, factor=1.5, min_abs=5.0)
+    _vanna_v     = round(_f('vanna_bn'), 3)
+    _vanna_min, _vanna_max = _sym_range(_vanna_v, factor=2.0, min_abs=0.5)
+    _charm_v     = round(_f('charm_bn'), 3)
+    _charm_min, _charm_max = _sym_range(_charm_v, factor=2.0, min_abs=0.2)
+    _gex_semi    = round(_gex_raw, 2)
 
     # ── Apply replacements ────────────────────────────────────────────────────
     _html = _JARVIS_EXPORT_TEMPLATE
@@ -8363,8 +8409,20 @@ def _export_dashboard_html():
     _html = _html.replace('__JV_GEX_T__',      _gex_t)
     _html = _html.replace('__JV_PC_T__',       _pc_s)
     _html = _html.replace('__JV_SQ_T__',       _sq_s)
+    # Greek semi-gauges (real BBG)
+    _html = _html.replace('__JV_V_GEX_SEMI__',  str(_gex_semi))
+    _html = _html.replace('__JV_V_DELTA__',      str(_delta_v))
+    _html = _html.replace('__JV_V_DELTA_MIN__',  str(_delta_min))
+    _html = _html.replace('__JV_V_DELTA_MAX__',  str(_delta_max))
+    _html = _html.replace('__JV_V_VANNA__',      str(_vanna_v))
+    _html = _html.replace('__JV_V_VANNA_MIN__',  str(_vanna_min))
+    _html = _html.replace('__JV_V_VANNA_MAX__',  str(_vanna_max))
+    _html = _html.replace('__JV_V_CHARM__',      str(_charm_v))
+    _html = _html.replace('__JV_V_CHARM_MIN__',  str(_charm_min))
+    _html = _html.replace('__JV_V_CHARM_MAX__',  str(_charm_max))
 
     return _html
+
 
 
 def _collect_widget_content(widget):
@@ -11390,6 +11448,9 @@ def run_analysis(_):
                 'put_wall':      put_wall,
                 'daily_move':    daily_move if 'daily_move' in dir() else 0,
                 'fragility':     fragility  if 'fragility'  in dir() else 0,
+                'delta_bn':      delta_bn   if 'delta_bn'   in dir() else 0,
+                'vanna_bn':      vanna_bn   if 'vanna_bn'   in dir() else 0,
+                'charm_bn':      charm_bn   if 'charm_bn'   in dir() else 0,
             }
 
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
