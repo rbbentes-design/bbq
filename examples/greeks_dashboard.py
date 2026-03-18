@@ -7784,11 +7784,12 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
         </div>
         <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
-          <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPX</div>
-          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">
-            <span style="color:rgba(0,212,232,.85)">Call Wall</span> = resistência onde dealers são short calls &nbsp;·&nbsp;
-            <span style="color:rgba(255,200,0,.8)">Gamma Flip</span> = abaixo deste nível vol acelera &nbsp;·&nbsp;
-            <span style="color:rgba(0,212,232,.45)">Put Wall</span> = suporte onde dealers são short puts
+          <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPOT vs REFERÊNCIAS</div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px;line-height:1.7">
+            <span style="color:rgba(0,212,232,.9);font-weight:700">▲ Call Wall</span> = teto de resistência (dealers venderam calls aqui) &nbsp;·&nbsp;
+            <span style="color:rgba(245,166,35,.95);font-weight:700">◆ Gamma Flip</span> = divisor crítico: acima=vol amortecida, abaixo=vol amplificada &nbsp;·&nbsp;
+            <span style="color:rgba(0,212,232,.5);font-weight:700">▼ Put Wall</span> = piso de suporte (dealers venderam puts aqui) &nbsp;·&nbsp;
+            linhas tracejadas = projeção de movimento esperado pela IV em 5 dias
           </div>
           <div class="cw" style="flex:1;min-height:380px"><canvas id="levChart"></canvas></div>
         </div>
@@ -8143,69 +8144,116 @@ function buildAll(){
     }
   });
 
-  // ESTRUTURA — Gamma Levels
-  const days=['Fev 22','Fev 25','Mar 1','Mar 4','Mar 8','Mar 11','Mar 15'];
-  const spx= [__JV_SPX_D0__,__JV_SPX_D1__,__JV_SPX_D2__,__JV_SPX_D3__,__JV_SPX_D4__,__JV_SPX_D5__,__JV_SPOT_NUM__];
-  // Key levels — real BBG values via Python placeholders
+  // ESTRUTURA — Gamma Levels (snapshot — sem dados históricos falsos)
   const lvSpot=__JV_SPOT_NUM__;
   const lvCW=__JV_CW_NUM__;
   const lvPW=__JV_PW_NUM__;
   const lvFlip=__JV_FLIP_NUM__;
   const lvEstUp=__JV_EST_UP_NUM__;
   const lvEstDn=__JV_EST_DN_NUM__;
-  const lvMin=Math.min(lvPW,lvEstDn,lvFlip)-80;
-  const lvMax=Math.max(lvCW,lvEstUp)+80;
+  const lvRange=Math.max(200,(lvCW-lvPW)*0.35,Math.abs(lvEstUp-lvSpot)*1.8);
+  const lvMin=Math.min(lvPW,lvEstDn,lvSpot)-lvRange;
+  const lvMax=Math.max(lvCW,lvEstUp,lvSpot)+lvRange;
+
+  // Determina a zona atual do SPX
+  const zoneLabel=lvSpot>lvCW?'ACIMA CALL WALL — Mercado empurrado':
+                  lvSpot>lvFlip?'ACIMA GAMMA FLIP — Vol baixa, dealers compram dip':
+                  lvSpot>lvPW?'ABAIXO FLIP — Vol pode acelerar, zona de risco':
+                  'ABAIXO PUT WALL — Suporte em risco, vol extrema';
+  const zoneColor=lvSpot>lvFlip?'rgba(0,212,232,.9)':'rgba(248,81,73,.9)';
 
   new Chart(document.getElementById('levChart'),{
     type:'line',
-    data:{labels:days,datasets:[
-      {label:'SPX (preço)',
-       data:spx,borderColor:'rgba(0,212,232,.95)',borderWidth:2,
-       pointRadius:3,pointBackgroundColor:'rgba(0,212,232,.9)',fill:false,tension:0.15},
-      {label:`Call Wall ${lvCW.toLocaleString()} — resistência (dealers short calls)`,
-       data:Array(7).fill(lvCW),borderColor:'rgba(0,212,232,.7)',
-       borderWidth:1.5,borderDash:[8,4],pointRadius:0,fill:false},
-      {label:`Gamma Flip ${lvFlip.toLocaleString()} — acima=vol baixa, abaixo=vol alta`,
-       data:Array(7).fill(lvFlip),borderColor:'rgba(255,200,0,.6)',
-       borderWidth:1.5,borderDash:[6,4],pointRadius:0,fill:false},
-      {label:`Put Wall ${lvPW.toLocaleString()} — suporte (dealers short puts)`,
-       data:Array(7).fill(lvPW),borderColor:'rgba(0,212,232,.3)',
-       borderWidth:1.5,borderDash:[4,5],pointRadius:0,fill:false},
-      {label:`Mov Est +5d (IV) ${lvEstUp.toLocaleString()}`,
-       data:Array(7).fill(lvEstUp),borderColor:'rgba(0,212,232,.18)',
-       borderWidth:1,borderDash:[2,6],pointRadius:0,fill:false},
-      {label:`Mov Est −5d (IV) ${lvEstDn.toLocaleString()}`,
-       data:Array(7).fill(lvEstDn),borderColor:'rgba(248,81,73,.18)',
-       borderWidth:1,borderDash:[2,6],pointRadius:0,fill:false},
-      {label:'Spot atual',
-       data:[...Array(6).fill(null),lvSpot],type:'scatter',
-       pointRadius:9,pointBackgroundColor:'rgba(0,212,232,1)',
-       pointBorderColor:'rgba(0,212,232,.3)',pointBorderWidth:3}
+    data:{labels:['HOJE','PROJ +5d'],datasets:[
+      // Zona de range esperado (fill entre up e dn)
+      {label:'Zona IV +5d',
+       data:[lvSpot,lvEstUp],borderColor:'rgba(0,212,232,.08)',
+       backgroundColor:'rgba(0,212,232,.06)',
+       borderWidth:0,pointRadius:0,fill:'+1',tension:0},
+      {label:'Zona IV −5d',
+       data:[lvSpot,lvEstDn],borderColor:'rgba(248,81,73,.08)',
+       backgroundColor:'rgba(248,81,73,.06)',
+       borderWidth:0,pointRadius:0,fill:false,tension:0},
+      // Linhas de referência horizontais
+      {label:`▲ CALL WALL  ${lvCW.toLocaleString('pt-BR')}`,
+       data:[lvCW,lvCW],
+       borderColor:'rgba(0,212,232,.85)',borderWidth:2,borderDash:[12,5],
+       pointRadius:0,fill:false},
+      {label:`◆ GAMMA FLIP  ${lvFlip.toLocaleString('pt-BR')}`,
+       data:[lvFlip,lvFlip],
+       borderColor:'rgba(245,166,35,.95)',borderWidth:2.5,borderDash:[8,4],
+       pointRadius:0,fill:false},
+      {label:`▼ PUT WALL  ${lvPW.toLocaleString('pt-BR')}`,
+       data:[lvPW,lvPW],
+       borderColor:'rgba(0,212,232,.45)',borderWidth:2,borderDash:[12,5],
+       pointRadius:0,fill:false},
+      // Projeção +5d
+      {label:`→ IV +5d  ${lvEstUp.toLocaleString('pt-BR')}`,
+       data:[lvSpot,lvEstUp],
+       borderColor:'rgba(0,212,232,.35)',borderWidth:1.5,borderDash:[4,6],
+       pointRadius:[0,6],pointBackgroundColor:'rgba(0,212,232,.5)',fill:false,tension:0},
+      {label:`→ IV −5d  ${lvEstDn.toLocaleString('pt-BR')}`,
+       data:[lvSpot,lvEstDn],
+       borderColor:'rgba(248,81,73,.35)',borderWidth:1.5,borderDash:[4,6],
+       pointRadius:[0,6],pointBackgroundColor:'rgba(248,81,73,.5)',fill:false,tension:0},
+      // Spot atual (ponto grande)
+      {label:`● SPX SPOT  ${lvSpot.toLocaleString('pt-BR')}`,
+       data:[lvSpot,null],type:'scatter',
+       pointRadius:14,pointHoverRadius:16,
+       pointBackgroundColor:'rgba(0,212,232,1)',
+       pointBorderColor:'rgba(0,212,232,.25)',pointBorderWidth:5}
     ]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{
         legend:{
-          labels:{color:'rgba(0,200,220,.75)',boxWidth:20,padding:10,
-            font:{size:10,family:"'Share Tech Mono',monospace"},
-            filter:i=>i.text!=='Spot atual'}
+          position:'top',
+          labels:{color:'rgba(0,200,220,.85)',boxWidth:24,padding:14,
+            font:{size:11,family:"'Share Tech Mono',monospace"},
+            filter:i=>!i.text.startsWith('Zona')}
         },
         tooltip:{...TT,callbacks:{
+          title:()=>'',
           label:ctx=>{
-            const v=ctx.parsed.y;
-            const hints={
-              'Call Wall':'Resistência — concentração de calls vendidas pelos dealers',
-              'Gamma Flip':'Acima: mercado pinado, baixa vol | Abaixo: movimentos ampliados',
-              'Put Wall':'Suporte — concentração de puts vendidas pelos dealers',
-              'SPX':'Preço de fechamento do S&P 500'
+            const v=ctx.parsed.y; if(v==null||v===undefined) return null;
+            const desc={
+              'CALL WALL':'Resistência — dealers são short calls, mercado trava aqui',
+              'GAMMA FLIP':'Acima: dealers compram dips, vol baixa | Abaixo: vol acelera',
+              'PUT WALL':'Suporte — dealers são short puts, mercado rebate aqui',
+              'SPX SPOT':'Preço atual do SPX',
+              'IV +5d':'Estimativa de alta pelo mercado de opções (1σ em 5 dias)',
+              'IV −5d':'Estimativa de queda pelo mercado de opções (1σ em 5 dias)'
             };
-            const k=Object.keys(hints).find(k=>ctx.dataset.label.includes(k));
-            return k?[`${v.toLocaleString()}`,hints[k]]:`${v.toLocaleString()}`;
+            const k=Object.keys(desc).find(k=>ctx.dataset.label.includes(k));
+            return k?[`${v.toLocaleString('pt-BR')}  —  ${desc[k]}`]:`${v.toLocaleString('pt-BR')}`;
           }
+        }},
+        // Anotação da zona atual — via plugin customizado inline
+        customZone:{id:'customZone',afterDraw(chart){
+          const {ctx,chartArea:{left,right,top}}=chart;
+          ctx.save();
+          ctx.fillStyle=zoneColor;
+          ctx.font=`bold 11px 'Share Tech Mono',monospace`;
+          ctx.textAlign='left';
+          ctx.fillText('ZONA: '+zoneLabel,left+10,top+18);
+          ctx.restore();
         }}
       },
+      plugins:[{id:'customZone',afterDraw(chart){
+        const {ctx,chartArea:{left,top}}=chart;
+        ctx.save();
+        ctx.fillStyle=zoneColor;
+        ctx.font=`bold 11px 'Share Tech Mono',monospace`;
+        ctx.textAlign='left';
+        ctx.fillText('ZONA: '+zoneLabel,left+10,top+18);
+        ctx.restore();
+      }}],
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.55)',font:{size:10}}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.55)',font:{size:10}},min:lvMin,max:lvMax}
+        x:{grid:{color:G},
+          ticks:{color:'rgba(0,200,220,.8)',font:{size:13,family:"'Orbitron',sans-serif"}}},
+        y:{grid:{color:G},
+          ticks:{color:'rgba(0,140,170,.7)',font:{size:11},
+            callback:v=>v.toLocaleString('pt-BR')},
+          min:lvMin,max:lvMax}
       }
     }
   });
@@ -8488,18 +8536,11 @@ def _export_dashboard_html():
     _est_move_5d = round(spot * (_iv30_raw if _iv30_raw > 0 else 0.15) * (5/252)**0.5)
     _est_up_num  = round(spot) + _est_move_5d
     _est_dn_num  = round(spot) - _est_move_5d
-    # Simulated recent SPX prices (±% noise ending at spot)
-    import math as _math
-    _spx_pts = [round(spot + _est_move_5d * (1.0 - i * 0.18)) for i in range(7)]
-    _spx_pts.reverse()  # ascending to current
-    _spx_pts[-1] = _spot_num  # ensure last = exact spot
     _html = _html.replace('__JV_SPOT_NUM__',   str(_spot_num))
     _html = _html.replace('__JV_CW_NUM__',     str(_cw_num))
     _html = _html.replace('__JV_PW_NUM__',     str(_pw_num))
     _html = _html.replace('__JV_EST_UP_NUM__', str(_est_up_num))
     _html = _html.replace('__JV_EST_DN_NUM__', str(_est_dn_num))
-    for _i, _v in enumerate(_spx_pts):
-        _html = _html.replace(f'__JV_SPX_D{_i}__', str(_v))
 
     # Flow score — 8 real BBG components
     import json as _json
