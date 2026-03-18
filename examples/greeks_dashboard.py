@@ -316,35 +316,36 @@ _JARVIS_JS = """
 (function(){
   /* ── Particles ─────────────────────────────────────────────────── */
   var pcv = document.getElementById('jarvis-pcv');
-  if (!pcv) return;
-  var ctx = pcv.getContext('2d'), W, H, pts = [];
-  function resize(){ W = pcv.width = window.innerWidth; H = pcv.height = window.innerHeight; }
-  resize(); window.addEventListener('resize', resize);
-  for(var i=0;i<55;i++) pts.push({
-    x:Math.random()*W, y:Math.random()*H,
-    vx:(Math.random()-.5)*.22, vy:(Math.random()-.5)*.22,
-    r:Math.random()*1.2+.4
-  });
-  function draw(){
-    ctx.clearRect(0,0,W,H);
-    ctx.lineWidth=.5; ctx.strokeStyle='rgba(0,200,255,.04)';
-    for(var x=0;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for(var y=0;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-    for(var i=0;i<pts.length;i++){
-      for(var j=i+1;j<pts.length;j++){
-        var dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y, d=Math.sqrt(dx*dx+dy*dy);
-        if(d<110){ctx.strokeStyle='rgba(0,200,255,'+(0.07*(1-d/110))+')';
-          ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.stroke();}
+  if(pcv){
+    var ctx = pcv.getContext('2d'), W, H, pts = [];
+    function resize(){ W = pcv.width = window.innerWidth; H = pcv.height = window.innerHeight; }
+    resize(); window.addEventListener('resize', resize);
+    for(var i=0;i<55;i++) pts.push({
+      x:Math.random()*W, y:Math.random()*H,
+      vx:(Math.random()-.5)*.22, vy:(Math.random()-.5)*.22,
+      r:Math.random()*1.2+.4
+    });
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      ctx.lineWidth=.5; ctx.strokeStyle='rgba(0,200,255,.04)';
+      for(var x=0;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+      for(var y=0;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+      for(var i=0;i<pts.length;i++){
+        for(var j=i+1;j<pts.length;j++){
+          var dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y, d=Math.sqrt(dx*dx+dy*dy);
+          if(d<110){ctx.strokeStyle='rgba(0,200,255,'+(0.07*(1-d/110))+')';
+            ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.stroke();}
+        }
+        pts[i].x+=pts[i].vx; pts[i].y+=pts[i].vy;
+        if(pts[i].x<0||pts[i].x>W) pts[i].vx*=-1;
+        if(pts[i].y<0||pts[i].y>H) pts[i].vy*=-1;
+        ctx.fillStyle='rgba(0,200,255,.45)';
+        ctx.beginPath();ctx.arc(pts[i].x,pts[i].y,pts[i].r,0,Math.PI*2);ctx.fill();
       }
-      pts[i].x+=pts[i].vx; pts[i].y+=pts[i].vy;
-      if(pts[i].x<0||pts[i].x>W) pts[i].vx*=-1;
-      if(pts[i].y<0||pts[i].y>H) pts[i].vy*=-1;
-      ctx.fillStyle='rgba(0,200,255,.45)';
-      ctx.beginPath();ctx.arc(pts[i].x,pts[i].y,pts[i].r,0,Math.PI*2);ctx.fill();
+      requestAnimationFrame(draw);
     }
-    requestAnimationFrame(draw);
+    draw();
   }
-  draw();
 
   /* ── Boot sequence ─────────────────────────────────────────────── */
   var boot = document.getElementById('jarvis-boot');

@@ -1,3 +1,6 @@
+---
+title: Accessing Your Portfolios in BQuant
+---
 # Accessing Your Portfolios in BQuant
 
 > Published on 05 January 2026 • Updated on 04 March 2026
