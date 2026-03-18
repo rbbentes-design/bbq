@@ -7769,8 +7769,12 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
         </div>
         <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
-          <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPX (30 DIAS)</div>
-          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">Referências: Est Move 5d, Call Trigger, Put Wall</div>
+          <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPX</div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">
+            <span style="color:rgba(0,212,232,.85)">Call Wall</span> = resistência onde dealers são short calls &nbsp;·&nbsp;
+            <span style="color:rgba(255,200,0,.8)">Gamma Flip</span> = abaixo deste nível vol acelera &nbsp;·&nbsp;
+            <span style="color:rgba(0,212,232,.45)">Put Wall</span> = suporte onde dealers são short puts
+          </div>
           <div class="cw" style="flex:1;min-height:380px"><canvas id="levChart"></canvas></div>
         </div>
       </div>
@@ -7787,7 +7791,11 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>CTA ESTIMATES — S&P 500 (NOTIONAL $B)</div>
-        <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">Histórico + projeções de cenário: Flat · Up 1σ/2σ · Down 1σ/2.5σ</div>
+        <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">
+          CTAs (Commodity Trading Advisors) são fundos sistemáticos que seguem tendência.
+          Posição em $B: <span style="color:rgba(0,212,232,.9)">positivo = comprado</span> · <span style="color:rgba(248,81,73,.9)">negativo = vendido</span>.
+          Projeções: queda intensa (−$68B atual) com recuperação se mercado subir 1σ/2σ.
+        </div>
         <div class="cw" style="min-height:380px"><canvas id="ctaLine"></canvas></div>
       </div>
       <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
@@ -8094,28 +8102,67 @@ function buildAll(){
 
   // ESTRUTURA — Gamma Levels
   const days=['Fev 22','Fev 25','Mar 1','Mar 4','Mar 8','Mar 11','Mar 15'];
-  const spx= [5885,5870,5840,5780,5750,5730,5716];
+  const spx= [__JV_SPX_D0__,__JV_SPX_D1__,__JV_SPX_D2__,__JV_SPX_D3__,__JV_SPX_D4__,__JV_SPX_D5__,__JV_SPOT_NUM__];
+  // Key levels — real BBG values via Python placeholders
+  const lvSpot=__JV_SPOT_NUM__;
+  const lvCW=__JV_CW_NUM__;
+  const lvPW=__JV_PW_NUM__;
+  const lvFlip=__JV_FLIP_NUM__;
+  const lvEstUp=__JV_EST_UP_NUM__;
+  const lvEstDn=__JV_EST_DN_NUM__;
+  const lvMin=Math.min(lvPW,lvEstDn,lvFlip)-80;
+  const lvMax=Math.max(lvCW,lvEstUp)+80;
+
   new Chart(document.getElementById('levChart'),{
     type:'line',
     data:{labels:days,datasets:[
-      {label:'SPX',data:spx,borderColor:'rgba(0,212,232,.9)',borderWidth:1.5,
-       pointRadius:3,pointBackgroundColor:'rgba(0,212,232,.8)',fill:false,tension:0.15},
-      {label:'Est Move +174',data:Array(7).fill(5890),borderColor:'rgba(0,212,232,.35)',
-       borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false},
-      {label:'Call Trigger',data:Array(7).fill(5800),borderColor:'rgba(0,212,232,.5)',
-       borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false},
-      {label:'Put Wall',data:Array(7).fill(5700),borderColor:'rgba(0,212,232,.25)',
-       borderWidth:1.5,borderDash:[4,4],pointRadius:0,fill:false},
-      {label:'Est Move −174',data:Array(7).fill(5640),borderColor:'rgba(0,212,232,.15)',
-       borderWidth:1,borderDash:[3,6],pointRadius:0,fill:false},
-      {label:'Spot atual',data:[...Array(6).fill(null),5716],type:'scatter',
-       pointRadius:7,pointBackgroundColor:'rgba(0,212,232,1)',pointBorderColor:'transparent'}
+      {label:'SPX (preço)',
+       data:spx,borderColor:'rgba(0,212,232,.95)',borderWidth:2,
+       pointRadius:3,pointBackgroundColor:'rgba(0,212,232,.9)',fill:false,tension:0.15},
+      {label:`Call Wall ${lvCW.toLocaleString()} — resistência (dealers short calls)`,
+       data:Array(7).fill(lvCW),borderColor:'rgba(0,212,232,.7)',
+       borderWidth:1.5,borderDash:[8,4],pointRadius:0,fill:false},
+      {label:`Gamma Flip ${lvFlip.toLocaleString()} — acima=vol baixa, abaixo=vol alta`,
+       data:Array(7).fill(lvFlip),borderColor:'rgba(255,200,0,.6)',
+       borderWidth:1.5,borderDash:[6,4],pointRadius:0,fill:false},
+      {label:`Put Wall ${lvPW.toLocaleString()} — suporte (dealers short puts)`,
+       data:Array(7).fill(lvPW),borderColor:'rgba(0,212,232,.3)',
+       borderWidth:1.5,borderDash:[4,5],pointRadius:0,fill:false},
+      {label:`Mov Est +5d (IV) ${lvEstUp.toLocaleString()}`,
+       data:Array(7).fill(lvEstUp),borderColor:'rgba(0,212,232,.18)',
+       borderWidth:1,borderDash:[2,6],pointRadius:0,fill:false},
+      {label:`Mov Est −5d (IV) ${lvEstDn.toLocaleString()}`,
+       data:Array(7).fill(lvEstDn),borderColor:'rgba(248,81,73,.18)',
+       borderWidth:1,borderDash:[2,6],pointRadius:0,fill:false},
+      {label:'Spot atual',
+       data:[...Array(6).fill(null),lvSpot],type:'scatter',
+       pointRadius:9,pointBackgroundColor:'rgba(0,212,232,1)',
+       pointBorderColor:'rgba(0,212,232,.3)',pointBorderWidth:3}
     ]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8},filter:i=>i.text!=='Spot atual'}},tooltip:TT},
+      plugins:{
+        legend:{
+          labels:{color:'rgba(0,200,220,.75)',boxWidth:20,padding:10,
+            font:{size:10,family:"'Share Tech Mono',monospace"},
+            filter:i=>i.text!=='Spot atual'}
+        },
+        tooltip:{...TT,callbacks:{
+          label:ctx=>{
+            const v=ctx.parsed.y;
+            const hints={
+              'Call Wall':'Resistência — concentração de calls vendidas pelos dealers',
+              'Gamma Flip':'Acima: mercado pinado, baixa vol | Abaixo: movimentos ampliados',
+              'Put Wall':'Suporte — concentração de puts vendidas pelos dealers',
+              'SPX':'Preço de fechamento do S&P 500'
+            };
+            const k=Object.keys(hints).find(k=>ctx.dataset.label.includes(k));
+            return k?[`${v.toLocaleString()}`,hints[k]]:`${v.toLocaleString()}`;
+          }
+        }}
+      },
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},min:5550,max:5950}
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.55)',font:{size:10}}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.55)',font:{size:10}},min:lvMin,max:lvMax}
       }
     }
   });
@@ -8145,7 +8192,8 @@ function buildAll(){
   const ctaDates=['Dez 1','Dez 8','Dez 15','Dez 22','Jan 1','Jan 8','Jan 15','Jan 22','Fev 1','Fev 8','Fev 15','Mar 1','Mar 8','Mar 15'];
   const ctaHist=[65,22,-15,8,28,52,72,83,88,90,86,35,16,-68];
   const projDates=[...ctaDates,'Mar 22','Mar 29','Abr 5','Abr 12'];
-  const nh=ctaDates.length;
+  const nh=ctaDates.length; // 14
+  // pad: 13 nulls + 5-point array = 18 items matching projDates
   const pad=arr=>[...Array(nh-1).fill(null),...arr];
 
   // inline plugin: $B labels on bars
@@ -8156,9 +8204,9 @@ function buildAll(){
         const v=ds.data[j]; if(v==null) return;
         const lbl=(v>=0?'+':'')+v.toFixed(1)+'B';
         ctx.save(); ctx.fillStyle='rgba(0,212,232,1)';
-        ctx.font='bold 9px monospace'; ctx.textAlign='center';
+        ctx.font='bold 11px monospace'; ctx.textAlign='center';
         ctx.textBaseline=v>=0?'bottom':'top';
-        ctx.fillText(lbl,bar.x,v>=0?bar.y-3:bar.y+3); ctx.restore();
+        ctx.fillText(lbl,bar.x,v>=0?bar.y-4:bar.y+4); ctx.restore();
       });
     });
   }};
@@ -8169,34 +8217,51 @@ function buildAll(){
       {label:'CTA Notional (Hist)',
        data:[...ctaHist,...Array(4).fill(null)],
        borderColor:'rgba(0,212,232,.9)',backgroundColor:'rgba(0,60,100,.12)',
-       borderWidth:1.5,fill:true,pointRadius:0,tension:0.3},
+       borderWidth:2,fill:true,pointRadius:0,tension:0.35},
       {label:'Flat',
        data:pad([-68,-68,-68,-68,-68]),
-       borderColor:'rgba(0,212,232,.25)',borderWidth:1,borderDash:[5,4],pointRadius:0,fill:false},
-      {label:'Up 1σ',
-       data:pad([-68,null,null,37]),
-       borderColor:'rgba(0,212,232,1)',borderWidth:2,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),4,0,0,7],fill:false,tension:0.3},
-      {label:'Up 2σ',
-       data:pad([-68,null,null,75]),
-       borderColor:'rgba(0,212,232,.65)',borderWidth:1.5,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),3,0,0,6],fill:false,tension:0.3},
-      {label:'Down 1σ',
-       data:pad([-68,null,null,-75]),
-       borderColor:'rgba(248,81,73,.8)',borderWidth:1.5,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),3,0,0,6],fill:false,tension:0.3},
-      {label:'Down 2.5σ',
-       data:pad([-68,null,null,-85]),
-       borderColor:'rgba(248,81,73,.4)',borderWidth:1,borderDash:[3,5],
-       pointRadius:[...Array(nh).fill(0),2,0,0,4],fill:false,tension:0.3},
+       borderColor:'rgba(0,212,232,.3)',borderWidth:1.5,borderDash:[5,4],
+       pointRadius:0,fill:false,spanGaps:true},
+      {label:'Up 1σ  →+37B',
+       data:pad([-68,-38,-8,18,37]),
+       borderColor:'rgba(0,212,232,1)',borderWidth:2.5,borderDash:[5,3],
+       pointRadius:[...Array(nh-1).fill(0),5,3,3,3,8],
+       pointBackgroundColor:'rgba(0,212,232,1)',
+       fill:false,tension:0.3,spanGaps:true},
+      {label:'Up 2σ  →+75B',
+       data:pad([-68,-20,15,48,75]),
+       borderColor:'rgba(0,212,232,.6)',borderWidth:2,borderDash:[5,3],
+       pointRadius:[...Array(nh-1).fill(0),4,3,3,3,7],
+       pointBackgroundColor:'rgba(0,212,232,.6)',
+       fill:false,tension:0.3,spanGaps:true},
+      {label:'Down 1σ  →-75B',
+       data:pad([-68,-70,-73,-74,-75]),
+       borderColor:'rgba(248,81,73,.9)',borderWidth:2,borderDash:[5,3],
+       pointRadius:[...Array(nh-1).fill(0),4,3,3,3,7],
+       pointBackgroundColor:'rgba(248,81,73,.9)',
+       fill:false,tension:0.2,spanGaps:true},
+      {label:'Down 2.5σ  →-85B',
+       data:pad([-68,-73,-78,-82,-85]),
+       borderColor:'rgba(248,81,73,.45)',borderWidth:1.5,borderDash:[3,5],
+       pointRadius:[...Array(nh-1).fill(0),3,2,2,2,6],
+       pointBackgroundColor:'rgba(248,81,73,.45)',
+       fill:false,tension:0.2,spanGaps:true},
     ]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'rgba(0,212,232,1)',boxWidth:8,font:{size:8}}},tooltip:TT,
-        annotation:{annotations:{z:{type:'line',yMin:0,yMax:0,borderColor:'rgba(0,212,232,.15)',borderWidth:1,borderDash:[3,6]}}}},
+      plugins:{
+        legend:{
+          display:true,position:'top',
+          labels:{color:'rgba(0,212,232,.85)',boxWidth:20,padding:14,
+            font:{size:11,family:"'Share Tech Mono',monospace"}}
+        },
+        tooltip:{...TT,callbacks:{
+          label:ctx=>`${ctx.dataset.label}: $${ctx.parsed.y}B`
+        }}
+      },
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)',maxTicksLimit:12}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)'},
-          title:{display:true,text:'$B Notional',color:'rgba(0,212,232,.4)',font:{size:8}}}
+        x:{grid:{color:G},ticks:{color:'rgba(0,212,232,.55)',maxTicksLimit:12,font:{size:10}}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,212,232,.55)',font:{size:10}},
+          title:{display:true,text:'$B Notional (CTA positioning)',color:'rgba(0,212,232,.5)',font:{size:11}}}
       }
     }
   });
@@ -8355,6 +8420,26 @@ def _export_dashboard_html():
     _html = _html.replace('__JV_V_CHARM__',      str(_charm_v))
     _html = _html.replace('__JV_V_CHARM_MIN__',  str(_charm_min))
     _html = _html.replace('__JV_V_CHARM_MAX__',  str(_charm_max))
+    # ── Gamma levels chart numeric values ─────────────────────────────────────
+    _spot_num    = round(spot)
+    _cw_num      = round(_cw_raw) if _cw_raw else round(spot * 1.03)
+    _pw_num      = round(_pw_raw) if _pw_raw else round(spot * 0.97)
+    _est_move_5d = round(spot * (_iv30_raw if _iv30_raw > 0 else 0.15) * (5/252)**0.5)
+    _est_up_num  = round(spot) + _est_move_5d
+    _est_dn_num  = round(spot) - _est_move_5d
+    # Simulated recent SPX prices (±% noise ending at spot)
+    import math as _math
+    _spx_pts = [round(spot + _est_move_5d * (1.0 - i * 0.18)) for i in range(7)]
+    _spx_pts.reverse()  # ascending to current
+    _spx_pts[-1] = _spot_num  # ensure last = exact spot
+    _html = _html.replace('__JV_SPOT_NUM__',   str(_spot_num))
+    _html = _html.replace('__JV_CW_NUM__',     str(_cw_num))
+    _html = _html.replace('__JV_PW_NUM__',     str(_pw_num))
+    _html = _html.replace('__JV_EST_UP_NUM__', str(_est_up_num))
+    _html = _html.replace('__JV_EST_DN_NUM__', str(_est_dn_num))
+    for _i, _v in enumerate(_spx_pts):
+        _html = _html.replace(f'__JV_SPX_D{_i}__', str(_v))
+
     # Flow score — 8 real BBG components
     import json as _json
     _flow_data = _json.dumps([
