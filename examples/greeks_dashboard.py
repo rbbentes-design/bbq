@@ -7241,7 +7241,7 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
     delta_bn = float(np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9)
     # Gamma:  op=subtract, scale=L²×0.01
     gamma_bn = float((np.nansum(greeks_now['gamma'][is_call] * oi_100[is_call]) -
-                      np.nansum(greeks_now['gamma'][is_put]  * oi_100[is_put])) * spot**2 * 0.01 / 1e9)
+                      np.nansum(greeks_now['gamma'][is_put]  * oi_100[is_put])) * spot**2 * 0.01 / 1e10)
     # Vanna:  op=subtract, scale=1  (sem spot)
     vanna_bn = float((np.nansum(greeks_now['vanna'][is_call] * oi_100[is_call]) -
                       np.nansum(greeks_now['vanna'][is_put]  * oi_100[is_put])) / 1e9)
@@ -7250,7 +7250,7 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
 
     # Escala dinâmica mínima por grega (SPX típico)
     g_delta = create_symmetric_gauge(delta_bn, 'Δ Delta Nocional',  max(5.0,  abs(delta_bn) * 1.5))
-    g_gamma = create_symmetric_gauge(gamma_bn, 'Γ Gamma (GEX Net)', max(3.0,  abs(gamma_bn) * 1.5))
+    g_gamma = create_symmetric_gauge(gamma_bn, 'Γ Gamma (GEX Net)', max(0.5,  abs(gamma_bn) * 1.5))
     g_vanna = create_symmetric_gauge(vanna_bn, 'V Vanna',           max(2.0,  abs(vanna_bn) * 1.5))
     g_charm = create_symmetric_gauge(charm_bn, 'C Charm (diário)',  max(0.5,  abs(charm_bn) * 1.5))
 
@@ -8314,7 +8314,7 @@ def run_analysis(_):
             # GEX curve (Plotly)
             fig_gex = go.FigureWidget()
             fig_gex.add_trace(go.Scatter(
-                x=levels, y=gamma_curve / 1e9, mode='lines',
+                x=levels, y=gamma_curve / 1e10, mode='lines',
                 fill='tozeroy', line_color=_C['accent'],
                 fillcolor='rgba(88,166,255,0.15)', name='GEX'))
             fig_gex.add_vline(x=spot, line_dash="dash", line_color=_C['red'],
@@ -8324,7 +8324,7 @@ def run_analysis(_):
                                   annotation_text=f"G-Flip {gamma_flip:,.0f}")
             fig_gex.update_layout(title="Gamma Exposure (GEX)",
                                   yaxis_title="$ Bi / 1% move",
-                                  height=350, template=DASH_TEMPLATE,
+                                  height=350, width=480, template=DASH_TEMPLATE,
                                   margin=dict(t=35, b=25), showlegend=False)
 
             # Return distribution (Plotly)
@@ -8350,7 +8350,7 @@ def run_analysis(_):
                                    yaxis_title="Prob.",
                                    xaxis_tickformat=".1%",
                                    xaxis_range=[_xlo, _xhi],
-                                   height=350, template=DASH_TEMPLATE,
+                                   height=350, width=480, template=DASH_TEMPLATE,
                                    margin=dict(t=35, b=25))
 
             # Sumário de vol e risco
@@ -8495,7 +8495,8 @@ def run_analysis(_):
 
             # ── Status bar ─────────────────────────────────────────────
             _flip_str = f"{gamma_flip:,.0f}"  if gamma_flip      else "N/A"
-            _gex_str  = f"{_sq_gex_v1:+.1f}B" if '_sq_gex_v1' in dir() else "N/A"
+            _gex_disp = _sq_gex_v1 * 0.1 if '_sq_gex_v1' in dir() else None
+            _gex_str  = f"{_gex_disp:+.1f}B" if _gex_disp is not None else "N/A"
             _pc_str   = f"{_sq_pc_v1:.2f}×"   if '_sq_pc_v1'  in dir() else "N/A"
             _ivrv_str = f"{(iv_30d - rv_30d)*100:+.1f}pp"
 
@@ -8649,10 +8650,11 @@ def run_analysis(_):
                  _cell(_fp_comps_w,   None, _DH),
                  _cell(_sq_detail_vb, None, _DH)],
                 layout=wd.Layout(
-                    grid_template_columns='repeat(3, 1fr)',
+                    grid_template_columns='repeat(3, minmax(420px, 1fr))',
                     grid_template_rows=f'{_DH}px',
                     gap='6px',
-                    width='100%'))
+                    width='100%',
+                    overflow_x='auto'))
 
             tab1 = wd.VBox([
                 _status_bar,
@@ -8666,7 +8668,7 @@ def run_analysis(_):
                 _sh('Estrutura de Mercado',
                     'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
                 wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
-                        layout={'flex_wrap': 'wrap', 'align_items': 'flex-start'}),
+                        layout={'flex_wrap': 'nowrap', 'align_items': 'flex-start', 'overflow_x': 'auto', 'width': '100%'}),
                 _sh('CTA Estimado & Resumo Narrativo'),
                 _home_cta,
                 wd.HTML(summary_html),
