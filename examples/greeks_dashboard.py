@@ -7424,19 +7424,19 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 #app.on{opacity:1}
 
 /* ── CMD STRIP ── */
-.cmd{display:flex;align-items:center;gap:5px;padding:4px 22px;
+.cmd{display:flex;align-items:center;gap:8px;padding:6px 24px;
   background:rgba(0,4,10,.98);border-bottom:1px solid var(--c08);flex-shrink:0}
-.cmd-id{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:700;letter-spacing:3px;
-  color:var(--c);display:flex;align-items:center;gap:5px;white-space:nowrap;margin-right:4px}
-.cmd-id::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--c);
-  box-shadow:0 0 6px var(--c);animation:blink 1.4s ease-in-out infinite;flex-shrink:0}
-.dvd{width:1px;height:14px;background:var(--c08);flex-shrink:0;margin:0 4px}
-.cs{display:flex;flex-direction:column;gap:0;flex-shrink:0}
-.csl{font-size:6px;letter-spacing:2px;color:var(--lbl)}
-.csv{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c)}
+.cmd-id{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:3px;
+  color:var(--c);display:flex;align-items:center;gap:6px;white-space:nowrap;margin-right:6px}
+.cmd-id::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--c);
+  box-shadow:0 0 8px var(--c);animation:blink 1.4s ease-in-out infinite;flex-shrink:0}
+.dvd{width:1px;height:18px;background:var(--c08);flex-shrink:0;margin:0 6px}
+.cs{display:flex;flex-direction:column;gap:1px;flex-shrink:0}
+.csl{font-size:9px;letter-spacing:2px;color:var(--lbl)}
+.csv{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;color:var(--c)}
 
 /* ── HEADER ── */
-.hdr{display:flex;align-items:center;padding:5px 22px;gap:12px;
+.hdr{display:flex;align-items:center;padding:8px 24px;gap:16px;
   background:linear-gradient(180deg,rgba(0,8,18,.98),rgba(0,4,10,.9));
   border-bottom:1px solid var(--c08);flex-shrink:0;position:relative}
 .hdr::after{content:'';position:absolute;bottom:0;left:0;width:15%;height:1px;
@@ -7452,119 +7452,119 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 @keyframes rpc{0%,100%{box-shadow:0 0 6px var(--c),0 0 12px var(--c)}
   50%{box-shadow:0 0 10px var(--c),0 0 22px var(--c),0 0 36px var(--c20)}}
 .brand{flex-shrink:0}
-.bn{font-family:'Orbitron',sans-serif;font-size:14px;font-weight:900;letter-spacing:4px;
-  color:var(--c);text-shadow:0 0 16px var(--c20)}
-.bs{font-size:6px;color:var(--lbl);letter-spacing:3px;margin-top:1px}
+.bn{font-family:'Orbitron',sans-serif;font-size:18px;font-weight:900;letter-spacing:5px;
+  color:var(--c);text-shadow:0 0 18px var(--c20)}
+.bs{font-size:9px;color:var(--lbl);letter-spacing:3px;margin-top:2px}
 .tabs{display:flex;align-items:stretch;gap:0;flex:1;justify-content:center}
-.tb{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:600;letter-spacing:3px;
-  color:var(--lbl);padding:0 16px;cursor:pointer;border:none;background:none;
+.tb{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:600;letter-spacing:3px;
+  color:var(--lbl);padding:0 20px;cursor:pointer;border:none;background:none;
   border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
 .tb:hover{color:var(--c40)}
 .tb.act{color:var(--c);border-bottom-color:var(--c)}
 .clkw{text-align:right;flex-shrink:0}
-.cll{font-size:6px;color:var(--lbl);letter-spacing:2px}
-.clv{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;color:var(--c)}
+.cll{font-size:9px;color:var(--lbl);letter-spacing:2px}
+.clv{font-family:'Orbitron',sans-serif;font-size:15px;font-weight:700;color:var(--c)}
 
 /* ── CONTENT ── */
 .content{flex:1;overflow-y:auto;overflow-x:hidden;min-height:0;
   scrollbar-width:thin;scrollbar-color:var(--c08) transparent}
-.content::-webkit-scrollbar{width:3px}
+.content::-webkit-scrollbar{width:4px}
 .content::-webkit-scrollbar-thumb{background:var(--c20)}
-.tp{display:none;flex-direction:column;gap:10px;padding:12px 18px}
+.tp{display:none;flex-direction:column;gap:16px;padding:20px 28px}
 .tp.act{display:flex}
 
 /* ── PANEL ── */
 .p{background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
   border:1px solid var(--brd);position:relative;
-  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px))}
-.p::before,.p::after,.p .cb,.p .ct{content:'';position:absolute;width:7px;height:7px;pointer-events:none}
+  clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px))}
+.p::before,.p::after,.p .cb,.p .ct{content:'';position:absolute;width:9px;height:9px;pointer-events:none}
 .p::before{top:-1px;left:-1px;border-top:1px solid var(--c40);border-left:1px solid var(--c40)}
 .p::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--c40);border-right:1px solid var(--c40)}
 .p .cb{bottom:-1px;left:-1px;border-bottom:1px solid var(--c40);border-left:1px solid var(--c40)}
 .p .ct{top:-1px;right:-1px;border-top:1px solid var(--c40);border-right:1px solid var(--c40)}
-.ph{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:700;letter-spacing:4px;
-  color:var(--c);padding-bottom:8px;border-bottom:1px solid var(--c08);margin-bottom:10px;
-  display:flex;align-items:center;gap:7px}
-.phd{width:4px;height:4px;background:var(--c);box-shadow:0 0 5px var(--c);flex-shrink:0}
+.ph{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:3px;
+  color:var(--c);padding-bottom:10px;border-bottom:1px solid var(--c08);margin-bottom:14px;
+  display:flex;align-items:center;gap:9px}
+.phd{width:5px;height:5px;background:var(--c);box-shadow:0 0 7px var(--c);flex-shrink:0}
 
 /* ── ARC GAUGE ── */
 .gc{clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
   background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
-  border:1px solid var(--brd);padding:10px 6px 8px;
+  border:1px solid var(--brd);padding:14px 10px 12px;
   display:flex;flex-direction:column;align-items:center}
 .gw{position:relative}
 .gv{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .gn{font-family:'Orbitron',sans-serif;font-weight:900;line-height:1}
-.gst{font-size:6px;letter-spacing:2px;margin-top:3px}
-.gl{font-family:'Orbitron',sans-serif;font-size:6px;font-weight:600;letter-spacing:2px;
-  text-transform:uppercase;margin-top:4px;color:var(--lbl);text-align:center;line-height:1.3}
-.gmm{display:flex;justify-content:space-between;font-size:6px;color:var(--c08);margin-top:1px}
+.gst{font-size:10px;letter-spacing:2px;margin-top:4px}
+.gl{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:600;letter-spacing:2px;
+  text-transform:uppercase;margin-top:6px;color:var(--lbl);text-align:center;line-height:1.4}
+.gmm{display:flex;justify-content:space-between;font-size:9px;color:var(--c08);margin-top:2px}
 
 /* ── SEMI GAUGE ── */
 .sc{clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,0 100%);
   background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
-  border:1px solid var(--brd);padding:8px 8px 10px;
-  display:flex;flex-direction:column;align-items:center;gap:2px}
-.sl2{font-family:'Orbitron',sans-serif;font-size:6px;letter-spacing:3px;color:var(--lbl);text-align:center}
-.sv{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;text-align:center;line-height:1.2;margin-top:2px}
+  border:1px solid var(--brd);padding:12px 12px 14px;
+  display:flex;flex-direction:column;align-items:center;gap:4px}
+.sl2{font-family:'Orbitron',sans-serif;font-size:10px;letter-spacing:3px;color:var(--lbl);text-align:center}
+.sv{font-family:'Orbitron',sans-serif;font-size:16px;font-weight:700;text-align:center;line-height:1.2;margin-top:4px}
 
 /* ── CARD ── */
 .card{clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%);
   background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
-  border:1px solid var(--brd);padding:9px 13px;display:flex;flex-direction:column;gap:3px}
-.cdl{font-size:6px;letter-spacing:3px;color:var(--lbl);text-transform:uppercase}
-.cdv{font-family:'Orbitron',sans-serif;font-size:17px;font-weight:700;line-height:1.1;color:var(--c)}
-.secl{font-family:'Orbitron',sans-serif;font-size:7px;letter-spacing:4px;color:var(--lbl);
-  padding:3px 0 2px;display:flex;align-items:center;gap:8px}
+  border:1px solid var(--brd);padding:13px 16px;display:flex;flex-direction:column;gap:5px}
+.cdl{font-size:10px;letter-spacing:3px;color:var(--lbl);text-transform:uppercase}
+.cdv{font-family:'Orbitron',sans-serif;font-size:22px;font-weight:700;line-height:1.1;color:var(--c)}
+.secl{font-family:'Orbitron',sans-serif;font-size:10px;letter-spacing:4px;color:var(--lbl);
+  padding:4px 0 3px;display:flex;align-items:center;gap:8px}
 .secl::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--c08),transparent)}
 
 /* ── RISK TABLE ── */
 .rt{width:100%;border-collapse:collapse}
-.rt th{font-family:'Orbitron',sans-serif;font-size:6px;letter-spacing:2px;color:var(--lbl);
-  padding:2px 5px;border-bottom:1px solid var(--c08);text-align:left}
-.rt td{font-size:9px;padding:4px 5px;border-bottom:1px solid var(--c04);color:var(--txt)}
-.rt td:last-child{text-align:right;font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c)}
+.rt th{font-family:'Orbitron',sans-serif;font-size:10px;letter-spacing:2px;color:var(--lbl);
+  padding:5px 8px;border-bottom:1px solid var(--c08);text-align:left}
+.rt td{font-size:12px;padding:7px 8px;border-bottom:1px solid var(--c04);color:var(--txt)}
+.rt td:last-child{text-align:right;font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;color:var(--c)}
 
 /* ── COMP BARS ── */
-.cbar{margin-bottom:8px}
-.cbh{display:flex;justify-content:space-between;margin-bottom:3px}
-.cbn{font-size:7px;color:var(--txt)}
-.cbs{font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;color:var(--c)}
-.cbt{height:3px;background:var(--c04);border-radius:1px;overflow:hidden}
-.cbf{height:100%;border-radius:1px;background:linear-gradient(90deg,var(--c08),var(--c))}
+.cbar{margin-bottom:12px}
+.cbh{display:flex;justify-content:space-between;margin-bottom:5px}
+.cbn{font-size:11px;color:var(--txt)}
+.cbs{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;color:var(--c)}
+.cbt{height:5px;background:var(--c04);border-radius:2px;overflow:hidden}
+.cbf{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--c08),var(--c))}
 
 /* ── SCORE BAR ── */
-.sbw{margin-top:10px}
-.sbl2{display:flex;justify-content:space-between;font-size:7px;color:var(--lbl);margin-bottom:4px}
-.sbt{height:3px;background:var(--c04);border-radius:1px;overflow:hidden}
-.sbf{height:100%;border-radius:1px;background:linear-gradient(90deg,var(--c08),var(--c));
-  box-shadow:0 0 8px var(--c20)}
+.sbw{margin-top:14px}
+.sbl2{display:flex;justify-content:space-between;font-size:11px;color:var(--lbl);margin-bottom:6px}
+.sbt{height:5px;background:var(--c04);border-radius:2px;overflow:hidden}
+.sbf{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--c08),var(--c));
+  box-shadow:0 0 10px var(--c20)}
 
 /* ── FLOW ITEMS ── */
-.flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.fhdr{font-family:'Orbitron',sans-serif;font-size:7px;letter-spacing:3px;color:var(--c60);
-  padding-bottom:6px;border-bottom:1px solid var(--c08);margin-bottom:8px;display:flex;align-items:center;gap:5px}
-.fi{display:flex;align-items:center;gap:8px;padding:5px 8px;
-  background:var(--c04);border:1px solid var(--brd);margin-bottom:4px}
-.fi-t{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c);width:44px;flex-shrink:0}
-.fi-bar{flex:1;height:3px;background:var(--c08);border-radius:1px;overflow:hidden}
-.fi-fill{height:100%;border-radius:1px}
-.fi-v{font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;color:var(--c);white-space:nowrap;margin-left:6px}
-.fi-s{font-size:7px;color:var(--lbl);white-space:nowrap;margin-left:4px}
+.flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.fhdr{font-family:'Orbitron',sans-serif;font-size:11px;letter-spacing:3px;color:var(--c60);
+  padding-bottom:8px;border-bottom:1px solid var(--c08);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.fi{display:flex;align-items:center;gap:10px;padding:8px 12px;
+  background:var(--c04);border:1px solid var(--brd);margin-bottom:6px}
+.fi-t{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;color:var(--c);width:52px;flex-shrink:0}
+.fi-bar{flex:1;height:5px;background:var(--c08);border-radius:2px;overflow:hidden}
+.fi-fill{height:100%;border-radius:2px}
+.fi-v{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;color:var(--c);white-space:nowrap;margin-left:8px}
+.fi-s{font-size:10px;color:var(--lbl);white-space:nowrap;margin-left:4px}
 
 /* ── LEITURA ── */
-.li{display:flex;align-items:center;gap:7px;padding:5px 0;border-bottom:1px solid var(--c08)}
-.lg{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c);width:14px;flex-shrink:0}
-.ld{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--c)}
-.lt{font-size:8px;color:var(--txt);line-height:1.4}
+.li{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--c08)}
+.lg{font-family:'Orbitron',sans-serif;font-size:14px;font-weight:700;color:var(--c);width:18px;flex-shrink:0}
+.ld{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:var(--c)}
+.lt{font-size:12px;color:var(--txt);line-height:1.5}
 
 /* ── CHART WRAP ── */
 .cw{position:relative;width:100%}
 
 /* ── TICKER ── */
-.ticker{flex-shrink:0;border-top:1px solid var(--c08);background:rgba(0,2,6,.9);overflow:hidden;padding:4px 0}
+.ticker{flex-shrink:0;border-top:1px solid var(--c08);background:rgba(0,2,6,.9);overflow:hidden;padding:6px 0}
 .ti{display:inline-block;white-space:nowrap;animation:tck 42s linear infinite}
-.ti s{font-size:7px;color:var(--c40);margin:0 18px;text-decoration:none}
+.ti s{font-size:11px;color:var(--c40);margin:0 22px;text-decoration:none}
 .up{color:var(--c)}.dn{color:var(--c40)}
 @keyframes tck{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 </style>
@@ -7629,12 +7629,12 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
     <!-- ══ PAINEL ══ -->
     <div class="tp act" id="tab-painel">
       <!-- 4 gauges top -->
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="gr1"></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px" id="gr1"></div>
       <!-- 3 gauges bottom -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px" id="gr2"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px" id="gr2"></div>
       <!-- Vol metrics -->
       <div class="secl">Volatilidade Implícita</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
         <div class="card"><div class="cdl">IV 30D ATM</div><div class="cdv">__JV_IV30__</div></div>
         <div class="card"><div class="cdl">RV 30D</div><div class="cdv" style="opacity:.7">__JV_RV30__</div></div>
         <div class="card"><div class="cdl">PRÊMIO IV−RV</div><div class="cdv">__JV_IVRV_PREM__</div></div>
@@ -7642,7 +7642,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       </div>
       <!-- VaR -->
       <div class="secl">Risco Caudal</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
         <div class="card"><div class="cdl">VaR 95%</div><div class="cdv" style="opacity:.7">−0.92%</div></div>
         <div class="card"><div class="cdl">CVaR 95%</div><div class="cdv" style="opacity:.7">−2.15%</div></div>
         <div class="card"><div class="cdl">VaR 99%</div><div class="cdv" style="opacity:.5">−2.39%</div></div>
@@ -7650,7 +7650,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       </div>
       <!-- Key levels -->
       <div class="secl">Níveis Chave</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
         <div class="card"><div class="cdl">GAMMA FLIP</div><div class="cdv">~__JV_FLIP__</div></div>
         <div class="card"><div class="cdl">CALL WALL</div><div class="cdv">__JV_CW__</div></div>
         <div class="card"><div class="cdl">PUT WALL</div><div class="cdv" style="opacity:.55">__JV_PW__</div></div>
@@ -7660,13 +7660,13 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 
     <!-- ══ RISCO ══ -->
     <div class="tp" id="tab-risco">
-      <div style="display:grid;grid-template-columns:1fr 1.2fr 0.9fr;gap:10px">
+      <div style="display:grid;grid-template-columns:1fr 1.2fr 0.9fr;gap:16px">
 
         <!-- Tail Risk table -->
-        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>TAIL RISK — __JV_TAIL_INT__/100</div>
-          <div style="font-size:7px;color:var(--lbl);margin-bottom:8px;letter-spacing:1px">ELEVADO — Monitorar sinais de stress</div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:12px;letter-spacing:1px">ELEVADO — Monitorar sinais de stress</div>
           <table class="rt">
             <thead><tr><th>Componente</th><th>Valor</th><th>Score</th></tr></thead>
             <tbody>
@@ -7679,26 +7679,26 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
             </tbody>
           </table>
           <div class="sbw" style="margin-top:auto">
-            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:12px;color:var(--c);font-weight:700">__JV_TAIL_NUM__ / 100</span></div>
+            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:16px;color:var(--c);font-weight:700">__JV_TAIL_NUM__ / 100</span></div>
             <div class="sbt"><div class="sbf" style="width:__JV_TAIL_PCT__%"></div></div>
           </div>
         </div>
 
         <!-- Flow Z-Score chart -->
-        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>COMPONENTES FLOW SCORE — Z-SCORE</div>
-          <div class="cw" style="flex:1;min-height:420px"><canvas id="flowChart"></canvas></div>
+          <div class="cw" style="flex:1;min-height:520px"><canvas id="flowChart"></canvas></div>
         </div>
 
         <!-- Gamma Squeeze -->
-        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd" style="animation:blink 1s infinite"></div>GAMMA SQUEEZE — __JV_SQ_NUM__/100</div>
-          <div style="font-size:7px;color:var(--lbl);margin-bottom:10px;letter-spacing:1px">RISCO MUITO ALTO — condições extremas</div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:14px;letter-spacing:1px">RISCO MUITO ALTO — condições extremas</div>
           <div id="gc" style="flex:1"></div>
-          <div class="sbw" style="border-top:1px solid var(--c08);padding-top:8px">
-            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:12px;color:var(--c);font-weight:700">__JV_SQ_NUM__ / 100</span></div>
+          <div class="sbw" style="border-top:1px solid var(--c08);padding-top:10px">
+            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:16px;color:var(--c);font-weight:700">__JV_SQ_NUM__ / 100</span></div>
             <div class="sbt"><div class="sbf" style="width:__JV_SQ_PCT__%"></div></div>
           </div>
         </div>
@@ -7710,9 +7710,9 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
     <div class="tp" id="tab-gregas">
 
       <!-- 4 semi gauges + leitura -->
-      <div style="display:grid;grid-template-columns:repeat(4,1fr) 210px;gap:10px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr) 260px;gap:16px">
         <div id="sgr" style="display:contents"></div>
-        <div class="p" style="padding:12px 14px">
+        <div class="p" style="padding:18px 20px">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>LEITURA DAS GREGAS</div>
           <div style="display:flex;flex-direction:column;gap:1px">
@@ -7725,7 +7725,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       </div>
 
       <!-- ETF Passive Rebalancing -->
-      <div class="p" style="padding:13px 16px">
+      <div class="p" style="padding:18px 20px">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>REBALANCEAMENTO ETF PASSIVO (VOO / SPY / IVV)</div>
         <div class="flow-grid">
@@ -7744,15 +7744,15 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
             <div class="fi"><div class="fi-t">AMZN</div><div class="fi-bar"><div class="fi-fill" style="width:14%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−2.89Bn</div><div class="fi-s">−105.5% ADV</div></div>
           </div>
         </div>
-        <div style="margin-top:6px;font-size:7px;color:var(--lbl)">Dados reais: rebalanceamento ETFs passivos (VOO/SPY/IVV)</div>
+        <div style="margin-top:10px;font-size:11px;color:var(--lbl)">Dados reais: rebalanceamento ETFs passivos (VOO/SPY/IVV)</div>
       </div>
 
       <!-- Overhang ADV -->
-      <div class="p" style="padding:13px 16px">
+      <div class="p" style="padding:18px 20px">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>OVERHANG — IMPACTO DO REBALANCEAMENTO (% ADV)</div>
-        <div style="font-size:7px;color:var(--lbl);margin-bottom:8px">Quanto o flow representa do volume médio diário (5d ADV)</div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="ovhng"></div>
+        <div style="font-size:11px;color:var(--lbl);margin-bottom:12px">Quanto o flow representa do volume médio diário (5d ADV)</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px" id="ovhng"></div>
       </div>
 
       <div style="height:8px"></div>
@@ -7760,40 +7760,40 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 
     <!-- ══ ESTRUTURA ══ -->
     <div class="tp" id="tab-estrutura">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>GAMMA EXPOSURE (GEX) — POR STRIKE</div>
-          <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">$ Bi por 1% de movimento — Spot __JV_SPOT__ | G-Flip __JV_FLIP__</div>
-          <div class="cw" style="flex:1;min-height:260px"><canvas id="gexChart"></canvas></div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">$ Bi por 1% de movimento — Spot __JV_SPOT__ | G-Flip __JV_FLIP__</div>
+          <div class="cw" style="flex:1;min-height:380px"><canvas id="gexChart"></canvas></div>
         </div>
-        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPX (30 DIAS)</div>
-          <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">Referências: Est Move 5d, Call Trigger, Put Wall</div>
-          <div class="cw" style="flex:1;min-height:260px"><canvas id="levChart"></canvas></div>
+          <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">Referências: Est Move 5d, Call Trigger, Put Wall</div>
+          <div class="cw" style="flex:1;min-height:380px"><canvas id="levChart"></canvas></div>
         </div>
       </div>
-      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+      <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>DISTRIBUIÇÃO DE RETORNOS — VaR 95% −0.92% | VaR 99% −2.39%</div>
-        <div class="cw" style="min-height:200px"><canvas id="distChart"></canvas></div>
+        <div class="cw" style="min-height:280px"><canvas id="distChart"></canvas></div>
       </div>
       <div style="height:8px"></div>
     </div>
 
     <!-- ══ CTA ══ -->
     <div class="tp" id="tab-cta">
-      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+      <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>CTA ESTIMATES — S&P 500 (NOTIONAL $B)</div>
-        <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">Histórico + projeções de cenário: Flat · Up 1σ/2σ · Down 1σ/2.5σ</div>
-        <div class="cw" style="min-height:250px"><canvas id="ctaLine"></canvas></div>
+        <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">Histórico + projeções de cenário: Flat · Up 1σ/2σ · Down 1σ/2.5σ</div>
+        <div class="cw" style="min-height:380px"><canvas id="ctaLine"></canvas></div>
       </div>
-      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+      <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>CTA SCENARIO FLOWS ($B) — 1 SEMANA vs 1 MÊS</div>
-        <div class="cw" style="min-height:230px"><canvas id="ctaBar"></canvas></div>
+        <div class="cw" style="min-height:360px"><canvas id="ctaBar"></canvas></div>
       </div>
       <div style="height:8px"></div>
     </div>
@@ -7877,7 +7877,7 @@ let bi=0;const bel=document.getElementById('blog');
    document.getElementById('app').classList.add('on');buildAll();_jvSpeak('Welcome trader. J A R V I S online.')},500);})();
 
 // ── ARC GAUGE — intensity via opacity only (monochromatic)
-function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=110}){
+function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=140}){
   const el=document.createElement('div');el.className='gc';
   const alpha=0.3+intensity*0.7; // 0.3 dim → 1.0 bright
   const col=`rgba(0,212,232,${alpha})`;
@@ -7917,7 +7917,7 @@ function semiGauge(container,{v,mn,mx,label,unit='$Bn',intensity=0.7}){
   const el=document.createElement('div');el.className='sc';
   const alpha=0.3+intensity*0.7;
   const col=`rgba(0,212,232,${alpha})`;
-  const W2=140,H2=78,R=54,CX=70,CY=70;
+  const W2=180,H2=100,R=70,CX=90,CY=90;
   const pct=Math.max(0,Math.min(1,(v-mn)/(mx-mn)));
   const sa=Math.PI,ea=2*Math.PI,fa=sa+pct*(ea-sa);
   const tx=a=>CX+R*Math.cos(a),ty=a=>CY+R*Math.sin(a);
@@ -7933,16 +7933,16 @@ function semiGauge(container,{v,mn,mx,label,unit='$Bn',intensity=0.7}){
       <path d="${trackD}" fill="none" stroke="rgba(0,30,44,.9)" stroke-width="8" stroke-linecap="round"/>
       ${nz?`<path d="${fillD}" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round" filter="url(#${id})"/>
             <path d="${fillD}" fill="none" stroke="${col}" stroke-width="14" stroke-linecap="round" opacity=".1"/>`:``}
-      <text x="4" y="74" font-size="7" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono">${mn}</text>
-      <text x="${W2-12}" y="74" font-size="7" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono" text-anchor="end">${mx}</text>
+      <text x="4" y="96" font-size="9" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono">${mn}</text>
+      <text x="${W2-12}" y="96" font-size="9" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono" text-anchor="end">${mx}</text>
     </svg>
-    <div class="sv" style="color:${col};text-shadow:0 0 10px rgba(0,212,232,${alpha*.4})">${v} <span style="font-size:9px;opacity:.6">${unit}</span></div>`;
+    <div class="sv" style="color:${col};text-shadow:0 0 10px rgba(0,212,232,${alpha*.4})">${v} <span style="font-size:12px;opacity:.6">${unit}</span></div>`;
   container.appendChild(el);
 }
 
 // ── CHART DEFAULTS
 Chart.defaults.color='rgba(0,140,170,.65)';
-Chart.defaults.font={family:"'Share Tech Mono',monospace",size:9};
+Chart.defaults.font={family:"'Share Tech Mono',monospace",size:11};
 const G='rgba(0,50,70,.25)';
 const TT={backgroundColor:'rgba(0,4,10,.97)',borderColor:'rgba(0,80,100,.3)',borderWidth:1,
   titleColor:'rgba(0,200,220,.8)',bodyColor:'rgba(0,140,170,.85)',padding:8};
@@ -7973,7 +7973,7 @@ function buildAll(){
     <div class="cbar">
       <div class="cbh">
         <span class="cbn">${c.n}</span>
-        <span class="cbs" style="opacity:${c.i}">${c.s}<span style="opacity:.4;font-size:7px">/${c.m}</span></span>
+        <span class="cbs" style="opacity:${c.i}">${c.s}<span style="opacity:.4;font-size:10px">/${c.m}</span></span>
       </div>
       <div class="cbt"><div class="cbf" style="width:${p}%;opacity:${c.i}"></div></div>
     </div>`});
