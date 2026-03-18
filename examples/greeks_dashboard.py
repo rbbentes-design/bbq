@@ -7387,19 +7387,19 @@ _JARVIS_EXPORT_TEMPLATE = """
 :root{
   --bg:#020810;
   --c:#00d4e8;        /* main cyan */
-  --c60:rgba(0,212,232,.6);
-  --c40:rgba(0,212,232,.4);
-  --c20:rgba(0,212,232,.2);
-  --c08:rgba(0,212,232,.08);
-  --c04:rgba(0,212,232,.04);
-  --brd:rgba(0,212,232,.12);
+  --c60:rgba(0,212,232,.85);
+  --c40:rgba(0,212,232,.7);
+  --c20:rgba(0,212,232,.5);
+  --c08:rgba(0,212,232,.15);
+  --c04:rgba(0,212,232,.08);
+  --brd:rgba(0,212,232,.22);
   --dim:#041420;
-  --txt:rgba(0,212,232,.55);
-  --lbl:rgba(0,212,232,.28);
+  --txt:rgba(0,212,232,.9);
+  --lbl:rgba(0,212,232,.6);
 }
 html,body{width:100%;height:100vh;overflow:hidden;background:var(--bg);
   font-family:'Share Tech Mono',monospace;color:var(--txt)}
-canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
+canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 .scl{position:fixed;inset:0;z-index:2;pointer-events:none;
   background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.04) 3px,rgba(0,0,0,.04) 4px)}
 
@@ -7413,8 +7413,8 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
 .bri2{inset:10px;border-bottom-color:var(--c40);border-left-color:var(--c40);animation:sp 1.8s linear reverse infinite}
 .bri3{inset:20px;border-top-color:var(--c20);animation:sp 3s linear infinite}
 .bcore{width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c),0 0 20px var(--c)}
-.btitle{font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:6px;color:var(--c40);margin-bottom:14px}
-#blog{font-size:9px;color:var(--c20);line-height:2.2;text-align:center;min-height:60px}
+.btitle{font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:6px;color:var(--c);margin-bottom:14px}
+#blog{font-size:9px;color:var(--c40);line-height:2.2;text-align:center;min-height:60px}
 @keyframes sp{to{transform:rotate(360deg)}}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.1}}
 
