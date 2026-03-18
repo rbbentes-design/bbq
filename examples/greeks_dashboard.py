@@ -2706,38 +2706,40 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
             row=1, col=1)
 
         # Scenario fan from last date
-        try:
-            last_date = pd.Timestamp(hist_dates.iloc[-1])
-        except Exception:
-            last_date = pd.Timestamp.now()
-        last_notional = float(hist_notional.iloc[-1])
-        d1w = (last_date + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
-        d1m = (last_date + pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-        last_date_s = last_date.strftime('%Y-%m-%d')
+        last_date = pd.Timestamp(hist_dates.iloc[-1])
+        last_notional = hist_notional.iloc[-1]
 
+        # Build forward points for 1W and 1M scenarios
         scenario_colors = {
-            'Flat':        'rgba(180,180,180,0.7)',
-            'Up 1\u03c3':  'rgba(0,212,232,1)',
-            'Up 2\u03c3':  'rgba(0,212,232,0.6)',
-            'Down 1\u03c3': 'rgba(248,81,73,0.9)',
-            'Down 2\u03c3': 'rgba(248,81,73,0.6)',
-            'Down 2.5\u03c3': 'rgba(248,81,73,0.4)',
+            'Flat': '#AAAAAA',
+            'Up 1\u03c3': '#00C853',
+            'Up 2\u03c3': '#00E676',
+            'Down 1\u03c3': '#FF5252',
+            'Down 2\u03c3': '#FF1744',
+            'Down 2.5\u03c3': '#D50000',
         }
 
         for s1w, s1m in zip(fp_cta_scenarios_1w, fp_cta_scenarios_1m):
             name = s1w['name']
-            end_1w = last_notional + s1w['flow_total'] / 1e9
-            end_1m = last_notional + s1m['flow_total'] / 1e9
-            color  = scenario_colors.get(name, 'rgba(180,180,180,0.5)')
+            end_notional_1w = CTA_AUM * CTA_EQUITY_ALLOC * s1w['pos_end'] / 1e9
+            end_notional_1m = CTA_AUM * CTA_EQUITY_ALLOC * s1m['pos_end'] / 1e9
+            color = scenario_colors.get(name, '#888888')
+
+            try:
+                d1w = last_date + pd.Timedelta(days=7)
+                d1m = last_date + pd.Timedelta(days=30)
+            except Exception:
+                d1w = last_date + pd.Timedelta(days=5)
+                d1m = last_date + pd.Timedelta(days=21)
 
             fig.add_trace(go.Scatter(
-                x=[last_date_s, d1w, d1m],
-                y=[last_notional, end_1w, end_1m],
+                x=[last_date, d1w, d1m],
+                y=[last_notional, end_notional_1w, end_notional_1m],
                 name=name,
                 mode='lines+markers',
-                line=dict(color=color, width=2.5, dash='dot'),
-                marker=dict(size=7, color=color),
-                showlegend=True),
+                line=dict(color=color, width=2, dash='dot'),
+                marker=dict(size=6, color=color),
+                legendgroup=name),
                 row=1, col=1)
 
         fig.add_hline(y=0, line_dash='dash', line_color='rgba(150,150,150,0.5)',
@@ -2753,21 +2755,19 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         bar_colors_1m = ['#00E676' if f > 0 else '#FF1744' for f in flows_1m]
 
         fig.add_trace(go.Bar(
-            x=names, y=flows_1w, name='1 Semana',
+            x=names, y=flows_1w, name='1 Week Flow',
             marker_color=bar_colors_1w,
             text=[f'${f:+.1f}B' for f in flows_1w],
-            textposition='auto',
-            textfont=dict(size=10, color='rgba(0,212,232,1)'),
-            cliponaxis=False),
+            textposition='outside',
+            textfont=dict(size=10)),
             row=2, col=1)
 
         fig.add_trace(go.Bar(
-            x=names, y=flows_1m, name='1 Mês',
+            x=names, y=flows_1m, name='1 Month Flow',
             marker_color=bar_colors_1m,
             text=[f'${f:+.1f}B' for f in flows_1m],
-            textposition='auto',
-            textfont=dict(size=10, color='rgba(0,212,232,1)'),
-            cliponaxis=False,
+            textposition='outside',
+            textfont=dict(size=10),
             opacity=0.7),
             row=2, col=1)
 
@@ -2778,14 +2778,13 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
         font=dict(color=_C['text'], size=11),
         legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center',
-                    font=dict(color='rgba(0,212,232,1)', size=10)),
+                    font=dict(color=_C['text_muted'], size=10)),
         height=620, margin=dict(l=55, r=30, t=40, b=40),
         barmode='group')
     for ax in ['yaxis', 'yaxis2', 'xaxis', 'xaxis2']:
         fig.update_layout(**{ax: dict(
             gridcolor=_C['border'], zerolinecolor=_C['border'],
             tickfont=dict(color=_C['text_muted']))})
-    fig.update_layout(yaxis2=dict(autorange=True))
     # Make subplot titles use theme color
     for ann in fig.layout.annotations:
         ann.font.color = _C['text']
@@ -2851,10 +2850,7 @@ def fp_plot_components_bar(score):
     names = list(components.keys())
     values = list(components.values())
     w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'rp', 'leveraged', 'passive_etf', 'buyback', 'cot']]
-    colors_bar = [
-        'rgba(0,212,232,0.85)' if v >= 0 else 'rgba(0,212,232,0.28)'
-        for v in values
-    ]
+    colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
                          name='Z-Score', text=[f'{v:+.2f}' for v in values],
@@ -2863,15 +2859,14 @@ def fp_plot_components_bar(score):
                              yaxis='y2', mode='markers+text',
                              text=[f'{w:.0%}' for w in w_vals],
                              textposition='top center',
-                             marker=dict(size=10, color='rgba(0,212,232,0.6)')))
+                             marker=dict(size=10, color=_C['text_muted'])))
     fig.update_layout(
         title='Componentes do Flow Score',
         yaxis_title='Z-Score',
         yaxis2=dict(overlaying='y', side='right',
                     title='Peso', range=[0, 1]),
         xaxis=dict(tickangle=-20, automargin=True),
-        **{**FLOW_FIG_LAYOUT, 'margin': dict(t=55, r=40, b=110, l=50),
-           'legend': dict(font=dict(color='rgba(0,212,232,1)', size=10))},
+        **{**FLOW_FIG_LAYOUT, 'margin': dict(t=55, r=40, b=110, l=50)},
     )
     return fig
 
@@ -8153,6 +8148,21 @@ function buildAll(){
   const nh=ctaDates.length;
   const pad=arr=>[...Array(nh-1).fill(null),...arr];
 
+  // inline plugin: $B labels on bars
+  const barLabels={id:'barLabels',afterDatasetsDraw(chart){
+    const {ctx}=chart;
+    chart.data.datasets.forEach((ds,i)=>{
+      chart.getDatasetMeta(i).data.forEach((bar,j)=>{
+        const v=ds.data[j]; if(v==null) return;
+        const lbl=(v>=0?'+':'')+v.toFixed(1)+'B';
+        ctx.save(); ctx.fillStyle='rgba(0,212,232,1)';
+        ctx.font='bold 9px monospace'; ctx.textAlign='center';
+        ctx.textBaseline=v>=0?'bottom':'top';
+        ctx.fillText(lbl,bar.x,v>=0?bar.y-3:bar.y+3); ctx.restore();
+      });
+    });
+  }};
+
   new Chart(document.getElementById('ctaLine'),{
     type:'line',
     data:{labels:projDates,datasets:[
@@ -8162,31 +8172,31 @@ function buildAll(){
        borderWidth:1.5,fill:true,pointRadius:0,tension:0.3},
       {label:'Flat',
        data:pad([-68,-68,-68,-68,-68]),
-       borderColor:'rgba(0,212,232,.3)',borderWidth:1,borderDash:[5,4],pointRadius:0,fill:false},
+       borderColor:'rgba(0,212,232,.25)',borderWidth:1,borderDash:[5,4],pointRadius:0,fill:false},
       {label:'Up 1σ',
        data:pad([-68,null,null,37]),
-       borderColor:'rgba(0,212,232,.8)',borderWidth:1.5,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+       borderColor:'rgba(0,212,232,1)',borderWidth:2,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),4,0,0,7],fill:false,tension:0.3},
       {label:'Up 2σ',
        data:pad([-68,null,null,75]),
-       borderColor:'rgba(0,212,232,.6)',borderWidth:1.5,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+       borderColor:'rgba(0,212,232,.65)',borderWidth:1.5,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),3,0,0,6],fill:false,tension:0.3},
       {label:'Down 1σ',
        data:pad([-68,null,null,-75]),
-       borderColor:'rgba(0,212,232,.4)',borderWidth:1.5,borderDash:[4,3],
-       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+       borderColor:'rgba(248,81,73,.8)',borderWidth:1.5,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),3,0,0,6],fill:false,tension:0.3},
       {label:'Down 2.5σ',
        data:pad([-68,null,null,-85]),
-       borderColor:'rgba(0,212,232,.2)',borderWidth:1,borderDash:[3,5],
-       pointRadius:[...Array(nh).fill(0),3,0,0,4],fill:false,tension:0.3},
+       borderColor:'rgba(248,81,73,.4)',borderWidth:1,borderDash:[3,5],
+       pointRadius:[...Array(nh).fill(0),2,0,0,4],fill:false,tension:0.3},
     ]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT,
+      plugins:{legend:{labels:{color:'rgba(0,212,232,1)',boxWidth:8,font:{size:8}}},tooltip:TT,
         annotation:{annotations:{z:{type:'line',yMin:0,yMax:0,borderColor:'rgba(0,212,232,.15)',borderWidth:1,borderDash:[3,6]}}}},
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)',maxTicksLimit:12}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
-          title:{display:true,text:'$B Notional',color:'rgba(0,120,150,.4)',font:{size:8}}}
+        x:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)',maxTicksLimit:12}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)'},
+          title:{display:true,text:'$B Notional',color:'rgba(0,212,232,.4)',font:{size:8}}}
       }
     }
   });
@@ -8194,23 +8204,24 @@ function buildAll(){
   // CTA — Scenario Bar
   new Chart(document.getElementById('ctaBar'),{
     type:'bar',
+    plugins:[barLabels],
     data:{
       labels:['Flat','Up 1σ','Up 2σ','Down 1σ','Down 2σ','Down 2.5σ'],
       datasets:[
         {label:'1 Semana',data:[0.5,14.5,38.3,-6.8,-7.9,-6.4],
-         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.45)':'rgba(0,212,232,.15)',
-         borderColor:'rgba(0,212,232,.7)',borderWidth:1,borderRadius:2},
+         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.55)':'rgba(0,212,232,.18)',
+         borderColor:'rgba(0,212,232,.8)',borderWidth:1,borderRadius:2},
         {label:'1 Mês',data:[1.5,105.8,143.8,-7.7,-2.0,0.5],
-         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.25)':'rgba(0,212,232,.1)',
-         borderColor:'rgba(0,212,232,.4)',borderWidth:1,borderRadius:2},
+         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.3)':'rgba(0,212,232,.1)',
+         borderColor:'rgba(0,212,232,.5)',borderWidth:1,borderRadius:2},
       ]
     },
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT},
+      plugins:{legend:{labels:{color:'rgba(0,212,232,1)',boxWidth:8,font:{size:8}}},tooltip:TT},
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
-          title:{display:true,text:'$B',color:'rgba(0,120,150,.4)',font:{size:8}}}
+        x:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,212,232,.5)'},
+          title:{display:true,text:'$B',color:'rgba(0,212,232,.4)',font:{size:8}}}
       }
     }
   });
