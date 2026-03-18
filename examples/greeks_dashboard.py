@@ -248,6 +248,13 @@ DASH_CSS = (
 "   ========================================================================= */\n"
 "@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');\n"
 "\n"
+"@keyframes spin-cw  { from { transform:rotate(0deg) }   to { transform:rotate(360deg) } }\n"
+"@keyframes spin-ccw { from { transform:rotate(360deg) } to { transform:rotate(0deg) } }\n"
+".jarvis-reactor { flex-shrink:0; margin-right:10px; }\n"
+".jarvis-r1 { animation:spin-cw  14s linear infinite; transform-origin:21px 21px; }\n"
+".jarvis-r2 { animation:spin-ccw  9s linear infinite; transform-origin:21px 21px; }\n"
+".jarvis-r3 { animation:spin-cw   5s linear infinite; transform-origin:21px 21px; }\n"
+"\n"
 "</style>\n"
 )
 
@@ -9199,10 +9206,6 @@ def run_analysis(_):
                 </div>
             </div></div>"""
 
-            # ── Gamma Levels Chart (home) ──
-            _gamma_lvl_chart = build_gamma_levels_chart(
-                prices, spot, call_wall, put_wall, gamma_flip, iv_30d)
-
             # ══ Dimensões fixas — NUNCA alterar sem redesign completo ═
             _GW, _GH   = 210, 190   # gauge  width × height
             _DH        = 250        # detail panel height
@@ -9488,8 +9491,8 @@ def run_analysis(_):
                     'Delta · Gamma · Vanna · Charm + Rebalanceamento ETF Passivo'),
                 _greek_overview,
                 _sh('Estrutura de Mercado',
-                    'GEX por Strike · Níveis Gamma · Distribuição de Retornos'),
-                wd.HBox([fig_gex, _gamma_lvl_chart, fig_dist],
+                    'GEX por Strike · Distribuição de Retornos'),
+                wd.HBox([fig_gex, fig_dist],
                         layout={'flex_wrap': 'nowrap', 'align_items': 'flex-start', 'overflow_x': 'auto', 'width': '100%'}),
                 _sh('CTA Estimado & Resumo Narrativo'),
                 _home_cta,
