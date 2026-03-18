@@ -7386,16 +7386,26 @@ _JARVIS_EXPORT_TEMPLATE = """
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#020810;
-  --c:#00d4e8;        /* main cyan */
-  --c60:rgba(0,212,232,.85);
-  --c40:rgba(0,212,232,.7);
-  --c20:rgba(0,212,232,.5);
-  --c08:rgba(0,212,232,.15);
+  --c:#00d4e8;              /* cyan — primary/neutral */
+  --c60:rgba(0,212,232,.88);
+  --c40:rgba(0,212,232,.72);
+  --c20:rgba(0,212,232,.52);
+  --c08:rgba(0,212,232,.16);
   --c04:rgba(0,212,232,.08);
-  --brd:rgba(0,212,232,.22);
+  --brd:rgba(0,212,232,.25);
   --dim:#041420;
-  --txt:rgba(0,212,232,.9);
-  --lbl:rgba(0,212,232,.6);
+  --txt:rgba(0,212,232,.92);
+  --lbl:rgba(0,212,232,.62);
+  --a:#f5a623;              /* amber — warning/caution */
+  --a60:rgba(245,166,35,.88);
+  --a40:rgba(245,166,35,.72);
+  --a20:rgba(245,166,35,.5);
+  --a08:rgba(245,166,35,.16);
+  --r:#f85149;              /* red — danger/bearish */
+  --r60:rgba(248,81,73,.88);
+  --r40:rgba(248,81,73,.72);
+  --r20:rgba(248,81,73,.5);
+  --r08:rgba(248,81,73,.16);
 }
 html,body{width:100%;height:100vh;overflow:hidden;background:var(--bg);
   font-family:'Share Tech Mono',monospace;color:var(--txt)}
@@ -7432,7 +7442,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
   box-shadow:0 0 8px var(--c);animation:blink 1.4s ease-in-out infinite;flex-shrink:0}
 .dvd{width:1px;height:18px;background:var(--c08);flex-shrink:0;margin:0 6px}
 .cs{display:flex;flex-direction:column;gap:1px;flex-shrink:0}
-.csl{font-size:9px;letter-spacing:2px;color:var(--lbl)}
+.csl{font-size:9px;letter-spacing:2px;color:rgba(0,200,220,.65)}
 .csv{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;color:var(--c)}
 
 /* ── HEADER ── */
@@ -7565,7 +7575,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
 .ticker{flex-shrink:0;border-top:1px solid var(--c08);background:rgba(0,2,6,.9);overflow:hidden;padding:6px 0}
 .ti{display:inline-block;white-space:nowrap;animation:tck 42s linear infinite}
 .ti s{font-size:11px;color:var(--c40);margin:0 22px;text-decoration:none}
-.up{color:var(--c)}.dn{color:var(--c40)}
+.up{color:rgba(0,212,232,1);text-shadow:0 0 6px rgba(0,212,232,.4)}.dn{color:rgba(248,81,73,.9);text-shadow:0 0 6px rgba(248,81,73,.3)}
 @keyframes tck{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 </style>
 <script src="https://unpkg.com/zdog@1/dist/zdog.dist.min.js"></script>
@@ -7588,19 +7598,19 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
   <div class="cmd">
     <div class="cmd-id">SPX MARKET COMMAND</div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">SPOT</div><div class="csv" style="color:rgba(0,212,232,1)">__JV_SPOT__</div></div>
+    <div class="cs"><div class="csl">SPOT</div><div class="csv" style="color:rgba(0,212,232,1);text-shadow:0 0 8px rgba(0,212,232,.4)">__JV_SPOT__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">GAMMA FLIP</div><div class="csv" style="opacity:.7">__JV_FLIP__</div></div>
+    <div class="cs"><div class="csl">GAMMA FLIP</div><div class="csv" style="color:var(--a60)">__JV_FLIP__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">GEX NET</div><div class="csv" style="opacity:.5">__JV_GEX__</div></div>
+    <div class="cs"><div class="csl">GEX NET</div><div class="csv" style="color:__JV_C_GEX__">__JV_GEX__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">P/C RATIO</div><div class="csv" style="opacity:.7">__JV_PC__</div></div>
+    <div class="cs"><div class="csl">P/C RATIO</div><div class="csv" style="color:var(--a60)">__JV_PC__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">IV−RV</div><div class="csv" style="opacity:.9">__JV_IVRV__</div></div>
+    <div class="cs"><div class="csl">IV−RV</div><div class="csv" style="color:__JV_C_IVRV__">__JV_IVRV__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">SQUEEZE RISK</div><div class="csv">__JV_SQ__</div></div>
+    <div class="cs"><div class="csl">SQUEEZE RISK</div><div class="csv" style="color:__JV_C_SQ__">__JV_SQ__</div></div>
     <div class="dvd"></div>
-    <div class="cs"><div class="csl">TAIL RISK</div><div class="csv" style="opacity:.7">__JV_TAIL__</div></div>
+    <div class="cs"><div class="csl">TAIL RISK</div><div class="csv" style="color:__JV_C_TAIL__">__JV_TAIL__</div></div>
   </div>
 
   <!-- HEADER -->
@@ -7617,9 +7627,14 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       <button class="tb" data-t="estrutura">ESTRUTURA</button>
       <button class="tb" data-t="cta">CTA</button>
     </div>
-    <div class="clkw">
-      <div class="cll">HORA LOCAL</div>
-      <div class="clv" id="clk">--:--:--</div>
+    <div class="clkw" style="text-align:right;flex-shrink:0;min-width:180px">
+      <div id="clk-session" style="font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:2px;color:var(--lbl);margin-bottom:2px">● CARREGANDO...</div>
+      <div style="font-family:'Orbitron',sans-serif;font-size:20px;font-weight:700;color:var(--c);line-height:1;letter-spacing:2px" id="clk-time">--:--:--</div>
+      <div style="display:flex;justify-content:flex-end;gap:14px;margin-top:3px">
+        <div style="font-size:9px;color:var(--lbl);letter-spacing:1px" id="clk-date">---</div>
+        <div style="font-size:9px;color:var(--a40);letter-spacing:1px" id="clk-ny">NY --:--</div>
+      </div>
+      <div style="font-size:8px;color:rgba(0,212,232,.3);letter-spacing:1px;margin-top:2px">DATA: __JV_TS__</div>
     </div>
   </div>
 
@@ -7834,8 +7849,29 @@ function drawBg(){ctx2.clearRect(0,0,W,H);
 window.addEventListener('resize',rsz);rsz();drawBg();
 
 // ── CLOCK
-setInterval(()=>{document.getElementById('clk').textContent=
-  new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})},1000);
+function _upClock(){
+  const now=new Date();
+  document.getElementById('clk-time').textContent=
+    now.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  document.getElementById('clk-date').textContent=
+    now.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'short'});
+  const nyFmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',
+    hour:'2-digit',minute:'2-digit',hour12:false});
+  const nyStr=nyFmt.format(now);
+  document.getElementById('clk-ny').textContent='NY '+nyStr;
+  const nyD=new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
+  const tot=nyD.getHours()*60+nyD.getMinutes(),wd=nyD.getDay();
+  let ses,sc;
+  if(wd===0||wd===6){ses='■ FIM DE SEMANA';sc='rgba(0,212,232,.35)'}
+  else if(tot<240){ses='■ FECHADO';sc='rgba(0,212,232,.35)'}
+  else if(tot<570){ses='◐ PRÉ-MERCADO';sc='rgba(245,166,35,.85)'}
+  else if(tot<960){ses='● AO VIVO — NYSE/NASDAQ';sc='rgba(0,212,232,1)'}
+  else if(tot<1200){ses='◑ PÓS-MERCADO';sc='rgba(245,166,35,.75)'}
+  else{ses='■ FECHADO';sc='rgba(0,212,232,.35)'}
+  const sel=document.getElementById('clk-session');
+  sel.textContent=ses;sel.style.color=sc;
+}
+setInterval(_upClock,1000);_upClock();
 
 // ── TABS
 document.querySelectorAll('.tb').forEach(b=>b.addEventListener('click',()=>{
@@ -7887,8 +7923,13 @@ let bi=0;const bel=document.getElementById('blog');
 // ── ARC GAUGE — intensity via opacity only (monochromatic)
 function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=140}){
   const el=document.createElement('div');el.className='gc';
-  const alpha=0.3+intensity*0.7; // 0.3 dim → 1.0 bright
-  const col=`rgba(0,212,232,${alpha})`;
+  const alpha=0.42+intensity*0.58;
+  const col=intensity>0.78?`rgba(248,81,73,${alpha})`:
+             intensity>0.48?`rgba(245,166,35,${alpha})`:
+             `rgba(0,212,232,${alpha})`;
+  const glw=intensity>0.78?`rgba(248,81,73,${alpha*.5})`:
+             intensity>0.48?`rgba(245,166,35,${alpha*.5})`:
+             `rgba(0,212,232,${alpha*.5})`;
   const R=size*.43,CX=size/2,CY=size/2,circ=2*Math.PI*R,sw=.75,tr=sw*circ;
   const pct=Math.max(0,Math.min(1,(v-mn)/(mx-mn)));
   const fill=pct*tr;const id='a'+Math.random().toString(36).slice(2,8);
@@ -7911,8 +7952,8 @@ function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=140
         </circle>
       </svg>
       <div class="gv">
-        <span class="gn" style="color:${col};text-shadow:0 0 12px rgba(0,212,232,${alpha*.5});font-size:${size*.16}px">${unit==='%'?v+'%':v}</span>
-        ${state?`<span class="gst" style="color:rgba(0,212,232,${alpha*.7})">${state}</span>`:''}
+        <span class="gn" style="color:${col};text-shadow:0 0 14px ${glw};font-size:${size*.17}px">${unit==='%'?v+'%':v}</span>
+        ${state?`<span class="gst" style="color:${col};opacity:.8">${state}</span>`:''}
       </div>
     </div>
     <div class="gmm" style="width:${size}px"><span>${mn}${unit==='%'?'%':''}</span><span>${mx}${unit==='%'?'%':''}</span></div>
@@ -7923,8 +7964,10 @@ function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=140
 // ── SEMI GAUGE
 function semiGauge(container,{v,mn,mx,label,unit='$Bn',intensity=0.7}){
   const el=document.createElement('div');el.className='sc';
-  const alpha=0.3+intensity*0.7;
-  const col=`rgba(0,212,232,${alpha})`;
+  const alpha=0.42+intensity*0.58;
+  const col=intensity>0.78?`rgba(248,81,73,${alpha})`:
+             intensity>0.48?`rgba(245,166,35,${alpha})`:
+             `rgba(0,212,232,${alpha})`;
   const W2=180,H2=100,R=70,CX=90,CY=90;
   const pct=Math.max(0,Math.min(1,(v-mn)/(mx-mn)));
   const sa=Math.PI,ea=2*Math.PI,fa=sa+pct*(ea-sa);
@@ -8409,6 +8452,19 @@ def _export_dashboard_html():
     _html = _html.replace('__JV_GEX_T__',      _gex_t)
     _html = _html.replace('__JV_PC_T__',       _pc_s)
     _html = _html.replace('__JV_SQ_T__',       _sq_s)
+    # ── Semantic colors for CMD strip ─────────────────────────────────────────
+    _c_gex   = 'rgba(0,212,232,1)' if _gex_raw >= 0 else 'rgba(248,81,73,.9)'
+    _c_ivrv  = 'rgba(248,81,73,.95)' if _ivrv_raw > 2 else ('rgba(245,166,35,.9)' if _ivrv_raw > 0 else 'rgba(0,212,232,.85)')
+    _c_sq    = 'rgba(248,81,73,1)' if _sq_raw > 70 else ('rgba(245,166,35,.95)' if _sq_raw > 40 else 'rgba(0,212,232,.85)')
+    _c_tail  = 'rgba(248,81,73,1)' if _tail_raw > 70 else ('rgba(245,166,35,.95)' if _tail_raw > 40 else 'rgba(0,212,232,.85)')
+    _html = _html.replace('__JV_C_GEX__',    _c_gex)
+    _html = _html.replace('__JV_C_IVRV__',   _c_ivrv)
+    _html = _html.replace('__JV_C_SQ__',     _c_sq)
+    _html = _html.replace('__JV_C_TAIL__',   _c_tail)
+    # Timestamp
+    import datetime as _dt
+    _ts_str = _snapshot.get('ts', _dt.datetime.now().strftime('%Y-%m-%d %H:%M'))
+    _html = _html.replace('__JV_TS__', str(_ts_str)[:16])
     # Greek semi-gauges (real BBG)
     _html = _html.replace('__JV_V_GEX_SEMI__',  str(_gex_semi))
     _html = _html.replace('__JV_V_DELTA__',      str(_delta_v))
