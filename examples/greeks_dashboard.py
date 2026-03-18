@@ -2991,11 +2991,15 @@ def fp_plot_components_bar(score):
                              text=[f'{w:.0%}' for w in w_vals],
                              textposition='top center',
                              marker=dict(size=10, color=_C['text_muted'])))
-    fig.update_layout(title='Componentes do Flow Score',
-                      yaxis_title='Z-Score',
-                      yaxis2=dict(overlaying='y', side='right',
-                                  title='Peso', range=[0, 1]),
-                      **FLOW_FIG_LAYOUT)
+    fig.update_layout(
+        title='Componentes do Flow Score',
+        yaxis_title='Z-Score',
+        yaxis2=dict(overlaying='y', side='right',
+                    title='Peso', range=[0, 1]),
+        xaxis=dict(tickangle=-20, automargin=True),
+        margin=dict(t=55, r=40, b=110, l=50),
+        **FLOW_FIG_LAYOUT
+    )
     return fig
 
 
@@ -7816,7 +7820,7 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
         <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>COMPONENTES FLOW SCORE — Z-SCORE</div>
-          <div class="cw" style="flex:1;min-height:360px"><canvas id="flowChart"></canvas></div>
+          <div class="cw" style="flex:1;min-height:420px"><canvas id="flowChart"></canvas></div>
         </div>
 
         <!-- Gamma Squeeze -->
@@ -8110,22 +8114,63 @@ function buildAll(){
   new Chart(document.getElementById('flowChart'),{
     type:'bar',
     data:{
-      labels:['CTA','Dealer/MM','Vol Ctrl','Risk Parity','ETFs Alav.','ETFs Pass.','Buyback','COT'],
+      labels:['CTA','Dealer/MM','Vol Ctrl',['Risk','Parity'],['ETFs','Alav.'],['ETFs','Passivos'],'Buyback','COT'],
       datasets:[{
         label:'Z-Score',
         data:[__JV_FLOW_DATA__],
-        backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.35)':'rgba(0,212,232,.15)',
-        borderColor:d=>d.raw>=0?'rgba(0,212,232,.9)':'rgba(0,212,232,.4)',
-        borderWidth:1,borderRadius:2
+        backgroundColor:d=>d.raw>=0?'rgba(88,166,255,.78)':'rgba(248,81,73,.82)',
+        borderColor:d=>d.raw>=0?'rgba(120,200,255,1)':'rgba(255,120,120,1)',
+        borderWidth:1,borderRadius:2,
+        order:2
+      },{
+        type:'line',
+        label:'Peso',
+        data:[__JV_FLOW_W_DATA__],
+        yAxisID:'y1',
+        showLine:false,
+        pointRadius:4,
+        pointHoverRadius:4,
+        pointBackgroundColor:'rgba(180,190,205,.95)',
+        pointBorderColor:'rgba(40,55,70,.95)',
+        pointBorderWidth:1,
+        order:1
       }]
     },
     options:{responsive:true,maintainAspectRatio:false,
-      layout:{padding:{bottom:20}},
-      plugins:{legend:{display:false},tooltip:TT},
+      layout:{padding:{top:6,bottom:12,left:6,right:6}},
+      plugins:{
+        legend:{
+          display:true,
+          position:'bottom',
+          labels:{color:'rgba(180,200,220,.85)',boxWidth:10,font:{size:9}}
+        },
+        tooltip:TT
+      },
       scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,200,220,.9)',font:{size:10,family:"'Orbitron',sans-serif"},maxRotation:45,minRotation:45},border:{color:'rgba(0,80,100,.2)'}},
+        x:{
+          grid:{color:G},
+          ticks:{
+            color:'rgba(0,200,220,.9)',
+            font:{size:9,family:"'Orbitron',sans-serif"},
+            autoSkip:false,
+            maxRotation:0,
+            minRotation:0,
+            padding:8
+          },
+          border:{color:'rgba(0,80,100,.2)'}
+        },
         y:{grid:{color:G},ticks:{color:'rgba(0,180,200,.7)'},min:-3.5,max:4,
-          title:{display:true,text:'Z-Score',color:'rgba(0,120,150,.5)',font:{size:8}}}
+          title:{display:true,text:'Z-Score',color:'rgba(0,120,150,.5)',font:{size:8}}},
+        y1:{
+          position:'right',
+          min:0,max:1,
+          grid:{drawOnChartArea:false},
+          ticks:{
+            color:'rgba(170,180,190,.8)',
+            callback:(v)=>`${Math.round(v*100)}%`
+          },
+          title:{display:true,text:'Peso',color:'rgba(140,150,165,.65)',font:{size:8}}
+        }
       }
     }
   });
@@ -8438,7 +8483,18 @@ def _export_dashboard_html():
         round(_f('z_buyback'), 2),
         round(_f('z_cot'), 2),
     ])
+    _flow_w_data = _json.dumps([
+        round(_f('w_cta', 0), 4),
+        round(_f('w_dealer', 0), 4),
+        round(_f('w_volctrl', 0), 4),
+        round(_f('w_rp', 0), 4),
+        round(_f('w_leveraged', 0), 4),
+        round(_f('w_passive_etf', 0), 4),
+        round(_f('w_buyback', 0), 4),
+        round(_f('w_cot', 0), 4),
+    ])
     _html = _html.replace('[__JV_FLOW_DATA__]', _flow_data)
+    _html = _html.replace('[__JV_FLOW_W_DATA__]', _flow_w_data)
 
     return _html
 
@@ -11479,6 +11535,14 @@ def run_analysis(_):
                 'z_passive_etf': fp_score.get('z_passive_etf', 0) if isinstance(fp_score, dict) else 0,
                 'z_buyback':     fp_score.get('z_buyback', 0)    if isinstance(fp_score, dict) else 0,
                 'z_cot':         fp_score.get('z_cot', 0)        if isinstance(fp_score, dict) else 0,
+                'w_cta':         fp_score.get('weights', {}).get('cta', 0) if isinstance(fp_score, dict) else 0,
+                'w_dealer':      fp_score.get('weights', {}).get('dealer', 0) if isinstance(fp_score, dict) else 0,
+                'w_volctrl':     fp_score.get('weights', {}).get('volctrl', 0) if isinstance(fp_score, dict) else 0,
+                'w_rp':          fp_score.get('weights', {}).get('rp', 0) if isinstance(fp_score, dict) else 0,
+                'w_leveraged':   fp_score.get('weights', {}).get('leveraged', 0) if isinstance(fp_score, dict) else 0,
+                'w_passive_etf': fp_score.get('weights', {}).get('passive_etf', 0) if isinstance(fp_score, dict) else 0,
+                'w_buyback':     fp_score.get('weights', {}).get('buyback', 0) if isinstance(fp_score, dict) else 0,
+                'w_cot':         fp_score.get('weights', {}).get('cot', 0) if isinstance(fp_score, dict) else 0,
             }
 
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
