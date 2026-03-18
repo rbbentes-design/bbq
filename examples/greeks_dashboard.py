@@ -242,58 +242,153 @@ DASH_CSS = (
 "  letter-spacing:1.5px; text-transform:uppercase;\n"
 "  font-family:'Orbitron','Courier New',monospace;\n"
 "  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
-".mm-badge-green  { background:rgba(0,255,136,0.10); color:#00ff88; border:1px solid rgba(0,255,136,0.4); }\n"
-".mm-badge-red    { background:rgba(255,71,87,0.12);  color:#ff4757; border:1px solid rgba(255,71,87,0.4); }\n"
-".mm-badge-yellow { background:rgba(255,140,0,0.12);  color:#ff8c00; border:1px solid rgba(255,140,0,0.45); }\n"
-".mm-badge-blue   { background:rgba(0,200,255,0.10);  color:#00c8ff; border:1px solid rgba(0,200,255,0.4); }\n"
 "\n"
-"/* -- Tables -- */\n"
-".mm-table { width:100%; border-collapse:separate; border-spacing:0;\n"
-"  font-size:11px; font-family:'Orbitron','Courier New',monospace; }\n"
-".mm-table th { background:rgba(255,140,0,0.06); color:rgba(255,140,0,0.7);\n"
-"  font-weight:700; text-transform:uppercase; font-size:8px; letter-spacing:1.5px;\n"
-"  padding:7px 10px; border-bottom:1px solid rgba(255,140,0,0.2); text-align:left; }\n"
-".mm-table td { padding:6px 10px; border-bottom:1px solid rgba(0,200,255,0.06); color:#cce8ff; }\n"
-".mm-table tr:hover td { background:rgba(255,140,0,0.04); }\n"
+"/* =========================================================================\n"
+"   JARVIS HUD -- boot, particles, scanlines, ticker, arc reactor\n"
+"   ========================================================================= */\n"
+"@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');\n"
 "\n"
-"/* -- KPI -- */\n"
-".mm-kpi-row { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }\n"
-".mm-kpi { flex:1; min-width:130px;\n"
-"  background:linear-gradient(135deg,rgba(1,8,20,0.97) 0%,rgba(255,140,0,0.04) 100%);\n"
-"  border:1px solid rgba(0,200,255,0.15); border-top:2px solid rgba(255,140,0,0.5);\n"
-"  padding:8px 12px; text-align:center;\n"
-"  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 0);\n"
-"}\n"
-".mm-kpi .kpi-label { font-size:7px; color:rgba(255,140,0,0.5); text-transform:uppercase;\n"
-"  letter-spacing:2px; font-weight:700; font-family:'Orbitron','Courier New',monospace; }\n"
-".mm-kpi .kpi-value { font-size:17px; font-weight:700; margin:3px 0;\n"
-"  font-family:'Orbitron','Courier New',monospace; text-shadow:0 0 10px currentColor; }\n"
+"@keyframes spin-cw  { from { transform:rotate(0deg) }   to { transform:rotate(360deg) } }\n"
+"@keyframes spin-ccw { from { transform:rotate(360deg) } to { transform:rotate(0deg) } }\n"
+"@keyframes jarvis-ticker { 0% { transform:translateX(0) } 100% { transform:translateX(-50%) } }\n"
 "\n"
-"/* -- Legacy compatibility: Stark palette -- */\n"
-".mm-title { font-size:14px; font-weight:700; color:#ff8c00; padding:8px 0 4px;\n"
-"  border-bottom:1px solid rgba(255,140,0,0.3); margin-bottom:8px;\n"
-"  letter-spacing:3px; text-transform:uppercase;\n"
-"  font-family:'Orbitron','Courier New',monospace;\n"
-"  text-shadow:0 0 12px rgba(255,140,0,0.5); }\n"
-".mm-title small { font-size:9px; color:rgba(0,200,255,0.5); font-weight:400; margin-left:12px; }\n"
-".mm-section-label { font-size:9px; font-weight:700; color:rgba(255,140,0,0.5);\n"
-"  text-transform:uppercase; letter-spacing:2px; margin:12px 0 5px;\n"
-"  font-family:'Orbitron','Courier New',monospace;\n"
-"  padding-bottom:3px; border-bottom:1px solid rgba(255,140,0,0.15); }\n"
-".mm-metric { display:inline-block; margin:0 12px 8px 0; }\n"
-".mm-metric .label { font-size:8px; color:rgba(0,200,255,0.45); text-transform:uppercase; letter-spacing:0.5px; }\n"
-".mm-metric .value { font-size:14px; font-weight:700; color:#cce8ff;\n"
-"  font-family:'Orbitron','Courier New',monospace; text-shadow:0 0 6px currentColor; }\n"
-".mm-loading { color:#00c8ff; font-size:12px; font-weight:600; padding:12px;\n"
-"  letter-spacing:1.5px; font-family:'Orbitron','Courier New',monospace;\n"
-"  text-shadow:0 0 8px rgba(0,200,255,0.6); }\n"
-".mm-loading .step { color:rgba(0,200,255,0.45); font-size:10px; }\n"
-".mm-cot-label { background:rgba(255,140,0,0.07); border:1px solid rgba(255,140,0,0.25);\n"
-"  padding:3px 7px; font-size:9px; display:inline-block; margin:2px;\n"
-"  font-family:'Orbitron','Courier New',monospace; color:#ff8c00;\n"
-"  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%); }\n"
+"#jarvis-pcv { position:fixed; inset:0; z-index:0; pointer-events:none; }\n"
+"#jarvis-sl  { position:fixed; inset:0; z-index:1; pointer-events:none;\n"
+"  background:repeating-linear-gradient(to bottom,transparent 0,transparent 3px,rgba(0,0,0,0.07) 3px,rgba(0,0,0,0.07) 4px); }\n"
+"#jarvis-boot {\n"
+"  position:fixed; inset:0; background:#020810; z-index:9999;\n"
+"  display:flex; flex-direction:column; align-items:center; justify-content:center;\n"
+"  transition:opacity 0.8s; }\n"
+".jb-line { font-family:'Share Tech Mono',monospace; font-size:12px;\n"
+"  color:rgba(0,200,255,0.75); opacity:0; margin:3px 0; transition:opacity 0.3s; }\n"
+".jb-line.show { opacity:1; }\n"
+"#jarvis-ticker-wrap {\n"
+"  position:fixed; bottom:0; left:0; right:0; height:26px;\n"
+"  background:rgba(0,4,10,0.97); border-top:1px solid rgba(0,200,255,0.18);\n"
+"  overflow:hidden; display:flex; align-items:center; z-index:200; }\n"
+"#jarvis-ticker-track {\n"
+"  display:flex; gap:24px; white-space:nowrap;\n"
+"  animation:jarvis-ticker 40s linear infinite; }\n"
+".jt-item { font-family:'Orbitron','Courier New',monospace; font-size:9px; letter-spacing:1px; }\n"
+".jt-up { color:rgba(0,200,255,1); }\n"
+".jt-dn { color:rgba(0,200,255,0.38); }\n"
+".jarvis-reactor { flex-shrink:0; margin-right:10px; }\n"
+".jarvis-r1 { animation:spin-cw  14s linear infinite; transform-origin:21px 21px; }\n"
+".jarvis-r2 { animation:spin-ccw  9s linear infinite; transform-origin:21px 21px; }\n"
+".jarvis-r3 { animation:spin-cw   5s linear infinite; transform-origin:21px 21px; }\n"
+"\n"
 "</style>\n"
 )
+
+# ─── JARVIS HUD — static HTML + JS injected at dashboard init ─────────────
+
+_JARVIS_HTML = """
+<canvas id="jarvis-pcv"></canvas>
+<div id="jarvis-sl"></div>
+<div id="jarvis-boot">
+  <svg width="140" height="140" viewBox="0 0 140 140">
+    <defs>
+      <filter id="jbglow">
+        <feGaussianBlur stdDeviation="5" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <circle cx="70" cy="70" r="56" fill="none" stroke="rgba(0,200,255,.28)" stroke-width="1"
+      stroke-dasharray="8 5" class="jarvis-r1"/>
+    <circle cx="70" cy="70" r="42" fill="none" stroke="rgba(0,200,255,.45)" stroke-width="1"
+      stroke-dasharray="5 4" class="jarvis-r2"/>
+    <circle cx="70" cy="70" r="27" fill="none" stroke="rgba(0,200,255,.65)" stroke-width="1"
+      stroke-dasharray="3 3" class="jarvis-r3"/>
+    <circle cx="70" cy="70" r="9" fill="rgba(0,200,255,.95)" filter="url(#jbglow)"/>
+    <circle cx="70" cy="70" r="3" fill="white" opacity=".8"/>
+  </svg>
+  <div style="font-family:'Orbitron','Courier New',monospace;font-size:18px;font-weight:900;
+    letter-spacing:5px;color:rgba(0,200,255,1);margin-top:14px;
+    text-shadow:0 0 20px rgba(0,200,255,.65)">J.A.R.V.I.S</div>
+  <div style="font-family:'Orbitron','Courier New',monospace;font-size:7px;letter-spacing:2px;
+    color:rgba(0,200,255,.4);margin-top:4px">OPTIONS ANALYTICS CORE · v4.2</div>
+  <div id="jboot-log" style="margin-top:18px;text-align:left;width:360px;min-height:120px"></div>
+</div>
+<div id="jarvis-ticker-wrap"><div id="jarvis-ticker-track"></div></div>
+"""
+
+_JARVIS_JS = """
+(function(){
+  /* ── Particles ─────────────────────────────────────────────────── */
+  var pcv = document.getElementById('jarvis-pcv');
+  if (!pcv) return;
+  var ctx = pcv.getContext('2d'), W, H, pts = [];
+  function resize(){ W = pcv.width = window.innerWidth; H = pcv.height = window.innerHeight; }
+  resize(); window.addEventListener('resize', resize);
+  for(var i=0;i<55;i++) pts.push({
+    x:Math.random()*W, y:Math.random()*H,
+    vx:(Math.random()-.5)*.22, vy:(Math.random()-.5)*.22,
+    r:Math.random()*1.2+.4
+  });
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    ctx.lineWidth=.5; ctx.strokeStyle='rgba(0,200,255,.04)';
+    for(var x=0;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+    for(var y=0;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+    for(var i=0;i<pts.length;i++){
+      for(var j=i+1;j<pts.length;j++){
+        var dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y, d=Math.sqrt(dx*dx+dy*dy);
+        if(d<110){ctx.strokeStyle='rgba(0,200,255,'+(0.07*(1-d/110))+')';
+          ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.stroke();}
+      }
+      pts[i].x+=pts[i].vx; pts[i].y+=pts[i].vy;
+      if(pts[i].x<0||pts[i].x>W) pts[i].vx*=-1;
+      if(pts[i].y<0||pts[i].y>H) pts[i].vy*=-1;
+      ctx.fillStyle='rgba(0,200,255,.45)';
+      ctx.beginPath();ctx.arc(pts[i].x,pts[i].y,pts[i].r,0,Math.PI*2);ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+  /* ── Boot sequence ─────────────────────────────────────────────── */
+  var boot = document.getElementById('jarvis-boot');
+  var log  = document.getElementById('jboot-log');
+  var lines = [
+    'Inicializando núcleo de risco...',
+    'Carregando superfície de vol...',
+    'Conectando feed OI...',
+    'Compilando GEX matrix...',
+    'Calibrando modelos de cauda...',
+    'Sincronizando posicionamento CTA...',
+    'Sistema operacional — ONLINE'
+  ];
+  if(boot && log){
+    lines.forEach(function(txt,i){
+      setTimeout(function(){
+        var d=document.createElement('div'); d.className='jb-line';
+        d.textContent='> '+txt; log.appendChild(d);
+        setTimeout(function(){ d.classList.add('show'); }, 20);
+        if(i===lines.length-1){
+          setTimeout(function(){
+            boot.style.opacity='0'; boot.style.pointerEvents='none';
+            setTimeout(function(){ boot.style.display='none'; }, 820);
+          }, 380);
+        }
+      }, i*260);
+    });
+  }
+
+  /* ── Ticker ────────────────────────────────────────────────────── */
+  var items = [
+    {s:'SPX',d:'\\u25b2',v:'6,716',u:true},{s:'GEX',d:'\\u25bc',v:'\\u221223.6B',u:false},
+    {s:'GAMMA FLIP',d:'\\u25bc',v:'6,803',u:false},{s:'VIX',d:'\\u25bc',v:'22.3',u:false},
+    {s:'IV 30D',d:'\\u25bc',v:'18.36%',u:false},{s:'RV 30D',d:'\\u25b2',v:'13.60%',u:true},
+    {s:'P/C',d:'\\u25bc',v:'1.50\\u00d7',u:false},{s:'CTA',d:'\\u25bc',v:'\\u221268B',u:false},
+    {s:'PUT WALL',d:'\\u25bc',v:'6,700',u:false},{s:'CALL WALL',d:'\\u25b2',v:'6,800',u:true},
+    {s:'TAIL RISK',d:'\\u25bc',v:'50.5',u:false},{s:'SQUEEZE',d:'\\u25bc',v:'76/100',u:false}
+  ];
+  function mkItem(x){ return '<span class="jt-item '+(x.u?'jt-up':'jt-dn')+'">'+x.s+' '+x.d+' '+x.v+'</span>'; }
+  var tt = document.getElementById('jarvis-ticker-track');
+  if(tt){ var h=items.map(mkItem).join(' &nbsp;&#183;&nbsp; '); tt.innerHTML=h+' &nbsp;&#183;&nbsp; '+h; }
+})();
+"""
+
 
 
 def _hud_panel(content, title='', scan=True, glow=False):
@@ -8412,6 +8507,15 @@ def run_analysis(_):
 
             _status_bar = wd.HTML(
                 f"<div class='mm-dash mm-statusbar'>"
+                "<div class='jarvis-reactor'>"
+                "<svg width='42' height='42' viewBox='0 0 42 42'>"
+                "<defs><filter id='rfglow'><feGaussianBlur stdDeviation='2' result='b'/>"
+                "<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge></filter></defs>"
+                "<circle cx='21' cy='21' r='18' fill='none' stroke='rgba(0,200,255,.22)' stroke-width='1' stroke-dasharray='6 4' class='jarvis-r1'/>"
+                "<circle cx='21' cy='21' r='13' fill='none' stroke='rgba(0,200,255,.42)' stroke-width='1' stroke-dasharray='4 3' class='jarvis-r2'/>"
+                "<circle cx='21' cy='21' r='7'  fill='none' stroke='rgba(0,200,255,.62)' stroke-width='1' stroke-dasharray='2 2' class='jarvis-r3'/>"
+                "<circle cx='21' cy='21' r='3.5' fill='rgba(0,200,255,.95)' filter='url(#rfglow)'/>"
+                "</svg></div>"
                 f"<span class='mm-cmd-title'>⬡ SPX&nbsp;MARKET&nbsp;COMMAND</span>"
                 f"<div style='display:flex;flex-wrap:wrap;align-items:stretch;'>"
                 + _stat('Spot',            f"{spot:,.0f}",        _C['text'])
@@ -10530,6 +10634,8 @@ _ctrl_box_layout = wd.Layout(
 )
 
 display(wd.HTML(DASH_CSS))
+display(HTML(_JARVIS_HTML))
+display(HTML(f'<script>{_JARVIS_JS}</script>'))
 display(wd.VBox([
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>Parâmetros da Análise</div></div>"),
     wd.VBox([
