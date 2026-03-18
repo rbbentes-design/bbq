@@ -7647,13 +7647,11 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px" id="gr1"></div>
       <!-- 3 gauges bottom -->
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px" id="gr2"></div>
-      <!-- Vol metrics -->
+      <!-- Vol metrics — PRÊMIO IV-RV e SKEW já estão nos gauges acima -->
       <div class="secl">Volatilidade Implícita</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px">
         <div class="card"><div class="cdl">IV 30D ATM</div><div class="cdv">__JV_IV30__</div></div>
-        <div class="card"><div class="cdl">RV 30D</div><div class="cdv" style="opacity:.7">__JV_RV30__</div></div>
-        <div class="card"><div class="cdl">PRÊMIO IV−RV</div><div class="cdv">__JV_IVRV_PREM__</div></div>
-        <div class="card"><div class="cdl">SKEW P25-C25</div><div class="cdv" style="opacity:.8">+8.42%</div></div>
+        <div class="card"><div class="cdl">RV 30D REALIZADA</div><div class="cdv" style="opacity:.7">__JV_RV30__</div></div>
       </div>
       <!-- VaR -->
       <div class="secl">Risco Caudal</div>
@@ -7786,10 +7784,10 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPOT vs REFERÊNCIAS</div>
           <div style="font-size:11px;color:var(--lbl);margin-bottom:8px;line-height:1.7">
-            <span style="color:rgba(0,212,232,.9);font-weight:700">▲ Call Wall</span> = teto de resistência (dealers venderam calls aqui) &nbsp;·&nbsp;
-            <span style="color:rgba(245,166,35,.95);font-weight:700">◆ Gamma Flip</span> = divisor crítico: acima=vol amortecida, abaixo=vol amplificada &nbsp;·&nbsp;
-            <span style="color:rgba(0,212,232,.5);font-weight:700">▼ Put Wall</span> = piso de suporte (dealers venderam puts aqui) &nbsp;·&nbsp;
-            linhas tracejadas = projeção de movimento esperado pela IV em 5 dias
+            <span style="color:rgba(0,212,232,.9);font-weight:700">▲ Call Wall</span> = strike com maior Open Interest de Calls (resistência técnica) &nbsp;·&nbsp;
+            <span style="color:rgba(245,166,35,.95);font-weight:700">◆ Gamma Flip</span> = divisor crítico: acima=vol amortecida/mercado pinado, abaixo=vol amplificada &nbsp;·&nbsp;
+            <span style="color:rgba(0,212,232,.5);font-weight:700">▼ Put Wall</span> = strike com maior Open Interest de Puts (suporte técnico) &nbsp;·&nbsp;
+            linhas tracejadas finas = projeção de movimento esperado pela IV em 5 dias
           </div>
           <div class="cw" style="flex:1;min-height:380px"><canvas id="levChart"></canvas></div>
         </div>
@@ -8216,12 +8214,12 @@ function buildAll(){
           label:ctx=>{
             const v=ctx.parsed.y; if(v==null||v===undefined) return null;
             const desc={
-              'CALL WALL':'Resistência — dealers são short calls, mercado trava aqui',
-              'GAMMA FLIP':'Acima: dealers compram dips, vol baixa | Abaixo: vol acelera',
-              'PUT WALL':'Suporte — dealers são short puts, mercado rebate aqui',
-              'SPX SPOT':'Preço atual do SPX',
-              'IV +5d':'Estimativa de alta pelo mercado de opções (1σ em 5 dias)',
-              'IV −5d':'Estimativa de queda pelo mercado de opções (1σ em 5 dias)'
+              'CALL WALL':'Strike com MAIOR Open Interest de Calls — resistência técnica',
+              'GAMMA FLIP':'Divisor: acima=vol baixa/mercado pinado | abaixo=vol amplificada',
+              'PUT WALL':'Strike com MAIOR Open Interest de Puts — suporte técnico',
+              'SPX SPOT':'Preço atual do S&P 500',
+              'IV +5d':'Estimativa de alta: 1 desvio padrão em 5 dias (pela IV de mercado)',
+              'IV −5d':'Estimativa de queda: 1 desvio padrão em 5 dias (pela IV de mercado)'
             };
             const k=Object.keys(desc).find(k=>ctx.dataset.label.includes(k));
             return k?[`${v.toLocaleString('pt-BR')}  —  ${desc[k]}`]:`${v.toLocaleString('pt-BR')}`;
