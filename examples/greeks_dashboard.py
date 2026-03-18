@@ -2854,7 +2854,7 @@ def fp_plot_components_bar(score):
     names = list(components.keys())
     values = list(components.values())
     w_vals = [weights.get(k, 0) for k in ['cta', 'dealer', 'volctrl', 'rp', 'leveraged', 'passive_etf', 'buyback', 'cot']]
-    colors_bar = [_C['accent'] if v >= 0 else _C['red'] for v in values]
+    colors_bar = [_C['green'] if v >= 0 else _C['red'] for v in values]
     fig = go.FigureWidget()
     fig.add_trace(go.Bar(x=names, y=values, marker_color=colors_bar,
                          name='Z-Score', text=[f'{v:+.2f}' for v in values],
