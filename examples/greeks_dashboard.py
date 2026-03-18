@@ -8160,100 +8160,101 @@ function buildAll(){
                   'ABAIXO PUT WALL — Suporte em risco, vol extrema';
   const zoneColor=lvSpot>lvFlip?'rgba(0,212,232,.9)':'rgba(248,81,73,.9)';
 
+  // Plugin: desenha zonas coloridas + labels diretamente no gráfico
+  const lvDraw={id:'lvDraw',afterDraw(chart){
+    const {ctx,chartArea:{left,right,top,bottom},scales:{y}}=chart;
+    // Zonas de fundo coloridas por região
+    [
+      [Math.max(lvCW,lvEstUp),lvMax,'rgba(0,212,232,.05)'],   // acima call wall
+      [lvFlip,Math.max(lvCW,lvEstUp),'rgba(0,212,232,.09)'],  // entre flip e call wall
+      [lvPW,lvFlip,'rgba(245,166,35,.06)'],                    // entre put wall e flip
+      [Math.min(lvPW,lvEstDn),lvPW,'rgba(248,81,73,.09)'],    // abaixo put wall
+    ].forEach(([lo,hi,c])=>{
+      const y1=Math.min(bottom,Math.max(top,y.getPixelForValue(hi)));
+      const y2=Math.min(bottom,Math.max(top,y.getPixelForValue(lo)));
+      if(y1>=y2) return;
+      ctx.save();ctx.fillStyle=c;ctx.fillRect(left,y1,right-left,y2-y1);ctx.restore();
+    });
+    // Labels das linhas de referência — lado direito
+    const lblPad=right-8;
+    [
+      [lvCW,  '▲ CALL WALL  '+lvCW.toLocaleString('pt-BR'),  'rgba(0,212,232,.95)', 'bold 11px'],
+      [lvFlip,'◆ GAMMA FLIP  '+lvFlip.toLocaleString('pt-BR'),'rgba(245,166,35,1)', 'bold 12px'],
+      [lvPW,  '▼ PUT WALL  '+lvPW.toLocaleString('pt-BR'),   'rgba(0,212,232,.65)', 'bold 11px'],
+      [lvEstUp,'↑ +5d IV  '+lvEstUp.toLocaleString('pt-BR'), 'rgba(0,212,232,.55)', '10px'],
+      [lvEstDn,'↓ −5d IV  '+lvEstDn.toLocaleString('pt-BR'), 'rgba(248,81,73,.55)', '10px'],
+      [lvSpot, '● SPX  '+lvSpot.toLocaleString('pt-BR'),     'rgba(0,212,232,1)',   'bold 13px'],
+    ].forEach(([v,lbl,col,fnt])=>{
+      const yp=y.getPixelForValue(v);
+      if(yp<top-2||yp>bottom+2) return;
+      const yc=Math.max(top+10,Math.min(bottom-10,yp));
+      ctx.save();
+      ctx.fillStyle=col;
+      ctx.font=`${fnt} 'Share Tech Mono',monospace`;
+      ctx.textAlign='right';ctx.textBaseline='middle';
+      // fundo semi-transparente para legibilidade
+      const w=ctx.measureText(lbl).width;
+      ctx.fillStyle='rgba(2,8,16,.7)';
+      ctx.fillRect(lblPad-w-6,yc-8,w+12,16);
+      ctx.fillStyle=col;
+      ctx.fillText(lbl,lblPad,yc);
+      ctx.restore();
+    });
+    // Status da zona — canto superior esquerdo
+    ctx.save();
+    ctx.fillStyle='rgba(2,8,16,.75)';ctx.fillRect(left+6,top+6,420,22);
+    ctx.fillStyle=zoneColor;
+    ctx.font=`bold 11px 'Share Tech Mono',monospace`;
+    ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.fillText('ZONA ATUAL: '+zoneLabel,left+12,top+17);
+    ctx.restore();
+  }};
+
   new Chart(document.getElementById('levChart'),{
     type:'line',
     data:{labels:['HOJE','PROJ +5d'],datasets:[
-      // Zona de range esperado (fill entre up e dn)
-      {label:'Zona IV +5d',
-       data:[lvSpot,lvEstUp],borderColor:'rgba(0,212,232,.08)',
-       backgroundColor:'rgba(0,212,232,.06)',
-       borderWidth:0,pointRadius:0,fill:'+1',tension:0},
-      {label:'Zona IV −5d',
-       data:[lvSpot,lvEstDn],borderColor:'rgba(248,81,73,.08)',
-       backgroundColor:'rgba(248,81,73,.06)',
-       borderWidth:0,pointRadius:0,fill:false,tension:0},
-      // Linhas de referência horizontais
-      {label:`▲ CALL WALL  ${lvCW.toLocaleString('pt-BR')}`,
-       data:[lvCW,lvCW],
-       borderColor:'rgba(0,212,232,.85)',borderWidth:2,borderDash:[12,5],
-       pointRadius:0,fill:false},
-      {label:`◆ GAMMA FLIP  ${lvFlip.toLocaleString('pt-BR')}`,
-       data:[lvFlip,lvFlip],
-       borderColor:'rgba(245,166,35,.95)',borderWidth:2.5,borderDash:[8,4],
-       pointRadius:0,fill:false},
-      {label:`▼ PUT WALL  ${lvPW.toLocaleString('pt-BR')}`,
-       data:[lvPW,lvPW],
-       borderColor:'rgba(0,212,232,.45)',borderWidth:2,borderDash:[12,5],
-       pointRadius:0,fill:false},
-      // Projeção +5d
-      {label:`→ IV +5d  ${lvEstUp.toLocaleString('pt-BR')}`,
-       data:[lvSpot,lvEstUp],
-       borderColor:'rgba(0,212,232,.35)',borderWidth:1.5,borderDash:[4,6],
-       pointRadius:[0,6],pointBackgroundColor:'rgba(0,212,232,.5)',fill:false,tension:0},
-      {label:`→ IV −5d  ${lvEstDn.toLocaleString('pt-BR')}`,
-       data:[lvSpot,lvEstDn],
-       borderColor:'rgba(248,81,73,.35)',borderWidth:1.5,borderDash:[4,6],
-       pointRadius:[0,6],pointBackgroundColor:'rgba(248,81,73,.5)',fill:false,tension:0},
-      // Spot atual (ponto grande)
-      {label:`● SPX SPOT  ${lvSpot.toLocaleString('pt-BR')}`,
-       data:[lvSpot,null],type:'scatter',
-       pointRadius:14,pointHoverRadius:16,
+      // Fan de projeção — zona preenchida
+      {data:[lvSpot,lvEstUp],backgroundColor:'rgba(0,212,232,.07)',
+       borderColor:'transparent',borderWidth:0,pointRadius:0,fill:'+1',tension:0},
+      {data:[lvSpot,lvEstDn],backgroundColor:'rgba(248,81,73,.05)',
+       borderColor:'transparent',borderWidth:0,pointRadius:0,fill:false,tension:0},
+      // Linhas de referência — horizontais
+      {data:[lvCW,lvCW],  borderColor:'rgba(0,212,232,.9)',   borderWidth:2.5,borderDash:[14,6],pointRadius:0,fill:false},
+      {data:[lvFlip,lvFlip],borderColor:'rgba(245,166,35,1)', borderWidth:3,  borderDash:[10,5],pointRadius:0,fill:false},
+      {data:[lvPW,lvPW],  borderColor:'rgba(0,212,232,.5)',   borderWidth:2,  borderDash:[14,6],pointRadius:0,fill:false},
+      // Projeção +/− 5d
+      {data:[lvSpot,lvEstUp],borderColor:'rgba(0,212,232,.5)',borderWidth:2,borderDash:[5,6],
+       pointRadius:[0,8],pointBackgroundColor:'rgba(0,212,232,.7)',fill:false,tension:0},
+      {data:[lvSpot,lvEstDn],borderColor:'rgba(248,81,73,.5)',borderWidth:2,borderDash:[5,6],
+       pointRadius:[0,8],pointBackgroundColor:'rgba(248,81,73,.7)',fill:false,tension:0},
+      // Spot
+      {data:[lvSpot,null],type:'scatter',
+       pointRadius:16,pointHoverRadius:18,
        pointBackgroundColor:'rgba(0,212,232,1)',
-       pointBorderColor:'rgba(0,212,232,.25)',pointBorderWidth:5}
+       pointBorderColor:'rgba(0,212,232,.2)',pointBorderWidth:6}
     ]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{
-        legend:{
-          position:'top',
-          labels:{color:'rgba(0,200,220,.85)',boxWidth:24,padding:14,
-            font:{size:11,family:"'Share Tech Mono',monospace"},
-            filter:i=>!i.text.startsWith('Zona')}
-        },
+        legend:{display:false},
         tooltip:{...TT,callbacks:{
           title:()=>'',
           label:ctx=>{
-            const v=ctx.parsed.y; if(v==null||v===undefined) return null;
-            const desc={
-              'CALL WALL':'Strike com MAIOR Open Interest de Calls — resistência técnica',
-              'GAMMA FLIP':'Divisor: acima=vol baixa/mercado pinado | abaixo=vol amplificada',
-              'PUT WALL':'Strike com MAIOR Open Interest de Puts — suporte técnico',
-              'SPX SPOT':'Preço atual do S&P 500',
-              'IV +5d':'Estimativa de alta: 1 desvio padrão em 5 dias (pela IV de mercado)',
-              'IV −5d':'Estimativa de queda: 1 desvio padrão em 5 dias (pela IV de mercado)'
-            };
-            const k=Object.keys(desc).find(k=>ctx.dataset.label.includes(k));
-            return k?[`${v.toLocaleString('pt-BR')}  —  ${desc[k]}`]:`${v.toLocaleString('pt-BR')}`;
+            const v=ctx.parsed.y; if(v==null) return null;
+            return `${v.toLocaleString('pt-BR')}`;
           }
-        }},
-        // Anotação da zona atual — via plugin customizado inline
-        customZone:{id:'customZone',afterDraw(chart){
-          const {ctx,chartArea:{left,right,top}}=chart;
-          ctx.save();
-          ctx.fillStyle=zoneColor;
-          ctx.font=`bold 11px 'Share Tech Mono',monospace`;
-          ctx.textAlign='left';
-          ctx.fillText('ZONA: '+zoneLabel,left+10,top+18);
-          ctx.restore();
         }}
       },
-      plugins:[{id:'customZone',afterDraw(chart){
-        const {ctx,chartArea:{left,top}}=chart;
-        ctx.save();
-        ctx.fillStyle=zoneColor;
-        ctx.font=`bold 11px 'Share Tech Mono',monospace`;
-        ctx.textAlign='left';
-        ctx.fillText('ZONA: '+zoneLabel,left+10,top+18);
-        ctx.restore();
-      }}],
       scales:{
         x:{grid:{color:G},
-          ticks:{color:'rgba(0,200,220,.8)',font:{size:13,family:"'Orbitron',sans-serif"}}},
+          ticks:{color:'rgba(0,200,220,.85)',font:{size:14,family:"'Orbitron',sans-serif"},
+            padding:10}},
         y:{grid:{color:G},
           ticks:{color:'rgba(0,140,170,.7)',font:{size:11},
             callback:v=>v.toLocaleString('pt-BR')},
           min:lvMin,max:lvMax}
       }
-    }
+    },
+    plugins:[lvDraw]
   });
 
   // ESTRUTURA — Distribution
