@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JARVIS HUD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <style>
+    /* =====================================================================
+       RESET
+    ===================================================================== */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* =====================================================================
+       BODY
+    ===================================================================== */
+    body {
+      background: #020810;
+      color: rgba(0, 212, 232, .85);
+      font-family: 'Share Tech Mono', monospace;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* =====================================================================
+       APP WRAPPER
+    ===================================================================== */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding-bottom: 28px;
+    }
+
+    /* =====================================================================
+       PARTICLE CANVAS
+    ===================================================================== */
+    #particles {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* =====================================================================
+       SCANLINES OVERLAY
+    ===================================================================== */
+    #scanlines {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 3px,
+        rgba(0, 0, 0, .08) 3px,
+        rgba(0, 0, 0, .08) 4px
+      );
+    }
+
+    /* =====================================================================
+       BOOT OVERLAY
+    ===================================================================== */
+    #boot {
+      position: fixed;
+      inset: 0;
+      background: #020810;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity .8s;
+    }
+
+    #boot.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .boot-logo {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 36px;
+      font-weight: 900;
+      letter-spacing: 8px;
+      color: rgba(0, 212, 232, 1);
+      text-shadow: 0 0 30px rgba(0, 212, 232, .8), 0 0 60px rgba(0, 212, 232, .4);
+    }
+
+    .boot-log {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+      color: rgba(0, 212, 232, .7);
+      margin-top: 24px;
+      text-align: left;
+      width: 380px;
+      min-height: 160px;
+    }
+
+    .boot-line {
+      opacity: 0;
+      margin: 3px 0;
+      transition: opacity .3s;
+    }
+
+    .boot-line.show {
+      opacity: 1;
+    }
+
+    /* =====================================================================
+       CMD STRIP
+    ===================================================================== */
+    #cmd-strip {
+      background: rgba(0, 8, 16, .95);
+      border-bottom: 1px solid rgba(0, 212, 232, .15);
+      padding: 4px 16px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      font-size: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      position: relative;
+      z-index: 10;
+    }
+
+    .cmd-item {
+      padding: 0 12px;
+      border-right: 1px solid rgba(0, 212, 232, .15);
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .cmd-item:first-child {
+      padding-left: 0;
+    }
+
+    .cmd-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 7px;
+      letter-spacing: 2px;
+      opacity: .5;
+      text-transform: uppercase;
+    }
+
+    .cmd-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      color: rgba(0, 212, 232, 1);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      background: rgba(0, 212, 232, 1);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .3; }
+    }
+
+    /* =====================================================================
+       HEADER
+    ===================================================================== */
+    #header {
+      background: rgba(0, 4, 12, .98);
+      border-bottom: 1px solid rgba(0, 212, 232, .2);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: relative;
+      overflow: hidden;
+      z-index: 10;
+    }
+
+    /* Header scan line sweep */
+    #header::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 60%;
+      height: 100%;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(0, 212, 232, .04) 50%,
+        transparent 100%
+      );
+      animation: hdr-scan 6s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes hdr-scan {
+      0%   { left: -60%; }
+      100% { left: 160%; }
+    }
+
+    .brand-block {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .brand-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      color: rgba(0, 212, 232, 1);
+      text-shadow: 0 0 20px rgba(0, 212, 232, .6);
+      line-height: 1;
+    }
+
+    .brand-sub {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 7px;
+      letter-spacing: 2px;
+      opacity: .45;
+      margin-top: 2px;
+      text-transform: uppercase;
+    }
+
+    #tabs {
+      display: flex;
+      gap: 2px;
+      margin-left: auto;
+    }
+
+    .tab {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      letter-spacing: 2px;
+      padding: 6px 14px;
+      background: transparent;
+      border: 1px solid rgba(0, 212, 232, .2);
+      color: rgba(0, 212, 232, .5);
+      cursor: pointer;
+      clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+      transition: all .2s;
+      text-transform: uppercase;
+      outline: none;
+      position: relative;
+      z-index: 1;
+    }
+
+    .tab:hover {
+      background: rgba(0, 212, 232, .06);
+      border-color: rgba(0, 212, 232, .4);
+      color: rgba(0, 212, 232, .8);
+    }
+
+    .tab.active {
+      background: rgba(0, 212, 232, .1);
+      border-color: rgba(0, 212, 232, .6);
+      color: rgba(0, 212, 232, 1);
+    }
+
+    #clock {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      margin-left: 16px;
+      opacity: .8;
+      white-space: nowrap;
+    }
+
+    /* =====================================================================
+       CONTENT AREA
+    ===================================================================== */
+    #content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px;
+      position: relative;
+      z-index: 5;
+    }
+
+    /* Scrollbar styling */
+    #content::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #content::-webkit-scrollbar-track {
+      background: rgba(0, 212, 232, .04);
+    }
+
+    #content::-webkit-scrollbar-thumb {
+      background: rgba(0, 212, 232, .25);
+      border-radius: 2px;
+    }
+
+    #content::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 212, 232, .45);
+    }
+
+    /* =====================================================================
+       TAB PANELS
+    ===================================================================== */
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    /* =====================================================================
+       PANEL BASE
+    ===================================================================== */
+    .panel {
+      background: rgba(0, 8, 20, .9);
+      border: 1px solid rgba(0, 212, 232, .2);
+      clip-path: polygon(
+        0 0,
+        calc(100% - 10px) 0,
+        100% 10px,
+        100% 100%,
+        10px 100%,
+        0 calc(100% - 10px)
+      );
+      padding: 12px;
+      margin-bottom: 8px;
+      position: relative;
+    }
+
+    .panel-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      color: rgba(0, 212, 232, .6);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(0, 212, 232, .1);
+    }
+
+    /* Corner bracket accents */
+    .cb,
+    .ct {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-color: rgba(0, 212, 232, .4);
+      border-style: solid;
+    }
+
+    /* top-left */
+    .ct.tl {
+      top: 0;
+      left: 0;
+      border-width: 1px 0 0 1px;
+    }
+
+    /* top-right */
+    .ct.tr {
+      top: 0;
+      right: 0;
+      border-width: 1px 1px 0 0;
+    }
+
+    /* bottom-left */
+    .cb.bl {
+      bottom: 0;
+      left: 0;
+      border-width: 0 0 1px 1px;
+    }
+
+    /* bottom-right */
+    .cb.br {
+      bottom: 0;
+      right: 0;
+      border-width: 0 1px 1px 0;
+    }
+
+    /* =====================================================================
+       GRID LAYOUTS
+    ===================================================================== */
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .gauge-grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      justify-items: center;
+    }
+
+    .gauge-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      justify-items: center;
+    }
+
+    .gregas-row1 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr) 210px;
+      gap: 8px;
+      align-items: start;
+    }
+
+    /* =====================================================================
+       INFO CARDS
+    ===================================================================== */
+    .info-card {
+      background: rgba(0, 212, 232, .04);
+      border: 1px solid rgba(0, 212, 232, .12);
+      clip-path: polygon(
+        0 0,
+        calc(100% - 10px) 0,
+        100% 10px,
+        100% 100%,
+        10px 100%,
+        0 calc(100% - 10px)
+      );
+      padding: 10px 12px;
+    }
+
+    .info-card-label {
+      font-size: 7px;
+      letter-spacing: 2px;
+      opacity: .4;
+      text-transform: uppercase;
+      font-family: 'Orbitron', sans-serif;
+    }
+
+    .info-card-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      margin-top: 4px;
+      color: rgba(0, 212, 232, 1);
+    }
+
+    .info-card-sub {
+      font-size: 9px;
+      opacity: .5;
+      margin-top: 2px;
+    }
+
+    /* =====================================================================
+       ETF TABLE
+    ===================================================================== */
+    .etf-bar-wrap {
+      background: rgba(0, 212, 232, .06);
+      height: 4px;
+      border-radius: 2px;
+      margin: 2px 0;
+    }
+
+    .etf-bar-fill {
+      height: 100%;
+      background: rgba(0, 212, 232, .6);
+      border-radius: 2px;
+      transition: width .5s;
+    }
+
+    .etf-row {
+      display: grid;
+      grid-template-columns: 50px 1fr 80px 60px;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(0, 212, 232, .06);
+    }
+
+    .etf-ticker {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      color: rgba(0, 212, 232, 1);
+    }
+
+    .etf-name {
+      font-size: 9px;
+      opacity: .6;
+    }
+
+    .etf-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      text-align: right;
+    }
+
+    .etf-chg {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    /* =====================================================================
+       SCORE BARS
+    ===================================================================== */
+    .score-bar {
+      background: rgba(0, 212, 232, .06);
+      height: 6px;
+      border-radius: 3px;
+      margin-top: 6px;
+    }
+
+    .score-fill {
+      height: 100%;
+      background: rgba(0, 212, 232, .7);
+      border-radius: 3px;
+      transition: width .5s;
+    }
+
+    /* =====================================================================
+       RISCO TAB 3-COL GRID
+    ===================================================================== */
+    .risco-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr 0.9fr;
+      gap: 8px;
+    }
+
+    /* =====================================================================
+       COMPONENT BAR
+    ===================================================================== */
+    .comp-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .comp-bar-label {
+      font-size: 9px;
+      opacity: .6;
+      min-width: 80px;
+      white-space: nowrap;
+    }
+
+    .comp-bar-track {
+      flex: 1;
+      height: 5px;
+      background: rgba(0, 212, 232, .08);
+      border-radius: 3px;
+    }
+
+    .comp-bar-fill {
+      height: 100%;
+      background: rgba(0, 212, 232, .7);
+      border-radius: 3px;
+    }
+
+    .comp-bar-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      min-width: 36px;
+      text-align: right;
+    }
+
+    /* =====================================================================
+       CTA / LEITURA GAUGE
+    ===================================================================== */
+    .cta-leitura-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(0, 212, 232, .08);
+    }
+
+    .leit-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .leit-label {
+      font-size: 9px;
+      opacity: .6;
+      flex: 1;
+    }
+
+    .leit-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    /* =====================================================================
+       GREGAS LEITURA PANEL
+    ===================================================================== */
+    .leitura-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    /* =====================================================================
+       CHART CONTAINERS
+    ===================================================================== */
+    .chart-wrap {
+      position: relative;
+      width: 100%;
+      height: 220px;
+    }
+
+    .chart-wrap.sm {
+      height: 180px;
+    }
+
+    /* =====================================================================
+       ARC REACTOR ANIMATIONS
+    ===================================================================== */
+    @keyframes spin-cw {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    @keyframes spin-ccw {
+      from { transform: rotate(360deg); }
+      to   { transform: rotate(0deg); }
+    }
+
+    /* =====================================================================
+       TICKER
+    ===================================================================== */
+    #ticker {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 28px;
+      background: rgba(0, 4, 10, .98);
+      border-top: 1px solid rgba(0, 212, 232, .15);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      z-index: 100;
+    }
+
+    .ticker-track {
+      display: flex;
+      gap: 32px;
+      white-space: nowrap;
+      animation: ticker-scroll 42s linear infinite;
+    }
+
+    @keyframes ticker-scroll {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    .t-item {
+      font-size: 9px;
+      font-family: 'Orbitron', sans-serif;
+      letter-spacing: 1px;
+    }
+
+    .t-up {
+      color: rgba(0, 212, 232, 1);
+    }
+
+    .t-dn {
+      color: rgba(0, 212, 232, .4);
+    }
+
+    .t-sep {
+      color: rgba(0, 212, 232, .2);
+      padding: 0 4px;
+    }
+
+    /* =====================================================================
+       UTILITY / MISC
+    ===================================================================== */
+    .text-dim {
+      opacity: .5;
+    }
+
+    .text-bright {
+      color: rgba(0, 212, 232, 1);
+    }
+
+    .mono {
+      font-family: 'Share Tech Mono', monospace;
+    }
+
+    .orb {
+      font-family: 'Orbitron', sans-serif;
+    }
+
+    .mb-8 {
+      margin-bottom: 8px;
+    }
+
+    .mt-8 {
+      margin-top: 8px;
+    }
+
+    .fs-9 {
+      font-size: 9px;
+    }
+
+    .fs-10 {
+      font-size: 10px;
+    }
+
+    .flex-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .flex-col {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Glow text utility */
+    .glow {
+      text-shadow: 0 0 12px rgba(0, 212, 232, .7);
+    }
+
+    /* Inline badge */
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 7px;
+      letter-spacing: 1px;
+      border: 1px solid rgba(0, 212, 232, .3);
+      color: rgba(0, 212, 232, .8);
+    }
+
+    /* Divider */
+    .hud-divider {
+      border: none;
+      border-top: 1px solid rgba(0, 212, 232, .08);
+      margin: 8px 0;
+    }
+
+    /* Signal strength dots row */
+    .sig-dots {
+      display: flex;
+      gap: 3px;
+      align-items: center;
+    }
+
+    .sig-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: rgba(0, 212, 232, .2);
+    }
+
+    .sig-dot.on {
+      background: rgba(0, 212, 232, 1);
+    }
+
+  </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+// ── CLOCK ─────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('pt-BR',{hour12:false,timeZone:'America/Sao_Paulo'});
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── TAB SWITCHING ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('tab-'+t.dataset.tab).classList.add('active');
+  });
+});
+
+// ── PARTICLE CANVAS ───────────────────────────────────────────────────────────
+const pcv = document.getElementById('particles');
+const pctx = pcv.getContext('2d');
+let W, H, pts = [];
+function resizeP() {
+  W = pcv.width = window.innerWidth;
+  H = pcv.height = window.innerHeight;
+}
+resizeP();
+window.addEventListener('resize', resizeP);
+for (let i = 0; i < 60; i++) pts.push({
+  x: Math.random()*W, y: Math.random()*H,
+  vx: (Math.random()-.5)*.3, vy: (Math.random()-.5)*.3,
+  r: Math.random()*1.5+.5
+});
+function drawParticles() {
+  pctx.clearRect(0,0,W,H);
+  // grid
+  pctx.strokeStyle = 'rgba(0,212,232,.04)';
+  pctx.lineWidth = .5;
+  for(let x=0;x<W;x+=60){pctx.beginPath();pctx.moveTo(x,0);pctx.lineTo(x,H);pctx.stroke();}
+  for(let y=0;y<H;y+=60){pctx.beginPath();pctx.moveTo(0,y);pctx.lineTo(W,y);pctx.stroke();}
+  // connect dots
+  for(let i=0;i<pts.length;i++){
+    for(let j=i+1;j<pts.length;j++){
+      const dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      if(d<120){
+        pctx.strokeStyle=`rgba(0,212,232,${.08*(1-d/120)})`;
+        pctx.beginPath();pctx.moveTo(pts[i].x,pts[i].y);pctx.lineTo(pts[j].x,pts[j].y);pctx.stroke();
+      }
+    }
+    pts[i].x += pts[i].vx; pts[i].y += pts[i].vy;
+    if(pts[i].x<0||pts[i].x>W) pts[i].vx*=-1;
+    if(pts[i].y<0||pts[i].y>H) pts[i].vy*=-1;
+    pctx.fillStyle='rgba(0,212,232,.5)';
+    pctx.beginPath();pctx.arc(pts[i].x,pts[i].y,pts[i].r,0,Math.PI*2);pctx.fill();
+  }
+  requestAnimationFrame(drawParticles);
+}
+drawParticles();
+
+// ── BOOT SEQUENCE ─────────────────────────────────────────────────────────────
+const bootLines = [
+  'Inicializando núcleo de risco...',
+  'Carregando superfície de vol...',
+  'Conectando feed OI...',
+  'Compilando GEX matrix...',
+  'Calibrando modelos de cauda...',
+  'Sincronizando posicionamento CTA...',
+  'Sistema operacional — ONLINE'
+];
+const logEl = document.getElementById('boot-log');
+// animate boot rings
+const br1 = document.getElementById('br1');
+const br2 = document.getElementById('br2');
+const br3 = document.getElementById('br3');
+let bootAngle = 0;
+let bootAnim;
+function animateBootRings() {
+  bootAngle += 1;
+  br1.setAttribute('transform', `rotate(${bootAngle} 80 80)`);
+  br2.setAttribute('transform', `rotate(${-bootAngle*1.5} 80 80)`);
+  br3.setAttribute('transform', `rotate(${bootAngle*2.2} 80 80)`);
+  bootAnim = requestAnimationFrame(animateBootRings);
+}
+animateBootRings();
+bootLines.forEach((line, i) => {
+  setTimeout(() => {
+    const d = document.createElement('div');
+    d.className = 'boot-line';
+    d.textContent = '> ' + line;
+    logEl.appendChild(d);
+    setTimeout(() => d.classList.add('show'), 20);
+    if (i === bootLines.length - 1) {
+      setTimeout(() => {
+        cancelAnimationFrame(bootAnim);
+        const boot = document.getElementById('boot');
+        boot.style.opacity = '0';
+        setTimeout(() => boot.style.display = 'none', 800);
+      }, 400);
+    }
+  }, i * 260);
+});
+
+// ── ARC GAUGE ─────────────────────────────────────────────────────────────────
+function arcGauge(container, cfg) {
+  const size = cfg.size || 110;
+  const cx = size/2, cy = size/2;
+  const R = size * 0.38;
+  const alpha = 0.3 + cfg.intensity * 0.7;
+  const startAngle = -225 * Math.PI/180;
+  const totalSweep = 270 * Math.PI/180;
+  const t = Math.max(0, Math.min(1, (cfg.value - cfg.min) / (cfg.max - cfg.min)));
+  const sweepAngle = totalSweep * t;
+
+  function polar(cx, cy, r, angle) {
+    return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+  }
+  function arcPath(cx, cy, r, start, end, large) {
+    const [x1,y1] = polar(cx,cy,r,start);
+    const [x2,y2] = polar(cx,cy,r,end);
+    const la = large ? 1 : 0;
+    return `M ${x1} ${y1} A ${r} ${r} 0 ${la} 1 ${x2} ${y2}`;
+  }
+  const endAngle = startAngle + totalSweep;
+  const fillEnd = startAngle + sweepAngle;
+  const trackLarge = (totalSweep > Math.PI) ? 1 : 0;
+  const fillLarge = (sweepAngle > Math.PI) ? 1 : 0;
+  const trackPath = arcPath(cx,cy,R, startAngle, endAngle, trackLarge);
+  const fillPath = sweepAngle > 0.01 ? arcPath(cx,cy,R, startAngle, fillEnd, fillLarge) : '';
+
+  const Ro = R + 8, Ri = R - 9;
+  const uid = 'g' + Math.random().toString(36).substr(2,6);
+
+  const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="overflow:visible">
+    <defs>
+      <filter id="gf${uid}"><feGaussianBlur stdDeviation="3" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${Ro}" fill="none" stroke="rgba(0,212,232,.15)"
+      stroke-width="1" stroke-dasharray="4 4"
+      style="animation:spin-cw 20s linear infinite;transform-origin:${cx}px ${cy}px"/>
+    <circle cx="${cx}" cy="${cy}" r="${Ri}" fill="none" stroke="rgba(0,212,232,.1)"
+      stroke-width="1" stroke-dasharray="3 5"
+      style="animation:spin-ccw 14s linear infinite;transform-origin:${cx}px ${cy}px"/>
+    <path d="${trackPath}" fill="none" stroke="rgba(0,30,44,.95)" stroke-width="7" stroke-linecap="round"/>
+    ${fillPath ? `
+    <path d="${fillPath}" fill="none" stroke="rgba(0,212,232,${alpha})" stroke-width="10" stroke-linecap="round" opacity=".1" filter="url(#gf${uid})"/>
+    <path d="${fillPath}" fill="none" stroke="rgba(0,212,232,${alpha})" stroke-width="6" stroke-linecap="round"/>
+    ` : ''}
+    <text x="${cx}" y="${cy - 2}" text-anchor="middle" dominant-baseline="middle"
+      font-family="Orbitron" font-weight="900" font-size="${size*0.16}"
+      fill="rgba(0,212,232,${alpha})" filter="url(#gf${uid})">${cfg.value}${cfg.unit||''}</text>
+    ${cfg.state ? `<text x="${cx}" y="${cy + size*0.1}" text-anchor="middle" dominant-baseline="middle"
+      font-family="Share Tech Mono" font-size="6"
+      fill="rgba(0,212,232,.5)">${cfg.state}</text>` : ''}
+    <text x="${polar(cx,cy,R,startAngle)[0]}" y="${polar(cx,cy,R,startAngle)[1]+8}"
+      text-anchor="middle" font-family="Share Tech Mono" font-size="6" fill="rgba(0,212,232,.3)">${cfg.min}</text>
+    <text x="${polar(cx,cy,R,endAngle)[0]}" y="${polar(cx,cy,R,endAngle)[1]+8}"
+      text-anchor="middle" font-family="Share Tech Mono" font-size="6" fill="rgba(0,212,232,.3)">${cfg.max}</text>
+    <text x="${cx}" y="${size - 6}" text-anchor="middle"
+      font-family="Orbitron" font-size="6" font-weight="700" letter-spacing="1.5"
+      fill="rgba(0,212,232,.45)" text-transform="uppercase">${cfg.label}</text>
+  </svg>`;
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px';
+  wrap.innerHTML = svg;
+  container.appendChild(wrap);
+}
+
+// ── SEMI GAUGE ────────────────────────────────────────────────────────────────
+function semiGauge(container, cfg) {
+  const size = cfg.size || 160;
+  const cx = size/2, cy = size * 0.62;
+  const R = size * 0.38;
+  const alpha = 0.3 + cfg.intensity * 0.7;
+  const t = Math.max(0, Math.min(1, (cfg.value - cfg.min) / (cfg.max - cfg.min)));
+  const uid = 'sg' + Math.random().toString(36).substr(2,6);
+
+  const trackD = `M ${cx - R} ${cy} A ${R} ${R} 0 1 1 ${cx + R} ${cy}`;
+
+  const fex = cx + R * Math.cos(Math.PI * (1 - t));
+  const fey = cy - R * Math.sin(Math.PI * t);
+  const fillLarge = t > 0.5 ? 1 : 0;
+  const fillD = t > 0.01 ? `M ${cx - R} ${cy} A ${R} ${R} 0 ${fillLarge} 1 ${fex} ${fey}` : '';
+
+  const svg = `<svg width="${size}" height="${size * 0.7}" viewBox="0 0 ${size} ${size * 0.7}" style="overflow:visible">
+    <defs>
+      <filter id="${uid}glow"><feGaussianBlur stdDeviation="3" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <path d="${trackD}" fill="none" stroke="rgba(0,30,44,.95)" stroke-width="7" stroke-linecap="round"/>
+    ${fillD ? `
+    <path d="${fillD}" fill="none" stroke="rgba(0,212,232,${alpha})" stroke-width="10" stroke-linecap="round" opacity=".1" filter="url(#${uid}glow)"/>
+    <path d="${fillD}" fill="none" stroke="rgba(0,212,232,${alpha})" stroke-width="6" stroke-linecap="round"/>
+    ` : ''}
+    <text x="${cx - R - 4}" y="${cy + 12}" text-anchor="end"
+      font-family="Share Tech Mono" font-size="7" fill="rgba(0,212,232,.35)">${cfg.min}</text>
+    <text x="${cx + R + 4}" y="${cy + 12}" text-anchor="start"
+      font-family="Share Tech Mono" font-size="7" fill="rgba(0,212,232,.35)">${cfg.max}</text>
+  </svg>`;
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px';
+  wrap.innerHTML = svg +
+    `<div style="font-family:Orbitron;font-size:${size*0.13}px;font-weight:700;color:rgba(0,212,232,${alpha})">${cfg.value}${cfg.unit||''}</div>` +
+    `<div style="font-family:Orbitron;font-size:7px;letter-spacing:1.5px;color:rgba(0,212,232,.45);text-transform:uppercase">${cfg.label}</div>`;
+  container.appendChild(wrap);
+}
+
+// ── PAINEL TAB GAUGES ─────────────────────────────────────────────────────────
+const painelR1 = document.getElementById('painel-gauges-row1');
+[
+  {value:'8.43', min:0, max:20, label:'FRAGILIDADE', unit:'%', intensity:.95, state:'ALTO'},
+  {value:'4.76', min:0, max:10, label:'PRÊMIO VOL', unit:'%', intensity:.55},
+  {value:'8.42', min:-15, max:15, label:'SKEW P25-C25', unit:'%', intensity:.65},
+  {value:'1.16', min:0, max:5, label:'MOV ESP 10', unit:'%', intensity:.35},
+].forEach(c => arcGauge(painelR1, {...c, size:110}));
+
+const painelR2 = document.getElementById('painel-gauges-row2');
+[
+  {value:'50.5', min:0, max:100, label:'TAIL RISK', unit:'', intensity:.65, state:'ELEVADO'},
+  {value:'50.0', min:0, max:100, label:'FLOW SCORE', unit:'', intensity:.50, state:'NEUTRO'},
+  {value:'75.8', min:0, max:100, label:'GAMMA SQUEEZE', unit:'', intensity:1.0, state:'CRÍTICO'},
+].forEach(c => arcGauge(painelR2, {...c, size:110}));
+
+// ── RISCO TAB ─────────────────────────────────────────────────────────────────
+const tailData = [
+  ['Excess Kurtosis', '28.55', '25.0', 1.0],
+  ['Left Skew', '0.577', '0.0', .3],
+  ['IV/RV Ratio', '1.35', '3.5', .6],
+  ['Put Skew 25d/ATM', '1.24', '12.0', 1.0],
+  ['Risk Reversal', '8.42', '10.0', 1.0],
+  ['Spot Up Vol Up Streak', '0', '0.0', .3],
+];
+const tbody = document.getElementById('tail-table');
+tailData.forEach(([comp, val, score, op]) => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td style="padding:5px 0;border-bottom:1px solid rgba(0,212,232,.06);opacity:${op}">${comp}</td>
+    <td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(0,212,232,.06);font-family:Orbitron;opacity:${op}">${val}</td>
+    <td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(0,212,232,.06);font-family:Orbitron;opacity:${op}">${score}</td>
+  `;
+  tbody.appendChild(tr);
+});
+
+const squeezeComps = [
+  ['Prêmio de Vol (IV–RV)', 19, 25, 1.0],
+  ['Distância Gamma Flip', 18, 25, 0.85],
+  ['P/C OI Ratio', 8, 25, 0.45],
+  ['GEX Negatividade', 30, 30, 0.9],
+];
+const sqEl = document.getElementById('squeeze-comps');
+squeezeComps.forEach(([label, val, max, intensity]) => {
+  const alpha = 0.3 + intensity * 0.7;
+  const pct = (val/max*100).toFixed(0);
+  sqEl.innerHTML += `
+    <div class="comp-bar-row">
+      <div style="flex:1;font-size:9px;opacity:.7">${label}</div>
+      <div style="font-family:Orbitron;font-size:9px;width:50px;text-align:right;opacity:${alpha}">${val}/${max}</div>
+    </div>
+    <div class="comp-bar-track" style="margin-bottom:8px">
+      <div class="comp-bar-fill" style="width:${pct}%;opacity:${alpha}"></div>
+    </div>`;
+});
+
+// ── CHART.JS GLOBAL DEFAULTS ──────────────────────────────────────────────────
+Chart.defaults.color = 'rgba(0,140,170,.65)';
+Chart.defaults.font = { family: "'Share Tech Mono', monospace", size: 9 };
+const gridOpts = { color: 'rgba(0,50,70,.25)', drawBorder: false };
+const tooltipPlugin = {
+  backgroundColor: 'rgba(0,4,10,.97)',
+  borderColor: 'rgba(0,80,100,.3)',
+  borderWidth: 1,
+  titleFont: { family: "'Share Tech Mono', monospace" },
+  bodyFont: { family: "'Share Tech Mono', monospace" }
+};
+
+// ── FLOW SCORE CHART ──────────────────────────────────────────────────────────
+new Chart(document.getElementById('chart-flow-score'), {
+  type: 'bar',
+  data: {
+    labels: ['CTA','Dealer/MM','Vol Ctrl','Risk Parity','ETFs Alav.'],
+    datasets: [{
+      data: [-2.1, 0.0, 3.0, 3.0, 0.37],
+      backgroundColor: ctx => ctx.raw >= 0 ? 'rgba(0,212,232,.35)' : 'rgba(0,212,232,.15)',
+      borderColor: ctx => ctx.raw >= 0 ? 'rgba(0,212,232,.9)' : 'rgba(0,212,232,.4)',
+      borderWidth: 1
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: {display:false}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid: gridOpts },
+      y: { min:-3.5, max:4, grid: gridOpts, title: {display:true, text:'Z-Score'} }
+    }
+  }
+});
+
+// ── GREGAS TAB ────────────────────────────────────────────────────────────────
+const gregasSemis = document.getElementById('gregas-semis');
+[
+  {value:-514.42, min:-800, max:0, label:'Δ DELTA NOCIONAL', unit:'$Bn', intensity:1.0},
+  {value:-23.02, min:-40, max:0, label:'Γ GAMMA (GEX NET)', unit:'$Bn', intensity:0.4},
+  {value:0.03, min:-1, max:1, label:'V VANNA', unit:'$Bn', intensity:0.25},
+  {value:-12.15, min:-20, max:0, label:'C CHARM (DIÁRIO)', unit:'$Bn', intensity:0.8},
+].forEach(c => semiGauge(gregasSemis, {...c, size:160}));
+
+const leitDiv = document.createElement('div');
+leitDiv.className = 'leitura-panel panel';
+leitDiv.innerHTML = `
+  <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+  <div class="panel-title">LEITURA DAS GREGAS</div>
+  ${[
+    ['Δ', 'Dealers vendidos → compra', 1.0],
+    ['Γ', 'GEX− acelera movimentos', 0.35],
+    ['V', 'Vanna: Neutro', 0.2],
+    ['C', 'Delta decai → reforça hedge', 0.9],
+  ].map(([sym, txt, op]) => `
+    <div class="cta-leitura-row">
+      <div class="leit-dot" style="background:rgba(0,212,232,${op})"></div>
+      <span style="font-family:Orbitron;font-size:9px;font-weight:700;opacity:${op};margin-right:6px">${sym}</span>
+      <span style="font-size:9px;opacity:${op*0.8}">${txt}</span>
+    </div>`).join('')}
+`;
+gregasSemis.appendChild(leitDiv);
+
+// ── ETF GRID ──────────────────────────────────────────────────────────────────
+const etfGrid = document.getElementById('etf-grid');
+const etfBuys = [
+  ['MU', 100, '▲ $7.93Bn', '179.8% ADV'],
+  ['XOM', 78, '▲ $6.21Bn', '952.7% ADV'],
+  ['CVX', 42, '▲ $3.34Bn', '451.8% ADV'],
+  ['GOOGL', 37, '▲ $2.95Bn', '104.9% ADV'],
+];
+const etfSells = [
+  ['MSFT', 100, '▼ $−21.31Bn', '−580.6% ADV'],
+  ['AAPL', 43, '▼ $−9.11Bn', '−274.3% ADV'],
+  ['LLY', 18, '▼ $−3.88Bn', '−662.3% ADV'],
+  ['AMZN', 14, '▼ $−2.89Bn', '−105.5% ADV'],
+];
+function etfSection(title, rows, opacity) {
+  const d = document.createElement('div');
+  d.innerHTML = `<div style="font-family:Orbitron;font-size:8px;letter-spacing:2px;opacity:.5;margin-bottom:6px">${title}</div>`;
+  rows.forEach(([ticker, pct, val, adv]) => {
+    d.innerHTML += `
+      <div class="etf-row" style="opacity:${opacity}">
+        <div class="etf-ticker">${ticker}</div>
+        <div><div class="etf-bar-wrap"><div class="etf-bar-fill" style="width:${pct}%"></div></div></div>
+        <div style="font-family:'Share Tech Mono';font-size:9px">${val}</div>
+        <div style="font-size:8px;opacity:.55">${adv}</div>
+      </div>`;
+  });
+  etfGrid.appendChild(d);
+}
+etfSection('Fluxo de Compra', etfBuys, 1);
+etfSection('Fluxo de Venda', etfSells, .5);
+
+// ── OVERHANG SEMI GAUGES ──────────────────────────────────────────────────────
+const overhangEl = document.getElementById('overhang-semis');
+[
+  {value:952.66, min:0, max:1000, label:'XOM', unit:'% ADV', intensity:1.0},
+  {value:451.81, min:0, max:1000, label:'CVX', unit:'% ADV', intensity:0.7},
+  {value:-662.29, min:-1000, max:0, label:'LLY', unit:'% ADV', intensity:0.65},
+  {value:-580.64, min:-1000, max:0, label:'MSFT', unit:'% ADV', intensity:0.55},
+].forEach(c => semiGauge(overhangEl, {...c, size:160}));
+
+// ── GEX CHART ─────────────────────────────────────────────────────────────────
+const strikes = [];
+const gexVals = [];
+for (let x = 6400; x <= 7000; x += 10) {
+  strikes.push(x);
+  gexVals.push(+(40 * (2/(1+Math.exp(-(x-6803)/200*3))-1)).toFixed(2));
+}
+const spotIdx = strikes.indexOf(6720) >= 0 ? strikes.indexOf(6720) : Math.round((6716-6400)/10);
+const flipIdx = Math.round((6803-6400)/10);
+
+new Chart(document.getElementById('chart-gex'), {
+  type: 'line',
+  data: {
+    labels: strikes,
+    datasets: [
+      {
+        label: 'GEX $Bi/1%',
+        data: gexVals,
+        borderColor: 'rgba(0,212,232,.8)',
+        backgroundColor: 'rgba(0,80,120,.1)',
+        borderWidth: 1.5,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.3
+      },
+      {
+        label: 'Spot 6,716',
+        data: strikes.map((s,i) => i===spotIdx ? gexVals[i] : null),
+        pointRadius: 7,
+        pointBackgroundColor: 'rgba(0,212,232,1)',
+        showLine: false
+      },
+      {
+        label: 'G-Flip 6,803',
+        data: strikes.map((s,i) => i===flipIdx ? gexVals[i] : null),
+        pointRadius: 7,
+        pointBackgroundColor: 'rgba(0,212,232,.4)',
+        showLine: false
+      }
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:true,labels:{boxWidth:8,padding:12}}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid:gridOpts, ticks:{maxTicksLimit:8} },
+      y: { grid:gridOpts, title:{display:true, text:'$ Bi / 1% move'} }
+    }
+  }
+});
+
+// ── GAMMA LEVELS CHART ────────────────────────────────────────────────────────
+const glDates = ['Fev 22','Fev 25','Mar 1','Mar 4','Mar 8','Mar 11','Mar 15'];
+const glSpx = [5885, 5870, 5840, 5780, 5750, 5730, 5716];
+new Chart(document.getElementById('chart-gamma-levels'), {
+  type: 'line',
+  data: {
+    labels: glDates,
+    datasets: [
+      {
+        label: 'SPX',
+        data: glSpx,
+        borderColor: 'rgba(0,212,232,.9)',
+        backgroundColor: 'rgba(0,50,80,.08)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.2,
+        pointRadius: d => d.dataIndex === glSpx.length-1 ? 6 : 2,
+        pointBackgroundColor: 'rgba(0,212,232,1)'
+      },
+      ...[ [5890,'Est Move +174',.35], [5800,'Call Trigger',.50], [5700,'Put Wall',.25], [5640,'Est Move −174',.15] ].map(([y,lbl,op]) => ({
+        label: lbl,
+        data: glDates.map(() => y),
+        borderColor: `rgba(0,212,232,${op})`,
+        borderWidth: 1,
+        borderDash: [4,4],
+        pointRadius: 0,
+        fill: false
+      }))
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:true,labels:{boxWidth:8,padding:10}}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid:gridOpts },
+      y: { min:5550, max:5950, grid:gridOpts }
+    }
+  }
+});
+
+// ── DISTRIBUTION CHART ────────────────────────────────────────────────────────
+const distBins = ['-3.0%','-2.5%','-2.0%','-1.5%','-1.0%','-0.5%','0.0%','+0.5%','+1.0%','+1.5%','+2.0%','+2.5%'];
+const distData = [2,4,12,18,35,80,195,120,55,25,8,3];
+const mu = 6, sigma = 2.2;
+const gaussian = distData.map((_,i) => {
+  const x = (i - mu) / sigma;
+  return Math.round(Math.max(...distData) * Math.exp(-0.5*x*x));
+});
+new Chart(document.getElementById('chart-dist'), {
+  type: 'bar',
+  data: {
+    labels: distBins,
+    datasets: [
+      {
+        type: 'bar',
+        label: 'Frequência',
+        data: distData,
+        backgroundColor: 'rgba(0,212,232,.25)',
+        borderColor: 'rgba(0,212,232,.6)',
+        borderWidth: 1
+      },
+      {
+        type: 'line',
+        label: 't-Student',
+        data: gaussian,
+        borderColor: 'rgba(0,212,232,.9)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: false,
+        tension: 0.4
+      }
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:true,labels:{boxWidth:8,padding:10}}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid:gridOpts },
+      y: { grid:gridOpts }
+    }
+  }
+});
+
+// ── CTA MAIN CHART ────────────────────────────────────────────────────────────
+const ctaDates = ['Dez 1','Dez 8','Dez 15','Dez 22','Jan 5','Jan 12','Jan 19','Jan 26','Fev 2','Fev 9','Fev 16','Fev 23','Mar 1','Mar 15'];
+const ctaHist = [65,22,-15,8,28,52,72,83,88,90,86,35,16,-68];
+const projDates = ['Mar 22','Mar 29','Abr 5','Abr 12'];
+const allLabels = [...ctaDates, ...projDates];
+const histLen = ctaDates.length;
+const lastVal = -68;
+
+function makeProj(endpoint) {
+  const proj = new Array(histLen).fill(null);
+  proj[histLen-1] = lastVal;
+  const steps = projDates.length;
+  for (let i = 0; i < steps; i++) {
+    proj.push(lastVal + (endpoint - lastVal) * (i+1)/steps);
+  }
+  return proj;
+}
+
+new Chart(document.getElementById('chart-cta-main'), {
+  type: 'line',
+  data: {
+    labels: allLabels,
+    datasets: [
+      {
+        label: 'Histórico',
+        data: [...ctaHist, ...new Array(projDates.length).fill(null)],
+        borderColor: 'rgba(0,212,232,.9)',
+        backgroundColor: 'rgba(0,60,100,.12)',
+        borderWidth: 2, fill:true, tension:.2,
+        pointRadius: d => d.dataIndex === histLen-1 ? 5 : 2,
+        pointBackgroundColor: 'rgba(0,212,232,.9)'
+      },
+      {
+        label: 'Flat',
+        data: makeProj(-68),
+        borderColor: 'rgba(0,212,232,.30)',
+        borderDash:[5,4], borderWidth:1.5, pointRadius:0, fill:false, tension:.1
+      },
+      {
+        label: 'Up 1σ',
+        data: makeProj(37),
+        borderColor: 'rgba(0,212,232,.80)',
+        borderDash:[4,3], borderWidth:1.5, pointRadius:0, fill:false, tension:.1
+      },
+      {
+        label: 'Up 2σ',
+        data: makeProj(75),
+        borderColor: 'rgba(0,212,232,.60)',
+        borderDash:[4,3], borderWidth:1.5, pointRadius:0, fill:false, tension:.1
+      },
+      {
+        label: 'Down 1σ',
+        data: makeProj(-75),
+        borderColor: 'rgba(0,212,232,.40)',
+        borderDash:[4,3], borderWidth:1.5, pointRadius:0, fill:false, tension:.1
+      },
+      {
+        label: 'Down 2.5σ',
+        data: makeProj(-85),
+        borderColor: 'rgba(0,212,232,.20)',
+        borderDash:[3,5], borderWidth:1.5, pointRadius:0, fill:false, tension:.1
+      },
+      {
+        label: 'Zero',
+        data: allLabels.map(() => 0),
+        borderColor: 'rgba(0,212,232,.15)',
+        borderDash:[3,6], borderWidth:1, pointRadius:0, fill:false
+      }
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:true,labels:{boxWidth:8,padding:10}}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid:gridOpts, ticks:{maxTicksLimit:10} },
+      y: { grid:gridOpts }
+    }
+  }
+});
+
+// ── CTA SCENARIO CHART ────────────────────────────────────────────────────────
+new Chart(document.getElementById('chart-cta-scenario'), {
+  type: 'bar',
+  data: {
+    labels: ['Flat','Up 1σ','Up 2σ','Down 1σ','Down 2σ','Down 2.5σ'],
+    datasets: [
+      {
+        label: '1 Semana',
+        data: [0.5, 14.5, 38.3, -6.8, -7.9, -6.4],
+        backgroundColor: ctx => ctx.raw >= 0 ? 'rgba(0,212,232,.45)' : 'rgba(0,212,232,.15)',
+        borderColor: 'rgba(0,212,232,.7)',
+        borderWidth: 1
+      },
+      {
+        label: '1 Mês',
+        data: [1.5, 105.8, 143.8, -7.7, -2.0, 0.5],
+        backgroundColor: ctx => ctx.raw >= 0 ? 'rgba(0,212,232,.25)' : 'rgba(0,212,232,.10)',
+        borderColor: 'rgba(0,212,232,.4)',
+        borderWidth: 1
+      }
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:true,labels:{boxWidth:8,padding:10}}, tooltip: tooltipPlugin },
+    scales: {
+      x: { grid:gridOpts },
+      y: { grid:gridOpts }
+    }
+  }
+});
+
+// ── TICKER ────────────────────────────────────────────────────────────────────
+const tickerItems = [
+  {sym:'SPX', dir:'▲', val:'6,716', up:true},
+  {sym:'GEX', dir:'▼', val:'−$23.6B', up:false},
+  {sym:'GAMMA FLIP', dir:'▼', val:'6,803', up:false},
+  {sym:'VIX', dir:'▼', val:'22.3', up:false},
+  {sym:'IV 30D', dir:'▼', val:'18.36%', up:false},
+  {sym:'RV 30D', dir:'▲', val:'13.60%', up:true},
+  {sym:'P/C', dir:'▼', val:'1.50×', up:false},
+  {sym:'CTA', dir:'▼', val:'−$68B', up:false},
+  {sym:'PUT WALL', dir:'▼', val:'6,700', up:false},
+  {sym:'CALL WALL', dir:'▲', val:'6,800', up:true},
+  {sym:'TAIL RISK', dir:'▼', val:'50.5', up:false},
+  {sym:'SQUEEZE', dir:'▼', val:'76/100', up:false},
+];
+function tickerHTML(items) {
+  return items.map(({sym,dir,val,up}) =>
+    `<span class="t-item ${up?'t-up':'t-dn'}">${sym} ${dir} ${val}</span>`
+  ).join(' &nbsp;·&nbsp; ');
+}
+const tt = document.getElementById('ticker-track');
+tt.innerHTML = tickerHTML(tickerItems) + ' &nbsp;·&nbsp; ' + tickerHTML(tickerItems);
+</script>
+<body>
+<!-- Particles canvas -->
+<canvas id="particles"></canvas>
+<!-- Scanlines -->
+<div id="scanlines"></div>
+
+<!-- Boot overlay -->
+<div id="boot">
+  <svg id="boot-rings" width="160" height="160" viewBox="0 0 160 160">
+    <circle cx="80" cy="80" r="60" fill="none" stroke="rgba(0,212,232,.3)" stroke-width="1" stroke-dasharray="8 4" id="br1"/>
+    <circle cx="80" cy="80" r="45" fill="none" stroke="rgba(0,212,232,.5)" stroke-width="1" stroke-dasharray="6 3" id="br2"/>
+    <circle cx="80" cy="80" r="28" fill="none" stroke="rgba(0,212,232,.7)" stroke-width="1" stroke-dasharray="4 3" id="br3"/>
+    <circle cx="80" cy="80" r="8" fill="rgba(0,212,232,.9)" filter="url(#boot-glow)"/>
+    <defs><filter id="boot-glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  </svg>
+  <div class="boot-log" id="boot-log"></div>
+</div>
+
+<!-- App shell -->
+<div id="app">
+
+  <!-- CMD STRIP -->
+  <div id="cmd-strip">
+    <div class="cmd-item" style="padding-left:0;display:flex;align-items:center;gap:6px">
+      <div class="live-dot"></div>
+      <span class="cmd-label">SPX MARKET COMMAND</span>
+    </div>
+    <div class="cmd-item"><span class="cmd-label">SPOT</span> <span class="cmd-val">6,716</span></div>
+    <div class="cmd-item"><span class="cmd-label">GAMMA FLIP</span> <span class="cmd-val">6,803</span></div>
+    <div class="cmd-item"><span class="cmd-label">GEX NET</span> <span class="cmd-val">−23.6B</span></div>
+    <div class="cmd-item"><span class="cmd-label">P/C RATIO</span> <span class="cmd-val">1.50×</span></div>
+    <div class="cmd-item"><span class="cmd-label">IV−RV</span> <span class="cmd-val">+4.8pp</span></div>
+    <div class="cmd-item"><span class="cmd-label">SQUEEZE</span> <span class="cmd-val">76/100</span></div>
+    <div class="cmd-item"><span class="cmd-label">TAIL RISK</span> <span class="cmd-val">50.5/100</span></div>
+  </div>
+
+  <!-- HEADER -->
+  <div id="header">
+    <!-- Arc reactor -->
+    <div id="reactor" style="width:52px;height:52px;position:relative;flex-shrink:0">
+      <svg width="52" height="52" viewBox="0 0 52 52" style="position:absolute;inset:0">
+        <defs>
+          <filter id="rglow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <circle cx="26" cy="26" r="23" fill="none" stroke="rgba(0,212,232,.25)" stroke-width="1" stroke-dasharray="6 3" style="animation:spin-cw 12s linear infinite;transform-origin:26px 26px"/>
+        <circle cx="26" cy="26" r="16" fill="none" stroke="rgba(0,212,232,.45)" stroke-width="1" stroke-dasharray="5 2" style="animation:spin-ccw 8s linear infinite;transform-origin:26px 26px"/>
+        <circle cx="26" cy="26" r="9" fill="none" stroke="rgba(0,212,232,.65)" stroke-width="1" stroke-dasharray="3 2" style="animation:spin-cw 5s linear infinite;transform-origin:26px 26px"/>
+        <circle cx="26" cy="26" r="4" fill="rgba(0,212,232,.9)" filter="url(#rglow)"/>
+      </svg>
+    </div>
+    <!-- Brand -->
+    <div>
+      <div class="brand-title">J.A.R.V.I.S</div>
+      <div class="brand-sub">JUST A RATHER VERY INTELLIGENT SYSTEM · OPTIONS CORE · v4.2</div>
+    </div>
+    <!-- Tabs -->
+    <div id="tabs">
+      <button class="tab active" data-tab="painel">PAINEL</button>
+      <button class="tab" data-tab="risco">RISCO</button>
+      <button class="tab" data-tab="gregas">GREGAS</button>
+      <button class="tab" data-tab="estrutura">ESTRUTURA</button>
+      <button class="tab" data-tab="cta">CTA</button>
+    </div>
+    <!-- Clock -->
+    <div id="clock">--:--:--</div>
+  </div>
+
+  <!-- CONTENT -->
+  <div id="content">
+
+    <!-- TAB: PAINEL -->
+    <div class="tab-panel active" id="tab-painel">
+      <div class="gauge-grid-4" id="painel-gauges-row1"></div>
+      <div class="gauge-grid-3" id="painel-gauges-row2" style="margin-top:8px;max-width:75%"></div>
+
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Volatilidade Implícita</div>
+        <div class="grid-4">
+          <div class="info-card"><div class="info-card-label">IV 30D ATM</div><div class="info-card-val">18.36%</div></div>
+          <div class="info-card"><div class="info-card-label">RV 30D</div><div class="info-card-val">13.60%</div></div>
+          <div class="info-card"><div class="info-card-label">PRÊMIO IV−RV</div><div class="info-card-val">+4.76%</div></div>
+          <div class="info-card"><div class="info-card-label">SKEW P25-C25</div><div class="info-card-val">+8.42%</div></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Risco Caudal</div>
+        <div class="grid-4">
+          <div class="info-card"><div class="info-card-label">VaR 95%</div><div class="info-card-val" style="opacity:1">−0.92%</div></div>
+          <div class="info-card"><div class="info-card-label">CVaR 95%</div><div class="info-card-val" style="opacity:.85">−2.15%</div></div>
+          <div class="info-card"><div class="info-card-label">VaR 99%</div><div class="info-card-val" style="opacity:.65">−2.39%</div></div>
+          <div class="info-card"><div class="info-card-label">CVaR 99%</div><div class="info-card-val" style="opacity:.45">−5.27%</div></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Níveis Chave</div>
+        <div class="grid-3">
+          <div class="info-card"><div class="info-card-label">GAMMA FLIP</div><div class="info-card-val">~6,803</div></div>
+          <div class="info-card"><div class="info-card-label">CALL WALL</div><div class="info-card-val">6,800</div></div>
+          <div class="info-card"><div class="info-card-label">PUT WALL</div><div class="info-card-val">6,700</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: RISCO -->
+    <div class="tab-panel" id="tab-risco">
+      <div class="risco-grid">
+        <!-- Col 1: Tail Risk -->
+        <div class="panel">
+          <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+          <div class="panel-title">Tail Risk — 50.5 / 100</div>
+          <div style="font-size:9px;opacity:.5;margin-bottom:8px">ELEVADO — Monitorar sinais de stress</div>
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead><tr>
+              <th style="text-align:left;font-family:Orbitron;font-size:7px;letter-spacing:1px;opacity:.4;padding:3px 0;border-bottom:1px solid rgba(0,212,232,.1)">COMPONENTE</th>
+              <th style="text-align:right;font-family:Orbitron;font-size:7px;letter-spacing:1px;opacity:.4;padding:3px 0;border-bottom:1px solid rgba(0,212,232,.1)">VALOR</th>
+              <th style="text-align:right;font-family:Orbitron;font-size:7px;letter-spacing:1px;opacity:.4;padding:3px 0;border-bottom:1px solid rgba(0,212,232,.1)">SCORE</th>
+            </tr></thead>
+            <tbody id="tail-table"></tbody>
+          </table>
+          <div style="margin-top:10px;font-size:8px;opacity:.4;font-family:Orbitron;letter-spacing:1px">SCORE TOTAL</div>
+          <div class="score-bar"><div class="score-fill" style="width:50.5%"></div></div>
+          <div style="font-family:Orbitron;font-size:11px;font-weight:700;margin-top:4px">50.5 / 100</div>
+        </div>
+
+        <!-- Col 2: Flow Score Bar Chart -->
+        <div class="panel">
+          <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+          <div class="panel-title">Componentes Flow Score — Z-Score</div>
+          <div class="chart-wrap" style="height:240px"><canvas id="chart-flow-score"></canvas></div>
+        </div>
+
+        <!-- Col 3: Gamma Squeeze -->
+        <div class="panel">
+          <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+          <div class="panel-title">Gamma Squeeze — 75.8 / 100</div>
+          <div style="font-size:9px;opacity:.5;margin-bottom:10px">RISCO MUITO ALTO — condições extremas</div>
+          <div id="squeeze-comps"></div>
+          <div style="margin-top:10px;font-size:8px;opacity:.4;font-family:Orbitron;letter-spacing:1px">SCORE TOTAL</div>
+          <div class="score-bar"><div class="score-fill" style="width:75.8%"></div></div>
+          <div style="font-family:Orbitron;font-size:11px;font-weight:700;margin-top:4px">75.8 / 100</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: GREGAS -->
+    <div class="tab-panel" id="tab-gregas">
+      <div class="gregas-row1" id="gregas-semis"></div>
+
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Rebalanceamento ETF Passivo (VOO/SPY/IVV)</div>
+        <div class="grid-2" id="etf-grid"></div>
+      </div>
+
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Overhang — Impacto do Rebalanceamento (% ADV)</div>
+        <div class="gauge-grid-4" id="overhang-semis"></div>
+      </div>
+    </div>
+
+    <!-- TAB: ESTRUTURA -->
+    <div class="tab-panel" id="tab-estrutura">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+          <div class="panel-title">Gamma Exposure (GEX) por Strike</div>
+          <div class="chart-wrap" style="height:240px"><canvas id="chart-gex"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+          <div class="panel-title">Níveis de Gamma SPX — 30 Dias</div>
+          <div class="chart-wrap" style="height:240px"><canvas id="chart-gamma-levels"></canvas></div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">Distribuição de Retornos &nbsp;·&nbsp; VaR 95% −0.92% &nbsp;·&nbsp; VaR 99% −2.39%</div>
+        <div class="chart-wrap" style="height:200px"><canvas id="chart-dist"></canvas></div>
+      </div>
+    </div>
+
+    <!-- TAB: CTA -->
+    <div class="tab-panel" id="tab-cta">
+      <div class="panel">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">CTA Estimates S&amp;P 500 (Notional $B)</div>
+        <div class="chart-wrap" style="height:260px"><canvas id="chart-cta-main"></canvas></div>
+      </div>
+      <div class="panel" style="margin-top:8px">
+        <div class="ct tl"></div><div class="ct tr"></div><div class="cb bl"></div><div class="cb br"></div>
+        <div class="panel-title">CTA Scenario Flows ($B) — 1 Semana vs 1 Mês</div>
+        <div class="chart-wrap" style="height:220px"><canvas id="chart-cta-scenario"></canvas></div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+
+</div><!-- /app -->
+
+<!-- TICKER -->
+<div id="ticker">
+  <div class="ticker-track" id="ticker-track"></div>
+</div>
+</body>
+</html>
