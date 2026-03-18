@@ -8358,7 +8358,12 @@ def _export_dashboard_html():
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _f(k, default=0):
         v = m.get(k, default)
-        return float(v) if isinstance(v, (int, float)) else default
+        if isinstance(v, (int, float)):
+            return float(v)
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
 
     def _sym_range(v, factor=1.5, min_abs=1.0):
         """Symmetric range centred on 0 for semi-gauges."""
@@ -11538,7 +11543,7 @@ def run_analysis(_):
                 'iv_rv_pp':      (iv_30d - rv_30d) * 100 if pd.notna(iv_30d) and pd.notna(rv_30d) else 0,
                 'iv_30d':        iv_30d if pd.notna(iv_30d) else 0,
                 'rv_30d':        rv_30d if pd.notna(rv_30d) else 0,
-                'squeeze_score': _sq_score_disp if '_sq_score_disp' in dir() else 'N/A',
+                'squeeze_score': (_sq_result_v1['score'] if '_sq_result_v1' in dir() and _sq_result_v1 else 0),
                 'tail_score':    analytics.get('tail_score', 0) if analytics else 0,
                 'call_wall':     call_wall,
                 'put_wall':      put_wall,
