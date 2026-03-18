@@ -2859,8 +2859,7 @@ def fp_plot_components_bar(score):
         yaxis2=dict(overlaying='y', side='right',
                     title='Peso', range=[0, 1]),
         xaxis=dict(tickangle=-20, automargin=True),
-        margin=dict(t=55, r=40, b=110, l=50),
-        **FLOW_FIG_LAYOUT
+        **{**FLOW_FIG_LAYOUT, 'margin': dict(t=55, r=40, b=110, l=50)},
     )
     return fig
 
