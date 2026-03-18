@@ -2092,6 +2092,7 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
         direction = "NEUTRAL"
 
     prob_up = 1.0 / (1.0 + math.exp(-combined))
+    score_0_100 = round(prob_up * 100, 1)
     return {
         'z_leveraged': z_lev, 'z_buyback': z_buyback,
         'z_cot': z_cot, 'z_passive_etf': z_passive,
@@ -2099,6 +2100,7 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
         'z_cta': z_cta, 'z_rp': z_rp,
         'combined_score': combined, 'direction': direction,
         'prob_up': prob_up, 'prob_down': 1.0 - prob_up,
+        'score': score_0_100, 'score_total': score_0_100,
         'weights': {'leveraged': w_lev, 'buyback': w_buy,
                     'cot': w_cot, 'passive_etf': w_passive,
                     'dealer': w_deal, 'volctrl': w_vc,
