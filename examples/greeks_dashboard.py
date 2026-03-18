@@ -7496,355 +7496,875 @@ def style_sensitivity_matrix(matrix_df, cmap='viridis'):
     return styled.to_html()
 
 
-def _export_dashboard_html():
-    """Exporta como JARVIS HUD HTML standalone — frame completo com dados reais."""
-    if not _snapshot['sections']:
-        return None
+_JARVIS_EXPORT_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>J.A.R.V.I.S — Intelligence Core</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#020810;
+  --c:#00d4e8;        /* main cyan */
+  --c60:rgba(0,212,232,.6);
+  --c40:rgba(0,212,232,.4);
+  --c20:rgba(0,212,232,.2);
+  --c08:rgba(0,212,232,.08);
+  --c04:rgba(0,212,232,.04);
+  --brd:rgba(0,212,232,.12);
+  --dim:#041420;
+  --txt:rgba(0,212,232,.55);
+  --lbl:rgba(0,212,232,.28);
+}
+html,body{width:100%;height:100vh;overflow:hidden;background:var(--bg);
+  font-family:'Share Tech Mono',monospace;color:var(--txt)}
+canvas#bg{position:fixed;inset:0;z-index:0;opacity:.3}
+.scl{position:fixed;inset:0;z-index:2;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.04) 3px,rgba(0,0,0,.04) 4px)}
 
-    import json as _json
+/* ── BOOT ── */
+#boot{position:fixed;inset:0;z-index:999;background:var(--bg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .7s}
+#boot.gone{opacity:0;pointer-events:none}
+.brw{position:relative;width:68px;height:68px;display:flex;align-items:center;justify-content:center;margin-bottom:20px}
+.bri{position:absolute;border-radius:50%;border:1px solid transparent}
+.bri1{inset:0;border-top-color:var(--c);border-right-color:var(--c);animation:sp 1s linear infinite}
+.bri2{inset:10px;border-bottom-color:var(--c40);border-left-color:var(--c40);animation:sp 1.8s linear reverse infinite}
+.bri3{inset:20px;border-top-color:var(--c20);animation:sp 3s linear infinite}
+.bcore{width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c),0 0 20px var(--c)}
+.btitle{font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:6px;color:var(--c40);margin-bottom:14px}
+#blog{font-size:9px;color:var(--c20);line-height:2.2;text-align:center;min-height:60px}
+@keyframes sp{to{transform:rotate(360deg)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.1}}
 
-    ticker  = _snapshot['ticker']
-    spot    = _snapshot['spot']
-    ts      = _snapshot['ts']
-    m       = _snapshot.get('metrics', {})
+/* ── APP ── */
+#app{position:relative;z-index:10;width:100vw;height:100vh;
+  display:flex;flex-direction:column;opacity:0;transition:opacity .8s}
+#app.on{opacity:1}
 
-    # ── Formatted metric strings ──────────────────────────────────────────
-    _spot_s  = f"{spot:,.0f}"
-    _flip_s  = f"{m.get('gamma_flip', 0):,.0f}" if m.get('gamma_flip') else "N/A"
-    _gex_s   = f"{m.get('gex_net_bn', 0):+.1f}B"
-    _pc_s    = f"{m.get('pc_ratio', 0):.2f}\u00d7"
-    _ivrv_s  = f"{m.get('iv_rv_pp', 0):+.1f}pp"
-    _sq_s    = f"{m.get('squeeze_score', 'N/A')}/100"
-    _tail_s  = f"{m.get('tail_score', 0):.0f}/100"
-    _iv_s    = f"{m.get('iv_30d', 0)*100:.2f}%"
-    _rv_s    = f"{m.get('rv_30d', 0)*100:.2f}%"
-    _cw_s    = f"{m.get('call_wall', 0):,.0f}" if m.get('call_wall') else "N/A"
-    _pw_s    = f"{m.get('put_wall',  0):,.0f}" if m.get('put_wall')  else "N/A"
+/* ── CMD STRIP ── */
+.cmd{display:flex;align-items:center;gap:5px;padding:4px 22px;
+  background:rgba(0,4,10,.98);border-bottom:1px solid var(--c08);flex-shrink:0}
+.cmd-id{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:700;letter-spacing:3px;
+  color:var(--c);display:flex;align-items:center;gap:5px;white-space:nowrap;margin-right:4px}
+.cmd-id::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--c);
+  box-shadow:0 0 6px var(--c);animation:blink 1.4s ease-in-out infinite;flex-shrink:0}
+.dvd{width:1px;height:14px;background:var(--c08);flex-shrink:0;margin:0 4px}
+.cs{display:flex;flex-direction:column;gap:0;flex-shrink:0}
+.csl{font-size:6px;letter-spacing:2px;color:var(--lbl)}
+.csv{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c)}
 
-    # ── Build tab buttons + panel HTML ────────────────────────────────────
-    _tab_btns   = []
-    _tab_panels = []
-    for i, sec in enumerate(_snapshot['sections']):
-        _active = ' active' if i == 0 else ''
-        _tab_btns.append(
-            f"<button class='jv-tab{_active}' data-jvtab='jvtab{i}'>"
-            f"{sec['name'].upper()}</button>")
-        _items = []
-        for item in sec['content']:
-            if item['type'] == 'plotly':
-                _fdiv = go.Figure(item['data']).to_html(
-                    full_html=False, include_plotlyjs=False,
-                    config={'displaylogo': False, 'responsive': True},
-                    div_id=f"plt{i}_{len(_items)}")
-                _items.append(
-                    "<div class='jv-panel'>"
-                    "<div class='ct tl'></div><div class='ct tr'></div>"
-                    "<div class='cb bl'></div><div class='cb br'></div>"
-                    f"{_fdiv}</div>")
-            elif item['type'] == 'html':
-                _items.append(
-                    "<div class='jv-panel'>"
-                    "<div class='ct tl'></div><div class='ct tr'></div>"
-                    "<div class='cb bl'></div><div class='cb br'></div>"
-                    f"<div class='mm-dash'>{item['data']}</div></div>")
-            elif item['type'] == 'matplotlib':
-                _items.append(
-                    "<div class='jv-panel'>"
-                    "<div class='ct tl'></div><div class='ct tr'></div>"
-                    "<div class='cb bl'></div><div class='cb br'></div>"
-                    f"<img src='data:image/png;base64,{item['data']}' "
-                    f"style='max-width:100%;display:block;'></div>")
-        _tab_panels.append(
-            f"<div class='jv-tab-panel{_active}' id='jvtab{i}'>"
-            + "\n".join(_items) + "</div>")
+/* ── HEADER ── */
+.hdr{display:flex;align-items:center;padding:5px 22px;gap:12px;
+  background:linear-gradient(180deg,rgba(0,8,18,.98),rgba(0,4,10,.9));
+  border-bottom:1px solid var(--c08);flex-shrink:0;position:relative}
+.hdr::after{content:'';position:absolute;bottom:0;left:0;width:15%;height:1px;
+  background:linear-gradient(90deg,transparent,var(--c60),transparent);animation:hln 7s linear infinite}
+@keyframes hln{0%{left:-15%}100%{left:115%}}
+.reactor{width:30px;height:30px;position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ri{position:absolute;border-radius:50%;border:1px solid transparent}
+.ri1{inset:0;border-top-color:var(--c);border-right-color:var(--c);animation:sp 2s linear infinite}
+.ri2{inset:5px;border-bottom-color:var(--c40);border-left-color:var(--c40);animation:sp 3.5s linear reverse infinite}
+.ri3{inset:11px;border-top-color:var(--c20);animation:sp 5s linear infinite}
+.rcore{width:6px;height:6px;border-radius:50%;background:var(--c);
+  box-shadow:0 0 6px var(--c),0 0 14px var(--c);animation:rpc 2.2s ease-in-out infinite}
+@keyframes rpc{0%,100%{box-shadow:0 0 6px var(--c),0 0 12px var(--c)}
+  50%{box-shadow:0 0 10px var(--c),0 0 22px var(--c),0 0 36px var(--c20)}}
+.brand{flex-shrink:0}
+.bn{font-family:'Orbitron',sans-serif;font-size:14px;font-weight:900;letter-spacing:4px;
+  color:var(--c);text-shadow:0 0 16px var(--c20)}
+.bs{font-size:6px;color:var(--lbl);letter-spacing:3px;margin-top:1px}
+.tabs{display:flex;align-items:stretch;gap:0;flex:1;justify-content:center}
+.tb{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:600;letter-spacing:3px;
+  color:var(--lbl);padding:0 16px;cursor:pointer;border:none;background:none;
+  border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
+.tb:hover{color:var(--c40)}
+.tb.act{color:var(--c);border-bottom-color:var(--c)}
+.clkw{text-align:right;flex-shrink:0}
+.cll{font-size:6px;color:var(--lbl);letter-spacing:2px}
+.clv{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;color:var(--c)}
 
-    _tabs_html   = "\n".join(_tab_btns)
-    _panels_html = "\n".join(_tab_panels)
+/* ── CONTENT ── */
+.content{flex:1;overflow-y:auto;overflow-x:hidden;min-height:0;
+  scrollbar-width:thin;scrollbar-color:var(--c08) transparent}
+.content::-webkit-scrollbar{width:3px}
+.content::-webkit-scrollbar-thumb{background:var(--c20)}
+.tp{display:none;flex-direction:column;gap:10px;padding:12px 18px}
+.tp.act{display:flex}
 
-    # ── Ticker items ──────────────────────────────────────────────────────
-    _tick_data = [
-        (f"SPX \u25b2 {_spot_s}",   True),
-        (f"GEX {_gex_s}",           False),
-        (f"GAMMA FLIP {_flip_s}",   False),
-        (f"IV 30D {_iv_s}",         False),
-        (f"RV 30D {_rv_s}",         True),
-        (f"P/C {_pc_s}",            False),
-        (f"SQUEEZE {_sq_s}",        False),
-        (f"TAIL RISK {_tail_s}",    False),
-        (f"CALL WALL \u25b2 {_cw_s}", True),
-        (f"PUT WALL \u25bc {_pw_s}", False),
-        (f"IV\u2212RV {_ivrv_s}",   False),
-    ]
-    _tick_html = " &nbsp;\u00b7&nbsp; ".join(
-        f"<span class='jt-item {'jt-up' if u else 'jt-dn'}'>{t}</span>"
-        for t, u in _tick_data)
+/* ── PANEL ── */
+.p{background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
+  border:1px solid var(--brd);position:relative;
+  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px))}
+.p::before,.p::after,.p .cb,.p .ct{content:'';position:absolute;width:7px;height:7px;pointer-events:none}
+.p::before{top:-1px;left:-1px;border-top:1px solid var(--c40);border-left:1px solid var(--c40)}
+.p::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--c40);border-right:1px solid var(--c40)}
+.p .cb{bottom:-1px;left:-1px;border-bottom:1px solid var(--c40);border-left:1px solid var(--c40)}
+.p .ct{top:-1px;right:-1px;border-top:1px solid var(--c40);border-right:1px solid var(--c40)}
+.ph{font-family:'Orbitron',sans-serif;font-size:8px;font-weight:700;letter-spacing:4px;
+  color:var(--c);padding-bottom:8px;border-bottom:1px solid var(--c08);margin-bottom:10px;
+  display:flex;align-items:center;gap:7px}
+.phd{width:4px;height:4px;background:var(--c);box-shadow:0 0 5px var(--c);flex-shrink:0}
 
-    # ════════════════════════════════════════════════════════════════════════
-    # JARVIS EXPORT CSS (frame + layout + Stark panel classes)
-    # ════════════════════════════════════════════════════════════════════════
-    _jv_css = """
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
-    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
-    body {
-      background:#020810; color:rgba(0,212,232,.85);
-      font-family:'Share Tech Mono',monospace;
-      min-height:100vh; padding-bottom:32px;
-      overflow-x:hidden;
-    }
-    @keyframes spin-cw  { from{transform:rotate(0deg)}   to{transform:rotate(360deg)} }
-    @keyframes spin-ccw { from{transform:rotate(360deg)} to{transform:rotate(0deg)} }
-    @keyframes jv-ticker { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
-    @keyframes jv-pulse  { 0%,100%{opacity:1} 50%{opacity:.3} }
-    @keyframes jv-scan   { 0%{left:-100%} 100%{left:200%} }
-    @keyframes jv-boot-fade { to{opacity:0;pointer-events:none} }
-    /* Particles & scanlines */
-    #jv-pcv { position:fixed; inset:0; z-index:0; pointer-events:none; }
-    #jv-sl  { position:fixed; inset:0; z-index:1; pointer-events:none;
-      background:repeating-linear-gradient(to bottom,transparent 0,transparent 3px,
-        rgba(0,0,0,.07) 3px,rgba(0,0,0,.07) 4px); }
-    /* Boot overlay */
-    #jv-boot {
-      position:fixed; inset:0; background:#020810; z-index:9999;
-      display:flex; flex-direction:column; align-items:center; justify-content:center;
-      transition:opacity .8s;
-    }
-    .jb-line { font-family:'Share Tech Mono',monospace; font-size:12px;
-      color:rgba(0,200,255,.75); opacity:0; margin:3px 0; transition:opacity .3s; }
-    .jb-line.show { opacity:1; }
-    /* App shell */
-    #jv-app { position:relative; z-index:2; display:flex; flex-direction:column; min-height:100vh; }
-    /* CMD strip */
-    #jv-cmd {
-      background:rgba(0,4,10,.97); border-bottom:1px solid rgba(0,212,232,.18);
-      padding:4px 16px; display:flex; align-items:center; gap:0;
-      font-size:10px; white-space:nowrap; overflow:hidden; flex-shrink:0;
-    }
-    .jv-cmd-item { padding:0 12px; border-right:1px solid rgba(0,212,232,.14); }
-    .jv-cmd-item:first-child { padding-left:4px; }
-    .jv-cmd-label { font-family:Orbitron,monospace; font-size:7px; letter-spacing:2px; opacity:.45; display:block; }
-    .jv-cmd-val   { font-family:Orbitron,monospace; font-size:11px; font-weight:700; color:rgba(0,212,232,1); }
-    .jv-live-dot  { width:6px; height:6px; background:rgba(0,212,232,1); border-radius:50%;
-      display:inline-block; margin-right:6px; animation:jv-pulse 2s infinite;
-      box-shadow:0 0 5px rgba(0,212,232,.8); }
-    /* Header */
-    #jv-header {
-      background:rgba(0,4,12,.98); border-bottom:1px solid rgba(0,212,232,.2);
-      padding:8px 16px; display:flex; align-items:center; gap:14px; position:relative;
-      overflow:hidden; flex-shrink:0;
-    }
-    #jv-header::after {
-      content:''; position:absolute; bottom:0; left:-100%; width:60%; height:1px;
-      background:linear-gradient(90deg,transparent,rgba(0,212,232,.8),transparent);
-      animation:jv-scan 4s linear infinite;
-    }
-    .jv-brand-title { font-family:Orbitron,monospace; font-size:20px; font-weight:900;
-      letter-spacing:4px; color:rgba(0,212,232,1); text-shadow:0 0 18px rgba(0,212,232,.55); }
-    .jv-brand-sub   { font-family:Orbitron,monospace; font-size:7px; letter-spacing:2px;
-      opacity:.4; margin-top:2px; }
-    /* Tabs */
-    #jv-tabs { display:flex; gap:3px; margin-left:auto; flex-wrap:wrap; }
-    .jv-tab {
-      font-family:Orbitron,monospace; font-size:9px; letter-spacing:1.5px;
-      padding:5px 12px; background:transparent; border:1px solid rgba(0,212,232,.2);
-      color:rgba(0,212,232,.45); cursor:pointer;
-      clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
-      transition:all .2s;
-    }
-    .jv-tab.active, .jv-tab:hover {
-      background:rgba(0,212,232,.1); border-color:rgba(0,212,232,.6); color:rgba(0,212,232,1);
-    }
-    #jv-clock { font-family:Orbitron,monospace; font-size:10px; font-weight:700;
-      letter-spacing:2px; margin-left:12px; opacity:.75; white-space:nowrap; }
-    /* Content */
-    #jv-content { flex:1; padding:10px 14px; overflow-y:auto; }
-    .jv-tab-panel { display:none; }
-    .jv-tab-panel.active { display:block; }
-    /* JARVIS panels */
-    .jv-panel {
-      background:rgba(0,6,18,.92); border:1px solid rgba(0,212,232,.18);
-      clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
-      padding:12px; margin-bottom:8px; position:relative;
-    }
-    .ct, .cb { position:absolute; width:10px; height:10px; border-color:rgba(0,212,232,.4); border-style:solid; }
-    .ct.tl { top:-1px; left:-1px;  border-width:2px 0 0 2px; }
-    .ct.tr { top:-1px; right:-1px; border-width:2px 2px 0 0; }
-    .cb.bl { bottom:-1px; left:-1px;  border-width:0 0 2px 2px; }
-    .cb.br { bottom:-1px; right:-1px; border-width:0 2px 2px 0; }
-    /* Ticker */
-    #jv-ticker {
-      position:fixed; bottom:0; left:0; right:0; height:26px;
-      background:rgba(0,4,10,.98); border-top:1px solid rgba(0,212,232,.18);
-      overflow:hidden; display:flex; align-items:center; z-index:200;
-    }
-    #jv-ticker-track { display:flex; gap:24px; white-space:nowrap;
-      animation:jv-ticker 40s linear infinite; }
-    .jt-item { font-family:Orbitron,monospace; font-size:9px; letter-spacing:1px; }
-    .jt-up   { color:rgba(0,212,232,1); }
-    .jt-dn   { color:rgba(0,212,232,.38); }
-    /* Arc reactor */
-    .jv-r1 { animation:spin-cw  14s linear infinite; transform-origin:21px 21px; }
-    .jv-r2 { animation:spin-ccw  9s linear infinite; transform-origin:21px 21px; }
-    .jv-r3 { animation:spin-cw   5s linear infinite; transform-origin:21px 21px; }
-    """
+/* ── ARC GAUGE ── */
+.gc{clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
+  background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
+  border:1px solid var(--brd);padding:10px 6px 8px;
+  display:flex;flex-direction:column;align-items:center}
+.gw{position:relative}
+.gv{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.gn{font-family:'Orbitron',sans-serif;font-weight:900;line-height:1}
+.gst{font-size:6px;letter-spacing:2px;margin-top:3px}
+.gl{font-family:'Orbitron',sans-serif;font-size:6px;font-weight:600;letter-spacing:2px;
+  text-transform:uppercase;margin-top:4px;color:var(--lbl);text-align:center;line-height:1.3}
+.gmm{display:flex;justify-content:space-between;font-size:6px;color:var(--c08);margin-top:1px}
 
-    # ════════════════════════════════════════════════════════════════════════
-    # JARVIS EXPORT JS
-    # ════════════════════════════════════════════════════════════════════════
-    _jv_js = r"""
-(function(){
-  /* Particles */
-  var pcv=document.getElementById('jv-pcv');
-  if(!pcv) return;
-  var ctx=pcv.getContext('2d'),W,H,pts=[];
-  function resize(){W=pcv.width=window.innerWidth;H=pcv.height=window.innerHeight;}
-  resize(); window.addEventListener('resize',resize);
-  for(var i=0;i<50;i++) pts.push({x:Math.random()*W,y:Math.random()*H,
-    vx:(Math.random()-.5)*.2,vy:(Math.random()-.5)*.2,r:Math.random()*1.2+.4});
-  function draw(){
-    ctx.clearRect(0,0,W,H);
-    ctx.lineWidth=.5; ctx.strokeStyle='rgba(0,200,255,.04)';
-    for(var x=0;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for(var y=0;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-    for(var i=0;i<pts.length;i++){
-      for(var j=i+1;j<pts.length;j++){
-        var dx=pts[i].x-pts[j].x,dy=pts[i].y-pts[j].y,d=Math.sqrt(dx*dx+dy*dy);
-        if(d<110){ctx.strokeStyle='rgba(0,200,255,'+(0.07*(1-d/110))+')';
-          ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.stroke();}
+/* ── SEMI GAUGE ── */
+.sc{clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,0 100%);
+  background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
+  border:1px solid var(--brd);padding:8px 8px 10px;
+  display:flex;flex-direction:column;align-items:center;gap:2px}
+.sl2{font-family:'Orbitron',sans-serif;font-size:6px;letter-spacing:3px;color:var(--lbl);text-align:center}
+.sv{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;text-align:center;line-height:1.2;margin-top:2px}
+
+/* ── CARD ── */
+.card{clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%);
+  background:linear-gradient(145deg,rgba(0,10,20,.98),rgba(0,4,10,.99));
+  border:1px solid var(--brd);padding:9px 13px;display:flex;flex-direction:column;gap:3px}
+.cdl{font-size:6px;letter-spacing:3px;color:var(--lbl);text-transform:uppercase}
+.cdv{font-family:'Orbitron',sans-serif;font-size:17px;font-weight:700;line-height:1.1;color:var(--c)}
+.secl{font-family:'Orbitron',sans-serif;font-size:7px;letter-spacing:4px;color:var(--lbl);
+  padding:3px 0 2px;display:flex;align-items:center;gap:8px}
+.secl::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--c08),transparent)}
+
+/* ── RISK TABLE ── */
+.rt{width:100%;border-collapse:collapse}
+.rt th{font-family:'Orbitron',sans-serif;font-size:6px;letter-spacing:2px;color:var(--lbl);
+  padding:2px 5px;border-bottom:1px solid var(--c08);text-align:left}
+.rt td{font-size:9px;padding:4px 5px;border-bottom:1px solid var(--c04);color:var(--txt)}
+.rt td:last-child{text-align:right;font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c)}
+
+/* ── COMP BARS ── */
+.cbar{margin-bottom:8px}
+.cbh{display:flex;justify-content:space-between;margin-bottom:3px}
+.cbn{font-size:7px;color:var(--txt)}
+.cbs{font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;color:var(--c)}
+.cbt{height:3px;background:var(--c04);border-radius:1px;overflow:hidden}
+.cbf{height:100%;border-radius:1px;background:linear-gradient(90deg,var(--c08),var(--c))}
+
+/* ── SCORE BAR ── */
+.sbw{margin-top:10px}
+.sbl2{display:flex;justify-content:space-between;font-size:7px;color:var(--lbl);margin-bottom:4px}
+.sbt{height:3px;background:var(--c04);border-radius:1px;overflow:hidden}
+.sbf{height:100%;border-radius:1px;background:linear-gradient(90deg,var(--c08),var(--c));
+  box-shadow:0 0 8px var(--c20)}
+
+/* ── FLOW ITEMS ── */
+.flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fhdr{font-family:'Orbitron',sans-serif;font-size:7px;letter-spacing:3px;color:var(--c60);
+  padding-bottom:6px;border-bottom:1px solid var(--c08);margin-bottom:8px;display:flex;align-items:center;gap:5px}
+.fi{display:flex;align-items:center;gap:8px;padding:5px 8px;
+  background:var(--c04);border:1px solid var(--brd);margin-bottom:4px}
+.fi-t{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c);width:44px;flex-shrink:0}
+.fi-bar{flex:1;height:3px;background:var(--c08);border-radius:1px;overflow:hidden}
+.fi-fill{height:100%;border-radius:1px}
+.fi-v{font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;color:var(--c);white-space:nowrap;margin-left:6px}
+.fi-s{font-size:7px;color:var(--lbl);white-space:nowrap;margin-left:4px}
+
+/* ── LEITURA ── */
+.li{display:flex;align-items:center;gap:7px;padding:5px 0;border-bottom:1px solid var(--c08)}
+.lg{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;color:var(--c);width:14px;flex-shrink:0}
+.ld{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--c)}
+.lt{font-size:8px;color:var(--txt);line-height:1.4}
+
+/* ── CHART WRAP ── */
+.cw{position:relative;width:100%}
+
+/* ── TICKER ── */
+.ticker{flex-shrink:0;border-top:1px solid var(--c08);background:rgba(0,2,6,.9);overflow:hidden;padding:4px 0}
+.ti{display:inline-block;white-space:nowrap;animation:tck 42s linear infinite}
+.ti s{font-size:7px;color:var(--c40);margin:0 18px;text-decoration:none}
+.up{color:var(--c)}.dn{color:var(--c40)}
+@keyframes tck{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div class="scl"></div>
+
+<!-- BOOT -->
+<div id="boot">
+  <div class="brw">
+    <div class="bri bri1"></div><div class="bri bri2"></div><div class="bri bri3"></div>
+    <div class="bcore"></div>
+  </div>
+  <div class="btitle">INICIALIZANDO J.A.R.V.I.S</div>
+  <div id="blog"></div>
+</div>
+
+<!-- APP -->
+<div id="app">
+
+  <!-- CMD: aparece UMA vez, resumo topo -->
+  <div class="cmd">
+    <div class="cmd-id">SPX MARKET COMMAND</div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">SPOT</div><div class="csv" style="color:rgba(0,212,232,1)">__JV_SPOT__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">GAMMA FLIP</div><div class="csv" style="opacity:.7">__JV_FLIP__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">GEX NET</div><div class="csv" style="opacity:.5">__JV_GEX__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">P/C RATIO</div><div class="csv" style="opacity:.7">__JV_PC__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">IV−RV</div><div class="csv" style="opacity:.9">__JV_IVRV__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">SQUEEZE RISK</div><div class="csv">__JV_SQ__</div></div>
+    <div class="dvd"></div>
+    <div class="cs"><div class="csl">TAIL RISK</div><div class="csv" style="opacity:.7">__JV_TAIL__</div></div>
+  </div>
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="reactor">
+      <div class="ri ri1"></div><div class="ri ri2"></div><div class="ri ri3"></div>
+      <div class="rcore"></div>
+    </div>
+    <div class="brand">
+      <div class="bn">J.A.R.V.I.S</div>
+      <div class="bs">JUST A RATHER VERY INTELLIGENT SYSTEM  ·  OPTIONS CORE  ·  v4.2</div>
+    </div>
+    <div class="tabs">
+      <button class="tb act" data-t="painel">PAINEL</button>
+      <button class="tb" data-t="risco">RISCO</button>
+      <button class="tb" data-t="gregas">GREGAS</button>
+      <button class="tb" data-t="estrutura">ESTRUTURA</button>
+      <button class="tb" data-t="cta">CTA</button>
+    </div>
+    <div class="clkw">
+      <div class="cll">HORA LOCAL</div>
+      <div class="clv" id="clk">--:--:--</div>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+
+    <!-- ══ PAINEL ══ -->
+    <div class="tp act" id="tab-painel">
+      <!-- 4 gauges top -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="gr1"></div>
+      <!-- 3 gauges bottom -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px" id="gr2"></div>
+      <!-- Vol metrics -->
+      <div class="secl">Volatilidade Implícita</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        <div class="card"><div class="cdl">IV 30D ATM</div><div class="cdv">__JV_IV30__</div></div>
+        <div class="card"><div class="cdl">RV 30D</div><div class="cdv" style="opacity:.7">__JV_RV30__</div></div>
+        <div class="card"><div class="cdl">PRÊMIO IV−RV</div><div class="cdv">__JV_IVRV_PREM__</div></div>
+        <div class="card"><div class="cdl">SKEW P25-C25</div><div class="cdv" style="opacity:.8">+8.42%</div></div>
+      </div>
+      <!-- VaR -->
+      <div class="secl">Risco Caudal</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        <div class="card"><div class="cdl">VaR 95%</div><div class="cdv" style="opacity:.7">−0.92%</div></div>
+        <div class="card"><div class="cdl">CVaR 95%</div><div class="cdv" style="opacity:.7">−2.15%</div></div>
+        <div class="card"><div class="cdl">VaR 99%</div><div class="cdv" style="opacity:.5">−2.39%</div></div>
+        <div class="card"><div class="cdl">CVaR 99%</div><div class="cdv" style="opacity:.5">−5.27%</div></div>
+      </div>
+      <!-- Key levels -->
+      <div class="secl">Níveis Chave</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="card"><div class="cdl">GAMMA FLIP</div><div class="cdv">~__JV_FLIP__</div></div>
+        <div class="card"><div class="cdl">CALL WALL</div><div class="cdv">__JV_CW__</div></div>
+        <div class="card"><div class="cdl">PUT WALL</div><div class="cdv" style="opacity:.55">__JV_PW__</div></div>
+      </div>
+      <div style="height:8px"></div>
+    </div>
+
+    <!-- ══ RISCO ══ -->
+    <div class="tp" id="tab-risco">
+      <div style="display:grid;grid-template-columns:1fr 1.2fr 0.9fr;gap:10px">
+
+        <!-- Tail Risk table -->
+        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd"></div>TAIL RISK — __JV_TAIL_INT__/100</div>
+          <div style="font-size:7px;color:var(--lbl);margin-bottom:8px;letter-spacing:1px">ELEVADO — Monitorar sinais de stress</div>
+          <table class="rt">
+            <thead><tr><th>Componente</th><th>Valor</th><th>Score</th></tr></thead>
+            <tbody>
+              <tr><td>Excess Kurtosis</td><td>28.55</td><td>25.0</td></tr>
+              <tr><td>Left Skew</td><td>0.577</td><td style="opacity:.3">0.0</td></tr>
+              <tr><td>IV/RV Ratio</td><td>1.35</td><td style="opacity:.6">3.5</td></tr>
+              <tr><td>Put Skew 25d/ATM</td><td>1.24</td><td>12.0</td></tr>
+              <tr><td>Risk Reversal</td><td>8.42</td><td>10.0</td></tr>
+              <tr><td>Spot Up Vol Up Streak</td><td>0</td><td style="opacity:.3">0.0</td></tr>
+            </tbody>
+          </table>
+          <div class="sbw" style="margin-top:auto">
+            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:12px;color:var(--c);font-weight:700">__JV_TAIL_NUM__ / 100</span></div>
+            <div class="sbt"><div class="sbf" style="width:__JV_TAIL_PCT__%"></div></div>
+          </div>
+        </div>
+
+        <!-- Flow Z-Score chart -->
+        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd"></div>COMPONENTES FLOW SCORE — Z-SCORE</div>
+          <div class="cw" style="flex:1;min-height:280px"><canvas id="flowChart"></canvas></div>
+        </div>
+
+        <!-- Gamma Squeeze -->
+        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd" style="animation:blink 1s infinite"></div>GAMMA SQUEEZE — __JV_SQ_NUM__/100</div>
+          <div style="font-size:7px;color:var(--lbl);margin-bottom:10px;letter-spacing:1px">RISCO MUITO ALTO — condições extremas</div>
+          <div id="gc" style="flex:1"></div>
+          <div class="sbw" style="border-top:1px solid var(--c08);padding-top:8px">
+            <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:12px;color:var(--c);font-weight:700">__JV_SQ_NUM__ / 100</span></div>
+            <div class="sbt"><div class="sbf" style="width:__JV_SQ_PCT__%"></div></div>
+          </div>
+        </div>
+      </div>
+      <div style="height:8px"></div>
+    </div>
+
+    <!-- ══ GREGAS ══ -->
+    <div class="tp" id="tab-gregas">
+
+      <!-- 4 semi gauges + leitura -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr) 210px;gap:10px">
+        <div id="sgr" style="display:contents"></div>
+        <div class="p" style="padding:12px 14px">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd"></div>LEITURA DAS GREGAS</div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <div class="li"><span class="lg">Δ</span><span class="ld" style="opacity:1"></span><span class="lt">Dealers vendidos → compra</span></div>
+            <div class="li"><span class="lg">Γ</span><span class="ld" style="opacity:.35"></span><span class="lt">GEX− acelera movimentos</span></div>
+            <div class="li"><span class="lg">V</span><span class="ld" style="opacity:.2"></span><span class="lt">Vanna: Neutro</span></div>
+            <div class="li"><span class="lg">C</span><span class="ld" style="opacity:.9"></span><span class="lt">Delta decai → reforça hedge</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ETF Passive Rebalancing -->
+      <div class="p" style="padding:13px 16px">
+        <div class="cb"></div><div class="ct"></div>
+        <div class="ph"><div class="phd"></div>REBALANCEAMENTO ETF PASSIVO (VOO / SPY / IVV)</div>
+        <div class="flow-grid">
+          <div>
+            <div class="fhdr">▲ FLUXO DE COMPRA</div>
+            <div class="fi"><div class="fi-t">MU</div><div class="fi-bar"><div class="fi-fill" style="width:100%"></div></div><div class="fi-v">▲ $7.93Bn</div><div class="fi-s">179.8% ADV</div></div>
+            <div class="fi"><div class="fi-t">XOM</div><div class="fi-bar"><div class="fi-fill" style="width:78%"></div></div><div class="fi-v">▲ $6.21Bn</div><div class="fi-s">952.7% ADV</div></div>
+            <div class="fi"><div class="fi-t">CVX</div><div class="fi-bar"><div class="fi-fill" style="width:42%"></div></div><div class="fi-v">▲ $3.34Bn</div><div class="fi-s">451.8% ADV</div></div>
+            <div class="fi"><div class="fi-t">GOOGL</div><div class="fi-bar"><div class="fi-fill" style="width:37%"></div></div><div class="fi-v">▲ $2.95Bn</div><div class="fi-s">104.9% ADV</div></div>
+          </div>
+          <div>
+            <div class="fhdr" style="opacity:.5">▼ FLUXO DE VENDA</div>
+            <div class="fi"><div class="fi-t">MSFT</div><div class="fi-bar"><div class="fi-fill" style="width:100%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−21.31Bn</div><div class="fi-s">−580.6% ADV</div></div>
+            <div class="fi"><div class="fi-t">AAPL</div><div class="fi-bar"><div class="fi-fill" style="width:43%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−9.11Bn</div><div class="fi-s">−274.3% ADV</div></div>
+            <div class="fi"><div class="fi-t">LLY</div><div class="fi-bar"><div class="fi-fill" style="width:18%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−3.88Bn</div><div class="fi-s">−662.3% ADV</div></div>
+            <div class="fi"><div class="fi-t">AMZN</div><div class="fi-bar"><div class="fi-fill" style="width:14%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−2.89Bn</div><div class="fi-s">−105.5% ADV</div></div>
+          </div>
+        </div>
+        <div style="margin-top:6px;font-size:7px;color:var(--lbl)">Dados reais: rebalanceamento ETFs passivos (VOO/SPY/IVV)</div>
+      </div>
+
+      <!-- Overhang ADV -->
+      <div class="p" style="padding:13px 16px">
+        <div class="cb"></div><div class="ct"></div>
+        <div class="ph"><div class="phd"></div>OVERHANG — IMPACTO DO REBALANCEAMENTO (% ADV)</div>
+        <div style="font-size:7px;color:var(--lbl);margin-bottom:8px">Quanto o flow representa do volume médio diário (5d ADV)</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="ovhng"></div>
+      </div>
+
+      <div style="height:8px"></div>
+    </div>
+
+    <!-- ══ ESTRUTURA ══ -->
+    <div class="tp" id="tab-estrutura">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd"></div>GAMMA EXPOSURE (GEX) — POR STRIKE</div>
+          <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">$ Bi por 1% de movimento — Spot __JV_SPOT__ | G-Flip __JV_FLIP__</div>
+          <div class="cw" style="flex:1;min-height:260px"><canvas id="gexChart"></canvas></div>
+        </div>
+        <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+          <div class="cb"></div><div class="ct"></div>
+          <div class="ph"><div class="phd"></div>NÍVEIS DE GAMMA — SPX (30 DIAS)</div>
+          <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">Referências: Est Move 5d, Call Trigger, Put Wall</div>
+          <div class="cw" style="flex:1;min-height:260px"><canvas id="levChart"></canvas></div>
+        </div>
+      </div>
+      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="cb"></div><div class="ct"></div>
+        <div class="ph"><div class="phd"></div>DISTRIBUIÇÃO DE RETORNOS — VaR 95% −0.92% | VaR 99% −2.39%</div>
+        <div class="cw" style="min-height:200px"><canvas id="distChart"></canvas></div>
+      </div>
+      <div style="height:8px"></div>
+    </div>
+
+    <!-- ══ CTA ══ -->
+    <div class="tp" id="tab-cta">
+      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="cb"></div><div class="ct"></div>
+        <div class="ph"><div class="phd"></div>CTA ESTIMATES — S&P 500 (NOTIONAL $B)</div>
+        <div style="font-size:7px;color:var(--lbl);margin-bottom:6px">Histórico + projeções de cenário: Flat · Up 1σ/2σ · Down 1σ/2.5σ</div>
+        <div class="cw" style="min-height:250px"><canvas id="ctaLine"></canvas></div>
+      </div>
+      <div class="p" style="padding:13px 15px;display:flex;flex-direction:column">
+        <div class="cb"></div><div class="ct"></div>
+        <div class="ph"><div class="phd"></div>CTA SCENARIO FLOWS ($B) — 1 SEMANA vs 1 MÊS</div>
+        <div class="cw" style="min-height:230px"><canvas id="ctaBar"></canvas></div>
+      </div>
+      <div style="height:8px"></div>
+    </div>
+
+  </div><!-- /content -->
+
+  <div class="ticker"><div class="ti" id="ti"></div></div>
+</div><!-- /app -->
+
+<script>
+// ── PARTICLES
+const cv=document.getElementById('bg'),ctx2=cv.getContext('2d');
+let W,H,pts=[];
+function rsz(){W=cv.width=innerWidth;H=cv.height=innerHeight;
+  pts=[];const n=Math.floor(W*H/18000);
+  for(let i=0;i<n;i++)pts.push({x:Math.random()*W,y:Math.random()*H,
+    vx:(Math.random()-.5)*.1,vy:(Math.random()-.5)*.1,r:Math.random()*.8+.3,a:Math.random()*.25+.08})}
+function drawBg(){ctx2.clearRect(0,0,W,H);
+  ctx2.strokeStyle='rgba(0,60,80,.04)';ctx2.lineWidth=.5;
+  const s=52;for(let x=0;x<W;x+=s)for(let y=0;y<H;y+=s)ctx2.strokeRect(x,y,s,s);
+  pts.forEach((p,i)=>{p.x+=p.vx;p.y+=p.vy;
+    if(p.x<0||p.x>W)p.vx*=-1;if(p.y<0||p.y>H)p.vy*=-1;
+    ctx2.beginPath();ctx2.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx2.fillStyle=`rgba(0,180,210,${p.a})`;ctx2.fill();
+    for(let j=i+1;j<pts.length;j++){
+      const dx=pts[j].x-p.x,dy=pts[j].y-p.y,d=Math.sqrt(dx*dx+dy*dy);
+      if(d<80){ctx2.beginPath();ctx2.moveTo(p.x,p.y);ctx2.lineTo(pts[j].x,pts[j].y);
+        ctx2.strokeStyle=`rgba(0,140,180,${.05*(1-d/80)})`;ctx2.lineWidth=.4;ctx2.stroke()}}});
+  requestAnimationFrame(drawBg)}
+window.addEventListener('resize',rsz);rsz();drawBg();
+
+// ── CLOCK
+setInterval(()=>{document.getElementById('clk').textContent=
+  new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})},1000);
+
+// ── TABS
+document.querySelectorAll('.tb').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tb').forEach(x=>x.classList.remove('act'));
+  document.querySelectorAll('.tp').forEach(x=>x.classList.remove('act'));
+  b.classList.add('act');
+  document.getElementById('tab-'+b.dataset.t).classList.add('act');
+}));
+
+// ── BOOT
+const BL=['Inicializando núcleo de risco...','Carregando superfície de vol...','Conectando feed OI...','Compilando GEX matrix...','Calibrando modelos de cauda...','Sincronizando posicionamento CTA...','Sistema operacional — ONLINE'];
+let bi=0;const bel=document.getElementById('blog');
+(function nb(){if(bi<BL.length){bel.innerHTML+=BL[bi++]+'<br>';setTimeout(nb,260)}
+ else setTimeout(()=>{document.getElementById('boot').classList.add('gone');
+   document.getElementById('app').classList.add('on');buildAll()},500);})();
+
+// ── ARC GAUGE — intensity via opacity only (monochromatic)
+function arcGauge(container,{v,mn,mx,label,unit='',state='',intensity=1,size=110}){
+  const el=document.createElement('div');el.className='gc';
+  const alpha=0.3+intensity*0.7; // 0.3 dim → 1.0 bright
+  const col=`rgba(0,212,232,${alpha})`;
+  const R=size*.43,CX=size/2,CY=size/2,circ=2*Math.PI*R,sw=.75,tr=sw*circ;
+  const pct=Math.max(0,Math.min(1,(v-mn)/(mx-mn)));
+  const fill=pct*tr;const id='a'+Math.random().toString(36).slice(2,8);
+  el.innerHTML=`
+    <div class="gw" style="width:${size}px;height:${size}px">
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <defs><filter id="${id}"><feGaussianBlur stdDeviation="2.5" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+        <circle cx="${CX}" cy="${CY}" r="${R+8}" fill="none" stroke="rgba(0,212,232,.06)" stroke-width="1" stroke-dasharray="3 8">
+          <animateTransform attributeName="transform" type="rotate" from="0 ${CX} ${CY}" to="360 ${CX} ${CY}" dur="${14+pct*9}s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="rgba(0,30,44,.95)" stroke-width="7"
+          stroke-dasharray="${tr} ${circ-tr}" stroke-dashoffset="0" transform="rotate(-225 ${CX} ${CY})" stroke-linecap="round"/>
+        <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="${col}" stroke-width="10" opacity=".1"
+          stroke-dasharray="${fill} ${circ-fill}" stroke-dashoffset="0" transform="rotate(-225 ${CX} ${CY})" stroke-linecap="round"/>
+        <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="${col}" stroke-width="6"
+          stroke-dasharray="${fill} ${circ-fill}" stroke-dashoffset="0" transform="rotate(-225 ${CX} ${CY})" stroke-linecap="round" filter="url(#${id})"/>
+        <circle cx="${CX}" cy="${CY}" r="${R*.6}" fill="none" stroke="rgba(0,212,232,.1)" stroke-width="1" stroke-dasharray="2 6">
+          <animateTransform attributeName="transform" type="rotate" from="0 ${CX} ${CY}" to="-360 ${CX} ${CY}" dur="11s" repeatCount="indefinite"/>
+        </circle>
+      </svg>
+      <div class="gv">
+        <span class="gn" style="color:${col};text-shadow:0 0 12px rgba(0,212,232,${alpha*.5});font-size:${size*.16}px">${unit==='%'?v+'%':v}</span>
+        ${state?`<span class="gst" style="color:rgba(0,212,232,${alpha*.7})">${state}</span>`:''}
+      </div>
+    </div>
+    <div class="gmm" style="width:${size}px"><span>${mn}${unit==='%'?'%':''}</span><span>${mx}${unit==='%'?'%':''}</span></div>
+    <div class="gl">${label}</div>`;
+  container.appendChild(el);
+}
+
+// ── SEMI GAUGE
+function semiGauge(container,{v,mn,mx,label,unit='$Bn',intensity=0.7}){
+  const el=document.createElement('div');el.className='sc';
+  const alpha=0.3+intensity*0.7;
+  const col=`rgba(0,212,232,${alpha})`;
+  const W2=140,H2=78,R=54,CX=70,CY=70;
+  const pct=Math.max(0,Math.min(1,(v-mn)/(mx-mn)));
+  const sa=Math.PI,ea=2*Math.PI,fa=sa+pct*(ea-sa);
+  const tx=a=>CX+R*Math.cos(a),ty=a=>CY+R*Math.sin(a);
+  const nz=pct>0.001;
+  const trackD=`M ${tx(sa)} ${ty(sa)} A ${R} ${R} 0 1 1 ${tx(ea)} ${ty(ea)}`;
+  const fillD=nz?`M ${tx(sa)} ${ty(sa)} A ${R} ${R} 0 0 1 ${tx(fa)} ${ty(fa)}`:'';
+  const id='s'+Math.random().toString(36).slice(2,8);
+  el.innerHTML=`
+    <div class="sl2">${label}</div>
+    <svg width="${W2}" height="${H2}" viewBox="0 0 ${W2} ${H2}" style="display:block">
+      <defs><filter id="${id}"><feGaussianBlur stdDeviation="2" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <path d="${trackD}" fill="none" stroke="rgba(0,30,44,.9)" stroke-width="8" stroke-linecap="round"/>
+      ${nz?`<path d="${fillD}" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round" filter="url(#${id})"/>
+            <path d="${fillD}" fill="none" stroke="${col}" stroke-width="14" stroke-linecap="round" opacity=".1"/>`:``}
+      <text x="4" y="74" font-size="7" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono">${mn}</text>
+      <text x="${W2-12}" y="74" font-size="7" fill="rgba(0,100,130,.5)" font-family="Share Tech Mono" text-anchor="end">${mx}</text>
+    </svg>
+    <div class="sv" style="color:${col};text-shadow:0 0 10px rgba(0,212,232,${alpha*.4})">${v} <span style="font-size:9px;opacity:.6">${unit}</span></div>`;
+  container.appendChild(el);
+}
+
+// ── CHART DEFAULTS
+Chart.defaults.color='rgba(0,140,170,.65)';
+Chart.defaults.font={family:"'Share Tech Mono',monospace",size:9};
+const G='rgba(0,50,70,.25)';
+const TT={backgroundColor:'rgba(0,4,10,.97)',borderColor:'rgba(0,80,100,.3)',borderWidth:1,
+  titleColor:'rgba(0,200,220,.8)',bodyColor:'rgba(0,140,170,.85)',padding:8};
+
+function buildAll(){
+
+  // PAINEL gauges row 1
+  const g1=document.getElementById('gr1');
+  [{v:__JV_V_FRAG__,mn:0,mx:20,label:'FRAGILIDADE',unit:'%',state:'ALTO',intensity:0.95},
+   {v:__JV_V_IVRV__,mn:0,mx:10,label:'PRÊMIO VOL',unit:'%',intensity:0.55},
+   {v:8.42,mn:-15,mx:15,label:'SKEW P25-C25',unit:'%',intensity:0.65},
+   {v:__JV_V_MOVE__,mn:0,mx:5,label:'MOV ESP 10',unit:'%',intensity:0.35}
+  ].forEach(g=>arcGauge(g1,g));
+
+  const g2=document.getElementById('gr2');
+  [{v:__JV_V_TAIL__,mn:0,mx:100,label:'TAIL RISK',state:'ELEVADO',intensity:0.65},
+   {v:50,mn:0,mx:100,label:'FLOW SCORE',state:'NEUTRO',intensity:0.5},
+   {v:__JV_V_SQ__,mn:0,mx:100,label:'GAMMA SQUEEZE',state:'CRÍTICO',intensity:1}
+  ].forEach(g=>arcGauge(g2,g));
+
+  // RISCO — gamma comps
+  [{n:'Prêmio de Vol (IV–RV)',s:19,m:25,i:1},
+   {n:'Distância Gamma Flip',s:18,m:25,i:.85},
+   {n:'P/C OI Ratio',s:8,m:25,i:.45},
+   {n:'GEX Negatividade',s:30,m:30,i:.9}
+  ].forEach(c=>{const p=(c.s/c.m)*100;
+    document.getElementById('gc').innerHTML+=`
+    <div class="cbar">
+      <div class="cbh">
+        <span class="cbn">${c.n}</span>
+        <span class="cbs" style="opacity:${c.i}">${c.s}<span style="opacity:.4;font-size:7px">/${c.m}</span></span>
+      </div>
+      <div class="cbt"><div class="cbf" style="width:${p}%;opacity:${c.i}"></div></div>
+    </div>`});
+
+  // RISCO — Flow Z-Score
+  new Chart(document.getElementById('flowChart'),{
+    type:'bar',
+    data:{
+      labels:['CTA','Dealer/MM','Vol Ctrl','Risk Parity','ETFs Alav.'],
+      datasets:[{
+        label:'Z-Score',
+        data:[-2.1,0.0,3.0,3.0,0.37],
+        backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.35)':'rgba(0,212,232,.15)',
+        borderColor:d=>d.raw>=0?'rgba(0,212,232,.9)':'rgba(0,212,232,.4)',
+        borderWidth:1,borderRadius:2
+      }]
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:TT},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.6)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.6)'},min:-3.5,max:4,
+          title:{display:true,text:'Z-Score',color:'rgba(0,120,150,.5)',font:{size:8}}}
       }
-      pts[i].x+=pts[i].vx;pts[i].y+=pts[i].vy;
-      if(pts[i].x<0||pts[i].x>W)pts[i].vx*=-1;
-      if(pts[i].y<0||pts[i].y>H)pts[i].vy*=-1;
-      ctx.fillStyle='rgba(0,200,255,.45)';
-      ctx.beginPath();ctx.arc(pts[i].x,pts[i].y,pts[i].r,0,Math.PI*2);ctx.fill();
     }
-    requestAnimationFrame(draw);
-  }
-  draw();
-  /* Boot */
-  var boot=document.getElementById('jv-boot'),log=document.getElementById('jv-boot-log');
-  var lines=['Inicializando nucleo de risco...','Carregando superficie de vol...',
-    'Conectando feed OI...','Compilando GEX matrix...','Calibrando modelos de cauda...',
-    'Sincronizando posicionamento CTA...','Sistema operacional \u2014 ONLINE'];
-  if(boot&&log){
-    lines.forEach(function(t,i){
-      setTimeout(function(){
-        var d=document.createElement('div');d.className='jb-line';
-        d.textContent='> '+t;log.appendChild(d);
-        setTimeout(function(){d.classList.add('show');},20);
-        if(i===lines.length-1)setTimeout(function(){
-          boot.style.opacity='0';boot.style.pointerEvents='none';
-          setTimeout(function(){boot.style.display='none';},820);
-        },350);
-      },i*240);
-    });
-  }
-  /* Tabs */
-  document.querySelectorAll('.jv-tab').forEach(function(t){
-    t.addEventListener('click',function(){
-      document.querySelectorAll('.jv-tab').forEach(function(x){x.classList.remove('active');});
-      document.querySelectorAll('.jv-tab-panel').forEach(function(x){x.classList.remove('active');});
-      t.classList.add('active');
-      var el=document.getElementById(t.getAttribute('data-jvtab'));
-      if(el) el.classList.add('active');
-    });
   });
-  /* Clock */
-  function tick(){
-    var el=document.getElementById('jv-clock');
-    if(el) el.textContent=new Date().toLocaleTimeString('pt-BR',{hour12:false});
+
+  // GREGAS — semis
+  const sg=document.getElementById('sgr');
+  [{v:-514.42,mn:-800,mx:0,label:'Δ DELTA NOCIONAL',intensity:1},
+   {v:-23.02,mn:-40,mx:0,label:'Γ GAMMA (GEX NET)',intensity:0.4},
+   {v:0.03,mn:-1,mx:1,label:'V VANNA',intensity:0.25},
+   {v:-12.15,mn:-20,mx:0,label:'C CHARM (DIÁRIO)',intensity:0.8}
+  ].forEach(g=>semiGauge(sg,g));
+
+  // GREGAS — overhang
+  const ov=document.getElementById('ovhng');
+  [{v:952.66,mn:0,mx:1000,label:'XOM',unit:'% ADV',intensity:1},
+   {v:451.81,mn:0,mx:1000,label:'CVX',unit:'% ADV',intensity:0.7},
+   {v:-662.29,mn:-1000,mx:0,label:'LLY',unit:'% ADV',intensity:0.65},
+   {v:-580.64,mn:-1000,mx:0,label:'MSFT',unit:'% ADV',intensity:0.55}
+  ].forEach(g=>semiGauge(ov,g));
+
+  // ESTRUTURA — GEX curve
+  const strikes=[],gex=[];
+  for(let s=6400;s<=7000;s+=10){
+    strikes.push(s);
+    const x=(s-__JV_FLIP_NUM__)/200;
+    gex.push(40*(2/(1+Math.exp(-x*3))-1));
   }
-  setInterval(tick,1000); tick();
-  /* Ticker */
-  var tt=document.getElementById('jv-ticker-track');
-  if(tt){var h=tt.innerHTML;tt.innerHTML=h+' &nbsp;\u00b7&nbsp; '+h;}
-})();
+  new Chart(document.getElementById('gexChart'),{
+    type:'line',
+    data:{labels:strikes,datasets:[
+      {label:'GEX $Bi/1%',data:gex,
+       borderColor:'rgba(0,212,232,.8)',backgroundColor:'rgba(0,80,120,.1)',
+       borderWidth:1.5,fill:true,pointRadius:0,tension:0.4},
+      {label:'Spot __JV_SPOT__',
+       data:strikes.map((s,i)=>Math.abs(s-__JV_SPOT_R10__)<6?gex[i]:null),
+       type:'scatter',pointRadius:6,
+       pointBackgroundColor:'rgba(0,212,232,1)',pointBorderColor:'rgba(0,212,232,.3)',pointBorderWidth:3},
+      {label:'G-Flip __JV_FLIP__',
+       data:strikes.map((s,i)=>Math.abs(s-__JV_FLIP_R10__)<6?gex[i]:null),
+       type:'scatter',pointRadius:6,
+       pointBackgroundColor:'rgba(0,212,232,.4)',pointBorderColor:'rgba(0,212,232,.2)',pointBorderWidth:3}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'rgba(0,140,170,.7)',boxWidth:8,font:{size:8}}},tooltip:TT},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)',maxTicksLimit:8},
+          title:{display:true,text:'SPX Strike',color:'rgba(0,120,150,.4)',font:{size:8}}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
+          title:{display:true,text:'$ Bi / 1% move',color:'rgba(0,120,150,.4)',font:{size:8}}}
+      }
+    }
+  });
+
+  // ESTRUTURA — Gamma Levels
+  const days=['Fev 22','Fev 25','Mar 1','Mar 4','Mar 8','Mar 11','Mar 15'];
+  const spx= [5885,5870,5840,5780,5750,5730,5716];
+  new Chart(document.getElementById('levChart'),{
+    type:'line',
+    data:{labels:days,datasets:[
+      {label:'SPX',data:spx,borderColor:'rgba(0,212,232,.9)',borderWidth:1.5,
+       pointRadius:3,pointBackgroundColor:'rgba(0,212,232,.8)',fill:false,tension:0.15},
+      {label:'Est Move +174',data:Array(7).fill(5890),borderColor:'rgba(0,212,232,.35)',
+       borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false},
+      {label:'Call Trigger',data:Array(7).fill(5800),borderColor:'rgba(0,212,232,.5)',
+       borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false},
+      {label:'Put Wall',data:Array(7).fill(5700),borderColor:'rgba(0,212,232,.25)',
+       borderWidth:1.5,borderDash:[4,4],pointRadius:0,fill:false},
+      {label:'Est Move −174',data:Array(7).fill(5640),borderColor:'rgba(0,212,232,.15)',
+       borderWidth:1,borderDash:[3,6],pointRadius:0,fill:false},
+      {label:'Spot atual',data:[...Array(6).fill(null),5716],type:'scatter',
+       pointRadius:7,pointBackgroundColor:'rgba(0,212,232,1)',pointBorderColor:'transparent'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8},filter:i=>i.text!=='Spot atual'}},tooltip:TT},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},min:5550,max:5950}
+      }
+    }
+  });
+
+  // ESTRUTURA — Distribution
+  const bins=['-3.0%','-2.5%','-2.0%','-1.5%','-1.0%','-0.5%','0.0%','+0.5%','+1.0%','+1.5%','+2.0%','+2.5%'];
+  const freq=[2,4,12,18,35,80,195,120,55,25,8,3];
+  const tst=bins.map((_,i)=>{const x=(i-6.5)/1.8;const d=(1+x*x/4);return 108*Math.exp(-0.5*x*x/d)/d});
+  new Chart(document.getElementById('distChart'),{
+    type:'bar',
+    data:{labels:bins,datasets:[
+      {label:'Reais',data:freq,backgroundColor:'rgba(0,212,232,.25)',borderColor:'rgba(0,212,232,.6)',borderWidth:1},
+      {label:'t-Student',data:tst,type:'line',borderColor:'rgba(0,212,232,.9)',borderWidth:2,
+       fill:false,pointRadius:0,tension:0.4}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
+          title:{display:true,text:'Prob.',color:'rgba(0,120,150,.4)',font:{size:8}}}
+      }
+    }
+  });
+
+  // CTA — Line
+  const ctaDates=['Dez 1','Dez 8','Dez 15','Dez 22','Jan 1','Jan 8','Jan 15','Jan 22','Fev 1','Fev 8','Fev 15','Mar 1','Mar 8','Mar 15'];
+  const ctaHist=[65,22,-15,8,28,52,72,83,88,90,86,35,16,-68];
+  const projDates=[...ctaDates,'Mar 22','Mar 29','Abr 5','Abr 12'];
+  const nh=ctaDates.length;
+  const pad=arr=>[...Array(nh-1).fill(null),...arr];
+
+  new Chart(document.getElementById('ctaLine'),{
+    type:'line',
+    data:{labels:projDates,datasets:[
+      {label:'CTA Notional (Hist)',
+       data:[...ctaHist,...Array(4).fill(null)],
+       borderColor:'rgba(0,212,232,.9)',backgroundColor:'rgba(0,60,100,.12)',
+       borderWidth:1.5,fill:true,pointRadius:0,tension:0.3},
+      {label:'Flat',
+       data:pad([-68,-68,-68,-68,-68]),
+       borderColor:'rgba(0,212,232,.3)',borderWidth:1,borderDash:[5,4],pointRadius:0,fill:false},
+      {label:'Up 1σ',
+       data:pad([-68,null,null,37]),
+       borderColor:'rgba(0,212,232,.8)',borderWidth:1.5,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+      {label:'Up 2σ',
+       data:pad([-68,null,null,75]),
+       borderColor:'rgba(0,212,232,.6)',borderWidth:1.5,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+      {label:'Down 1σ',
+       data:pad([-68,null,null,-75]),
+       borderColor:'rgba(0,212,232,.4)',borderWidth:1.5,borderDash:[4,3],
+       pointRadius:[...Array(nh).fill(0),4,0,0,6],fill:false,tension:0.3},
+      {label:'Down 2.5σ',
+       data:pad([-68,null,null,-85]),
+       borderColor:'rgba(0,212,232,.2)',borderWidth:1,borderDash:[3,5],
+       pointRadius:[...Array(nh).fill(0),3,0,0,4],fill:false,tension:0.3},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT,
+        annotation:{annotations:{z:{type:'line',yMin:0,yMax:0,borderColor:'rgba(0,212,232,.15)',borderWidth:1,borderDash:[3,6]}}}},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)',maxTicksLimit:12}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
+          title:{display:true,text:'$B Notional',color:'rgba(0,120,150,.4)',font:{size:8}}}
+      }
+    }
+  });
+
+  // CTA — Scenario Bar
+  new Chart(document.getElementById('ctaBar'),{
+    type:'bar',
+    data:{
+      labels:['Flat','Up 1σ','Up 2σ','Down 1σ','Down 2σ','Down 2.5σ'],
+      datasets:[
+        {label:'1 Semana',data:[0.5,14.5,38.3,-6.8,-7.9,-6.4],
+         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.45)':'rgba(0,212,232,.15)',
+         borderColor:'rgba(0,212,232,.7)',borderWidth:1,borderRadius:2},
+        {label:'1 Mês',data:[1.5,105.8,143.8,-7.7,-2.0,0.5],
+         backgroundColor:d=>d.raw>=0?'rgba(0,212,232,.25)':'rgba(0,212,232,.1)',
+         borderColor:'rgba(0,212,232,.4)',borderWidth:1,borderRadius:2},
+      ]
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT},
+      scales:{
+        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
+        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
+          title:{display:true,text:'$B',color:'rgba(0,120,150,.4)',font:{size:8}}}
+      }
+    }
+  });
+}
+
+// TICKER
+const td=[['SPX','__JV_SPOT__',1],['GEX','__JV_GEX_T__',0],['GAMMA FLIP','__JV_FLIP__',0],['VIX','22.3',0],
+  ['IV 30D','__JV_IV30__',0],['RV 30D','__JV_RV30__',1],['P/C','__JV_PC_T__',0],['CTA','−$68B',0],
+  ['PUT WALL','__JV_PW__',0],['CALL WALL','__JV_CW__',1],['TAIL RISK','__JV_TAIL_NUM__',0],['SQUEEZE','__JV_SQ_T__',0]];
+const th=td.map(([n,v,u])=>`<s>${n} <span class="${u?'up':'dn'}">${u?'▲':'▼'} ${v}</span></s>`).join('');
+document.getElementById('ti').innerHTML=th+th;
+</script>
+</body>
+</html>
+
 """
 
-    # ════════════════════════════════════════════════════════════════════════
-    # ASSEMBLE FULL HTML
-    # ════════════════════════════════════════════════════════════════════════
-    html = (
-        "<!DOCTYPE html><html lang='pt-BR'>\n"
-        "<head><meta charset='UTF-8'/>\n"
-        f"<title>JARVIS \u2014 {ticker} @ {spot:,.2f} \u00b7 {ts}</title>\n"
-        "<script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script>\n"
-        f"<style>{_jv_css}</style>\n"
-        f"{DASH_CSS.replace('<style>', '<style>.mm-dash{{position:relative}}')}\n"
-        "</head>\n<body>\n"
+def _export_dashboard_html():
+    """Exporta JARVIS HUD HTML standalone — 100% fiel ao jarvis_final design."""
+    if not _snapshot.get('ts'):
+        return None
 
-        # Canvas + scanlines + boot
-        "<canvas id='jv-pcv'></canvas>\n"
-        "<div id='jv-sl'></div>\n"
-        "<div id='jv-boot'>\n"
-        "  <svg width='130' height='130' viewBox='0 0 130 130'>\n"
-        "    <defs><filter id='jbg'><feGaussianBlur stdDeviation='4' result='b'/>"
-        "<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge></filter></defs>\n"
-        "    <circle cx='65' cy='65' r='52' fill='none' stroke='rgba(0,200,255,.28)' stroke-width='1' stroke-dasharray='8 5' class='jv-r1'/>\n"
-        "    <circle cx='65' cy='65' r='38' fill='none' stroke='rgba(0,200,255,.45)' stroke-width='1' stroke-dasharray='5 4' class='jv-r2'/>\n"
-        "    <circle cx='65' cy='65' r='24' fill='none' stroke='rgba(0,200,255,.65)' stroke-width='1' stroke-dasharray='3 3' class='jv-r3'/>\n"
-        "    <circle cx='65' cy='65' r='8' fill='rgba(0,200,255,.95)' filter='url(#jbg)'/>\n"
-        "    <circle cx='65' cy='65' r='3' fill='white' opacity='.8'/>\n"
-        "  </svg>\n"
-        "  <div style='font-family:Orbitron,monospace;font-size:16px;font-weight:900;"
-        "letter-spacing:5px;color:rgba(0,200,255,1);margin-top:12px;"
-        "text-shadow:0 0 16px rgba(0,200,255,.6)'>J.A.R.V.I.S</div>\n"
-        "  <div style='font-family:Orbitron,monospace;font-size:7px;letter-spacing:2px;"
-        f"color:rgba(0,200,255,.4);margin-top:3px'>{ticker} \u00b7 OPTIONS ANALYTICS \u00b7 {ts}</div>\n"
-        "  <div id='jv-boot-log' style='margin-top:16px;text-align:left;width:340px;min-height:110px'></div>\n"
-        "</div>\n"
+    m = _snapshot.get('metrics', {})
+    spot = _snapshot['spot']
+    import math as _math
 
-        # App shell
-        "<div id='jv-app'>\n"
+    # ── Compute display values ────────────────────────────────────────────────
+    _spot_s      = f"{spot:,.0f}"
+    _flip_raw    = float(m.get('gamma_flip', 0) or 0)
+    _flip_s      = f"{_flip_raw:,.0f}" if _flip_raw else "N/A"
+    _flip_num    = round(_flip_raw)
+    _spot_r10    = round(spot / 10) * 10
+    _flip_r10    = round(_flip_num / 10) * 10
 
-        # CMD strip
-        "<div id='jv-cmd'>\n"
-        "  <div class='jv-cmd-item' style='padding-left:0;display:flex;align-items:center'>\n"
-        "    <span class='jv-live-dot'></span>\n"
-        "    <span class='jv-cmd-label' style='display:inline'>SPX MARKET COMMAND</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>SPOT</span><span class='jv-cmd-val'>{_spot_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>GAMMA FLIP</span><span class='jv-cmd-val'>{_flip_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>GEX NET</span><span class='jv-cmd-val'>{_gex_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>P/C RATIO</span><span class='jv-cmd-val'>{_pc_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>IV\u2212RV</span><span class='jv-cmd-val'>{_ivrv_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>SQUEEZE</span><span class='jv-cmd-val'>{_sq_s}</span></div>\n"
-        f"  <div class='jv-cmd-item'><span class='jv-cmd-label'>TAIL RISK</span><span class='jv-cmd-val'>{_tail_s}</span></div>\n"
-        "</div>\n"
+    _gex_raw     = float(m.get('gex_net_bn', 0) or 0)
+    _gex_sign    = "\u2212" if _gex_raw < 0 else "+"
+    _gex_s       = f"{_gex_sign}{abs(_gex_raw):.1f}B"
+    _gex_t       = f"{_gex_sign}${abs(_gex_raw):.1f}B"
 
-        # Header
-        "<div id='jv-header'>\n"
-        "  <div style='flex-shrink:0'>\n"
-        "    <svg width='44' height='44' viewBox='0 0 44 44'>\n"
-        "      <defs><filter id='rfg'><feGaussianBlur stdDeviation='2' result='b'/>"
-        "<feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge></filter></defs>\n"
-        "      <circle cx='22' cy='22' r='19' fill='none' stroke='rgba(0,200,255,.22)' stroke-width='1' stroke-dasharray='6 4' class='jv-r1'/>\n"
-        "      <circle cx='22' cy='22' r='14' fill='none' stroke='rgba(0,200,255,.42)' stroke-width='1' stroke-dasharray='4 3' class='jv-r2'/>\n"
-        "      <circle cx='22' cy='22' r='8'  fill='none' stroke='rgba(0,200,255,.62)' stroke-width='1' stroke-dasharray='2 2' class='jv-r3'/>\n"
-        "      <circle cx='22' cy='22' r='3.5' fill='rgba(0,200,255,.95)' filter='url(#rfg)'/>\n"
-        "    </svg>\n"
-        "  </div>\n"
-        "  <div>\n"
-        "    <div class='jv-brand-title'>J.A.R.V.I.S</div>\n"
-        "    <div class='jv-brand-sub'>JUST A RATHER VERY INTELLIGENT SYSTEM \u00b7 OPTIONS CORE \u00b7 v4.2</div>\n"
-        "  </div>\n"
-        f"  <div id='jv-tabs'>{_tabs_html}</div>\n"
-        "  <div id='jv-clock'></div>\n"
-        "</div>\n"
+    _pc_raw      = float(m.get('pc_ratio', 0) or 0)
+    _pc_s        = f"{_pc_raw:.2f}\u00d7"
 
-        # Content
-        f"<div id='jv-content'>{_panels_html}</div>\n"
+    _ivrv_raw    = float(m.get('iv_rv_pp', 0) or 0)
+    _ivrv_s      = f"{_ivrv_raw:+.1f}pp"
+    _ivrv_prem_s = f"{_ivrv_raw:+.2f}%"
 
-        "</div>\n"  # /jv-app
+    _sq_raw      = m.get('squeeze_score', 0)
+    _sq_num      = float(_sq_raw) if isinstance(_sq_raw, (int, float)) else 0.0
+    _sq_s        = f"{_sq_num:.0f}/100"
+    _sq_int_s    = f"{_sq_num:.0f}"
 
-        # Ticker
-        "<div id='jv-ticker'>\n"
-        f"  <div id='jv-ticker-track'>{_tick_html}</div>\n"
-        "</div>\n"
+    _tail_raw    = float(m.get('tail_score', 0) or 0)
+    _tail_s      = f"{_tail_raw:.1f}/100"
+    _tail_num_s  = f"{_tail_raw:.1f}"
+    _tail_int_s  = f"{_tail_raw:.0f}"
 
-        f"<script>{_jv_js}</script>\n"
-        "</body></html>"
-    )
+    _iv30_raw    = float(m.get('iv_30d', 0) or 0)
+    _rv30_raw    = float(m.get('rv_30d', 0) or 0)
+    _iv30_s      = f"{_iv30_raw*100:.2f}%"
+    _rv30_s      = f"{_rv30_raw*100:.2f}%"
 
-    return html
+    _cw_raw      = float(m.get('call_wall', 0) or 0)
+    _pw_raw      = float(m.get('put_wall',  0) or 0)
+    _cw_s        = f"{_cw_raw:,.0f}" if _cw_raw else "N/A"
+    _pw_s        = f"{_pw_raw:,.0f}" if _pw_raw else "N/A"
+
+    _frag_raw    = float(m.get('fragility', 0) or 0)
+    _frag_v      = round(_frag_raw * 100, 2) if abs(_frag_raw) <= 1.0 else round(abs(_frag_raw), 2)
+    _move_raw    = float(m.get('daily_move', 0) or 0)
+    _move_v      = round(abs(_move_raw) * 100, 2) if abs(_move_raw) <= 1.0 else round(abs(_move_raw), 2)
+    _ivrv_v      = round(abs(_ivrv_raw), 2)
+    _sq_v        = round(_sq_num, 1)
+    _tail_v      = round(_tail_raw, 1)
+
+    # ── Apply replacements ────────────────────────────────────────────────────
+    _html = _JARVIS_EXPORT_TEMPLATE
+    _html = _html.replace('__JV_SPOT__',       _spot_s)
+    _html = _html.replace('__JV_FLIP__',       _flip_s)
+    _html = _html.replace('__JV_GEX__',        _gex_s)
+    _html = _html.replace('__JV_PC__',         _pc_s)
+    _html = _html.replace('__JV_IVRV__',       _ivrv_s)
+    _html = _html.replace('__JV_SQ__',         _sq_s)
+    _html = _html.replace('__JV_TAIL__',       _tail_s)
+    _html = _html.replace('__JV_IV30__',       _iv30_s)
+    _html = _html.replace('__JV_RV30__',       _rv30_s)
+    _html = _html.replace('__JV_IVRV_PREM__',  _ivrv_prem_s)
+    _html = _html.replace('__JV_CW__',         _cw_s)
+    _html = _html.replace('__JV_PW__',         _pw_s)
+    _html = _html.replace('__JV_TAIL_INT__',   _tail_int_s)
+    _html = _html.replace('__JV_TAIL_NUM__',   _tail_num_s)
+    _html = _html.replace('__JV_TAIL_PCT__',   _tail_num_s)
+    _html = _html.replace('__JV_SQ_NUM__',     _sq_int_s)
+    _html = _html.replace('__JV_SQ_PCT__',     _sq_int_s)
+    _html = _html.replace('__JV_V_FRAG__',     str(_frag_v))
+    _html = _html.replace('__JV_V_IVRV__',     str(_ivrv_v))
+    _html = _html.replace('__JV_V_MOVE__',     str(_move_v))
+    _html = _html.replace('__JV_V_TAIL__',     str(_tail_v))
+    _html = _html.replace('__JV_V_SQ__',       str(_sq_v))
+    _html = _html.replace('__JV_FLIP_NUM__',   str(_flip_num))
+    _html = _html.replace('__JV_SPOT_R10__',   str(_spot_r10))
+    _html = _html.replace('__JV_FLIP_R10__',   str(_flip_r10))
+    _html = _html.replace('__JV_GEX_T__',      _gex_t)
+    _html = _html.replace('__JV_PC_T__',       _pc_s)
+    _html = _html.replace('__JV_SQ_T__',       _sq_s)
+
+    return _html
 
 
 def _collect_widget_content(widget):
