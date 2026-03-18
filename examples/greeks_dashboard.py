@@ -11568,6 +11568,8 @@ def run_analysis(_):
                     pass
 
             display(title_html, dashboard)
+            display(HTML(_JARVIS_HTML))
+            display(HTML(f'<script>{_JARVIS_JS}</script>'))
 
         except Exception as e:
             clear_output(wait=True)
@@ -11632,8 +11634,6 @@ _ctrl_box_layout = wd.Layout(
 )
 
 display(wd.HTML(DASH_CSS))
-display(HTML(_JARVIS_HTML))
-display(HTML(f'<script>{_JARVIS_JS}</script>'))
 display(wd.VBox([
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>Parâmetros da Análise</div></div>"),
     wd.VBox([
