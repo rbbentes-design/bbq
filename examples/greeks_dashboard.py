@@ -7653,14 +7653,6 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
         <div class="card"><div class="cdl">IV 30D ATM</div><div class="cdv">__JV_IV30__</div></div>
         <div class="card"><div class="cdl">RV 30D REALIZADA</div><div class="cdv" style="opacity:.7">__JV_RV30__</div></div>
       </div>
-      <!-- VaR -->
-      <div class="secl">Risco Caudal</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
-        <div class="card"><div class="cdl">VaR 95%</div><div class="cdv" style="opacity:.7">−0.92%</div></div>
-        <div class="card"><div class="cdl">CVaR 95%</div><div class="cdv" style="opacity:.7">−2.15%</div></div>
-        <div class="card"><div class="cdl">VaR 99%</div><div class="cdv" style="opacity:.5">−2.39%</div></div>
-        <div class="card"><div class="cdl">CVaR 99%</div><div class="cdv" style="opacity:.5">−5.27%</div></div>
-      </div>
       <!-- Key levels -->
       <div class="secl">Níveis Chave</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
@@ -7680,17 +7672,9 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
           <div class="cb"></div><div class="ct"></div>
           <div class="ph"><div class="phd"></div>TAIL RISK — __JV_TAIL_INT__/100</div>
           <div style="font-size:11px;color:var(--lbl);margin-bottom:12px;letter-spacing:1px">ELEVADO — Monitorar sinais de stress</div>
-          <table class="rt">
-            <thead><tr><th>Componente</th><th>Valor</th><th>Score</th></tr></thead>
-            <tbody>
-              <tr><td>Excess Kurtosis</td><td>28.55</td><td>25.0</td></tr>
-              <tr><td>Left Skew</td><td>0.577</td><td style="opacity:.3">0.0</td></tr>
-              <tr><td>IV/RV Ratio</td><td>1.35</td><td style="opacity:.6">3.5</td></tr>
-              <tr><td>Put Skew 25d/ATM</td><td>1.24</td><td>12.0</td></tr>
-              <tr><td>Risk Reversal</td><td>8.42</td><td>10.0</td></tr>
-              <tr><td>Spot Up Vol Up Streak</td><td>0</td><td style="opacity:.3">0.0</td></tr>
-            </tbody>
-          </table>
+          <div style="font-size:11px;color:var(--lbl);margin:8px 0 12px;line-height:1.8">
+            Score calculado via BQL: excess kurtosis, skew, IV/RV ratio, put skew e risk reversal da superfície de vol do SPX.
+          </div>
           <div class="sbw" style="margin-top:auto">
             <div class="sbl2"><span>SCORE TOTAL</span><span style="font-family:'Orbitron',sans-serif;font-size:16px;color:var(--c);font-weight:700">__JV_TAIL_NUM__ / 100</span></div>
             <div class="sbt"><div class="sbf" style="width:__JV_TAIL_PCT__%"></div></div>
@@ -7737,36 +7721,6 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
         </div>
       </div>
 
-      <!-- ETF Passive Rebalancing -->
-      <div class="p" style="padding:18px 20px">
-        <div class="cb"></div><div class="ct"></div>
-        <div class="ph"><div class="phd"></div>REBALANCEAMENTO ETF PASSIVO (VOO / SPY / IVV)</div>
-        <div class="flow-grid">
-          <div>
-            <div class="fhdr">▲ FLUXO DE COMPRA</div>
-            <div class="fi"><div class="fi-t">MU</div><div class="fi-bar"><div class="fi-fill" style="width:100%"></div></div><div class="fi-v">▲ $7.93Bn</div><div class="fi-s">179.8% ADV</div></div>
-            <div class="fi"><div class="fi-t">XOM</div><div class="fi-bar"><div class="fi-fill" style="width:78%"></div></div><div class="fi-v">▲ $6.21Bn</div><div class="fi-s">952.7% ADV</div></div>
-            <div class="fi"><div class="fi-t">CVX</div><div class="fi-bar"><div class="fi-fill" style="width:42%"></div></div><div class="fi-v">▲ $3.34Bn</div><div class="fi-s">451.8% ADV</div></div>
-            <div class="fi"><div class="fi-t">GOOGL</div><div class="fi-bar"><div class="fi-fill" style="width:37%"></div></div><div class="fi-v">▲ $2.95Bn</div><div class="fi-s">104.9% ADV</div></div>
-          </div>
-          <div>
-            <div class="fhdr" style="opacity:.5">▼ FLUXO DE VENDA</div>
-            <div class="fi"><div class="fi-t">MSFT</div><div class="fi-bar"><div class="fi-fill" style="width:100%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−21.31Bn</div><div class="fi-s">−580.6% ADV</div></div>
-            <div class="fi"><div class="fi-t">AAPL</div><div class="fi-bar"><div class="fi-fill" style="width:43%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−9.11Bn</div><div class="fi-s">−274.3% ADV</div></div>
-            <div class="fi"><div class="fi-t">LLY</div><div class="fi-bar"><div class="fi-fill" style="width:18%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−3.88Bn</div><div class="fi-s">−662.3% ADV</div></div>
-            <div class="fi"><div class="fi-t">AMZN</div><div class="fi-bar"><div class="fi-fill" style="width:14%;opacity:.4"></div></div><div class="fi-v" style="opacity:.5">▼ $−2.89Bn</div><div class="fi-s">−105.5% ADV</div></div>
-          </div>
-        </div>
-        <div style="margin-top:10px;font-size:11px;color:var(--lbl)">Dados reais: rebalanceamento ETFs passivos (VOO/SPY/IVV)</div>
-      </div>
-
-      <!-- Overhang ADV -->
-      <div class="p" style="padding:18px 20px">
-        <div class="cb"></div><div class="ct"></div>
-        <div class="ph"><div class="phd"></div>OVERHANG — IMPACTO DO REBALANCEAMENTO (% ADV)</div>
-        <div style="font-size:11px;color:var(--lbl);margin-bottom:12px">Quanto o flow representa do volume médio diário (5d ADV)</div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px" id="ovhng"></div>
-      </div>
 
       <div style="height:8px"></div>
     </div>
@@ -7792,11 +7746,6 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
           <div class="cw" style="flex:1;min-height:380px"><canvas id="levChart"></canvas></div>
         </div>
       </div>
-      <div class="p" style="padding:18px 20px;display:flex;flex-direction:column">
-        <div class="cb"></div><div class="ct"></div>
-        <div class="ph"><div class="phd"></div>DISTRIBUIÇÃO DE RETORNOS — VaR 95% −0.92% | VaR 99% −2.39%</div>
-        <div class="cw" style="min-height:280px"><canvas id="distChart"></canvas></div>
-      </div>
       <div style="height:8px"></div>
     </div>
 
@@ -7806,9 +7755,9 @@ canvas#bg{position:fixed;inset:0;z-index:0;opacity:.5}
         <div class="cb"></div><div class="ct"></div>
         <div class="ph"><div class="phd"></div>CTA ESTIMATES — S&P 500 (NOTIONAL $B)</div>
         <div style="font-size:11px;color:var(--lbl);margin-bottom:8px">
+          Dados do modelo CTA — estimativas baseadas em posicionamento histórico via BQL.
           CTAs (Commodity Trading Advisors) são fundos sistemáticos que seguem tendência.
           Posição em $B: <span style="color:rgba(0,212,232,.9)">positivo = comprado</span> · <span style="color:rgba(248,81,73,.9)">negativo = vendido</span>.
-          Projeções: queda intensa (−$68B atual) com recuperação se mercado subir 1σ/2σ.
         </div>
         <div class="cw" style="min-height:380px"><canvas id="ctaLine"></canvas></div>
       </div>
@@ -8003,22 +7952,18 @@ function buildAll(){
   const g1=document.getElementById('gr1');
   [{v:__JV_V_FRAG__,mn:0,mx:20,label:'FRAGILIDADE',unit:'%',state:'ALTO',intensity:0.95},
    {v:__JV_V_IVRV__,mn:0,mx:10,label:'PRÊMIO VOL',state:'pp',intensity:0.55},
-   {v:8.42,mn:-15,mx:15,label:'SKEW P25-C25',unit:'%',intensity:0.65},
+   {v:__JV_V_SKEW__,mn:-15,mx:15,label:'SKEW P25-C25',unit:'%',intensity:0.65},
    {v:__JV_V_MOVE__,mn:0,mx:5,label:'MOV ESP 10',unit:'%',intensity:0.35}
   ].forEach(g=>arcGauge(g1,g));
 
   const g2=document.getElementById('gr2');
   [{v:__JV_V_TAIL__,mn:0,mx:100,label:'TAIL RISK',state:'ELEVADO',intensity:0.65},
-   {v:50,mn:0,mx:100,label:'FLOW SCORE',state:'NEUTRO',intensity:0.5},
+   {v:__JV_V_FLOW__,mn:0,mx:100,label:'FLOW SCORE',state:'NEUTRO',intensity:0.5},
    {v:__JV_V_SQ__,mn:0,mx:100,label:'GAMMA SQUEEZE',state:'CRÍTICO',intensity:1}
   ].forEach(g=>arcGauge(g2,g));
 
   // RISCO — gamma comps
-  [{n:'Prêmio de Vol (IV–RV)',s:19,m:25,i:1},
-   {n:'Distância Gamma Flip',s:18,m:25,i:.85},
-   {n:'P/C OI Ratio',s:8,m:25,i:.45},
-   {n:'GEX Negatividade',s:30,m:30,i:.9}
-  ].forEach(c=>{const p=(c.s/c.m)*100;
+  __JV_SQ_COMPS__.forEach(c=>{const p=(c.s/c.m)*100;
     document.getElementById('gc').innerHTML+=`
     <div class="cbar">
       <div class="cbh">
@@ -8100,14 +8045,6 @@ function buildAll(){
    {v:__JV_V_VANNA__,mn:__JV_V_VANNA_MIN__,mx:__JV_V_VANNA_MAX__,label:'V VANNA',intensity:0.25},
    {v:__JV_V_CHARM__,mn:__JV_V_CHARM_MIN__,mx:__JV_V_CHARM_MAX__,label:'C CHARM (DIÁRIO)',intensity:0.8}
   ].forEach(g=>semiGauge(sg,g));
-
-  // GREGAS — overhang
-  const ov=document.getElementById('ovhng');
-  [{v:952.66,mn:0,mx:1000,label:'XOM',unit:'% ADV',intensity:1},
-   {v:451.81,mn:0,mx:1000,label:'CVX',unit:'% ADV',intensity:0.7},
-   {v:-662.29,mn:-1000,mx:0,label:'LLY',unit:'% ADV',intensity:0.65},
-   {v:-580.64,mn:-1000,mx:0,label:'MSFT',unit:'% ADV',intensity:0.55}
-  ].forEach(g=>semiGauge(ov,g));
 
   // ESTRUTURA — GEX curve
   const strikes=[],gex=[];
@@ -8257,27 +8194,6 @@ function buildAll(){
     plugins:[lvDraw]
   });
 
-  // ESTRUTURA — Distribution
-  const bins=['-3.0%','-2.5%','-2.0%','-1.5%','-1.0%','-0.5%','0.0%','+0.5%','+1.0%','+1.5%','+2.0%','+2.5%'];
-  const freq=[2,4,12,18,35,80,195,120,55,25,8,3];
-  const tst=bins.map((_,i)=>{const x=(i-6.5)/1.8;const d=(1+x*x/4);return 108*Math.exp(-0.5*x*x/d)/d});
-  new Chart(document.getElementById('distChart'),{
-    type:'bar',
-    data:{labels:bins,datasets:[
-      {label:'Reais',data:freq,backgroundColor:'rgba(0,212,232,.25)',borderColor:'rgba(0,212,232,.6)',borderWidth:1},
-      {label:'t-Student',data:tst,type:'line',borderColor:'rgba(0,212,232,.9)',borderWidth:2,
-       fill:false,pointRadius:0,tension:0.4}
-    ]},
-    options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'rgba(0,140,170,.65)',boxWidth:8,font:{size:8}}},tooltip:TT},
-      scales:{
-        x:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'}},
-        y:{grid:{color:G},ticks:{color:'rgba(0,140,170,.5)'},
-          title:{display:true,text:'Prob.',color:'rgba(0,120,150,.4)',font:{size:8}}}
-      }
-    }
-  });
-
   // CTA — Line
   const ctaDates=['Dez 1','Dez 8','Dez 15','Dez 22','Jan 1','Jan 8','Jan 15','Jan 22','Fev 1','Fev 8','Fev 15','Mar 1','Mar 8','Mar 15'];
   const ctaHist=[65,22,-15,8,28,52,72,83,88,90,86,35,16,-68];
@@ -8383,7 +8299,7 @@ function buildAll(){
 }
 
 // TICKER
-const td=[['SPX','__JV_SPOT__',1],['GEX','__JV_GEX_T__',0],['GAMMA FLIP','__JV_FLIP__',0],['VIX','22.3',0],
+const td=[['SPX','__JV_SPOT__',1],['GEX','__JV_GEX_T__',0],['GAMMA FLIP','__JV_FLIP__',0],['VIX','__JV_VIX__',0],
   ['IV 30D','__JV_IV30__',0],['RV 30D','__JV_RV30__',1],['P/C','__JV_PC_T__',0],['CTA','−$68B',0],
   ['PUT WALL','__JV_PW__',0],['CALL WALL','__JV_CW__',1],['TAIL RISK','__JV_TAIL_NUM__',0],['SQUEEZE','__JV_SQ_T__',0]];
 const th=td.map(([n,v,u])=>`<s>${n} <span class="${u?'up':'dn'}">${u?'▲':'▼'} ${v}</span></s>`).join('');
@@ -8565,6 +8481,36 @@ def _export_dashboard_html():
     ])
     _html = _html.replace('[__JV_FLOW_DATA__]', _flow_data)
     _html = _html.replace('[__JV_FLOW_W_DATA__]', _flow_w_data)
+
+    # ── SKEW 25d (put-call IV spread, real BBG) ───────────────────────────────
+    _skew_v = round(_f('skew_25d', 0), 2)
+    _html = _html.replace('__JV_V_SKEW__', str(_skew_v))
+
+    # ── FLOW SCORE total (from fp_score via BBG) ──────────────────────────────
+    _flow_score_v = round(_f('flow_score_total', 50), 1)
+    _html = _html.replace('__JV_V_FLOW__', str(_flow_score_v))
+
+    # ── VIX current (fetched from BBG time series, last value) ────────────────
+    _vix_raw = _f('vix', 0)
+    _vix_s = f"{_vix_raw:.1f}" if _vix_raw > 0 else 'N/D'
+    _html = _html.replace('__JV_VIX__', _vix_s)
+
+    # ── Gamma Squeeze component bars (real BBG-derived) ───────────────────────
+    import json as _json2
+    _sq_comps_raw = m.get('squeeze_components', {})
+    _sq_comps_list = []
+    _comp_order = [
+        ('vol_premium',     'Prêmio de Vol (IV−RV)', 20),
+        ('flip_proximity',  'Distância Gamma Flip',   25),
+        ('pc_ratio',        'P/C OI Ratio',           25),
+        ('gex',             'GEX Negatividade',       30),
+    ]
+    for _ck, _cn, _cm in _comp_order:
+        _cv = _sq_comps_raw.get(_ck, {})
+        _cs = float(_cv.get('score', 0)) if isinstance(_cv, dict) else 0.0
+        _ci = min(1.0, max(0.1, _cs / _cm)) if _cm > 0 else 0.5
+        _sq_comps_list.append({'n': _cn, 's': round(_cs, 1), 'm': _cm, 'i': round(_ci, 2)})
+    _html = _html.replace('__JV_SQ_COMPS__', _json2.dumps(_sq_comps_list))
 
     return _html
 
@@ -11609,6 +11555,14 @@ def run_analysis(_):
                 'w_passive_etf': fp_score.get('weights', {}).get('passive_etf', 0) if isinstance(fp_score, dict) else 0,
                 'w_buyback':     fp_score.get('weights', {}).get('buyback', 0) if isinstance(fp_score, dict) else 0,
                 'w_cot':         fp_score.get('weights', {}).get('cot', 0) if isinstance(fp_score, dict) else 0,
+                # Skew 25d (P25 put IV − C25 call IV), from BBG implied_volatility BQL
+                'skew_25d':      round(skew * 100, 2) if pd.notna(skew) else 0,
+                # Flow score total (0-100), from fp_score BBG-derived composite
+                'flow_score_total': fp_score.get('score_total', 0) if isinstance(fp_score, dict) else 0,
+                # VIX last price from BBG time series (fetched in analytics block)
+                'vix':           float(vix_s.iloc[-1]) if ('vix_s' in dir() and not vix_s.empty) else 0,
+                # Gamma Squeeze component breakdown (for bar chart)
+                'squeeze_components': (_sq_result_v1['components'] if '_sq_result_v1' in dir() and _sq_result_v1 else {}),
             }
 
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
