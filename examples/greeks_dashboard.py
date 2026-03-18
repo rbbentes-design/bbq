@@ -2760,7 +2760,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
             marker_color=bar_colors_1w,
             text=[f'${f:+.1f}B' for f in flows_1w],
             textposition='auto',
-            textfont=dict(size=10, color='white'),
+            textfont=dict(size=10, color='rgba(0,212,232,1)'),
             cliponaxis=False),
             row=2, col=1)
 
@@ -2769,7 +2769,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
             marker_color=bar_colors_1m,
             text=[f'${f:+.1f}B' for f in flows_1m],
             textposition='auto',
-            textfont=dict(size=10, color='white'),
+            textfont=dict(size=10, color='rgba(0,212,232,1)'),
             cliponaxis=False,
             opacity=0.7),
             row=2, col=1)
@@ -2781,7 +2781,7 @@ def build_cta_gs_chart(fp_cta_hist, fp_cta_scenarios_1w, fp_cta_scenarios_1m,
         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
         font=dict(color=_C['text'], size=11),
         legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center',
-                    font=dict(color=_C['text_muted'], size=10)),
+                    font=dict(color='rgba(0,212,232,1)', size=10)),
         height=620, margin=dict(l=55, r=30, t=40, b=40),
         barmode='group')
     for ax in ['yaxis', 'yaxis2', 'xaxis', 'xaxis2']:
@@ -2873,7 +2873,8 @@ def fp_plot_components_bar(score):
         yaxis2=dict(overlaying='y', side='right',
                     title='Peso', range=[0, 1]),
         xaxis=dict(tickangle=-20, automargin=True),
-        **{**FLOW_FIG_LAYOUT, 'margin': dict(t=55, r=40, b=110, l=50)},
+        **{**FLOW_FIG_LAYOUT, 'margin': dict(t=55, r=40, b=110, l=50),
+           'legend': dict(font=dict(color='rgba(0,212,232,1)', size=10))},
     )
     return fig
 
