@@ -8349,7 +8349,7 @@ def _export_dashboard_html():
     _gex_t       = f"{_gex_sign}${abs(_gex_raw):.1f}B"
 
     _pc_raw      = _f('pc_ratio')
-    _pc_s        = f"{_pc_raw:.2f}\u00d7"
+    _pc_s        = f"{_pc_raw:.2f}\u00d7" if _pc_raw > 0 else 'N/D'
 
     _ivrv_raw    = _f('iv_rv_pp')
     _ivrv_s      = f"{_ivrv_raw:+.1f}pp"
@@ -9098,6 +9098,19 @@ def run_analysis(_):
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
 
+            # ── P/C OI Ratio (standalone, always fetched from BBG) ───────
+            # fp_vol_data may already be populated by Flow Predictor block;
+            # if not (FP disabled or query failed), fetch it now so that
+            # pc_ratio is always a real BBG value, never hardcoded.
+            if not (isinstance(fp_vol_data, dict) and fp_vol_data.get('pc_ratio', 0) > 0):
+                try:
+                    _pc_tmp = fetch_options_volume_bql(ticker)
+                    if _pc_tmp.get('pc_ratio', 0) > 0:
+                        fp_vol_data = _pc_tmp
+                        print(f"[PC] P/C OI ratio (standalone): {_pc_tmp['pc_ratio']:.2f}")
+                except Exception as _pc_err:
+                    print(f"⚠️ P/C ratio standalone fetch: {_pc_err}")
+
             # ── 15. Dispersion Trade + Tail Risk ─────────────────────────
             disp_result = {
                 'error': None, 'disp_signal': pd.DataFrame(),
@@ -9450,7 +9463,7 @@ def run_analysis(_):
             _sq_score_disp = 'N/A'
             _sq_ac         = _C['text_muted']
             try:
-                _sq_pc_v1  = (fp_vol_data.get('pc_ratio', 1.5) or 1.5) if fp_ok else 1.5
+                _sq_pc_v1  = fp_vol_data.get('pc_ratio', 0) or 0  # 0 = BBG unavailable
                 _sq_gex_v1 = total_gex_val / 1e9 if 'total_gex_val' in dir() else (
                               total_gex / 1e9    if 'total_gex'     in dir() else 0)
                 _sq_result_v1 = compute_gamma_squeeze_score(
@@ -9472,7 +9485,7 @@ def run_analysis(_):
             _flip_str = f"{gamma_flip:,.0f}"  if gamma_flip      else "N/A"
             _gex_disp = _sq_gex_v1 * 0.1 if '_sq_gex_v1' in dir() else None
             _gex_str  = f"{_gex_disp:+.1f}B" if _gex_disp is not None else "N/A"
-            _pc_str   = f"{_sq_pc_v1:.2f}×"   if '_sq_pc_v1'  in dir() else "N/A"
+            _pc_str   = (f"{_sq_pc_v1:.2f}×" if ('_sq_pc_v1' in dir() and _sq_pc_v1 > 0) else "N/D")
             _ivrv_str = f"{(iv_30d - rv_30d)*100:+.1f}pp"
 
             def _stat(label, value, color):
