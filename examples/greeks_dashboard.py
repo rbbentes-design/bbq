@@ -3331,6 +3331,7 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
       axwa_hist, axwa_cur          — AXWA Index: SPX equity funding spread (bps)
       fedpsor1_hist, fedpsor1_cur  — FEDPSOR1 Index: Primary Dealer equity repo ($B)
       es_bid_ask_cur               — ES1 bid-ask spread atual (ticks)
+      lagidbma_hist, lagidbma_cur  — LAGIDBMA Index: Conference Board margin level
     """
     out = {k: None for k in [
         'vvix_hist','vvix_cur',
@@ -3342,6 +3343,7 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         'axwa_hist','axwa_cur',
         'fedpsor1_hist','fedpsor1_cur',
         'es_bid_ask_cur',
+        'lagidbma_hist','lagidbma_cur',
     ]}
     dt_range = bq.func.range(f'-{lookback_days}d', '0d')
 
@@ -3476,6 +3478,16 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         out['fedpsor1_cur']  = round(float(_s.iloc[-1]), 1) if not _s.empty else None
     except Exception as _e:
         print(f'[FEDPSOR1] {_e}')
+
+    # ── LAGIDBMA Index — Conference Board margin level ───────────────────────
+    try:
+        _r = bq.execute(bql.Request('LAGIDBMA Index',
+                {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+        _s = _bql_ts(_r[0], 'px').dropna()
+        out['lagidbma_hist'] = _s
+        out['lagidbma_cur']  = round(float(_s.iloc[-1]), 2) if not _s.empty else None
+    except Exception as _e:
+        print(f'[LAGIDBMA] {_e}')
 
     # ── ES1 bid-ask spread (ticks) — liquidez do futuro ───────────────────────
     try:
@@ -8505,9 +8517,25 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='color:{_ba_col};'>{_ba_lvl}</td>"
             f"<td style='font-size:11px;'>Spread bid-ask do futuro ES — >2 ticks = custo de trade elevado = stress de liquidez</td></tr>")
 
+    # LAGIDBMA — Conference Board margin level
+    _lag = _vvol.get('lagidbma_cur')
+    _lag_hist = _vvol.get('lagidbma_hist')
+    if _lag is not None:
+        _lg_col, _lg_lvl, _lg_pct = _pct_color_level(
+            _lag, _lag_hist,
+            label_low='🔴 margin baixa — guarda baixa',
+            label_mid='🟡 margin moderada',
+            label_hi='🟢 margin elevada — mercado confiante')
+        # baixa margin = guarda baixa = stress → lógica direta (baixo pct = vermelho) já está ok
+        _vvol_html += (
+            f"<tr><td>LAGIDBMA (Conference Board Margin)</td>"
+            f"<td><b style='color:{_lg_col};'>{_lag:.2f}{_lg_pct}</b></td>"
+            f"<td style='color:{_lg_col};'>{_lg_lvl}</td>"
+            f"<td style='font-size:11px;'>Nível de margin Conference Board — baixo = mercado de guarda baixa / stress de crédito</td></tr>")
+
     # Se nenhum indicador disponível (nenhuma seção)
     if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi,
-                                _axwa, _fed1, _es_ba]):
+                                _axwa, _fed1, _es_ba, _lag]):
         _vvol_html += "<tr><td colspan='4' style='color:#8b949e;'>Indicadores não disponíveis (falha no fetch BBG)</td></tr>"
 
     _vvol_html += "</table></div></div>"
