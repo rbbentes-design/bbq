@@ -3395,15 +3395,16 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         except Exception:
             continue
 
-    # ── VIX OI (Call + Put) — campo direto do índice ──────────────────────
+    # ── VIX OI (Call + Put) — via universe filter por tipo ───────────────────
     try:
-        _r = bq.execute(bql.Request('VIX Index', {
-            'call_oi': bq.data.opt_call_open_int(),
-            'put_oi':  bq.data.opt_put_open_int(),
-        }))
-        _df = _r[0].combined()
-        out['vix_call_oi'] = float(_df['call_oi'].iloc[0]) / 1e6  # milhões
-        out['vix_put_oi']  = float(_df['put_oi'].iloc[0])  / 1e6
+        _univ_c = bq.univ.filter(bq.univ.options(['VIX Index']),
+                                  bq.data.put_call() == 'Call')
+        _univ_p = bq.univ.filter(bq.univ.options(['VIX Index']),
+                                  bq.data.put_call() == 'Put')
+        _rc = bq.execute(bql.Request(_univ_c, {'oi': bq.data.open_int()}))
+        _rp = bq.execute(bql.Request(_univ_p, {'oi': bq.data.open_int()}))
+        out['vix_call_oi'] = round(_rc[0].df()['oi'].sum() / 1e6, 2)
+        out['vix_put_oi']  = round(_rp[0].df()['oi'].sum() / 1e6, 2)
     except Exception as _e:
         print(f'[VIX OI] {_e}')
 
@@ -3415,17 +3416,14 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         _items = {
             'Strike': bq.data.strike_px(),
             'Type':   bq.data.put_call(),
-            'IV':     bq.data.ivol_mid(),
+            'IV':     bq.data.ivol(),
         }
         _r = bq.execute(bql.Request(_univ, _items))
-        _opt = pd.DataFrame({
-            'Strike': _r[0].combined()['Strike'],
-            'Type':   _r[1].combined()['Type'],
-            'IV':     _r[2].combined()['IV'],
-        }).dropna()
+        _df_vix_opts = pd.concat([r.df() for r in _r], axis=1).dropna()
+        _opt = _df_vix_opts[['Strike', 'Type', 'IV']].copy()
         # VIX spot
         _vix_px = float(bq.execute(bql.Request('VIX Index',
-                {'px': bq.data.px_last()}))[0].combined()['px'].iloc[0])
+                {'px': bq.data.px_last()}))[0].df()['px'].iloc[0])
         _calls = _opt[_opt['Type'] == 'Call']
         _puts  = _opt[_opt['Type'] == 'Put']
         if not _calls.empty and not _puts.empty:
@@ -3501,17 +3499,13 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
     except Exception as _e:
         print(f'[LAGIDBMA] {_e}')
 
-    # ── ES1 bid-ask spread (ticks) — liquidez do futuro ───────────────────────
+    # ── ES1 bid-ask spread — average_bid_ask_spread() em pts, converte p/ ticks ─
     try:
-        _r = bq.execute(bql.Request('ES1 Index', {
-            'bid': bq.data.bid(),
-            'ask': bq.data.ask(),
-        }))
-        _df = _r[0].combined()
-        _bid = float(_df['bid'].iloc[0])
-        _ask = float(_df['ask'].iloc[0])
-        # ES tick = 0.25 pts; spread em ticks
-        out['es_bid_ask_cur'] = round((_ask - _bid) / 0.25, 2)
+        _r = bq.execute(bql.Request('ES1 Index',
+                {'ba': bq.data.average_bid_ask_spread()}))
+        _ba_pts = float(_r[0].df()['ba'].iloc[0])
+        # ES1 tick = 0.25 pts
+        out['es_bid_ask_cur'] = round(_ba_pts / 0.25, 2)
     except Exception as _e:
         print(f'[ES bid-ask] {_e}')
 
@@ -14080,7 +14074,7 @@ def run_analysis(_):
                     _vix9d_req = bql.Request('VIX9D Index',
                                              {'px': bq.data.px_last()})
                     _vix9d_resp = bq.execute(_vix9d_req)
-                    _vix9d_val = float(_vix9d_resp[0].combined()['px'].iloc[0])
+                    _vix9d_val = float(_vix9d_resp[0].df()['px'].iloc[0])
                 except Exception as _v9e:
                     print(f"[VIX9D] {_v9e}")
 
