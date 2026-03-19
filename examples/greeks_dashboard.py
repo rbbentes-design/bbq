@@ -3344,6 +3344,10 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
       fedpsor1_hist, fedpsor1_cur  — FEDPSOR1 Index: Primary Dealer equity repo ($B)
       es_bid_ask_cur               — ES1 bid-ask spread atual (ticks)
       lagidbma_hist, lagidbma_cur  — LAGIDBMA Index: Conference Board margin level
+      spx_iv_hist, spx_iv_cur      — SPX 30d ATM IV histórico
+      spx_iv_pct                   — IV Percentile 1Y (0–100)
+      spx_skew_hist, spx_skew_cur  — SPX skew 30d (ATM − 90% moneyness)
+      spx_skew_pct                 — Skew Percentile 1Y
     """
     out = {k: None for k in [
         'vvix_hist','vvix_cur',
@@ -3356,8 +3360,35 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         'fedpsor1_hist','fedpsor1_cur',
         'es_bid_ask_cur',
         'lagidbma_hist','lagidbma_cur',
+        'spx_iv_hist','spx_iv_cur','spx_iv_pct',
+        'spx_skew_hist','spx_skew_cur','spx_skew_pct',
     ]}
     dt_range = bq.func.range(f'-{lookback_days}d', '0d')
+
+    # ── SPX 30d ATM IV + Skew history + percentiles ───────────────────────────
+    try:
+        _r = bq.execute(bql.Request('SPX Index', {
+            'iv_atm':  bq.data.implied_volatility(
+                           expiry='30d', pct_moneyness='100',
+                           dates=dt_range).dropna(),
+            'iv_90':   bq.data.implied_volatility(
+                           expiry='30d', pct_moneyness='90',
+                           dates=dt_range).dropna(),
+        }))
+        _df_spx = _r[0].df()
+        _iv_s   = pd.to_numeric(_df_spx['iv_atm'], errors='coerce').dropna()
+        _sk_s   = pd.to_numeric(_df_spx['iv_atm'] - _df_spx['iv_90'],
+                                errors='coerce').dropna()
+        if not _iv_s.empty:
+            out['spx_iv_hist'] = _iv_s
+            out['spx_iv_cur']  = round(float(_iv_s.iloc[-1]), 2)
+            out['spx_iv_pct']  = round(float(np.mean(_iv_s.values < _iv_s.values[-1])) * 100, 1)
+        if not _sk_s.empty:
+            out['spx_skew_hist'] = _sk_s
+            out['spx_skew_cur']  = round(float(_sk_s.iloc[-1]), 2)
+            out['spx_skew_pct']  = round(float(np.mean(_sk_s.values < _sk_s.values[-1])) * 100, 1)
+    except Exception as _e:
+        print(f'[SPX IV hist] {_e}')
 
     # ── VVIX ─────────────────────────────────────────────────────────────────
     try:
@@ -8354,13 +8385,52 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             _col, _lvl, _pct_str = '#8b949e', '— sem histórico', ''
         return _col, _lvl, _pct_str
 
+    # ── SPX IV & Skew context vars ──────────────────────────────────────────
+    _spx_iv_cur  = _vvol.get('spx_iv_cur')
+    _spx_iv_pct  = _vvol.get('spx_iv_pct')
+    _spx_sk_cur  = _vvol.get('spx_skew_cur')
+    _spx_sk_pct  = _vvol.get('spx_skew_pct')
+
     _vvol_html = (
         "<div class='mm-dash'><div class='mm-card'>"
         "<h3 style='margin:0 0 8px;'>Vol-of-Vol &amp; Tail Risk Indicators</h3>"
         "<table class='mm-table' style='width:100%;font-size:12px;'>"
         "<tr style='background:#161b22;'>"
-        "<th>Indicador</th><th>Valor</th><th>Nível</th><th>Descrição</th></tr>"
+        "<th>Indicador</th><th>Valor</th><th>Percentil 1Y</th><th>Descrição</th></tr>"
     )
+
+    # SPX 30d ATM IV + Percentile
+    if _spx_iv_cur is not None:
+        _iv_col = ('#f85149' if (_spx_iv_pct or 0) > 80 else
+                   '#ffaa00' if (_spx_iv_pct or 0) > 60 else
+                   '#3fb950' if (_spx_iv_pct or 0) < 30 else '#8b949e')
+        _iv_lvl = ('🔴 IV alta — fear' if (_spx_iv_pct or 0) > 80 else
+                   '🟡 IV elevada'     if (_spx_iv_pct or 0) > 60 else
+                   '🟢 IV baixa — complacência' if (_spx_iv_pct or 0) < 30 else '🔵 IV neutra')
+        _pct_bar = f'p{_spx_iv_pct:.0f}' if _spx_iv_pct is not None else '—'
+        _vvol_html += (
+            f"<tr><td>SPX 30d ATM IV</td>"
+            f"<td><b style='color:{_iv_col};'>{_spx_iv_cur:.1f}%</b></td>"
+            f"<td style='color:{_iv_col};'><b>{_pct_bar}</b></td>"
+            f"<td style='font-size:11px;'>IV implícita 30d ATM — percentil relativo a 1 ano</td></tr>")
+
+    # SPX 30d Skew (ATM − 90% moneyness)
+    if _spx_sk_cur is not None:
+        _sk_col, _sk_lvl, _sk_pct_str = _pct_color_level(
+            _spx_sk_cur, _vvol.get('spx_skew_hist'),
+            label_low='🟢 skew plano — complacência',
+            label_mid='🟡 skew moderado',
+            label_hi='🔴 skew íngreme — proteção cara')
+        _vvol_html += (
+            f"<tr><td>SPX Skew 30d (ATM−90%)</td>"
+            f"<td><b style='color:{_sk_col};'>{_spx_sk_cur:.2f} vol pts</b></td>"
+            f"<td style='color:{_sk_col};'><b>p{_spx_sk_pct:.0f}</b></td>"
+            f"<td style='font-size:11px;'>Skew 30d: IV ATM − IV 90% OTM — alto = mercado pagando por downside</td></tr>"
+            if _spx_sk_pct is not None else
+            f"<tr><td>SPX Skew 30d (ATM−90%)</td>"
+            f"<td><b style='color:{_sk_col};'>{_spx_sk_cur:.2f} vol pts</b></td>"
+            f"<td>—</td>"
+            f"<td style='font-size:11px;'>Skew 30d: IV ATM − IV 90% OTM</td></tr>")
 
     # VVIX
     if _vvix is not None:
@@ -8548,6 +8618,32 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
 
     _vvol_html += "</table></div></div>"
 
+    # SPX IV + Skew sparklines
+    _spx_iv_chart = None
+    _spx_iv_h = _vvol.get('spx_iv_hist')
+    _spx_sk_h = _vvol.get('spx_skew_hist')
+    if _spx_iv_h is not None and len(_spx_iv_h) > 10:
+        _fig_iv = go.FigureWidget()
+        _fig_iv.add_trace(go.Scatter(
+            x=_spx_iv_h.index, y=_spx_iv_h.values,
+            mode='lines', line=dict(color='#61afef', width=1.5),
+            fill='tozeroy', fillcolor='rgba(97,175,239,0.08)', name='ATM IV'))
+        if _spx_sk_h is not None and len(_spx_sk_h) > 10:
+            _fig_iv.add_trace(go.Scatter(
+                x=_spx_sk_h.index, y=_spx_sk_h.values,
+                mode='lines', line=dict(color='#e5c07b', width=1.2, dash='dot'),
+                name='Skew (ATM−90%)', yaxis='y2'))
+            _fig_iv.update_layout(yaxis2=dict(
+                overlaying='y', side='right', showgrid=False,
+                tickfont=dict(size=8, color='#e5c07b'), title='Skew'))
+        _fig_iv.update_layout(
+            title='SPX 30d ATM IV + Skew (1Y)', height=180, template='plotly_dark',
+            margin=dict(t=30, b=20, l=40, r=50),
+            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+            legend=dict(font=dict(size=9), x=0, y=1),
+            yaxis_title='IV (%)')
+        _spx_iv_chart = _fig_iv
+
     # VVIX history sparkline (se disponível)
     _vvix_hist = _vvol.get('vvix_hist')
     _vvix_chart = None
@@ -8627,6 +8723,9 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
                 layout={'align_items': 'flex-start'}),
         wd.HTML(_vvol_html),
     ]
+    # linha 0: SPX IV + Skew (contexto base)
+    if _spx_iv_chart is not None:
+        children.append(_spx_iv_chart)
     # linha 1: VVIX + VRP
     _row1 = [c for c in [_vvix_chart, _vrp_chart] if c is not None]
     if _row1:
