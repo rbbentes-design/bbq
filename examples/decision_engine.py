@@ -84,13 +84,15 @@ if not _DASHBOARD_AVAILABLE:
     def fetch_market_data(*a, **kw): return {}
 
 # ─── logging ─────────────────────────────────────────────────────────────────
+_log_handlers = [logging.StreamHandler()]
+try:
+    _log_handlers.append(logging.FileHandler('decision_engine.log', mode='a', encoding='utf-8'))
+except OSError:
+    pass  # read-only filesystem (BQuant kernel) — console only
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s — %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('decision_engine.log', mode='a', encoding='utf-8'),
-    ]
+    handlers=_log_handlers,
 )
 log = logging.getLogger('DecisionEngine')
 

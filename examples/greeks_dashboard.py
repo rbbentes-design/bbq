@@ -8201,6 +8201,105 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
             )]))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 14 — DECISION ENGINE (inline loader, no external import)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=None):
+    """
+    Loads decision_engine.py via importlib (avoids ModuleNotFoundError in
+    BQuant kernel where sys.path doesn't include the project directory).
+    Falls back to a minimal informational tab if the file cannot be found.
+    """
+    import importlib.util as _ilu
+    import sys as _sys
+    import os as _os
+    import json as _json
+    import traceback as _tb
+
+    ext = external_scores or {}
+
+    # ── Step 1: try to get already-loaded module ──────────────────────────────
+    _de_mod = _sys.modules.get('decision_engine', None)
+
+    # ── Step 2: search for decision_engine.py ────────────────────────────────
+    if _de_mod is None:
+        _de_candidates = []
+        # Same directory as a known absolute path (BBG local)
+        for _base in [
+            _os.path.expanduser('~/bbg/examples'),
+            _os.path.expanduser('~/examples'),
+            '/bbg/examples',
+            '/home/user/bbg/examples',
+            '/home/user/examples',
+            _os.getcwd(),
+            _os.path.join(_os.getcwd(), '..'),
+            _os.path.join(_os.getcwd(), '..', 'examples'),
+            # Windows path (for local dev)
+            r'C:\Users\rafael bentes\bbg\examples',
+            '/c/Users/rafael bentes/bbg/examples',
+        ]:
+            _p = _os.path.join(_base, 'decision_engine.py')
+            if _os.path.isfile(_p) and _p not in _de_candidates:
+                _de_candidates.append(_p)
+
+        for _path in _de_candidates:
+            try:
+                _spec = _ilu.spec_from_file_location('decision_engine', _path)
+                _mod  = _ilu.module_from_spec(_spec)
+                _sys.modules['decision_engine'] = _mod
+                _spec.loader.exec_module(_mod)
+                _de_mod = _mod
+                print(f"✓ decision_engine carregado de: {_path}")
+                break
+            except Exception as _load_err:
+                _sys.modules.pop('decision_engine', None)
+                print(f"⚠ decision_engine load failed ({_path}): {_load_err}")
+                continue
+
+    # ── Step 3: delegate to build_decision_engine_tab ────────────────────────
+    if _de_mod is not None:
+        try:
+            return _de_mod.build_decision_engine_tab(df, spot, rfr, ticker, ext)
+        except Exception as _render_err:
+            _err_html = (
+                "<div style='background:#0d1520;border:1px solid #f85149;"
+                "border-radius:8px;padding:16px;font-family:monospace;'>"
+                "<h3 style='color:#f85149;'>Decision Engine — erro ao renderizar</h3>"
+                f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>"
+                f"{_tb.format_exc()}</pre></div>"
+            )
+            return wd.VBox([wd.HTML(_err_html)])
+
+    # ── Step 4: fallback tab when file not found ──────────────────────────────
+    _scores_html = ''.join(
+        f"<tr><td style='color:#aaa;padding:4px 12px 4px 0;'>{k}</td>"
+        f"<td style='color:#00d4e8;font-weight:bold;'>{v:.1f}</td></tr>"
+        for k, v in ext.items()
+    )
+    _fallback_html = f"""
+<div style='background:#0d1520;border:1px solid rgba(0,212,232,.25);
+            border-radius:8px;padding:20px;font-family:monospace;max-width:700px;'>
+  <h3 style='color:#00d4e8;margin:0 0 8px;'>Decision Engine — 0DTE Intraday</h3>
+  <p style='color:#f85149;margin:0 0 12px;'>
+    ⚠ <b>decision_engine.py não encontrado</b> no path do kernel BQuant.
+  </p>
+  <p style='color:#aaa;font-size:11px;margin:0 0 8px;'>
+    Verifique que <code>decision_engine.py</code> está na mesma pasta que
+    <code>greeks_dashboard.py</code> e que o kernel tem acesso ao diretório.
+  </p>
+  <p style='color:rgba(0,212,232,.6);font-size:10px;letter-spacing:.8px;
+             margin:12px 0 4px;'>SCORES EXTERNOS RECEBIDOS</p>
+  <table style='font-size:11px;border-collapse:collapse;'>
+    {_scores_html}
+  </table>
+  <p style='color:#aaa;font-size:10px;margin:16px 0 0;'>
+    Paths tentados: {", ".join(_de_candidates) if "_de_candidates" in dir() else "nenhum"}
+  </p>
+</div>"""
+    return wd.VBox([wd.HTML(_fallback_html)])
+
+
 def build_greek_overview(greeks_now, df, spot, etf_flows=None):
     """
     Seção de termômetros das gregas + fluxo por ação (Mag8) para a Visão Geral.
@@ -12633,24 +12732,6 @@ def run_analysis(_):
 
             # ── Tab 14: Decision Engine (0DTE Intraday) ───────────────────
             try:
-                import sys, os as _os, importlib.util as _ilu
-                # Localiza decision_engine.py via busca em caminhos conhecidos
-                _de_candidates = [
-                    _os.path.join(_os.path.expanduser('~'), 'bbg', 'examples', 'decision_engine.py'),
-                    '/home/user/bbg/examples/decision_engine.py',
-                    '/bbg/examples/decision_engine.py',
-                    _os.path.join(_os.getcwd(), 'decision_engine.py'),
-                ]
-                _de_path = next((p for p in _de_candidates if _os.path.isfile(p)), None)
-                if _de_path is None:
-                    raise FileNotFoundError(
-                        f'decision_engine.py não encontrado. Tentei: {_de_candidates}')
-                _de_spec = _ilu.spec_from_file_location('decision_engine', _de_path)
-                _de_mod  = _ilu.module_from_spec(_de_spec)
-                sys.modules['decision_engine'] = _de_mod
-                _de_spec.loader.exec_module(_de_mod)
-                build_decision_engine_tab = _de_mod.build_decision_engine_tab
-                # Monta external_scores com o que já foi calculado na sessão
                 _ext_scores = {
                     'flow_score':    float(fp_score.get('score', 50)) if isinstance(fp_score, dict) else 50.0,
                     'squeeze_score': float(_sq_result_v1['score']) if '_sq_result_v1' in dir() and _sq_result_v1 else 0.0,
@@ -12658,15 +12739,13 @@ def run_analysis(_):
                     'iv_rv_spread':  float((iv_30d - rv_30d) * 100) if pd.notna(iv_30d) and pd.notna(rv_30d) else 0.0,
                     'skew_level':    float(iv_30d * 100) if pd.notna(iv_30d) else 0.0,
                 }
-                tab14 = build_decision_engine_tab(df, spot, rfr, ticker=ticker,
-                                                   external_scores=_ext_scores)
+                tab14 = _build_decision_engine_tab_inline(df, spot, rfr, ticker, _ext_scores)
             except Exception as _de_err:
-                print(f"⚠️ Decision Engine tab: {_de_err}")
-                import traceback; traceback.print_exc()
+                print(f"⚠️ Decision Engine tab: {_de_err}\n{traceback.format_exc()}")
                 tab14 = wd.VBox([wd.HTML(
                     f"<h3 style='color:#00d4e8;'>Decision Engine</h3>"
-                    f"<p style='color:#f85149;'>Erro ao carregar: {_de_err}</p>"
-                    f"<p style='color:#aaa;font-size:10px;'>Verifique se decision_engine.py está no mesmo diretório.</p>")])
+                    f"<p style='color:#f85149;'>Erro: {_de_err}</p>"
+                    f"<pre style='font-size:10px;color:#aaa;'>{traceback.format_exc()}</pre>")])
 
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
