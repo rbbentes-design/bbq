@@ -6799,7 +6799,9 @@ GAMMA_SQUEEZE_EVENTS = [
 
 
 def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip,
-                                spot, skew, put_wall, call_wall):
+                                spot, skew, put_wall, call_wall,
+                                spxsk3_current=None, spxsk3_hist=None,
+                                pc_hist=None, vix9d=None):
     """
     Calcula o Gamma Squeeze Score (0–100).
 
@@ -6808,13 +6810,13 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
     - Posicionamento bearish excessivo (P/C ratio alto, skew alto)
     - Mercado próximo ao gamma flip → qualquer alta cruza o flip e acelera
     - Vol realizada bem abaixo da implícita (mais espaço para rali surpresa)
+    - Tail Skew (SPXSK3 / ATM_IV*10) < 0.40 → tail extremo confirmado
 
     Retorna dict com score total, sub-scores, interpretação e nível de alerta.
     """
     components = {}
 
     # 1. GEX negativity (0–30): quanto mais negativo, maior o score
-    # Normalizado por -20Bn como referência de mercado muito short gamma
     _gex_score = min(30, max(0, abs(min(0, net_gex_bn)) / 20.0 * 30))
     components['gex'] = {
         'label': 'GEX Negatividade',
@@ -6824,19 +6826,26 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
         'desc': 'Dealers SHORT gamma → amplificam movimentos de alta',
     }
 
-    # 2. Put/Call ratio (0–25): >1.5 = bearish extremo
-    _pc_score = min(25, max(0, (pc_ratio - 1.0) / 1.5 * 25)) if pc_ratio > 1.0 else 0
+    # 2. Put/Call ratio (0–25): usa percentil histórico quando disponível
+    if pc_hist is not None and len(pc_hist) > 20:
+        _pc_pct = float(np.mean(np.asarray(pc_hist) < pc_ratio))  # fração abaixo do atual
+        _pc_score = min(25, _pc_pct * 25)
+        _pc_hist_label = f' (p{_pc_pct*100:.0f}h)'
+    else:
+        # faixa ampliada: começa a pontuar de 0.75 (não só >1.0)
+        _pc_score = min(25, max(0, (pc_ratio - 0.75) / 1.75 * 25))
+        _pc_hist_label = ''
     components['pc_ratio'] = {
         'label': 'P/C OI Ratio',
-        'value': f'{pc_ratio:.2f}x',
+        'value': f'{pc_ratio:.2f}x{_pc_hist_label}',
         'score': round(_pc_score, 1),
         'max': 25,
-        'desc': 'Posicionamento muito pessimista → squeeze mais intenso se mercado subir',
+        'desc': 'Posicionamento pessimista → squeeze mais intenso se mercado subir',
     }
 
-    # 3. Proximidade ao gamma flip (0–25): quanto mais perto, mais perigoso
+    # 3. Proximidade ao gamma flip (0–25)
     _flip_dist = abs(gamma_flip - spot) / spot if (gamma_flip and spot) else 0.05
-    _flip_score = min(25, max(0, (1 - _flip_dist / 0.05) * 25))  # max score se dist < 0.5%
+    _flip_score = min(25, max(0, (1 - _flip_dist / 0.05) * 25))
     _flip_side = 'ACIMA' if (gamma_flip and gamma_flip > spot) else 'ABAIXO'
     components['flip_proximity'] = {
         'label': 'Distância Gamma Flip',
@@ -6846,10 +6855,9 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
         'desc': 'Próximo ao flip → qualquer rali pode cruzar e virar auto-reforçado',
     }
 
-    # 4. Vol premium invertida (0–20): IV muito > RV = mercado pagando por proteção
-    # Mas para squeeze, queremos IV alta (medo) + mercado que ainda não se moveu
+    # 4. Vol premium IV−RV (0–20)
     _vol_gap = (iv_30d - rv_30d) if (pd.notna(iv_30d) and pd.notna(rv_30d)) else 0
-    _vol_score = min(20, max(0, _vol_gap * 100 * 4))  # 5 vol pts gap → score 20
+    _vol_score = min(20, max(0, _vol_gap * 100 * 4))
     components['vol_premium'] = {
         'label': 'Prêmio de Vol (IV−RV)',
         'value': f'{_vol_gap*100:+.1f} vol pts',
@@ -6858,7 +6866,40 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
         'desc': 'IV > RV = medo embutido → mais proteção para ser revertida',
     }
 
-    total = sum(c['score'] for c in components.values())
+    # 5. Tail Skew — SPXSK3 / (ATM_IV × 10) (0–20)
+    #    Fórmula BBG: .SPXSK3 G ÷ (SPX 30D IVOL at 100 × 0.1)
+    #    <0.40 = TAIL EXTREMO (Volmageddon / COVID / End-2022)
+    #    >0.65 = tail normal
+    _sk3_ratio = None
+    _sk3_score = 0.0
+    if spxsk3_current is not None and iv_30d and iv_30d > 0:
+        _sk3_ratio = spxsk3_current / (iv_30d * 10)   # mesmo cálculo do BBG chart
+        # score baseado no nível absoluto
+        _sk3_level_score = min(20, max(0, (0.65 - _sk3_ratio) / (0.65 - 0.40) * 20))
+        # percentil histórico reforça (quanto mais raro → mais score)
+        if spxsk3_hist is not None and len(spxsk3_hist) > 20:
+            _sk3_arr = np.asarray(spxsk3_hist)
+            _sk3_hist_ratios = _sk3_arr / (iv_30d * 10)
+            _hist_pct = float(np.mean(_sk3_hist_ratios > _sk3_ratio))  # fração acima do atual
+            _sk3_score = max(_sk3_level_score, _hist_pct * 20)
+        else:
+            _sk3_score = _sk3_level_score
+        # confirmação VIX9D
+        _vix9d_str = ''
+        if vix9d is not None and vix9d > 20 and _sk3_ratio < 0.55:
+            _vix9d_str = f' | VIX9D={vix9d:.1f} ✓'
+        _sk3_label = ('⚠ EXTREMO' if _sk3_ratio < 0.40 else
+                      'ELEVADO'   if _sk3_ratio < 0.55 else 'normal')
+        components['tail_skew'] = {
+            'label': 'Tail Skew (SPXSK3/IV)',
+            'value': f'{_sk3_ratio:.3f} — {_sk3_label}{_vix9d_str}',
+            'score': round(_sk3_score, 1),
+            'max': 20,
+            'desc': 'Ratio <0.40 = tail extremo → squeeze/vol spike iminente (Volmageddon, COVID)',
+        }
+
+    total_raw = sum(c['score'] for c in components.values())
+    total = min(100, round(total_raw, 1))  # cap em 100
 
     # Interpretação
     if total >= 75:
@@ -6874,18 +6915,19 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
         interp = 'Risco baixo — posicionamento não sugere squeeze iminente'
         alert = 'low'
 
-    # Estimativa de magnitude do squeeze se o flip for cruzado
-    _squeeze_mag = abs(net_gex_bn) * 0.15 * (pc_ratio / 1.5)  # rough: 15% do GEX por 1% de alta
-    _squeeze_mag_pct = min(15, _squeeze_mag / (spot * 0.01))   # % de alta esperado
+    _squeeze_mag = abs(net_gex_bn) * 0.15 * (pc_ratio / 1.5)
+    _squeeze_mag_pct = min(15, _squeeze_mag / (spot * 0.01))
 
     return {
-        'score': round(total, 1),
+        'score': total,
         'alert': alert,
         'interp': interp,
         'components': components,
         'squeeze_mag_pct': round(_squeeze_mag_pct, 1),
         'flip_above': gamma_flip is not None and gamma_flip > spot,
         'flip_dist_pct': round(_flip_dist * 100, 2),
+        'sk3_ratio': round(_sk3_ratio, 4) if _sk3_ratio is not None else None,
+        'vix9d': vix9d,
     }
 
 
@@ -7986,9 +8028,9 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
         textposition='outside'))
     bar_fig.update_layout(
         title='Componentes do Score',
-        xaxis=dict(range=[0, 30], title='Score'),
-        height=220, template='plotly_dark',
-        margin=dict(t=35, b=20, l=5, r=60),
+        xaxis=dict(range=[0, 35], title='Score'),
+        height=250, template='plotly_dark',
+        margin=dict(t=35, b=20, l=5, r=70),
         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'], showlegend=False)
 
     # ── Resumo textual ──
@@ -8004,7 +8046,13 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
         f"<tr><td>Gamma Flip</td><td><b>{gamma_flip:,.0f}</b> ({_fd:.1f}% {_flip_dir} do spot)</td></tr>"
         f"<tr><td>P/C OI Ratio</td><td><b>{pc_ratio:.2f}x</b></td></tr>"
         f"<tr><td>IV−RV Gap</td><td><b>{(iv_30d-rv_30d)*100:+.1f} vol pts</b></td></tr>"
-        f"<tr><td>Magnitude estimada</td><td><b>~{_sq_mag:.1f}%</b> se flip cruzado</td></tr>"
+        + (f"<tr><td>Tail Skew (SPXSK3/IV×10)</td><td><b style='color:{"#f85149" if squeeze_result.get("sk3_ratio") and squeeze_result["sk3_ratio"]<0.40 else "#ffaa00" if squeeze_result.get("sk3_ratio") and squeeze_result["sk3_ratio"]<0.55 else "#3fb950"};'>"
+           f"{squeeze_result['sk3_ratio']:.3f}</b>"
+           f"{' ⚠ TAIL EXTREMO' if squeeze_result.get('sk3_ratio') and squeeze_result['sk3_ratio']<0.40 else ''}</td></tr>"
+           if squeeze_result.get('sk3_ratio') is not None else "")
+        + (f"<tr><td>VIX9D</td><td><b>{squeeze_result['vix9d']:.1f}</b></td></tr>"
+           if squeeze_result.get('vix9d') is not None else "")
+        + f"<tr><td>Magnitude estimada</td><td><b>~{_sq_mag:.1f}%</b> se flip cruzado</td></tr>"
         f"</table>"
     )
     # Componentes detalhados
@@ -13436,6 +13484,38 @@ def run_analysis(_):
                 _sq_pc = fp_vol_data.get('pc_ratio', 1.5) or 1.5
                 _sq_gex_bn = total_gex_val / 1e9 if 'total_gex_val' in dir() else (
                     total_gex / 1e9 if 'total_gex' in dir() else 0)
+
+                # ── Fetch SPXSK3 history (SPX Skew Ratio 30d) ────────────
+                _spxsk3_hist = pd.Series(dtype=float)
+                _spxsk3_cur  = None
+                try:
+                    _spxsk3_hist = _bql_fetch_impl_corr(504)  # 2 anos
+                    if not _spxsk3_hist.empty:
+                        _spxsk3_cur = float(_spxsk3_hist.dropna().iloc[-1])
+                except Exception as _sk3e:
+                    print(f"[SPXSK3] {_sk3e}")
+
+                # ── Fetch P/C ratio history (PUTCALLRAT Index) ────────────
+                _pc_hist = pd.Series(dtype=float)
+                try:
+                    _dt_pc = bq.func.range('-504d', '0d')
+                    _pc_req = bql.Request('PUTCALLRAT Index',
+                                          {'px': bq.data.px_last(fill='PREV', dates=_dt_pc)})
+                    _pc_resp = bq.execute(_pc_req)
+                    _pc_hist = _bql_ts(_pc_resp[0], 'px').dropna()
+                except Exception as _pce:
+                    print(f"[PC hist] {_pce}")
+
+                # ── Fetch VIX9D current ────────────────────────────────────
+                _vix9d_val = None
+                try:
+                    _vix9d_req = bql.Request('VIX9D Index',
+                                             {'px': bq.data.px_last()})
+                    _vix9d_resp = bq.execute(_vix9d_req)
+                    _vix9d_val = float(_vix9d_resp[0].combined()['px'].iloc[0])
+                except Exception as _v9e:
+                    print(f"[VIX9D] {_v9e}")
+
                 _sq_result = compute_gamma_squeeze_score(
                     net_gex_bn=_sq_gex_bn,
                     pc_ratio=_sq_pc,
@@ -13445,7 +13525,11 @@ def run_analysis(_):
                     spot=spot,
                     skew=skew,
                     put_wall=put_wall,
-                    call_wall=call_wall)
+                    call_wall=call_wall,
+                    spxsk3_current=_spxsk3_cur,
+                    spxsk3_hist=_spxsk3_hist.values if not _spxsk3_hist.empty else None,
+                    pc_hist=_pc_hist.values if not _pc_hist.empty else None,
+                    vix9d=_vix9d_val)
                 tab12 = build_squeeze_tab(
                     _sq_result, _sq_gex_bn, spot, gamma_flip,
                     iv_30d, rv_30d, _sq_pc, _C)
