@@ -3409,34 +3409,18 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         print(f'[VIX OI] {_e}')
 
     # ── VIX 25-delta Call/Put skew vs ATM ─────────────────────────────────
-    # Tenta via BQL options chain de VIX (2M expiry ~45-75d)
+    # implied_volatility() direto no VIX Index — mais limpo e confiável
     try:
-        _cond = (bq.data.expire_dt() >= '40d').and_(bq.data.expire_dt() <= '80d')
-        _univ = bq.univ.filter(bq.univ.options(['VIX Index']), _cond)
-        _items = {
-            'Strike': bq.data.strike_px(),
-            'Type':   bq.data.put_call(),
-            'IV':     bq.data.ivol(),
-        }
-        _r = bq.execute(bql.Request(_univ, _items))
-        _df_vix_opts = pd.concat([r.df() for r in _r], axis=1).dropna()
-        _opt = _df_vix_opts[['Strike', 'Type', 'IV']].copy()
-        # VIX spot
-        _vix_px = float(bq.execute(bql.Request('VIX Index',
-                {'px': bq.data.px_last()}))[0].df()['px'].iloc[0])
-        _calls = _opt[_opt['Type'] == 'Call']
-        _puts  = _opt[_opt['Type'] == 'Put']
-        if not _calls.empty and not _puts.empty:
-            # ATM IV
-            _atm_c = float(_calls.iloc[(_calls['Strike'] - _vix_px).abs().argsort()[:1]]['IV'].values[0])
-            _atm_p = float(_puts.iloc[(_puts['Strike']  - _vix_px).abs().argsort()[:1]]['IV'].values[0])
-            _atm   = (_atm_c + _atm_p) / 2
-            # 25-delta proxy: call = ~1 std above ATM, put = ~1 std below
-            _1std  = _vix_px * _atm * np.sqrt(60 / 252)
-            _c25   = _calls.iloc[(_calls['Strike'] - (_vix_px + _1std)).abs().argsort()[:1]]
-            _p25   = _puts.iloc[ (_puts['Strike']  - (_vix_px - _1std)).abs().argsort()[:1]]
-            if not _c25.empty: out['vix_skew_c25'] = round(float(_c25['IV'].values[0]) / _atm, 3)
-            if not _p25.empty: out['vix_skew_p25'] = round(float(_p25['IV'].values[0]) / _atm, 3)
+        _r = bq.execute(bql.Request('VIX Index', {
+            'iv_atm': bq.data.implied_volatility(expiry='45d', delta='50').dropna(),
+            'iv_c25': bq.data.implied_volatility(expiry='45d', delta='25').dropna(),
+            'iv_p25': bq.data.implied_volatility(expiry='45d', delta='-25').dropna(),
+        }))
+        _df_iv = _r[0].df()
+        _atm = float(_df_iv['iv_atm'].iloc[0])
+        if _atm and _atm > 0:
+            out['vix_skew_c25'] = round(float(_df_iv['iv_c25'].iloc[0]) / _atm, 3)
+            out['vix_skew_p25'] = round(float(_df_iv['iv_p25'].iloc[0]) / _atm, 3)
     except Exception as _e:
         print(f'[VIX skew] {_e}')
 
