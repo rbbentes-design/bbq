@@ -8187,6 +8187,18 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
     _sq_mag = squeeze_result['squeeze_mag_pct']
     _fd = squeeze_result['flip_dist_pct']
     _flip_dir = 'ACIMA' if squeeze_result['flip_above'] else 'ABAIXO'
+
+    # pré-calcula cor do tail skew (evita aspas duplas dentro de f-string)
+    _sk3 = squeeze_result.get('sk3_ratio')
+    _sk3_col = '#f85149' if (_sk3 and _sk3 < 0.40) else '#ffaa00' if (_sk3 and _sk3 < 0.55) else '#3fb950'
+    _sk3_tag = ' ⚠ TAIL EXTREMO' if (_sk3 and _sk3 < 0.40) else ''
+    _sk3_row = (f"<tr><td>Tail Skew (SPXSK3/IV×10)</td>"
+                f"<td><b style='color:{_sk3_col};'>{_sk3:.3f}{_sk3_tag}</b></td></tr>"
+                if _sk3 is not None else "")
+    _v9d = squeeze_result.get('vix9d')
+    _v9d_row = (f"<tr><td>VIX9D</td><td><b>{_v9d:.1f}</b></td></tr>"
+                if _v9d is not None else "")
+
     summary_html = (
         f"<div class='mm-dash'><div class='mm-card'>"
         f"<h3 style='color:{alert_color}'>Gamma Squeeze Score: {score:.0f}/100</h3>"
@@ -8195,13 +8207,8 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
         f"<tr><td>GEX NET</td><td><b>{net_gex_bn:+.2f}B</b></td></tr>"
         f"<tr><td>Gamma Flip</td><td><b>{gamma_flip:,.0f}</b> ({_fd:.1f}% {_flip_dir} do spot)</td></tr>"
         f"<tr><td>P/C OI Ratio</td><td><b>{pc_ratio:.2f}x</b></td></tr>"
-        f"<tr><td>IV−RV Gap</td><td><b>{(iv_30d-rv_30d)*100:+.1f} vol pts</b></td></tr>"
-        + (f"<tr><td>Tail Skew (SPXSK3/IV×10)</td><td><b style='color:{"#f85149" if squeeze_result.get("sk3_ratio") and squeeze_result["sk3_ratio"]<0.40 else "#ffaa00" if squeeze_result.get("sk3_ratio") and squeeze_result["sk3_ratio"]<0.55 else "#3fb950"};'>"
-           f"{squeeze_result['sk3_ratio']:.3f}</b>"
-           f"{' ⚠ TAIL EXTREMO' if squeeze_result.get('sk3_ratio') and squeeze_result['sk3_ratio']<0.40 else ''}</td></tr>"
-           if squeeze_result.get('sk3_ratio') is not None else "")
-        + (f"<tr><td>VIX9D</td><td><b>{squeeze_result['vix9d']:.1f}</b></td></tr>"
-           if squeeze_result.get('vix9d') is not None else "")
+        f"<tr><td>IV-RV Gap</td><td><b>{(iv_30d-rv_30d)*100:+.1f} vol pts</b></td></tr>"
+        + _sk3_row + _v9d_row
         + f"<tr><td>Magnitude estimada</td><td><b>~{_sq_mag:.1f}%</b> se flip cruzado</td></tr>"
         f"</table>"
     )
