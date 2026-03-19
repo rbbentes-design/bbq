@@ -7019,8 +7019,8 @@ def build_vol_smile_chart(df_orig, spot, ticker=''):
             legend=dict(
                 bgcolor='rgba(0,0,0,0)', font=dict(size=10),
                 orientation='h', y=-0.15),
-            margin=dict(t=50, b=50, l=55, r=20),
-            height=340,
+            margin=dict(t=50, b=60, l=60, r=20),
+            height=520,
         )
 
         with out_smile:
