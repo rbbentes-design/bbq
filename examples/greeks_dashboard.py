@@ -7137,9 +7137,11 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
     w_reset= wd.Button(description='↺ Reset',  button_style='',
                        layout=wd.Layout(width='90px',  height='34px', margin='2px 0 0 0'))
 
-    out_cards = wd.Output()
-    out_agg   = wd.Output()
-    out_inst  = wd.Output()
+    out_cards       = wd.Output()
+    out_agg         = wd.Output()
+    out_inst        = wd.Output()
+    out_sensitivity = wd.Output()
+    out_mc          = wd.Output()
 
     def _compute_and_render(_):
         S_new        = spot + w_dspot.value
@@ -7448,6 +7450,87 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
                 + _html_table(shown, num_cols=SIGN_COLS)
             ))
 
+        # ── Sensitivity Matrix ────────────────────────────────────────────────
+        # Grid: ΔSpot(%) × ΔVol(pp) → Hedge Adj total e P&L
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots as _msp
+
+        _sp_pcts  = np.array([-0.03, -0.02, -0.01, -0.005, 0, 0.005, 0.01, 0.02, 0.03])
+        _vv_pps   = np.array([-15, -10, -5, 0, 5, 10, 15, 20])
+        _K_s      = df_orig['Strike'].values
+        _iv_s     = df_orig['IV'].values
+        _T_s      = df_orig['Tte'].values
+        _typ_s    = df_orig['Type'].values
+        _oi_s_raw = df_orig['OI'].values * 100.0
+        if _aum_val > 0:
+            _mkt_s = float(_oi_s_raw.sum() * spot)
+            _sc_s  = (_aum_val * 1e9) / _mkt_s if _mkt_s > 0 else 1.0
+            _oi_s  = _oi_s_raw * _sc_s
+        else:
+            _oi_s  = _oi_s_raw
+        _g_base_s = calculate_all_greeks(spot, _K_s, _iv_s, _T_s, _typ_s, r=rfr)
+        _px_bs    = black_scholes_price_vec(spot, _K_s, _iv_s, _T_s, _typ_s, r=rfr)
+
+        _sens_adj = np.zeros((len(_sp_pcts), len(_vv_pps)))
+        _sens_pnl = np.zeros_like(_sens_adj)
+
+        for _ii, _dp in enumerate(_sp_pcts):
+            _S_i = spot * (1.0 + _dp)
+            # Sticky-delta IV por vencimento
+            if _dp != 0:
+                _iv_i = _iv_s.copy()
+                for _exp in df_orig['Exp'].unique():
+                    _msk_e = df_orig['Exp'].values == _exp
+                    _k_e  = _K_s[_msk_e]; _iv_e = _iv_s[_msk_e]
+                    _mo   = _k_e / spot;  _mn   = _k_e / _S_i
+                    _ord  = np.argsort(_mo)
+                    _iv_i[_msk_e] = np.interp(_mn, _mo[_ord], _iv_e[_ord],
+                                               left=_iv_e[_ord[0]], right=_iv_e[_ord[-1]])
+            else:
+                _iv_i = _iv_s.copy()
+            for _jj, _dv_pp in enumerate(_vv_pps):
+                _dv_dec = _dv_pp / 100.0
+                _mn_i   = _K_s / spot
+                _dvol_i = np.where((_mn_i >= 0.50) & (_mn_i < 1.00), _dv_dec,
+                          np.where((_mn_i >= 1.00) & (_mn_i <= 1.50), _dv_dec * 0.7, 0.0))
+                _vol_i  = np.maximum(_iv_i + _dvol_i, 0.001)
+                _g_s_i  = calculate_all_greeks(_S_i, _K_s, _vol_i, _T_s, _typ_s, r=rfr)
+                _px_s_i = black_scholes_price_vec(_S_i, _K_s, _vol_i, _T_s, _typ_s, r=rfr)
+                _dp_b   = _g_base_s['delta'] * _oi_s
+                _dp_a   = _g_s_i['delta']    * _oi_s
+                _va_h   = -(_g_s_i['vanna'] - _g_base_s['vanna']) * _oi_s * _dvol_i
+                _sens_adj[_ii, _jj] = (-((_dp_a - _dp_b)) + _va_h).sum()
+                _sens_pnl[_ii, _jj] = ((_px_s_i - _px_bs) * _oi_s).sum()
+
+        _sp_lbls = [f'{p*100:+.1f}%' for p in _sp_pcts]
+        _vv_lbls = [f'{v:+d}pp'      for v in _vv_pps]
+
+        _fig_sens = _msp(rows=1, cols=2,
+                         subplot_titles=['Hedge Adj (Δ) — ΔSpot × ΔVol',
+                                         'P&L ($) — ΔSpot × ΔVol'],
+                         horizontal_spacing=0.10)
+        _fig_sens.add_trace(go.Heatmap(
+            z=_sens_adj, x=_vv_lbls, y=_sp_lbls, colorscale='RdYlGn', zmid=0,
+            text=[[f'{v:,.0f}' for v in row] for row in _sens_adj],
+            texttemplate='%{text}', showscale=True,
+            colorbar=dict(x=0.44, thickness=10, len=0.85, title='Δ')), row=1, col=1)
+        _fig_sens.add_trace(go.Heatmap(
+            z=_sens_pnl, x=_vv_lbls, y=_sp_lbls, colorscale='RdYlGn', zmid=0,
+            text=[[f'${v/1e6:.1f}M' for v in row] for row in _sens_pnl],
+            texttemplate='%{text}', showscale=True,
+            colorbar=dict(x=1.01, thickness=10, len=0.85, title='$')), row=1, col=2)
+        _fig_sens.update_layout(
+            height=430, paper_bgcolor='#0f1117', plot_bgcolor='#0f1117',
+            font=dict(color='#e0e0e0', size=10),
+            title=dict(text='Matrix de Sensibilidade — Hedge Adj e P&L por Cenário',
+                       x=0.5, font=dict(size=12, color='#00d4e8')),
+            margin=dict(l=60, r=60, t=55, b=30))
+        _fig_sens.update_xaxes(title_text='ΔVol (put e call wing)', tickfont=dict(size=9))
+        _fig_sens.update_yaxes(title_text='ΔSpot', tickfont=dict(size=9))
+        with out_sensitivity:
+            out_sensitivity.clear_output(wait=True)
+            _disp(go.FigureWidget(_fig_sens))
+
     def _reset(_):
         w_dspot.value     = 0.0
         w_dvol_put.value  = 0.0
@@ -7457,6 +7540,127 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         w_aum.value       = round(abs(dealer_aum_bn), 2) if dealer_aum_bn else round(_mkt_notional_bn, 2)
         _compute_and_render(None)
 
+    # ── Monte Carlo ───────────────────────────────────────────────────────────
+    w_mc_n   = wd.IntText(value=500, description='N sims:',
+                          layout=wd.Layout(width='130px'),
+                          style={'description_width': '60px'})
+    w_mc_btn = wd.Button(description='🎲 Monte Carlo',
+                         button_style='warning',
+                         layout=wd.Layout(width='150px', height='34px', margin='2px 0 0 0'))
+
+    def _run_mc(_):
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots as _msp2
+        _df_mc   = df_orig.copy()
+        _K_mc    = _df_mc['Strike'].values
+        _iv_mc   = _df_mc['IV'].values
+        _T_mc    = _df_mc['Tte'].values
+        _typ_mc  = _df_mc['Type'].values
+        # ATM IV: strike mais próximo ao spot
+        _atm_iv  = float(_iv_mc[np.argmin(np.abs(_K_mc - spot))])
+        T_yr_mc  = max(int(w_days.value), 1) / float(TRADING_DAYS)
+        N_sim    = max(int(w_mc_n.value), 50)
+        rho      = -0.70   # correlação spot-vol típica equity
+
+        # OI com AUM scaling
+        _oi_mc_raw = _df_mc['OI'].values * 100.0
+        _aum_mc    = float(w_aum.value)
+        if _aum_mc > 0:
+            _mkt_mc  = float(_oi_mc_raw.sum() * spot)
+            _oi_mc   = _oi_mc_raw * ((_aum_mc * 1e9) / _mkt_mc if _mkt_mc > 0 else 1.0)
+        else:
+            _oi_mc   = _oi_mc_raw
+
+        np.random.seed(42)
+        Z1 = np.random.standard_normal(N_sim)
+        Z2 = np.random.standard_normal(N_sim)
+        sq_T     = np.sqrt(T_yr_mc)
+        # GBM: S_T = S × exp((−σ²/2)T + σ√T × Z1)
+        S_sims   = spot * np.exp(-0.5 * _atm_iv**2 * T_yr_mc + _atm_iv * sq_T * Z1)
+        # Vol shock correlacionado com spot (equity: vol sobe quando spot cai)
+        dvol_sims = 0.30 * _atm_iv * (rho * Z1 + np.sqrt(1 - rho**2) * Z2) * sq_T
+
+        _g_base_mc  = calculate_all_greeks(spot, _K_mc, _iv_mc, _T_mc, _typ_mc, r=rfr)
+        _px_base_mc = black_scholes_price_vec(spot, _K_mc, _iv_mc, _T_mc, _typ_mc, r=rfr)
+        _dp_base_mc = _g_base_mc['delta'] * _oi_mc
+
+        _adj_mc = np.zeros(N_sim)
+        _pnl_mc = np.zeros(N_sim)
+
+        for _n in range(N_sim):
+            _S_n  = float(S_sims[_n])
+            _dv_n = float(dvol_sims[_n])
+            # Sticky-delta IV por vencimento
+            _iv_n = _iv_mc.copy()
+            for _exp in _df_mc['Exp'].unique():
+                _msk  = _df_mc['Exp'].values == _exp
+                _k_e  = _K_mc[_msk]; _iv_e = _iv_mc[_msk]
+                _mo   = _k_e / spot;  _mn   = _k_e / _S_n
+                _ord  = np.argsort(_mo)
+                _iv_n[_msk] = np.interp(_mn, _mo[_ord], _iv_e[_ord],
+                                         left=_iv_e[_ord[0]], right=_iv_e[_ord[-1]])
+            # Wing shock (mesmo dv para put e call, reduz 30% na call wing)
+            _mn_n   = _K_mc / spot
+            _dvol_n = np.where((_mn_n >= 0.50) & (_mn_n < 1.00), _dv_n,
+                      np.where((_mn_n >= 1.00) & (_mn_n <= 1.50), _dv_n * 0.7, 0.0))
+            _vol_n  = np.maximum(_iv_n + _dvol_n, 0.001)
+            _T_n    = np.maximum(_T_mc - T_yr_mc, 0.0)
+
+            _g_n    = calculate_all_greeks(_S_n, _K_mc, _vol_n, _T_n, _typ_mc, r=rfr)
+            _px_n   = black_scholes_price_vec(_S_n, _K_mc, _vol_n, _T_n, _typ_mc, r=rfr)
+            _dp_n   = _g_n['delta']  * _oi_mc
+            _va_h_n = -(_g_n['vanna'] - _g_base_mc['vanna']) * _oi_mc * _dvol_n
+            _ch_h_n = -_g_base_mc['charm'] * _oi_mc * T_yr_mc
+            _adj_mc[_n] = (-(_dp_n - _dp_base_mc) + _va_h_n + _ch_h_n).sum()
+            _pnl_mc[_n] = ((_px_n - _px_base_mc) * _oi_mc).sum()
+
+        _pcts    = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+        _adj_pct = np.percentile(_adj_mc, _pcts)
+        _pnl_pct = np.percentile(_pnl_mc, _pcts)
+
+        _fig_mc = _msp2(rows=1, cols=2,
+                        subplot_titles=[f'Hedge Adj (Δ) — {N_sim} cenários',
+                                        f'P&L ($) — {N_sim} cenários'],
+                        horizontal_spacing=0.10)
+        _fig_mc.add_trace(go.Histogram(x=_adj_mc, nbinsx=40,
+            marker_color='#00d4e8', opacity=0.75, name='Adj'), row=1, col=1)
+        _fig_mc.add_trace(go.Histogram(x=_pnl_mc, nbinsx=40,
+            marker_color='#ff6b35', opacity=0.75, name='P&L'), row=1, col=2)
+        for _col, _pct_arr in [(1, _adj_pct), (2, _pnl_pct)]:
+            _fig_mc.add_vline(x=float(_pct_arr[1]),  line_dash='dash',
+                              line_color='#ff4444', row=1, col=_col,
+                              annotation_text='P5',  annotation_font_size=9)
+            _fig_mc.add_vline(x=float(_pct_arr[-2]), line_dash='dash',
+                              line_color='#44ff44', row=1, col=_col,
+                              annotation_text='P95', annotation_font_size=9)
+        _fig_mc.update_layout(
+            height=360, paper_bgcolor='#0f1117', plot_bgcolor='#131722',
+            font=dict(color='#e0e0e0', size=10), showlegend=False,
+            title=dict(
+                text=f'Monte Carlo GBM — {int(w_days.value)}d | ATM IV={_atm_iv*100:.1f}% | ρ(S,σ)={rho}',
+                x=0.5, font=dict(size=11, color='#00d4e8')),
+            margin=dict(l=50, r=50, t=55, b=30))
+
+        _pct_rows = ''.join(
+            f"<tr>"
+            f"<td style='padding:2px 10px;color:#aaa;'>{p}%</td>"
+            f"<td style='padding:2px 10px;color:#00d4e8;text-align:right;'>{a:,.0f}Δ</td>"
+            f"<td style='padding:2px 10px;color:#ff6b35;text-align:right;'>${pl/1e6:.1f}M</td>"
+            f"</tr>"
+            for p, a, pl in zip(_pcts, _adj_pct, _pnl_pct))
+        _pct_html = (
+            "<div style='margin-top:8px;display:inline-block;'>"
+            "<table style='border-collapse:collapse;font-size:11px;font-family:monospace;'>"
+            "<tr><th style='padding:2px 10px;color:#00d4e8;text-align:left;'>Percentil</th>"
+            "<th style='padding:2px 10px;color:#00d4e8;'>Hedge Adj</th>"
+            "<th style='padding:2px 10px;color:#ff6b35;'>P&L</th></tr>"
+            + _pct_rows + "</table></div>")
+        with out_mc:
+            out_mc.clear_output(wait=True)
+            _disp(go.FigureWidget(_fig_mc))
+            _disp(wd.HTML(_pct_html))
+
+    w_mc_btn.on_click(_run_mc)
     w_btn.on_click(_compute_and_render)
     w_reset.on_click(_reset)
     _compute_and_render(None)  # render cenário zero ao carregar
@@ -7484,7 +7688,11 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
 
     smile_widget = build_vol_smile_chart(df_orig, spot, ticker=ticker)
 
-    return wd.VBox([header, input_row, out_cards, smile_widget, out_agg, out_inst])
+    mc_row = wd.HBox(
+        [w_mc_n, w_mc_btn],
+        layout=wd.Layout(margin='10px 0 4px 0', gap='8px', align_items='center'))
+    return wd.VBox([header, input_row, out_cards, smile_widget, out_agg, out_inst,
+                    out_sensitivity, mc_row, out_mc])
 
 
 def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
