@@ -7038,7 +7038,7 @@ def build_vol_smile_chart(df_orig, spot, ticker=''):
     ])
 
 
-def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
+def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
     """
     Aba Ajuste Dinâmico do Book.
 
@@ -7122,6 +7122,16 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                               tooltip='Asa de call: moneyness 100%–150% (strikes acima do spot)')
     w_drate    = wd.FloatText(value=0.0, description='ΔRate (bp):',        layout=_lyt,  style=_sty)
     w_days     = wd.IntText( value=0,    description='Dias à frente:',     layout=_lyt,  style=_sty)
+    # AUM dos dealers: soma do book — escala o tamanho real da posição
+    # Pré-preenchido com delta_bn total da cadeia (build_greek_overview)
+    # scale = dealer_aum_$ / (total_OI × 100 × spot) → ajuste por instrumento
+    _mkt_notional_bn = float(df_orig['OI'].sum() * 100 * spot / 1e9)
+    w_aum  = wd.FloatText(
+        value=round(abs(dealer_aum_bn), 2) if dealer_aum_bn else round(_mkt_notional_bn, 2),
+        description='AUM Dealers ($B):',
+        layout=wd.Layout(width='230px'), style={'description_width': '130px'},
+        tooltip='Soma do book dos dealers em $B. Escala o tamanho de posição '
+                'proporcional ao OI. 0 = usa OI×100 bruto (mercado total).')
     w_btn  = wd.Button(description='▶ Aplicar', button_style='primary',
                        layout=wd.Layout(width='120px', height='34px', margin='2px 0 0 0'))
     w_reset= wd.Button(description='↺ Reset',  button_style='',
@@ -7152,7 +7162,19 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
 
         T_after  = np.maximum(df['Tte'].values - dt_yr, 0.0)
         vol_aft  = np.maximum(df['IV'].values + dvol_arr, 0.001)
-        oi100    = df['OI'].values * 100.0
+
+        # ── Posição por instrumento ───────────────────────────────────────────
+        # Se AUM dos dealers fornecido: escala oi100 para refletir o book real.
+        # Distribuição proporcional ao OI (preserva a estrutura do livro).
+        # scale = dealer_aum_$ / (total_OI × 100 × spot)
+        _oi_raw  = df['OI'].values * 100.0
+        _aum_val = w_aum.value
+        if _aum_val > 0:
+            _mkt_total = float(_oi_raw.sum() * spot)
+            _scale     = (_aum_val * 1e9) / _mkt_total if _mkt_total > 0 else 1.0
+            oi100      = _oi_raw * _scale
+        else:
+            oi100      = _oi_raw
 
         # ── Gregas e preços: base e cenário ──────────────────────────────────
         g_b  = calculate_all_greeks(spot, df['Strike'].values, df['IV'].values,
@@ -7291,11 +7313,13 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
         col_adj  = 'rgba(245,166,35,.95)' if abs(tot_adj) > 0 else 'rgba(255,255,255,.35)'
         col_dd   = 'rgba(0,212,232,.95)'  if (tot_da-tot_db) > 0 else 'rgba(248,81,73,.95)'
 
+        _scale_lbl = f'{_scale:.3f}×' if _aum_val > 0 else 'OI bruto'
         scenario_lbl = (f"ΔSpot {w_dspot.value:+.0f}  |  "
-                        f"ΔVol Put {w_dvol_put.value:+.1f}pp (50–100%)  |  "
-                        f"ΔVol Call {w_dvol_call.value:+.1f}pp (100–150%)  |  "
+                        f"ΔVol Put {w_dvol_put.value:+.1f}pp  |  "
+                        f"ΔVol Call {w_dvol_call.value:+.1f}pp  |  "
                         f"ΔRate {w_drate.value:+.0f}bp  |  "
-                        f"+{w_days.value}d")
+                        f"+{w_days.value}d  |  "
+                        f"AUM ${_aum_val:.1f}B [{_scale_lbl}]")
 
         cards_html = (
             f"<div style='margin:8px 0 12px;'>"
@@ -7311,6 +7335,9 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
             + _card('P&L ESTIMADO', f'${tot_pnl:+,.0f}', color=col_pnl)
             + _card('VEGA BASE→CEN', f'{tot_vb:+,.1f} → {tot_va:+,.1f}',
                     sub=f'{n_exp} vencimentos')
+            + _card('AUM DEALERS', f'${_aum_val:.1f}B',
+                    color='rgba(245,166,35,.9)',
+                    sub=f'scale {_scale_lbl} vs OI bruto')
             + "</div></div>"
         )
 
@@ -7407,6 +7434,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
         w_dvol_call.value = 0.0
         w_drate.value     = 0.0
         w_days.value      = 0
+        w_aum.value       = round(abs(dealer_aum_bn), 2) if dealer_aum_bn else round(_mkt_notional_bn, 2)
         _compute_and_render(None)
 
     w_btn.on_click(_compute_and_render)
@@ -7428,7 +7456,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
         "VOL SURFACE SHOCK</p>",
         layout=wd.Layout(margin='6px 0 0 0'))
     input_row = wd.VBox([
-        wd.HBox([w_dspot, w_drate, w_days, w_btn, w_reset],
+        wd.HBox([w_dspot, w_drate, w_days, w_aum, w_btn, w_reset],
                 layout=wd.Layout(flex_flow='row wrap', gap='8px')),
         wd.HBox([vol_label, w_dvol_put, w_dvol_call],
                 layout=wd.Layout(flex_flow='row wrap', gap='8px', align_items='center')),
@@ -12132,7 +12160,11 @@ def run_analysis(_):
 
             # ── Tab 13: Ajuste Dinâmico do Book ──────────────────────────
             try:
-                tab13 = build_dynamic_book_tab(df, spot, rfr, ticker=ticker)
+                # dealer_aum_bn: delta_bn raw (antes do /10 de escala BBG)
+                # = sum(delta × OI × 100) × spot / 1e9 — proxy do notional total do livro
+                _dealer_aum = abs(_greek_cache.get('delta_bn', 0)) * 10  # reverte escala BBG
+                tab13 = build_dynamic_book_tab(df, spot, rfr, ticker=ticker,
+                                               dealer_aum_bn=_dealer_aum)
             except Exception as _db_err:
                 print(f"⚠️ Ajuste Dinâmico tab: {_db_err}")
                 tab13 = wd.VBox([wd.HTML(
