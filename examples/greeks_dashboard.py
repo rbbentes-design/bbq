@@ -942,19 +942,32 @@ def fetch_options_chain(ticker, spot, min_dte, max_dte, mny_low, mny_high,
         bq.data.strike_px() > from_strike
     ).and_(
         bq.data.strike_px() < to_strike
+    ).and_(
+        bq.data.open_int() > 0
+    ).and_(
+        bq.data.ivol() > 0
     )
+
+    # monthly_only via BQL (expiration_periodicity) — mais correto que filtro por dia
+    if monthly_only:
+        conditions = conditions.and_(
+            bq.data.expiration_periodicity() == 'monthly'
+        )
+
     univ = bq.univ.filter(bq.univ.options([ticker]), conditions)
 
     items = {
         'Expire': bq.data.expire_dt(),
         'Strike': bq.data.strike_px(),
         'Type':   bq.data.put_call(),
-        'IV':     bq.data.ivol()['Value'],
-        'OI':     bq.data.open_int()['Value'],
+        'IV':     bq.data.ivol(),
+        'OI':     bq.data.open_int(),
     }
+    resp = bq.execute(bql.Request(univ, items))
     data = pd.concat(
-        [r.df() for r in bq.execute(bql.Request(univ, items))], axis=1
-    ).dropna()
+        [r.df()[r.name] for r in resp], axis=1
+    )
+    data = data.loc[:, ~data.columns.duplicated()]
 
     if data.empty:
         raise ValueError("Nenhum dado de opção encontrado para os filtros.")
@@ -963,20 +976,11 @@ def fetch_options_chain(ticker, spot, min_dte, max_dte, mny_low, mny_high,
         'Exp':    pd.to_datetime(data['Expire']),
         'Strike': pd.to_numeric(data['Strike'], errors='coerce'),
         'Type':   data['Type'],
+        'IV':     pd.to_numeric(data['IV'], errors='coerce'),
+        'OI':     pd.to_numeric(data['OI'], errors='coerce'),
     })
-    df['IV'] = pd.to_numeric(data['IV'], errors='coerce')
-    df['OI'] = pd.to_numeric(data['OI'], errors='coerce')
     df.dropna(subset=['IV', 'OI', 'Strike'], inplace=True)
     df['IV'] /= 100.0
-
-    # ── Filtro mensal: mantém só expiries da 3ª sexta (dia 15-21) ─────────────
-    if monthly_only and not df.empty:
-        _before = len(df)
-        df = df[df['Exp'].dt.day.between(15, 21)]
-        if df.empty:
-            raise ValueError(
-                f"monthly_only=True mas nenhum expiry mensal (dia 15-21) encontrado "
-                f"(havia {_before} linhas com todos expiries).")
 
     today = np.datetime64(datetime.utcnow().date(), 'D')
     bus = np.busday_count(today, df.Exp.dt.normalize().values.astype('datetime64[D]'))
@@ -2221,7 +2225,8 @@ def fetch_options_volume_bql(ticker='SPX Index'):
             'put_vol':  bq.data.opt_put_volume(),
         })
         resp = bq.execute(req)
-        _df = resp[0].combined() if hasattr(resp[0], 'combined') else resp[0].df()
+        _df = pd.concat([r.df()[r.name] for r in resp], axis=1)
+        _df = _df.loc[:, ~_df.columns.duplicated()]
         cv = float(_df['call_vol'].iloc[0] or 0)
         pv = float(_df['put_vol'].iloc[0]  or 0)
     except Exception as _ve:
@@ -3370,12 +3375,13 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         _r = bq.execute(bql.Request('SPX Index', {
             'iv_atm':  bq.data.implied_volatility(
                            expiry='30d', pct_moneyness='100',
-                           dates=dt_range).dropna(),
+                           dates=dt_range),
             'iv_90':   bq.data.implied_volatility(
                            expiry='30d', pct_moneyness='90',
-                           dates=dt_range).dropna(),
+                           dates=dt_range),
         }))
-        _df_spx = _r[0].df()
+        _df_spx = pd.concat([r.df()[r.name] for r in _r], axis=1)
+        _df_spx = _df_spx.loc[:, ~_df_spx.columns.duplicated()]
         _iv_s   = pd.to_numeric(_df_spx['iv_atm'], errors='coerce').dropna()
         _sk_s   = pd.to_numeric(_df_spx['iv_atm'] - _df_spx['iv_90'],
                                 errors='coerce').dropna()
@@ -3434,8 +3440,8 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
                                   bq.data.put_call() == 'Put')
         _rc = bq.execute(bql.Request(_univ_c, {'oi': bq.data.open_int()}))
         _rp = bq.execute(bql.Request(_univ_p, {'oi': bq.data.open_int()}))
-        out['vix_call_oi'] = round(_rc[0].df()['oi'].sum() / 1e6, 2)
-        out['vix_put_oi']  = round(_rp[0].df()['oi'].sum() / 1e6, 2)
+        out['vix_call_oi'] = round(float(_rc[0].df()['oi'].sum()) / 1e6, 2)
+        out['vix_put_oi']  = round(float(_rp[0].df()['oi'].sum()) / 1e6, 2)
     except Exception as _e:
         print(f'[VIX OI] {_e}')
 
@@ -3443,15 +3449,16 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
     # implied_volatility() direto no VIX Index — mais limpo e confiável
     try:
         _r = bq.execute(bql.Request('VIX Index', {
-            'iv_atm': bq.data.implied_volatility(expiry='45d', delta='50').dropna(),
-            'iv_c25': bq.data.implied_volatility(expiry='45d', delta='25').dropna(),
-            'iv_p25': bq.data.implied_volatility(expiry='45d', delta='-25').dropna(),
+            'iv_atm': bq.data.implied_volatility(expiry='45d', delta='50'),
+            'iv_c25': bq.data.implied_volatility(expiry='45d', delta='25'),
+            'iv_p25': bq.data.implied_volatility(expiry='45d', delta='-25'),
         }))
-        _df_iv = _r[0].df()
-        _atm = float(_df_iv['iv_atm'].iloc[0])
+        _df_iv = pd.concat([r.df()[r.name] for r in _r], axis=1)
+        _df_iv = _df_iv.loc[:, ~_df_iv.columns.duplicated()]
+        _atm = float(_df_iv['iv_atm'].dropna().iloc[-1])
         if _atm and _atm > 0:
-            out['vix_skew_c25'] = round(float(_df_iv['iv_c25'].iloc[0]) / _atm, 3)
-            out['vix_skew_p25'] = round(float(_df_iv['iv_p25'].iloc[0]) / _atm, 3)
+            out['vix_skew_c25'] = round(float(_df_iv['iv_c25'].dropna().iloc[-1]) / _atm, 3)
+            out['vix_skew_p25'] = round(float(_df_iv['iv_p25'].dropna().iloc[-1]) / _atm, 3)
     except Exception as _e:
         print(f'[VIX skew] {_e}')
 
