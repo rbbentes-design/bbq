@@ -7095,6 +7095,8 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                 f"<tbody>{rows_html}</tbody></table></div>")
 
     def _card(label, value, color='rgba(0,212,232,.9)', sub=''):
+        _sub_p = ('<p style="color:rgba(255,255,255,.35);font-size:9px;margin:2px 0 0;">'
+                  + sub + '</p>') if sub else ''
         return (f"<div style='background:rgba(0,212,232,.06);"
                 f"border:1px solid rgba(0,212,232,.18);border-radius:6px;"
                 f"padding:10px 18px;min-width:150px;'>"
@@ -7102,7 +7104,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                 f"letter-spacing:1.2px;margin:0;'>{label}</p>"
                 f"<p style='color:{color};font-size:17px;font-weight:700;"
                 f"margin:4px 0 0;font-family:monospace;'>{value}</p>"
-                f"{'<p style=\"color:rgba(255,255,255,.35);font-size:9px;margin:2px 0 0;\">'+sub+'</p>' if sub else ''}"
+                f"{_sub_p}"
                 f"</div>")
 
     # ── Widgets de cenário ────────────────────────────────────────────────────
