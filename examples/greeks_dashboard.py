@@ -12633,13 +12633,23 @@ def run_analysis(_):
 
             # ── Tab 14: Decision Engine (0DTE Intraday) ───────────────────
             try:
-                import sys, os as _os
-                _de_dir = _os.path.dirname(_os.path.abspath(__file__)) \
-                          if '__file__' in dir() else \
-                          _os.path.join(_os.path.expanduser('~'), 'bbg', 'examples')
-                if _de_dir not in sys.path:
-                    sys.path.insert(0, _de_dir)
-                from decision_engine import build_decision_engine_tab
+                import sys, os as _os, importlib.util as _ilu
+                # Localiza decision_engine.py via busca em caminhos conhecidos
+                _de_candidates = [
+                    _os.path.join(_os.path.expanduser('~'), 'bbg', 'examples', 'decision_engine.py'),
+                    '/home/user/bbg/examples/decision_engine.py',
+                    '/bbg/examples/decision_engine.py',
+                    _os.path.join(_os.getcwd(), 'decision_engine.py'),
+                ]
+                _de_path = next((p for p in _de_candidates if _os.path.isfile(p)), None)
+                if _de_path is None:
+                    raise FileNotFoundError(
+                        f'decision_engine.py não encontrado. Tentei: {_de_candidates}')
+                _de_spec = _ilu.spec_from_file_location('decision_engine', _de_path)
+                _de_mod  = _ilu.module_from_spec(_de_spec)
+                sys.modules['decision_engine'] = _de_mod
+                _de_spec.loader.exec_module(_de_mod)
+                build_decision_engine_tab = _de_mod.build_decision_engine_tab
                 # Monta external_scores com o que já foi calculado na sessão
                 _ext_scores = {
                     'flow_score':    float(fp_score.get('score', 50)) if isinstance(fp_score, dict) else 50.0,

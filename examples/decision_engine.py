@@ -26,36 +26,61 @@ from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
 from scipy.stats import norm
 
-# ── garantir que o diretório deste arquivo está no sys.path ─────────────────
+# ── reuse from main dashboard via sys.modules (já carregado pelo notebook) ───
 import sys as _sys
 import os as _os
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-if _THIS_DIR not in _sys.path:
-    _sys.path.insert(0, _THIS_DIR)
+import importlib.util as _ilu
 
-# reuse from main dashboard
-try:
-    from greeks_dashboard import (
-        calculate_all_greeks,
-        black_scholes_price_vec,
-        fetch_options_chain,
-        compute_walls,
-        compute_strike_exposures,
-        fetch_market_data,
-        TRADING_DAYS,
-        FUTURES_MULTIPLIER,
-    )
-    _DASHBOARD_AVAILABLE = True
-except Exception as _de_import_err:
+def _import_dashboard_symbols():
+    """
+    greeks_dashboard é carregado pelo kernel do BQuant como o notebook principal.
+    Se já estiver em sys.modules, reutiliza. Caso contrário, localiza e carrega.
+    """
+    if 'greeks_dashboard' in _sys.modules:
+        return _sys.modules['greeks_dashboard']
+    # busca em caminhos conhecidos
+    _candidates = [
+        _os.path.join(_os.path.expanduser('~'), 'bbg', 'examples', 'greeks_dashboard.py'),
+        '/home/user/bbg/examples/greeks_dashboard.py',
+        '/bbg/examples/greeks_dashboard.py',
+        _os.path.join(_os.getcwd(), 'greeks_dashboard.py'),
+    ]
+    _path = next((p for p in _candidates if _os.path.isfile(p)), None)
+    if _path is None:
+        return None
+    _spec = _ilu.spec_from_file_location('greeks_dashboard', _path)
+    _mod  = _ilu.module_from_spec(_spec)
+    _sys.modules['greeks_dashboard'] = _mod
+    _spec.loader.exec_module(_mod)
+    return _mod
+
+_dashboard_mod = _import_dashboard_symbols()
+
+if _dashboard_mod is not None:
+    try:
+        calculate_all_greeks    = _dashboard_mod.calculate_all_greeks
+        black_scholes_price_vec = _dashboard_mod.black_scholes_price_vec
+        fetch_options_chain     = _dashboard_mod.fetch_options_chain
+        compute_walls           = _dashboard_mod.compute_walls
+        compute_strike_exposures= _dashboard_mod.compute_strike_exposures
+        fetch_market_data       = _dashboard_mod.fetch_market_data
+        TRADING_DAYS            = _dashboard_mod.TRADING_DAYS
+        FUTURES_MULTIPLIER      = _dashboard_mod.FUTURES_MULTIPLIER
+        _DASHBOARD_AVAILABLE    = True
+    except AttributeError as _ae:
+        _DASHBOARD_AVAILABLE = False
+else:
     _DASHBOARD_AVAILABLE = False
+
+if not _DASHBOARD_AVAILABLE:
     TRADING_DAYS = 252
     FUTURES_MULTIPLIER = 50
-    # stubs para rodar standalone sem o dashboard
     def calculate_all_greeks(*a, **kw): return {}
     def black_scholes_price_vec(*a, **kw): return np.zeros(1)
     def fetch_options_chain(*a, **kw): return None
     def compute_walls(*a, **kw): return None, None
     def compute_strike_exposures(*a, **kw): return None
+    def fetch_market_data(*a, **kw): return {}
     def fetch_market_data(*a, **kw): return {}
 
 # ─── logging ─────────────────────────────────────────────────────────────────
