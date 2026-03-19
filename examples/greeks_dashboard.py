@@ -8360,6 +8360,22 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             col = lo_color
         return f"<td><b style='color:{col};'>{txt}</b></td>"
 
+    def _pct_color_level(cur, hist_s, label_low='🔴 guarda baixa', label_mid='🟡 moderado', label_hi='🟢 defensivo'):
+        """Percentil baixo = barato/plano = guard down (vermelho). Alto = caro/íngreme = defensivo (verde)."""
+        if hist_s is not None and len(hist_s) > 20:
+            _arr = np.asarray(hist_s.dropna())
+            _pct = float(np.mean(_arr < cur))
+            _col = ('#f85149' if _pct < 0.20 else
+                    '#ffaa00' if _pct < 0.40 else
+                    '#3fb950' if _pct > 0.70 else '#8b949e')
+            _lvl = (label_low  if _pct < 0.20 else
+                    label_mid  if _pct < 0.40 else
+                    label_hi   if _pct > 0.70 else '🔵 neutro')
+            _pct_str = f' p{_pct*100:.0f}'
+        else:
+            _col, _lvl, _pct_str = '#8b949e', '— sem histórico', ''
+        return _col, _lvl, _pct_str
+
     _vvol_html = (
         "<div class='mm-dash'><div class='mm-card'>"
         "<h3 style='margin:0 0 8px;'>Vol-of-Vol &amp; Tail Risk Indicators</h3>"
@@ -8422,23 +8438,6 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td><b style='color:{_oi_col};'>{_oi_str}</b></td>"
             f"<td style='color:{_oi_col};'>{'⚠ call heavy' if (_oi_ratio and _oi_ratio > 2.0) else 'balanceado'}</td>"
             f"<td style='font-size:11px;'>>2x calls = inst. comprando upside de vol / hedges de curto prazo</td></tr>")
-
-    # ── helper: percentil histórico para colorir SDEX/TDEX ───────────────────
-    def _pct_color_level(cur, hist_s, label_low='🔴 guarda baixa', label_mid='🟡 moderado', label_hi='🟢 defensivo'):
-        """Percentil baixo = barato/plano = guard down (vermelho). Alto = caro/íngreme = defensivo (verde)."""
-        if hist_s is not None and len(hist_s) > 20:
-            _arr = np.asarray(hist_s.dropna())
-            _pct = float(np.mean(_arr < cur))  # fração abaixo do atual
-            _col = ('#f85149' if _pct < 0.20 else
-                    '#ffaa00' if _pct < 0.40 else
-                    '#3fb950' if _pct > 0.70 else '#8b949e')
-            _lvl = (label_low  if _pct < 0.20 else
-                    label_mid  if _pct < 0.40 else
-                    label_hi   if _pct > 0.70 else '🔵 neutro')
-            _pct_str = f' p{_pct*100:.0f}'
-        else:
-            _col, _lvl, _pct_str = '#8b949e', '— sem histórico', ''
-        return _col, _lvl, _pct_str
 
     # SDEX — inclinação do skew SPY (OTM/ATM)
     if _sdex is not None:
