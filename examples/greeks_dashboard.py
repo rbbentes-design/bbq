@@ -3326,6 +3326,8 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
       sdex_hist, sdex_cur         — CBOE SDEX (downside tail)
       tdex_hist, tdex_cur         — CBOE TDEX (tail risk)
       vix_skew_c25, vix_skew_p25  — VIX 25d Call/Put IV vs ATM (ratio)
+      vrp_hist, vrp_cur            — VRP = VIX − RV10D SPX (vol risk premium, %)
+      rv10_cur                     — SPX realized vol 10D atual (%)
     """
     out = {k: None for k in [
         'vvix_hist','vvix_cur',
@@ -3333,6 +3335,7 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         'sdex_hist','sdex_cur',
         'tdex_hist','tdex_cur',
         'vix_skew_c25','vix_skew_p25',
+        'vrp_hist','vrp_cur','rv10_cur',
     ]}
     dt_range = bq.func.range(f'-{lookback_days}d', '0d')
 
@@ -3418,6 +3421,31 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
             if not _p25.empty: out['vix_skew_p25'] = round(float(_p25['IV'].values[0]) / _atm, 3)
     except Exception as _e:
         print(f'[VIX skew] {_e}')
+
+    # ── VRP = VIX − RV 10D (vol risk premium) ────────────────────────────────
+    # VIX já está em % anualizado; RV10D = std 10d dos retornos SPX × sqrt(252) × 100
+    try:
+        _dt_vrp = bq.func.range(f'-{lookback_days + 20}d', '0d')  # +20 warm-up
+        _r_vix  = bq.execute(bql.Request('VIX Index',
+                    {'px': bq.data.px_last(fill='PREV', dates=_dt_vrp)}))
+        _r_spx  = bq.execute(bql.Request('SPX Index',
+                    {'px': bq.data.px_last(fill='PREV', dates=_dt_vrp)}))
+        _vix_s  = _bql_ts(_r_vix[0], 'px').dropna()
+        _spx_s  = _bql_ts(_r_spx[0], 'px').dropna()
+        _rv10   = (_spx_s.pct_change()
+                         .rolling(10).std()
+                         .mul(np.sqrt(252) * 100)  # → % anualizado, igual ao VIX
+                         .dropna())
+        _common = _vix_s.index.intersection(_rv10.index)
+        _vrp    = (_vix_s.reindex(_common) - _rv10.reindex(_common)).dropna()
+        # recorta ao lookback solicitado
+        _vrp    = _vrp.iloc[-lookback_days:]
+        _rv10   = _rv10.iloc[-lookback_days:]
+        out['vrp_hist'] = _vrp
+        out['vrp_cur']  = round(float(_vrp.iloc[-1]),  2) if not _vrp.empty  else None
+        out['rv10_cur'] = round(float(_rv10.iloc[-1]), 2) if not _rv10.empty else None
+    except Exception as _e:
+        print(f'[VRP] {_e}')
 
     return out
 
@@ -8297,6 +8325,24 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='color:{_p25_col};'>{'⬆ skew elevado' if (_p25 and _p25 > 1.10) else 'normal'}</td>"
             f"<td style='font-size:11px;'>Skew de put do VIX → demanda por tail protection</td></tr>")
 
+    # VRP = VIX − RV 10D SPX
+    _vrp_cur  = _vvol.get('vrp_cur')
+    _rv10_cur = _vvol.get('rv10_cur')
+    _vrp_hist = _vvol.get('vrp_hist')
+    if _vrp_cur is not None:
+        _vrp_col, _vrp_lvl, _vrp_pct = _pct_color_level(
+            _vrp_cur, _vrp_hist,
+            label_low='🔴 VRP baixo — IV comprimida',
+            label_mid='🟡 VRP moderado',
+            label_hi='🟢 VRP alto — medo embutido')
+        _rv10_str = f' | RV10D: {_rv10_cur:.1f}%' if _rv10_cur is not None else ''
+        _vix_ref  = _vvol.get('vvix_cur')  # usa VVIX como proxy do VIX se disponível
+        _vvol_html += (
+            f"<tr><td>VRP (VIX − RV 10D)</td>"
+            f"<td><b style='color:{_vrp_col};'>{_vrp_cur:+.1f} vol pts{_vrp_pct}{_rv10_str}</b></td>"
+            f"<td style='color:{_vrp_col};'>{_vrp_lvl}</td>"
+            f"<td style='font-size:11px;'>Prêmio de vol: IV implícita vs realizada 10D — alto = medo excessivo = squeeze fuel</td></tr>")
+
     # VIX OI Call vs Put
     if _call_oi is not None or _put_oi is not None:
         _oi_ratio = (_call_oi / _put_oi) if (_call_oi and _put_oi and _put_oi > 0) else None
@@ -8381,14 +8427,37 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             showlegend=False, yaxis_title='VVIX')
         _vvix_chart = _vvix_fig
 
+    # VRP sparkline
+    _vrp_chart = None
+    _vrp_hist2 = _vvol.get('vrp_hist')
+    if _vrp_hist2 is not None and len(_vrp_hist2) > 10:
+        _vrp_fig = go.FigureWidget()
+        _vrp_fig.add_trace(go.Scatter(
+            x=_vrp_hist2.index, y=_vrp_hist2.values,
+            mode='lines', line=dict(color='#f0a500', width=1.5),
+            fill='tozeroy', fillcolor='rgba(240,165,0,0.08)',
+            name='VRP'))
+        _vrp_fig.add_hline(y=0, line_dash='dash', line_color='#8b949e', line_width=1)
+        _vrp_fig.update_layout(
+            title='VRP = VIX − RV 10D SPX (1Y)', height=180, template='plotly_dark',
+            margin=dict(t=30, b=20, l=40, r=10),
+            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+            showlegend=False, yaxis_title='Vol pts')
+        _vrp_chart = _vrp_fig
+
     children = [
         wd.HTML(summary_html),
         wd.HBox([gauge_fig, bar_fig],
                 layout={'align_items': 'flex-start'}),
         wd.HTML(_vvol_html),
     ]
-    if _vvix_chart is not None:
+    if _vvix_chart is not None and _vrp_chart is not None:
+        children.append(wd.HBox([_vvix_chart, _vrp_chart],
+                                 layout={'align_items': 'flex-start'}))
+    elif _vvix_chart is not None:
         children.append(_vvix_chart)
+    elif _vrp_chart is not None:
+        children.append(_vrp_chart)
     children.append(wd.HTML(_evts_html))
     return wd.VBox(children)
 
