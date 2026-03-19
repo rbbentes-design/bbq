@@ -9455,36 +9455,39 @@ class _DE_RiskEngine:
                 'estimated_margin':     final * mg_lot}
 
     def validate(self, decision, struct, minutes_to_close):
-        # Hard blocks
-        if self.acc.available_cash < self.cfg.min_cash_buffer:
-            decision.block_reason = f'Caixa abaixo do buffer: ${self.acc.available_cash:,.0f}'
-            decision.execution_ready = False; return decision
-        if self._rb_day_rem <= 0:
-            decision.block_reason = 'Budget diário esgotado'
-            decision.execution_ready = False; return decision
-        if minutes_to_close < self.cfg.last_entry_min_before_close:
-            decision.block_reason = f'Muito perto do fechamento: {minutes_to_close:.0f} min'
-            decision.execution_ready = False; return decision
-
+        # Sempre calcula sizing primeiro — garante que campos de capital ficam populados
         stop_pts = abs((decision.entry_price or 0) - (decision.stop_loss or 0))
         sz = self.size(struct, stop_pts, decision.instrument, minutes_to_close)
-        decision.allowed_size           = sz['allowed_size']
-        decision.size_block_reason      = sz.get('block_reason')
-        decision.estimated_trade_cost   = sz['estimated_trade_cost']
-        decision.estimated_max_loss     = sz['estimated_max_loss']
-        decision.estimated_margin_usage = sz['estimated_margin']
-        decision.capital_available      = sz['capital']
-        decision.margin_available       = sz['available_margin']
-        decision.risk_budget_trade      = sz['risk_budget_trade']
+        decision.allowed_size              = sz['allowed_size']
+        decision.size_block_reason         = sz.get('block_reason')
+        decision.estimated_trade_cost      = sz['estimated_trade_cost']
+        decision.estimated_max_loss        = sz['estimated_max_loss']
+        decision.estimated_margin_usage    = sz['estimated_margin']
+        decision.capital_available         = sz['capital']
+        decision.margin_available          = sz['available_margin']
+        decision.risk_budget_trade         = sz['risk_budget_trade']
         decision.risk_budget_day_remaining = sz['risk_budget_day_remaining']
+        # flatten time
+        now   = _de_dt.now()
+        close = now.replace(hour=_DE_CLOSE[0], minute=_DE_CLOSE[1], second=0, microsecond=0)
+        ft    = close - _de_td(minutes=self.cfg.flatten_min_before_close)
+        decision.flatten_time = ft.strftime('%H:%M ET')
+
+        # Hard blocks — ignorados quando force_override está ativo
+        if not self.cfg.force_override:
+            if self.acc.available_cash < self.cfg.min_cash_buffer:
+                decision.block_reason = f'Caixa abaixo do buffer: ${self.acc.available_cash:,.0f}'
+                decision.execution_ready = False; return decision
+            if self._rb_day_rem <= 0:
+                decision.block_reason = 'Budget diário esgotado'
+                decision.execution_ready = False; return decision
+            if minutes_to_close < self.cfg.last_entry_min_before_close:
+                decision.block_reason = f'Muito perto do fechamento: {minutes_to_close:.0f} min'
+                decision.execution_ready = False; return decision
+
         decision.execution_ready = (sz['allowed_size'] > 0
                                     and (not self.cfg.paper_mode or self.cfg.force_override)
                                     and decision.stop_loss is not None)
-        # flatten time
-        now = _de_dt.now()
-        close = now.replace(hour=_DE_CLOSE[0], minute=_DE_CLOSE[1], second=0, microsecond=0)
-        ft = close - _de_td(minutes=self.cfg.flatten_min_before_close)
-        decision.flatten_time = ft.strftime('%H:%M ET')
         return decision
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -9536,10 +9539,14 @@ class _DE_Orchestrator:
                     'sell' if regime in (_DE_Regime.DIRECTIONAL_SHORT, _DE_Regime.SHORT_VOL) else 'buy')
 
         if struct:
+            # Custo líquido da estrutura em pontos (sempre positivo = prêmio pago/recebido)
             ep = abs(struct.net_debit) / _DE_OPT_MULT
-            sp = ep * 0.5 if struct.net_debit > 0 else ep + struct.max_loss / _DE_OPT_MULT
-            tp = ep * 2.0 if struct.net_debit > 0 else ep * 0.5
-            d.entry_price = round(ep, 2); d.stop_loss = round(sp, 2); d.take_profit = round(tp, 2)
+            # Stop = perde 50% do prêmio pago (long) ou lucra 50% (short/crédito)
+            # Alvo = ganha 100% do prêmio ou perde 50% (crédito)
+            _is_debit = (struct.net_debit >= 0)   # long/debit structure
+            sp = round(ep * 0.50, 2) if _is_debit else round(ep * 1.50, 2)  # stop sempre < entry para long
+            tp = round(ep * 2.00, 2) if _is_debit else round(ep * 0.25, 2)  # alvo > entry para long
+            d.entry_price = round(ep, 2); d.stop_loss = sp; d.take_profit = tp
             d.strikes = {f'leg{i+1}': l.strike for i, l in enumerate(struct.legs) if l.strike}
             d.risk_metrics = {'net_delta': struct.net_delta, 'net_gamma': struct.net_gamma,
                               'net_vega': struct.net_vega, 'net_theta': struct.net_theta}
