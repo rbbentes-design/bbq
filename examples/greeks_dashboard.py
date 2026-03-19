@@ -2213,19 +2213,31 @@ def fetch_options_volume_bql(ticker='SPX Index'):
     except Exception as _pce:
         print(f"⚠️ PCUSEQTR fetch: {_pce}")
 
-    # Volume de calls/puts
+    # Volume de calls/puts — tenta campos BQL alternativos
     cv, pv = 0.0, 0.0
     try:
         req = bql.Request(ticker, {
-            'call_vol': bq.data.call_opt_volume(),
-            'put_vol':  bq.data.put_opt_volume(),
+            'call_vol': bq.data.opt_call_volume(),
+            'put_vol':  bq.data.opt_put_volume(),
         })
         resp = bq.execute(req)
-        row = resp[0].df().iloc[0] if len(resp[0].df()) > 0 else {}
-        cv = float(row.get('call_vol', 0) or 0)
-        pv = float(row.get('put_vol',  0) or 0)
+        _df = resp[0].combined() if hasattr(resp[0], 'combined') else resp[0].df()
+        cv = float(_df['call_vol'].iloc[0] or 0)
+        pv = float(_df['put_vol'].iloc[0]  or 0)
     except Exception as _ve:
-        print(f"⚠️ Options volume fetch: {_ve}")
+        print(f"⚠️ Options volume fetch (opt_call_volume): {_ve}")
+        # fallback: opt_volume separado por type
+        try:
+            _cond_c = bq.data.put_call() == 'Call'
+            _cond_p = bq.data.put_call() == 'Put'
+            _univ_c = bq.univ.filter(bq.univ.options([ticker]), _cond_c)
+            _univ_p = bq.univ.filter(bq.univ.options([ticker]), _cond_p)
+            _rc = bq.execute(bql.Request(_univ_c, {'v': bq.data.opt_volume()}))
+            _rp = bq.execute(bql.Request(_univ_p, {'v': bq.data.opt_volume()}))
+            cv = float(_rc[0].df()['v'].sum() or 0)
+            pv = float(_rp[0].df()['v'].sum() or 0)
+        except Exception as _ve2:
+            print(f"⚠️ Options volume fetch (fallback): {_ve2}")
 
     total = cv + pv
     return {
