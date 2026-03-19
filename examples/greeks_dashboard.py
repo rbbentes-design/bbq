@@ -490,6 +490,7 @@ LEVERAGED_ETFS_EXT = LEVERAGED_ETFS + [
 COT_FUTURES_MAP = {
     'SPX Index': 'ES1 Index', 'NDX Index': 'NQ1 Index',
     'RTY Index': 'RA1 Index', 'INDU Index': 'DM1 Index',
+    'HWAA Index': 'ES1 Index',  # Micro SPX (1/10 do SPX)
     'SPXL US Equity': 'ES1 Index', 'SPXS US Equity': 'ES1 Index',
     'TQQQ US Equity': 'NQ1 Index', 'SQQQ US Equity': 'NQ1 Index',
     'NG1 Comdty': 'NG1 Comdty', 'CL1 Comdty': 'CL1 Comdty',
@@ -918,8 +919,18 @@ def fetch_market_data(ticker):
     }
 
 
-def fetch_options_chain(ticker, spot, min_dte, max_dte, mny_low, mny_high):
-    """Busca a cadeia de opções e retorna DataFrame processado."""
+def fetch_options_chain(ticker, spot, min_dte, max_dte, mny_low, mny_high,
+                        monthly_only=None):
+    """Busca a cadeia de opções e retorna DataFrame processado.
+
+    monthly_only: filtra só expiries mensais (3ª sexta, dia 15-21 do mês).
+      None = auto (True quando ticker for ES1/ES futures, False caso contrário).
+      Reduz drasticamente o tamanho da chain para futuros tipo ES1.
+    """
+    # Auto-detect: ES futures têm chain enorme → force monthly
+    if monthly_only is None:
+        monthly_only = any(k in ticker.upper() for k in ('ES1', 'ES2', 'ES '))
+
     from_strike = (1 + mny_low) * spot
     to_strike = (1 + mny_high) * spot
 
@@ -957,6 +968,15 @@ def fetch_options_chain(ticker, spot, min_dte, max_dte, mny_low, mny_high):
     df['OI'] = pd.to_numeric(data['OI'], errors='coerce')
     df.dropna(subset=['IV', 'OI', 'Strike'], inplace=True)
     df['IV'] /= 100.0
+
+    # ── Filtro mensal: mantém só expiries da 3ª sexta (dia 15-21) ─────────────
+    if monthly_only and not df.empty:
+        _before = len(df)
+        df = df[df['Exp'].dt.day.between(15, 21)]
+        if df.empty:
+            raise ValueError(
+                f"monthly_only=True mas nenhum expiry mensal (dia 15-21) encontrado "
+                f"(havia {_before} linhas com todos expiries).")
 
     today = np.datetime64(datetime.utcnow().date(), 'D')
     bus = np.busday_count(today, df.Exp.dt.normalize().values.astype('datetime64[D]'))
@@ -3294,6 +3314,112 @@ def _bql_fetch_impl_corr(lookback_days=252):
         return _bql_ts(resp[0], 'px')
     except Exception:
         return pd.Series(dtype=float)
+
+
+def _fetch_vol_of_vol_indicators(lookback_days=252):
+    """
+    Busca indicadores de Vol-of-Vol e Tail Risk para o Gamma Squeeze panel.
+
+    Retorna dict com séries históricas e valores spot:
+      vvix_hist, vvix_cur          — VVIX Index (vol da vol)
+      vix_call_oi, vix_put_oi     — VIX Total Call/Put OI (spot, milhões)
+      sdex_hist, sdex_cur         — CBOE SDEX (downside tail)
+      tdex_hist, tdex_cur         — CBOE TDEX (tail risk)
+      vix_skew_c25, vix_skew_p25  — VIX 25d Call/Put IV vs ATM (ratio)
+    """
+    out = {k: None for k in [
+        'vvix_hist','vvix_cur',
+        'vix_call_oi','vix_put_oi',
+        'sdex_hist','sdex_cur',
+        'tdex_hist','tdex_cur',
+        'vix_skew_c25','vix_skew_p25',
+    ]}
+    dt_range = bq.func.range(f'-{lookback_days}d', '0d')
+
+    # ── VVIX ─────────────────────────────────────────────────────────────────
+    try:
+        _r = bq.execute(bql.Request('VVIX Index',
+                {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+        _s = _bql_ts(_r[0], 'px').dropna()
+        out['vvix_hist'] = _s
+        out['vvix_cur']  = float(_s.iloc[-1]) if not _s.empty else None
+    except Exception as _e:
+        print(f'[VVIX] {_e}')
+
+    # ── SDEX ─────────────────────────────────────────────────────────────────
+    for _sdex_ticker in ['SPXSDEX Index', '.SDEX G Index', 'SDEX Index']:
+        try:
+            _r = bq.execute(bql.Request(_sdex_ticker,
+                    {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+            _s = _bql_ts(_r[0], 'px').dropna()
+            if not _s.empty:
+                out['sdex_hist'] = _s
+                out['sdex_cur']  = float(_s.iloc[-1])
+                break
+        except Exception:
+            continue
+
+    # ── TDEX ─────────────────────────────────────────────────────────────────
+    for _tdex_ticker in ['SPXTDEX Index', '.TDEX G Index', 'TDEX Index']:
+        try:
+            _r = bq.execute(bql.Request(_tdex_ticker,
+                    {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+            _s = _bql_ts(_r[0], 'px').dropna()
+            if not _s.empty:
+                out['tdex_hist'] = _s
+                out['tdex_cur']  = float(_s.iloc[-1])
+                break
+        except Exception:
+            continue
+
+    # ── VIX OI (Call + Put) — campo direto do índice ──────────────────────
+    try:
+        _r = bq.execute(bql.Request('VIX Index', {
+            'call_oi': bq.data.opt_call_open_int(),
+            'put_oi':  bq.data.opt_put_open_int(),
+        }))
+        _df = _r[0].combined()
+        out['vix_call_oi'] = float(_df['call_oi'].iloc[0]) / 1e6  # milhões
+        out['vix_put_oi']  = float(_df['put_oi'].iloc[0])  / 1e6
+    except Exception as _e:
+        print(f'[VIX OI] {_e}')
+
+    # ── VIX 25-delta Call/Put skew vs ATM ─────────────────────────────────
+    # Tenta via BQL options chain de VIX (2M expiry ~45-75d)
+    try:
+        _cond = (bq.data.expire_dt() >= '40d').and_(bq.data.expire_dt() <= '80d')
+        _univ = bq.univ.filter(bq.univ.options(['VIX Index']), _cond)
+        _items = {
+            'Strike': bq.data.strike_px(),
+            'Type':   bq.data.put_call(),
+            'IV':     bq.data.ivol_mid(),
+        }
+        _r = bq.execute(bql.Request(_univ, _items))
+        _opt = pd.DataFrame({
+            'Strike': _r[0].combined()['Strike'],
+            'Type':   _r[1].combined()['Type'],
+            'IV':     _r[2].combined()['IV'],
+        }).dropna()
+        # VIX spot
+        _vix_px = float(bq.execute(bql.Request('VIX Index',
+                {'px': bq.data.px_last()}))[0].combined()['px'].iloc[0])
+        _calls = _opt[_opt['Type'] == 'Call']
+        _puts  = _opt[_opt['Type'] == 'Put']
+        if not _calls.empty and not _puts.empty:
+            # ATM IV
+            _atm_c = float(_calls.iloc[(_calls['Strike'] - _vix_px).abs().argsort()[:1]]['IV'].values[0])
+            _atm_p = float(_puts.iloc[(_puts['Strike']  - _vix_px).abs().argsort()[:1]]['IV'].values[0])
+            _atm   = (_atm_c + _atm_p) / 2
+            # 25-delta proxy: call = ~1 std above ATM, put = ~1 std below
+            _1std  = _vix_px * _atm * np.sqrt(60 / 252)
+            _c25   = _calls.iloc[(_calls['Strike'] - (_vix_px + _1std)).abs().argsort()[:1]]
+            _p25   = _puts.iloc[ (_puts['Strike']  - (_vix_px - _1std)).abs().argsort()[:1]]
+            if not _c25.empty: out['vix_skew_c25'] = round(float(_c25['IV'].values[0]) / _atm, 3)
+            if not _p25.empty: out['vix_skew_p25'] = round(float(_p25['IV'].values[0]) / _atm, 3)
+    except Exception as _e:
+        print(f'[VIX skew] {_e}')
+
+    return out
 
 
 def compute_realized_correlation(prices_df, windows=None):
@@ -6801,7 +6927,10 @@ GAMMA_SQUEEZE_EVENTS = [
 def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip,
                                 spot, skew, put_wall, call_wall,
                                 spxsk3_current=None, spxsk3_hist=None,
-                                pc_hist=None, vix9d=None):
+                                pc_hist=None, vix9d=None,
+                                vvix=None, vix_skew_c25=None, vix_skew_p25=None,
+                                sdex_cur=None, tdex_cur=None,
+                                vix_call_oi=None, vix_put_oi=None):
     """
     Calcula o Gamma Squeeze Score (0–100).
 
@@ -6898,6 +7027,19 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
             'desc': 'Ratio <0.40 = tail extremo → squeeze/vol spike iminente (Volmageddon, COVID)',
         }
 
+    # 6. VVIX — vol da vol (0–15)
+    if vvix is not None:
+        _vvix_score = min(15, max(0, (vvix - 80) / (150 - 80) * 15))
+        _vvix_level = ('EXTREMO ⚠' if vvix > 130 else
+                       'ELEVADO'   if vvix > 100 else 'normal')
+        components['vvix'] = {
+            'label': 'VVIX (Vol da Vol)',
+            'value': f'{vvix:.1f} — {_vvix_level}',
+            'score': round(_vvix_score, 1),
+            'max': 15,
+            'desc': '>130 = panic vol-of-vol → squeeze/spike iminente',
+        }
+
     total_raw = sum(c['score'] for c in components.values())
     total = min(100, round(total_raw, 1))  # cap em 100
 
@@ -6928,6 +7070,14 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
         'flip_dist_pct': round(_flip_dist * 100, 2),
         'sk3_ratio': round(_sk3_ratio, 4) if _sk3_ratio is not None else None,
         'vix9d': vix9d,
+        # vol-of-vol pass-through
+        'vvix': vvix,
+        'vix_skew_c25': vix_skew_c25,
+        'vix_skew_p25': vix_skew_p25,
+        'sdex_cur': sdex_cur,
+        'tdex_cur': tdex_cur,
+        'vix_call_oi': vix_call_oi,
+        'vix_put_oi': vix_put_oi,
     }
 
 
@@ -7970,7 +8120,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
 
 
 def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
-                      iv_30d, rv_30d, pc_ratio, _C):
+                      iv_30d, rv_30d, pc_ratio, _C, vvol_data=None):
     """Monta widget da aba Gamma Squeeze."""
     import plotly.graph_objects as go
 
@@ -8029,7 +8179,7 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
     bar_fig.update_layout(
         title='Componentes do Score',
         xaxis=dict(range=[0, 35], title='Score'),
-        height=250, template='plotly_dark',
+        height=max(250, len(bar_labels) * 38 + 50), template='plotly_dark',
         margin=dict(t=35, b=20, l=5, r=70),
         paper_bgcolor=_C['card'], plot_bgcolor=_C['card'], showlegend=False)
 
@@ -8085,12 +8235,154 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='font-size:11px;'>{ev['desc']}</td></tr>")
     _evts_html += "</table></div></div>"
 
+    # ── Vol-of-Vol & Tail Risk Panel ─────────────────────────────────────────
+    _vvol = vvol_data or {}
+    _vvix      = squeeze_result.get('vvix') or _vvol.get('vvix_cur')
+    _c25       = squeeze_result.get('vix_skew_c25') or _vvol.get('vix_skew_c25')
+    _p25       = squeeze_result.get('vix_skew_p25') or _vvol.get('vix_skew_p25')
+    _sdex      = squeeze_result.get('sdex_cur') or _vvol.get('sdex_cur')
+    _tdex      = squeeze_result.get('tdex_cur') or _vvol.get('tdex_cur')
+    _call_oi   = squeeze_result.get('vix_call_oi') or _vvol.get('vix_call_oi')
+    _put_oi    = squeeze_result.get('vix_put_oi') or _vvol.get('vix_put_oi')
+
+    def _cell(val, fmt, lo=None, hi=None, lo_color='#3fb950', hi_color='#f85149'):
+        """Formata célula com cor opcional baseada em thresholds."""
+        if val is None:
+            return "<td>—</td>"
+        txt = fmt.format(val)
+        col = _C['text']
+        if hi is not None and val >= hi:
+            col = hi_color
+        elif lo is not None and val <= lo:
+            col = lo_color
+        return f"<td><b style='color:{col};'>{txt}</b></td>"
+
+    _vvol_html = (
+        "<div class='mm-dash'><div class='mm-card'>"
+        "<h3 style='margin:0 0 8px;'>Vol-of-Vol &amp; Tail Risk Indicators</h3>"
+        "<table class='mm-table' style='width:100%;font-size:12px;'>"
+        "<tr style='background:#161b22;'>"
+        "<th>Indicador</th><th>Valor</th><th>Nível</th><th>Descrição</th></tr>"
+    )
+
+    # VVIX
+    if _vvix is not None:
+        _vv_lvl = '🔴 EXTREMO' if _vvix > 130 else ('🟡 ELEVADO' if _vvix > 100 else '🟢 normal')
+        _vv_col = '#f85149' if _vvix > 130 else ('#ffaa00' if _vvix > 100 else '#3fb950')
+        _vvol_html += (f"<tr><td>VVIX (Vol-of-Vol)</td>"
+                       f"<td><b style='color:{_vv_col};'>{_vvix:.1f}</b></td>"
+                       f"<td style='color:{_vv_col};'>{_vv_lvl}</td>"
+                       f"<td style='font-size:11px;'>Vol da vol do SPX — >130 = panic, >100 = elevado</td></tr>")
+
+    # VIX 25d Call/Put skew
+    if _c25 is not None or _p25 is not None:
+        _c25_str = f"{_c25:.3f}x" if _c25 else "—"
+        _p25_str = f"{_p25:.3f}x" if _p25 else "—"
+        _c25_col = '#ffaa00' if (_c25 and _c25 > 1.10) else _C['text']
+        _p25_col = '#f85149' if (_p25 and _p25 > 1.20) else _C['text']
+        _vvol_html += (
+            f"<tr><td>VIX 25Δ Call IV / ATM</td>"
+            f"<td><b style='color:{_c25_col};'>{_c25_str}</b></td>"
+            f"<td style='color:{_c25_col};'>{'⬆ acima ATM' if (_c25 and _c25 > 1.0) else 'normal'}</td>"
+            f"<td style='font-size:11px;'>Inst. comprando upside de vol → squeeze amplifier</td></tr>"
+            f"<tr><td>VIX 25Δ Put IV / ATM</td>"
+            f"<td><b style='color:{_p25_col};'>{_p25_str}</b></td>"
+            f"<td style='color:{_p25_col};'>{'⬆ skew elevado' if (_p25 and _p25 > 1.10) else 'normal'}</td>"
+            f"<td style='font-size:11px;'>Skew de put do VIX → demanda por tail protection</td></tr>")
+
+    # VIX OI Call vs Put
+    if _call_oi is not None or _put_oi is not None:
+        _oi_ratio = (_call_oi / _put_oi) if (_call_oi and _put_oi and _put_oi > 0) else None
+        _oi_col = '#ffaa00' if (_oi_ratio and _oi_ratio > 2.0) else _C['text']
+        _oi_str = (f"{_call_oi:.1f}M calls / {_put_oi:.1f}M puts"
+                   + (f" = {_oi_ratio:.1f}x call-heavy" if _oi_ratio else ""))
+        _vvol_html += (
+            f"<tr><td>VIX OI (Call vs Put)</td>"
+            f"<td><b style='color:{_oi_col};'>{_oi_str}</b></td>"
+            f"<td style='color:{_oi_col};'>{'⚠ call heavy' if (_oi_ratio and _oi_ratio > 2.0) else 'balanceado'}</td>"
+            f"<td style='font-size:11px;'>>2x calls = inst. comprando upside de vol / hedges de curto prazo</td></tr>")
+
+    # ── helper: percentil histórico para colorir SDEX/TDEX ───────────────────
+    def _pct_color_level(cur, hist_s, label_low='🔴 guarda baixa', label_mid='🟡 moderado', label_hi='🟢 defensivo'):
+        """Percentil baixo = barato/plano = guard down (vermelho). Alto = caro/íngreme = defensivo (verde)."""
+        if hist_s is not None and len(hist_s) > 20:
+            _arr = np.asarray(hist_s.dropna())
+            _pct = float(np.mean(_arr < cur))  # fração abaixo do atual
+            _col = ('#f85149' if _pct < 0.20 else
+                    '#ffaa00' if _pct < 0.40 else
+                    '#3fb950' if _pct > 0.70 else '#8b949e')
+            _lvl = (label_low  if _pct < 0.20 else
+                    label_mid  if _pct < 0.40 else
+                    label_hi   if _pct > 0.70 else '🔵 neutro')
+            _pct_str = f' p{_pct*100:.0f}'
+        else:
+            _col, _lvl, _pct_str = '#8b949e', '— sem histórico', ''
+        return _col, _lvl, _pct_str
+
+    # SDEX — inclinação do skew SPY (OTM/ATM)
+    if _sdex is not None:
+        _sd_hist = _vvol.get('sdex_hist')
+        _sd_col, _sd_lvl, _sd_pct = _pct_color_level(
+            _sdex, _sd_hist,
+            label_low='🔴 skew plano — guarda baixa',
+            label_mid='🟡 skew moderado',
+            label_hi='🟢 skew íngreme — defensivo')
+        _vvol_html += (
+            f"<tr><td>SDEX (CBOE Skew SPY)</td>"
+            f"<td><b style='color:{_sd_col};'>{_sdex:.2f}{_sd_pct}</b></td>"
+            f"<td style='color:{_sd_col};'>{_sd_lvl}</td>"
+            f"<td style='font-size:11px;'>Inclinação OTM/ATM do SPY — baixo = skew plano = mercado de guarda baixa</td></tr>")
+
+    # TDEX — custo absoluto de OTM tail risk
+    if _tdex is not None:
+        _td_hist = _vvol.get('tdex_hist')
+        _td_col, _td_lvl, _td_pct = _pct_color_level(
+            _tdex, _td_hist,
+            label_low='🔴 tail barato — guarda baixa',
+            label_mid='🟡 tail moderado',
+            label_hi='🟢 tail caro — mercado defensivo')
+        _vvol_html += (
+            f"<tr><td>TDEX (CBOE Tail Risk)</td>"
+            f"<td><b style='color:{_td_col};'>{_tdex:.2f}{_td_pct}</b></td>"
+            f"<td style='color:{_td_col};'>{_td_lvl}</td>"
+            f"<td style='font-size:11px;'>Custo de OTM tail risk — baixo = tail options baratas = mercado de guarda baixa</td></tr>")
+
+    # Se nenhum indicador disponível
+    if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi]):
+        _vvol_html += "<tr><td colspan='4' style='color:#8b949e;'>Indicadores não disponíveis (falha no fetch BBG)</td></tr>"
+
+    _vvol_html += "</table></div></div>"
+
+    # VVIX history sparkline (se disponível)
+    _vvix_hist = _vvol.get('vvix_hist')
+    _vvix_chart = None
+    if _vvix_hist is not None and len(_vvix_hist) > 10:
+        _vvix_fig = go.FigureWidget()
+        _vvix_fig.add_trace(go.Scatter(
+            x=_vvix_hist.index, y=_vvix_hist.values,
+            mode='lines', line=dict(color='#58a6ff', width=1.5),
+            fill='tozeroy', fillcolor='rgba(88,166,255,0.08)',
+            name='VVIX'))
+        _vvix_fig.add_hline(y=130, line_dash='dash', line_color='#f85149', line_width=1,
+                            annotation_text='130 Extreme', annotation_font_color='#f85149')
+        _vvix_fig.add_hline(y=100, line_dash='dot',  line_color='#ffaa00', line_width=1,
+                            annotation_text='100 Elevated', annotation_font_color='#ffaa00')
+        _vvix_fig.update_layout(
+            title='VVIX — Vol da Vol (1Y)', height=180, template='plotly_dark',
+            margin=dict(t=30, b=20, l=40, r=10),
+            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+            showlegend=False, yaxis_title='VVIX')
+        _vvix_chart = _vvix_fig
+
     children = [
         wd.HTML(summary_html),
         wd.HBox([gauge_fig, bar_fig],
                 layout={'align_items': 'flex-start'}),
-        wd.HTML(_evts_html),
+        wd.HTML(_vvol_html),
     ]
+    if _vvix_chart is not None:
+        children.append(_vvix_chart)
+    children.append(wd.HTML(_evts_html))
     return wd.VBox(children)
 
 
@@ -8989,7 +9281,7 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
             new_df = fetch_options_chain(
                 ticker, spot,
                 min_dte=0, max_dte=5,
-                mny_low=-0.10, mny_high=0.10)
+                mny_low=-0.10, mny_high=0.10)  # monthly_only auto via ticker
             if new_df is not None and not new_df.empty:
                 _live_df[0] = new_df
         except Exception as _fe:
@@ -10552,7 +10844,8 @@ def _capture_matplotlib_figures(func, *args, **kwargs):
 
 # Widget definitions (global)
 ticker_w = wd.Text(value='SPX Index', description='Ativo:',
-                   layout={'width': '250px'})
+                   placeholder='ex: SPX Index | HWAA Index (Micro SPX)',
+                   layout={'width': '300px'})
 dte_w = wd.IntRangeSlider(value=[0, 30], min=0, max=90, step=1,
                           description='DTE (dias):',
                           layout={'width': '400px'})
@@ -13516,6 +13809,13 @@ def run_analysis(_):
                 except Exception as _v9e:
                     print(f"[VIX9D] {_v9e}")
 
+                # ── Fetch Vol-of-Vol indicators (VVIX, SDEX, TDEX, VIX skew) ─
+                _vvol_data = {}
+                try:
+                    _vvol_data = _fetch_vol_of_vol_indicators(lookback_days=252)
+                except Exception as _vve:
+                    print(f"[Vol-of-Vol] {_vve}")
+
                 _sq_result = compute_gamma_squeeze_score(
                     net_gex_bn=_sq_gex_bn,
                     pc_ratio=_sq_pc,
@@ -13529,10 +13829,17 @@ def run_analysis(_):
                     spxsk3_current=_spxsk3_cur,
                     spxsk3_hist=_spxsk3_hist.values if not _spxsk3_hist.empty else None,
                     pc_hist=_pc_hist.values if not _pc_hist.empty else None,
-                    vix9d=_vix9d_val)
+                    vix9d=_vix9d_val,
+                    vvix=_vvol_data.get('vvix_cur'),
+                    vix_skew_c25=_vvol_data.get('vix_skew_c25'),
+                    vix_skew_p25=_vvol_data.get('vix_skew_p25'),
+                    sdex_cur=_vvol_data.get('sdex_cur'),
+                    tdex_cur=_vvol_data.get('tdex_cur'),
+                    vix_call_oi=_vvol_data.get('vix_call_oi'),
+                    vix_put_oi=_vvol_data.get('vix_put_oi'))
                 tab12 = build_squeeze_tab(
                     _sq_result, _sq_gex_bn, spot, gamma_flip,
-                    iv_30d, rv_30d, _sq_pc, _C)
+                    iv_30d, rv_30d, _sq_pc, _C, vvol_data=_vvol_data)
             except Exception as _sq_err:
                 _sq_tb = traceback.format_exc()
                 print(f"⚠️ Gamma Squeeze tab: {_sq_err}\n{_sq_tb}")
