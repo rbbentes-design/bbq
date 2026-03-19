@@ -7141,7 +7141,6 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
     out_agg         = wd.Output()
     out_inst        = wd.Output()
     out_sensitivity = wd.Output()
-    out_mc          = wd.Output()
 
     def _compute_and_render(_):
         S_new        = spot + w_dspot.value
@@ -7540,127 +7539,277 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         w_aum.value       = round(abs(dealer_aum_bn), 2) if dealer_aum_bn else round(_mkt_notional_bn, 2)
         _compute_and_render(None)
 
-    # ── Monte Carlo ───────────────────────────────────────────────────────────
-    w_mc_n   = wd.IntText(value=500, description='N sims:',
-                          layout=wd.Layout(width='130px'),
-                          style={'description_width': '60px'})
-    w_mc_btn = wd.Button(description='🎲 Monte Carlo',
-                         button_style='warning',
-                         layout=wd.Layout(width='150px', height='34px', margin='2px 0 0 0'))
+    # ── Predictive Analytics ─────────────────────────────────────────────────
+    # HAR (Heterogeneous Autoregressive) para RV vs IV
+    # CatBoost/GBM para sinal direcional de vol
+    # PCA da surface para fatores de nível/skew/curvatura
+    out_predict = wd.Output()
+    w_pred_btn  = wd.Button(description='📊 Calibrar Modelos',
+                            button_style='info',
+                            layout=wd.Layout(width='170px', height='34px', margin='2px 0 0 0'),
+                            tooltip='HAR (RV vs IV) · CatBoost signal · Surface PCA')
 
-    def _run_mc(_):
+    def _run_predict(_):
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots as _msp2
-        _df_mc   = df_orig.copy()
-        _K_mc    = _df_mc['Strike'].values
-        _iv_mc   = _df_mc['IV'].values
-        _T_mc    = _df_mc['Tte'].values
-        _typ_mc  = _df_mc['Type'].values
-        # ATM IV: strike mais próximo ao spot
-        _atm_iv  = float(_iv_mc[np.argmin(np.abs(_K_mc - spot))])
-        T_yr_mc  = max(int(w_days.value), 1) / float(TRADING_DAYS)
-        N_sim    = max(int(w_mc_n.value), 50)
-        rho      = -0.70   # correlação spot-vol típica equity
+        from plotly.subplots import make_subplots as _msp3
+        _msgs = []
 
-        # OI com AUM scaling
-        _oi_mc_raw = _df_mc['OI'].values * 100.0
-        _aum_mc    = float(w_aum.value)
-        if _aum_mc > 0:
-            _mkt_mc  = float(_oi_mc_raw.sum() * spot)
-            _oi_mc   = _oi_mc_raw * ((_aum_mc * 1e9) / _mkt_mc if _mkt_mc > 0 else 1.0)
+        # ── Dados da surface atual ────────────────────────────────────────
+        _df_p   = df_orig.copy()
+        _K_p    = _df_p['Strike'].values
+        _iv_p   = _df_p['IV'].values
+        _T_p    = _df_p['Tte'].values
+        _atm_iv = float(_iv_p[np.argmin(np.abs(_K_p - spot))])  # ATM IV decimal
+
+        # ══════════════════════════════════════════════════════════════════
+        # 1. HAR — Heterogeneous Autoregressive Model
+        #    RV_{t+1} = α + β_d·RV_t + β_w·RV̄_{t-5} + β_m·RV̄_{t-22} + ε
+        #    Benchmark obrigatório para RV vs IV
+        # ══════════════════════════════════════════════════════════════════
+        _har_ok   = False
+        _rv_fore  = None
+        _rv_hist  = None
+        _iv_proxy = None
+        try:
+            _hist_req = bql.Request(ticker, {
+                'px': bq.data.px_last(dates=bq.func.range('-40d', '0d'),
+                                      per='D', fill='PREV')})
+            _hist_resp = bq.execute(_hist_req)
+            _px_hist   = _hist_resp[0].df()['px'].dropna().values.astype(float)
+            if len(_px_hist) >= 25:
+                _rets    = np.diff(np.log(_px_hist))
+                _rv_day  = _rets ** 2                        # variance diária
+                N        = len(_rv_day)
+                _rv_w    = np.array([_rv_day[max(0, i-5):i].mean()  for i in range(N)])
+                _rv_m    = np.array([_rv_day[max(0, i-22):i].mean() for i in range(N)])
+                _start   = 22
+                _Y       = _rv_day[_start:]
+                _X       = np.column_stack([
+                    np.ones(len(_Y)),
+                    _rv_day[_start-1:-1],
+                    _rv_w[_start-1:-1],
+                    _rv_m[_start-1:-1]])
+                _coef, _, _, _ = np.linalg.lstsq(_X, _Y, rcond=None)
+                _x_new   = np.array([1.0, _rv_day[-1], _rv_w[-1], _rv_m[-1]])
+                _rv_fore_var = float(np.clip(_coef @ _x_new, 1e-10, None))
+                _rv_fore     = np.sqrt(_rv_fore_var * 252) * 100   # % anualizado
+                _rv_hist     = np.sqrt(_rv_day * 252) * 100        # série histórica %
+                _iv_proxy    = _atm_iv * 100                       # ATM IV em %
+                _har_ok      = True
+                _msgs.append(f'HAR: β_d={_coef[1]:.3f} β_w={_coef[2]:.3f} β_m={_coef[3]:.3f}')
+        except Exception as _e:
+            _msgs.append(f'HAR: dados históricos indisponíveis ({_e})')
+
+        # ══════════════════════════════════════════════════════════════════
+        # 2. Surface PCA — Estágio 1 do modelo em dois estágios
+        #    Fatores: nível (PC1), inclinação/skew (PC2), curvatura (PC3)
+        # ══════════════════════════════════════════════════════════════════
+        _pca_ok = False
+        _pc_scores = None
+        _pc_expvar = None
+        _pca_fig   = None
+        try:
+            from sklearn.decomposition import PCA
+            # Bucket de moneyness: 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15
+            _mn_bkts = np.array([0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15])
+            _exps_u  = sorted(_df_p['Exp'].unique())[:8]   # até 8 vencimentos
+            _surface = []
+            _exp_lbls = []
+            for _e in _exps_u:
+                _row = _df_p[_df_p['Exp'] == _e]
+                _mn_e  = _row['Strike'].values / spot
+                _iv_e  = _row['IV'].values
+                _ord_e = np.argsort(_mn_e)
+                _iv_interp = np.interp(_mn_bkts, _mn_e[_ord_e], _iv_e[_ord_e],
+                                        left=_iv_e[_ord_e[0]], right=_iv_e[_ord_e[-1]])
+                _surface.append(_iv_interp * 100)
+                _dte = int(float(_row['Tte'].mean()) * 365)
+                _exp_lbls.append(f'{_dte}d')
+            _surface = np.array(_surface)           # shape: (n_exp, n_moneyness)
+            if _surface.shape[0] >= 3:
+                _pca = PCA(n_components=min(3, _surface.shape[0]))
+                _pca.fit(_surface)
+                _pc_scores  = _pca.transform(_surface)
+                _pc_expvar  = _pca.explained_variance_ratio_ * 100
+                _loadings   = _pca.components_              # (3, 7)
+                _pca_ok     = True
+                _msgs.append(f'PCA surface: PC1={_pc_expvar[0]:.1f}% PC2={_pc_expvar[1]:.1f}% PC3={_pc_expvar[2]:.1f}%')
+        except Exception as _e:
+            _msgs.append(f'PCA: {_e}')
+
+        # ══════════════════════════════════════════════════════════════════
+        # 3. CatBoost / GBM — Sinal direcional de IV
+        #    Features: IV level, IV change 1d/5d, RV-IV spread, IV momentum
+        #    Label: IV sobe (1) ou cai (0) no próximo dia
+        # ══════════════════════════════════════════════════════════════════
+        _gb_ok   = False
+        _gb_pred = None
+        _gb_proba = None
+        _feat_imp = None
+        _feat_names = None
+        try:
+            # Busca histórico de IV (usa frontmonth ATM IV se disponível,
+            # senão usa VIX como proxy de IV implícita)
+            _iv_ticker = 'VIX Index' if 'SPX' in ticker.upper() else ticker
+            _iv_req  = bql.Request(_iv_ticker, {
+                'iv_px': bq.data.px_last(dates=bq.func.range('-90d', '0d'),
+                                          per='D', fill='PREV')})
+            _iv_resp  = bq.execute(_iv_req)
+            _iv_hist_raw = _iv_resp[0].df()['iv_px'].dropna().values.astype(float)
+
+            if len(_iv_hist_raw) >= 40 and _har_ok:
+                # Alinhar com série de preços (igual comprimento)
+                N_iv = min(len(_iv_hist_raw), len(_rv_hist)) if _rv_hist is not None else len(_iv_hist_raw)
+                _iv_s_   = _iv_hist_raw[-N_iv:]
+                _rv_s_   = _rv_hist[-N_iv:] if _rv_hist is not None else np.full(N_iv, _atm_iv * 100)
+
+                # Feature engineering
+                _iv_chg1 = np.diff(_iv_s_,   prepend=_iv_s_[0])
+                _iv_chg5 = np.diff(_iv_s_, n=5, prepend=_iv_s_[:5])
+                _rv_iv   = _rv_s_ - _iv_s_               # RV - IV spread
+                _iv_mom  = _iv_s_ - np.array([_iv_s_[max(0,i-10):i+1].mean()
+                                               for i in range(len(_iv_s_))])  # mean-reversion
+                _feat_names = ['IV_level', 'IV_chg_1d', 'IV_chg_5d', 'RV-IV_spread', 'IV_momentum']
+                _feats = np.column_stack([_iv_s_, _iv_chg1, _iv_chg5, _rv_iv, _iv_mom])
+
+                # Label: IV sobe amanhã?
+                _labels = (np.diff(_iv_s_, append=_iv_s_[-1]) > 0).astype(int)
+
+                # Treina nos primeiros 80%, prediz nos últimos 20%
+                _split = int(len(_feats) * 0.80)
+                _X_tr, _X_te = _feats[:_split], _feats[_split:]
+                _y_tr, _y_te = _labels[:_split], _labels[_split:]
+
+                try:
+                    from catboost import CatBoostClassifier
+                    _gb = CatBoostClassifier(iterations=200, depth=4, learning_rate=0.05,
+                                             verbose=0, random_seed=42)
+                    _gb.fit(_X_tr, _y_tr)
+                    _feat_imp = _gb.get_feature_importance()
+                    _model_name = 'CatBoost'
+                except ImportError:
+                    from sklearn.ensemble import GradientBoostingClassifier
+                    _gb = GradientBoostingClassifier(n_estimators=200, max_depth=4,
+                                                     learning_rate=0.05, random_state=42)
+                    _gb.fit(_X_tr, _y_tr)
+                    _feat_imp = _gb.feature_importances_
+                    _model_name = 'GBM (sklearn fallback)'
+
+                # Predição atual
+                _cur_iv_chg1 = float(_iv_hist_raw[-1] - _iv_hist_raw[-2])
+                _cur_iv_chg5 = float(_iv_hist_raw[-1] - _iv_hist_raw[-6]) if len(_iv_hist_raw) >= 6 else 0
+                _cur_rv_iv   = (float(_rv_hist[-1]) if _rv_hist is not None else _atm_iv * 100) - float(_iv_hist_raw[-1])
+                _cur_iv_mom  = float(_iv_hist_raw[-1]) - float(_iv_hist_raw[-10:].mean())
+                _x_cur = np.array([[float(_iv_hist_raw[-1]), _cur_iv_chg1,
+                                    _cur_iv_chg5, _cur_rv_iv, _cur_iv_mom]])
+                _gb_proba = float(_gb.predict_proba(_x_cur)[0][1])   # P(IV sobe)
+                _gb_pred  = 'Sobe' if _gb_proba > 0.55 else ('Cai' if _gb_proba < 0.45 else 'Neutro')
+                _gb_ok    = True
+                _msgs.append(f'{_model_name}: P(IV↑)={_gb_proba*100:.1f}% → {_gb_pred}')
+        except Exception as _e:
+            _msgs.append(f'CatBoost/GBM: {_e}')
+
+        # ── Montagem dos charts ───────────────────────────────────────────
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots as _msp3
+
+        n_cols = (1 + int(_pca_ok) + int(_gb_ok and _feat_imp is not None))
+        _fig_p  = _msp3(rows=1, cols=n_cols,
+                        subplot_titles=(
+                            ['HAR: RV Forecast vs ATM IV']
+                            + (['PCA Surface — Fatores'] if _pca_ok else [])
+                            + ([f'{"CatBoost" if "CatBoost" in str(_msgs) else "GBM"} — Feature Importance'] if _gb_ok and _feat_imp is not None else [])
+                        ),
+                        horizontal_spacing=0.08)
+
+        # Chart 1: HAR
+        _col = 1
+        if _har_ok and _rv_hist is not None:
+            _days_axis = list(range(len(_rv_hist)))
+            _fig_p.add_trace(go.Scatter(x=_days_axis, y=_rv_hist,
+                mode='lines', line=dict(color='#00d4e8', width=1.5),
+                name='RV Realizada (HAR)'), row=1, col=_col)
+            _fig_p.add_hline(y=_atm_iv * 100, line_dash='dash',
+                             line_color='#ff6b35', row=1, col=_col,
+                             annotation_text=f'ATM IV {_atm_iv*100:.1f}%',
+                             annotation_font_size=9)
+            _fig_p.add_hline(y=_rv_fore, line_dash='dot',
+                             line_color='#44ff44', row=1, col=_col,
+                             annotation_text=f'HAR forecast {_rv_fore:.1f}%',
+                             annotation_font_size=9)
         else:
-            _oi_mc   = _oi_mc_raw
+            _fig_p.add_annotation(text='Dados históricos<br>indisponíveis',
+                                  xref='paper', yref='paper', x=0.1, y=0.5,
+                                  showarrow=False, font=dict(color='#aaa'), row=1, col=_col)
+        _col += 1
 
-        np.random.seed(42)
-        Z1 = np.random.standard_normal(N_sim)
-        Z2 = np.random.standard_normal(N_sim)
-        sq_T     = np.sqrt(T_yr_mc)
-        # GBM: S_T = S × exp((−σ²/2)T + σ√T × Z1)
-        S_sims   = spot * np.exp(-0.5 * _atm_iv**2 * T_yr_mc + _atm_iv * sq_T * Z1)
-        # Vol shock correlacionado com spot (equity: vol sobe quando spot cai)
-        dvol_sims = 0.30 * _atm_iv * (rho * Z1 + np.sqrt(1 - rho**2) * Z2) * sq_T
+        # Chart 2: PCA loadings
+        if _pca_ok:
+            _mn_lbls_pca = [f'{int(m*100)}%' for m in _mn_bkts]
+            _colors_pca  = ['#00d4e8', '#ff6b35', '#44ff44']
+            for _pc_i in range(min(3, len(_pca.components_))):
+                _fig_p.add_trace(go.Scatter(
+                    x=_mn_lbls_pca, y=_pca.components_[_pc_i] * 100,
+                    mode='lines+markers',
+                    line=dict(color=_colors_pca[_pc_i], width=2),
+                    name=f'PC{_pc_i+1} ({_pc_expvar[_pc_i]:.1f}%)'), row=1, col=_col)
+            _col += 1
 
-        _g_base_mc  = calculate_all_greeks(spot, _K_mc, _iv_mc, _T_mc, _typ_mc, r=rfr)
-        _px_base_mc = black_scholes_price_vec(spot, _K_mc, _iv_mc, _T_mc, _typ_mc, r=rfr)
-        _dp_base_mc = _g_base_mc['delta'] * _oi_mc
+        # Chart 3: Feature Importance
+        if _gb_ok and _feat_imp is not None and _feat_names is not None:
+            _fi_sorted = sorted(zip(_feat_names, _feat_imp), key=lambda x: x[1])
+            _fig_p.add_trace(go.Bar(
+                x=[v for _, v in _fi_sorted],
+                y=[n for n, _ in _fi_sorted],
+                orientation='h',
+                marker_color='#00d4e8',
+                name='Importância'), row=1, col=_col)
 
-        _adj_mc = np.zeros(N_sim)
-        _pnl_mc = np.zeros(N_sim)
+        _fig_p.update_layout(
+            height=400, paper_bgcolor='#0f1117', plot_bgcolor='#131722',
+            font=dict(color='#e0e0e0', size=10), showlegend=True,
+            legend=dict(orientation='h', y=-0.15, font=dict(size=9)),
+            margin=dict(l=50, r=40, t=55, b=60))
 
-        for _n in range(N_sim):
-            _S_n  = float(S_sims[_n])
-            _dv_n = float(dvol_sims[_n])
-            # Sticky-delta IV por vencimento
-            _iv_n = _iv_mc.copy()
-            for _exp in _df_mc['Exp'].unique():
-                _msk  = _df_mc['Exp'].values == _exp
-                _k_e  = _K_mc[_msk]; _iv_e = _iv_mc[_msk]
-                _mo   = _k_e / spot;  _mn   = _k_e / _S_n
-                _ord  = np.argsort(_mo)
-                _iv_n[_msk] = np.interp(_mn, _mo[_ord], _iv_e[_ord],
-                                         left=_iv_e[_ord[0]], right=_iv_e[_ord[-1]])
-            # Wing shock (mesmo dv para put e call, reduz 30% na call wing)
-            _mn_n   = _K_mc / spot
-            _dvol_n = np.where((_mn_n >= 0.50) & (_mn_n < 1.00), _dv_n,
-                      np.where((_mn_n >= 1.00) & (_mn_n <= 1.50), _dv_n * 0.7, 0.0))
-            _vol_n  = np.maximum(_iv_n + _dvol_n, 0.001)
-            _T_n    = np.maximum(_T_mc - T_yr_mc, 0.0)
+        # Painel de signal
+        _iv_rv_spread = (_atm_iv * 100 - _rv_fore) if _rv_fore else None
+        _signal_color = '#00ff99' if (_iv_rv_spread and _iv_rv_spread > 2) else \
+                        '#ff4444' if (_iv_rv_spread and _iv_rv_spread < -2) else '#aaaaaa'
+        _signal_text  = ('Vender Vol — IV > HAR RV'  if _iv_rv_spread and _iv_rv_spread > 2 else
+                         'Comprar Vol — IV < HAR RV' if _iv_rv_spread and _iv_rv_spread < -2 else
+                         'IV ≈ RV — sem sinal claro')
+        _gb_color     = '#00ff99' if _gb_pred == 'Sobe' else '#ff4444' if _gb_pred == 'Cai' else '#aaa'
+        _signal_html  = (
+            f"<div style='display:flex;gap:16px;margin:8px 0;flex-wrap:wrap;'>"
+            + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
+               f"border-left:3px solid {_signal_color};'>"
+               f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>HAR SIGNAL</div>"
+               f"<div style='color:{_signal_color};font-size:14px;font-weight:bold;'>{_signal_text}</div>"
+               f"<div style='color:#aaa;font-size:10px;'>IV={_atm_iv*100:.1f}% · RV HAR={_rv_fore:.1f}% · spread={_iv_rv_spread:+.1f}pp</div>"
+               f"</div>" if _rv_fore else '')
+            + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
+               f"border-left:3px solid {_gb_color};'>"
+               f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>CATBOOST/GBM SIGNAL</div>"
+               f"<div style='color:{_gb_color};font-size:14px;font-weight:bold;'>IV {_gb_pred}</div>"
+               f"<div style='color:#aaa;font-size:10px;'>P(IV↑) = {_gb_proba*100:.1f}%</div>"
+               f"</div>" if _gb_ok else '')
+            + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
+               f"border-left:3px solid #00d4e8;'>"
+               f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>SURFACE PCA</div>"
+               f"<div style='color:#00d4e8;font-size:13px;'>"
+               f"PC1 nível: {_pc_expvar[0]:.1f}% &nbsp;·&nbsp; PC2 skew: {_pc_expvar[1]:.1f}%"
+               + (f" &nbsp;·&nbsp; PC3 curv: {_pc_expvar[2]:.1f}%" if len(_pc_expvar) > 2 else '')
+               + f"</div></div>" if _pca_ok else '')
+            + f"</div>"
+            + f"<p style='color:rgba(255,255,255,.3);font-size:9px;margin:4px 0 0;'>"
+            + ' &nbsp;|&nbsp; '.join(_msgs) + f"</p>")
 
-            _g_n    = calculate_all_greeks(_S_n, _K_mc, _vol_n, _T_n, _typ_mc, r=rfr)
-            _px_n   = black_scholes_price_vec(_S_n, _K_mc, _vol_n, _T_n, _typ_mc, r=rfr)
-            _dp_n   = _g_n['delta']  * _oi_mc
-            _va_h_n = -(_g_n['vanna'] - _g_base_mc['vanna']) * _oi_mc * _dvol_n
-            _ch_h_n = -_g_base_mc['charm'] * _oi_mc * T_yr_mc
-            _adj_mc[_n] = (-(_dp_n - _dp_base_mc) + _va_h_n + _ch_h_n).sum()
-            _pnl_mc[_n] = ((_px_n - _px_base_mc) * _oi_mc).sum()
+        with out_predict:
+            out_predict.clear_output(wait=True)
+            _disp(go.FigureWidget(_fig_p))
+            _disp(wd.HTML(_signal_html))
 
-        _pcts    = [1, 5, 10, 25, 50, 75, 90, 95, 99]
-        _adj_pct = np.percentile(_adj_mc, _pcts)
-        _pnl_pct = np.percentile(_pnl_mc, _pcts)
-
-        _fig_mc = _msp2(rows=1, cols=2,
-                        subplot_titles=[f'Hedge Adj (Δ) — {N_sim} cenários',
-                                        f'P&L ($) — {N_sim} cenários'],
-                        horizontal_spacing=0.10)
-        _fig_mc.add_trace(go.Histogram(x=_adj_mc, nbinsx=40,
-            marker_color='#00d4e8', opacity=0.75, name='Adj'), row=1, col=1)
-        _fig_mc.add_trace(go.Histogram(x=_pnl_mc, nbinsx=40,
-            marker_color='#ff6b35', opacity=0.75, name='P&L'), row=1, col=2)
-        for _col, _pct_arr in [(1, _adj_pct), (2, _pnl_pct)]:
-            _fig_mc.add_vline(x=float(_pct_arr[1]),  line_dash='dash',
-                              line_color='#ff4444', row=1, col=_col,
-                              annotation_text='P5',  annotation_font_size=9)
-            _fig_mc.add_vline(x=float(_pct_arr[-2]), line_dash='dash',
-                              line_color='#44ff44', row=1, col=_col,
-                              annotation_text='P95', annotation_font_size=9)
-        _fig_mc.update_layout(
-            height=360, paper_bgcolor='#0f1117', plot_bgcolor='#131722',
-            font=dict(color='#e0e0e0', size=10), showlegend=False,
-            title=dict(
-                text=f'Monte Carlo GBM — {int(w_days.value)}d | ATM IV={_atm_iv*100:.1f}% | ρ(S,σ)={rho}',
-                x=0.5, font=dict(size=11, color='#00d4e8')),
-            margin=dict(l=50, r=50, t=55, b=30))
-
-        _pct_rows = ''.join(
-            f"<tr>"
-            f"<td style='padding:2px 10px;color:#aaa;'>{p}%</td>"
-            f"<td style='padding:2px 10px;color:#00d4e8;text-align:right;'>{a:,.0f}Δ</td>"
-            f"<td style='padding:2px 10px;color:#ff6b35;text-align:right;'>${pl/1e6:.1f}M</td>"
-            f"</tr>"
-            for p, a, pl in zip(_pcts, _adj_pct, _pnl_pct))
-        _pct_html = (
-            "<div style='margin-top:8px;display:inline-block;'>"
-            "<table style='border-collapse:collapse;font-size:11px;font-family:monospace;'>"
-            "<tr><th style='padding:2px 10px;color:#00d4e8;text-align:left;'>Percentil</th>"
-            "<th style='padding:2px 10px;color:#00d4e8;'>Hedge Adj</th>"
-            "<th style='padding:2px 10px;color:#ff6b35;'>P&L</th></tr>"
-            + _pct_rows + "</table></div>")
-        with out_mc:
-            out_mc.clear_output(wait=True)
-            _disp(go.FigureWidget(_fig_mc))
-            _disp(wd.HTML(_pct_html))
-
-    w_mc_btn.on_click(_run_mc)
+    w_pred_btn.on_click(_run_predict)
     w_btn.on_click(_compute_and_render)
     w_reset.on_click(_reset)
     _compute_and_render(None)  # render cenário zero ao carregar
@@ -7688,11 +7837,11 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
 
     smile_widget = build_vol_smile_chart(df_orig, spot, ticker=ticker)
 
-    mc_row = wd.HBox(
-        [w_mc_n, w_mc_btn],
-        layout=wd.Layout(margin='10px 0 4px 0', gap='8px', align_items='center'))
+    pred_row = wd.HBox(
+        [w_pred_btn],
+        layout=wd.Layout(margin='10px 0 4px 0', align_items='center'))
     return wd.VBox([header, input_row, out_cards, smile_widget, out_agg, out_inst,
-                    out_sensitivity, mc_row, out_mc])
+                    out_sensitivity, pred_row, out_predict])
 
 
 def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
