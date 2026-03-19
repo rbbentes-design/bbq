@@ -7193,7 +7193,10 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         pnl    = (px_a - px_b) * oi100
         # Ajuste incremental: quanto comprar/vender do ativo para rebalancear
         # Sinal: positivo = comprar underlying, negativo = vender
-        hedge_adj = -(dpos_a - dpos_b)
+        # Componentes: delta puro + vanna (sensibilidade ao vol) + charm (decay temporal)
+        _vanna_hedge = -(g_a['vanna'] - g_b['vanna']) * oi100 * dvol_arr
+        _charm_hedge = -g_b['charm'] * oi100 * dt_yr
+        hedge_adj = -(dpos_a - dpos_b) + _vanna_hedge + _charm_hedge
 
         # ── Tabela por instrumento ────────────────────────────────────────────
         expired_flag = T_after <= 0
@@ -7756,7 +7759,7 @@ def build_greek_overview(greeks_now, df, spot, etf_flows=None):
     delta_bn = float(np.nansum(greeks_now['delta'] * oi_100) * spot / 1e9)
     # Gamma:  op=subtract, scale=L²×0.01
     gamma_bn = float((np.nansum(greeks_now['gamma'][is_call] * oi_100[is_call]) -
-                      np.nansum(greeks_now['gamma'][is_put]  * oi_100[is_put])) * spot**2 * 0.01 / 1e10)
+                      np.nansum(greeks_now['gamma'][is_put]  * oi_100[is_put])) * spot**2 * 0.01 / 1e9)
     # Vanna:  op=subtract, scale=1  (sem spot)
     vanna_bn = float((np.nansum(greeks_now['vanna'][is_call] * oi_100[is_call]) -
                       np.nansum(greeks_now['vanna'][is_put]  * oi_100[is_put])) / 1e9)
