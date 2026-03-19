@@ -6889,6 +6889,155 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
     }
 
 
+def build_vol_smile_chart(df_orig, spot, ticker=''):
+    """
+    Gráfico interativo de vol smile por expiry — estilo SpotGamma.
+    X = Strike, Y = IV%
+    Banda = intervalo entre IV de puts e IV de calls no mesmo strike.
+    Linha vertical = spot atual.
+    Dropdown para selecionar o vencimento.
+    """
+    import plotly.graph_objects as go
+    from IPython.display import display as _disp
+
+    expiries = sorted(df_orig['Exp'].dt.normalize().unique())
+
+    out_smile = wd.Output()
+
+    w_exp = wd.Dropdown(
+        options=[(pd.Timestamp(e).strftime('%d/%b/%Y — %d DTE' if True else ''),
+                  pd.Timestamp(e))
+                 for e in expiries],
+        description='Vencimento:',
+        style={'description_width': '100px'},
+        layout=wd.Layout(width='280px'))
+
+    # Build option list properly
+    today = pd.Timestamp('today').normalize()
+    w_exp.options = [
+        (f"{pd.Timestamp(e).strftime('%d/%b/%Y')}  ({(pd.Timestamp(e)-today).days}d)",
+         pd.Timestamp(e))
+        for e in expiries
+    ]
+    # default: nearest expiry
+    if expiries:
+        w_exp.value = pd.Timestamp(expiries[0])
+
+    def _draw_smile(_):
+        sel_exp = w_exp.value
+        sub = df_orig[df_orig['Exp'].dt.normalize() == sel_exp.normalize()].copy()
+        if sub.empty:
+            with out_smile:
+                out_smile.clear_output(wait=True)
+                _disp(wd.HTML("<p style='color:#f85149;'>Sem dados para este vencimento.</p>"))
+            return
+
+        calls = sub[sub['Type'] == 'Call'].sort_values('Strike')
+        puts  = sub[sub['Type'] == 'Put' ].sort_values('Strike')
+
+        # Pivot: para cada strike, obter call IV e put IV
+        c_iv = calls.set_index('Strike')['IV'] * 100
+        p_iv = puts.set_index('Strike')['IV']  * 100
+        all_k = sorted(set(c_iv.index) | set(p_iv.index))
+
+        c_vals = [c_iv.get(k, np.nan) for k in all_k]
+        p_vals = [p_iv.get(k, np.nan) for k in all_k]
+
+        # Band = fill between put IV e call IV (mesma estrutura do SpotGamma)
+        # Linha mid = média dos dois onde ambos existem
+        mid_vals = [np.nanmean([c, p]) for c, p in zip(c_vals, p_vals)]
+        band_lo  = [min(c, p) if not (np.isnan(c) or np.isnan(p)) else np.nan
+                    for c, p in zip(c_vals, p_vals)]
+        band_hi  = [max(c, p) if not (np.isnan(c) or np.isnan(p)) else np.nan
+                    for c, p in zip(c_vals, p_vals)]
+
+        dte = (sel_exp - today).days
+        fig = go.Figure()
+
+        # Banda (fill)
+        fig.add_trace(go.Scatter(
+            x=all_k + all_k[::-1],
+            y=band_hi + band_lo[::-1],
+            fill='toself',
+            fillcolor='rgba(0,180,160,.22)',
+            line=dict(color='rgba(0,0,0,0)'),
+            hoverinfo='skip',
+            showlegend=False,
+            name='Banda Put/Call'))
+
+        # Linha mid IV
+        fig.add_trace(go.Scatter(
+            x=all_k, y=mid_vals,
+            mode='lines',
+            line=dict(color='rgba(0,212,232,.9)', width=2),
+            name='Mid IV',
+            hovertemplate='K=%{x}<br>IV=%{y:.2f}%<extra></extra>'))
+
+        # Calls pontilhado
+        fig.add_trace(go.Scatter(
+            x=list(c_iv.index), y=list(c_iv.values),
+            mode='lines',
+            line=dict(color='rgba(0,212,232,.45)', width=1, dash='dot'),
+            name='Call IV',
+            hovertemplate='K=%{x}<br>Call IV=%{y:.2f}%<extra></extra>'))
+
+        # Puts pontilhado
+        fig.add_trace(go.Scatter(
+            x=list(p_iv.index), y=list(p_iv.values),
+            mode='lines',
+            line=dict(color='rgba(248,81,73,.45)', width=1, dash='dot'),
+            name='Put IV',
+            hovertemplate='K=%{x}<br>Put IV=%{y:.2f}%<extra></extra>'))
+
+        # Linha vertical — spot atual
+        iv_at_spot = np.interp(spot, all_k,
+                               [v if not np.isnan(v) else 0 for v in mid_vals])
+        fig.add_vline(x=spot,
+                      line=dict(color='rgba(0,212,232,.6)', width=1.5, dash='dash'),
+                      annotation_text=f'Spot ${spot:,.2f}',
+                      annotation_font=dict(color='rgba(0,212,232,.8)', size=10),
+                      annotation_position='top right')
+
+        # Layout escuro igual ao resto do dashboard
+        fig.update_layout(
+            title=dict(
+                text=f'<b>Vol Smile — {sel_exp.strftime("%d/%b/%Y")}  ({dte} DTE) &nbsp;|&nbsp; {ticker}</b>',
+                font=dict(color='rgba(0,212,232,.85)', size=13),
+                x=0.5, xanchor='center'),
+            paper_bgcolor='rgba(12,15,20,1)',
+            plot_bgcolor='rgba(12,15,20,1)',
+            font=dict(family="'Courier New',monospace", color='rgba(200,200,200,.7)', size=10),
+            xaxis=dict(
+                title='Strike', showgrid=True,
+                gridcolor='rgba(255,255,255,.05)',
+                zerolinecolor='rgba(255,255,255,.08)',
+                tickformat=',d'),
+            yaxis=dict(
+                title='Implied Vol (%)', showgrid=True,
+                gridcolor='rgba(255,255,255,.05)',
+                ticksuffix='%'),
+            legend=dict(
+                bgcolor='rgba(0,0,0,0)', font=dict(size=10),
+                orientation='h', y=-0.15),
+            margin=dict(t=50, b=50, l=55, r=20),
+            height=340,
+        )
+
+        with out_smile:
+            out_smile.clear_output(wait=True)
+            _disp(fig)
+
+    w_exp.observe(lambda c: _draw_smile(None) if c['name'] == 'value' else None)
+    _draw_smile(None)
+
+    return wd.VBox([
+        wd.HTML("<p style='color:rgba(0,212,232,.7);font-size:11px;margin:12px 0 4px;"
+                "letter-spacing:.5px;'>VOL SMILE — IV% por strike e vencimento</p>"),
+        w_exp,
+        out_smile,
+    ])
+
+
 def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
     """
     Aba Ajuste Dinâmico do Book.
@@ -7249,7 +7398,9 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                 layout=wd.Layout(flex_flow='row wrap', gap='8px', align_items='center')),
     ], layout=wd.Layout(margin='4px 0 10px 0'))
 
-    return wd.VBox([header, input_row, out_cards, out_agg, out_inst])
+    smile_widget = build_vol_smile_chart(df_orig, spot, ticker=ticker)
+
+    return wd.VBox([header, input_row, out_cards, smile_widget, out_agg, out_inst])
 
 
 def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
