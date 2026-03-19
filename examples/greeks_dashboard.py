@@ -3328,6 +3328,9 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
       vix_skew_c25, vix_skew_p25  — VIX 25d Call/Put IV vs ATM (ratio)
       vrp_hist, vrp_cur            — VRP = VIX − RV10D SPX (vol risk premium, %)
       rv10_cur                     — SPX realized vol 10D atual (%)
+      axwa_hist, axwa_cur          — AXWA Index: SPX equity funding spread (bps)
+      fedpsor1_hist, fedpsor1_cur  — FEDPSOR1 Index: Primary Dealer equity repo ($B)
+      es_bid_ask_cur               — ES1 bid-ask spread atual (ticks)
     """
     out = {k: None for k in [
         'vvix_hist','vvix_cur',
@@ -3336,6 +3339,9 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         'tdex_hist','tdex_cur',
         'vix_skew_c25','vix_skew_p25',
         'vrp_hist','vrp_cur','rv10_cur',
+        'axwa_hist','axwa_cur',
+        'fedpsor1_hist','fedpsor1_cur',
+        'es_bid_ask_cur',
     ]}
     dt_range = bq.func.range(f'-{lookback_days}d', '0d')
 
@@ -3446,6 +3452,44 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         out['rv10_cur'] = round(float(_rv10.iloc[-1]), 2) if not _rv10.empty else None
     except Exception as _e:
         print(f'[VRP] {_e}')
+
+    # ── AXWA Index — SPX equity funding spread (financing cost) ──────────────
+    # Generic 2nd 'AXW' SPX Funding Future → spread em ticks/bps
+    try:
+        _r = bq.execute(bql.Request('AXWA Index',
+                {'px':  bq.data.px_last(fill='PREV', dates=dt_range),
+                 'vol': bq.data.px_volume(fill='PREV', dates=dt_range)}))
+        _s_px  = _bql_ts(_r[0], 'px').dropna()
+        _s_vol = _bql_ts(_r[1], 'vol').dropna()
+        out['axwa_hist'] = _s_px
+        out['axwa_cur']  = round(float(_s_px.iloc[-1]),  2) if not _s_px.empty  else None
+        out['axwa_vol']  = round(float(_s_vol.iloc[-1]), 0) if not _s_vol.empty else None
+    except Exception as _e:
+        print(f'[AXWA] {_e}')
+
+    # ── FEDPSOR1 Index — Primary Dealer equity repo outstanding ($B) ──────────
+    try:
+        _r = bq.execute(bql.Request('FEDPSOR1 Index',
+                {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+        _s = _bql_ts(_r[0], 'px').dropna()
+        out['fedpsor1_hist'] = _s
+        out['fedpsor1_cur']  = round(float(_s.iloc[-1]), 1) if not _s.empty else None
+    except Exception as _e:
+        print(f'[FEDPSOR1] {_e}')
+
+    # ── ES1 bid-ask spread (ticks) — liquidez do futuro ───────────────────────
+    try:
+        _r = bq.execute(bql.Request('ES1 Index', {
+            'bid': bq.data.bid(),
+            'ask': bq.data.ask(),
+        }))
+        _df = _r[0].combined()
+        _bid = float(_df['bid'].iloc[0])
+        _ask = float(_df['ask'].iloc[0])
+        # ES tick = 0.25 pts; spread em ticks
+        out['es_bid_ask_cur'] = round((_ask - _bid) / 0.25, 2)
+    except Exception as _e:
+        print(f'[ES bid-ask] {_e}')
 
     return out
 
@@ -8400,8 +8444,70 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='color:{_td_col};'>{_td_lvl}</td>"
             f"<td style='font-size:11px;'>Custo de OTM tail risk — baixo = tail options baratas = mercado de guarda baixa</td></tr>")
 
-    # Se nenhum indicador disponível
-    if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi]):
+    # ── Funding & Liquidity Stress ────────────────────────────────────────────
+    _axwa      = _vvol.get('axwa_cur')
+    _axwa_hist = _vvol.get('axwa_hist')
+    _axwa_vol  = _vvol.get('axwa_vol')
+    _fed1      = _vvol.get('fedpsor1_cur')
+    _fed1_hist = _vvol.get('fedpsor1_hist')
+    _es_ba     = _vvol.get('es_bid_ask_cur')
+
+    if any(v is not None for v in [_axwa, _fed1, _es_ba]):
+        _vvol_html += (
+            "<tr style='background:#0d1117;'>"
+            "<td colspan='4' style='color:#58a6ff;font-weight:bold;padding:4px 0 2px;'>"
+            "── Funding &amp; Liquidity Stress ──</td></tr>")
+
+    # AXWA — equity funding spread
+    if _axwa is not None:
+        _ax_col, _ax_lvl, _ax_pct = _pct_color_level(
+            _axwa, _axwa_hist,
+            label_low='🟢 funding barato',
+            label_mid='🟡 funding moderado',
+            label_hi='🔴 funding caro — stress')
+        # para AXWA: HIGH = stress (inverte lógica — alto pct = vermelho)
+        _ax_col = ('#f85149' if _ax_col == '#3fb950' else
+                   '#3fb950' if _ax_col == '#f85149' else _ax_col)
+        _ax_lvl = ('🔴 funding caro — stress' if '🟢' in _ax_lvl else
+                   '🟢 funding barato'        if '🔴' in _ax_lvl else _ax_lvl)
+        _vol_str = f' | vol: {int(_axwa_vol):,}' if _axwa_vol else ''
+        _vvol_html += (
+            f"<tr><td>AXWA (SPX Funding Spread)</td>"
+            f"<td><b style='color:{_ax_col};'>{_axwa:.1f}{_ax_pct}{_vol_str}</b></td>"
+            f"<td style='color:{_ax_col};'>{_ax_lvl}</td>"
+            f"<td style='font-size:11px;'>Custo de financiamento de equity SPX — alto = funding squeeze</td></tr>")
+
+    # FEDPSOR1 — Primary Dealer equity repo
+    if _fed1 is not None:
+        _fd_col, _fd_lvl, _fd_pct = _pct_color_level(
+            _fed1, _fed1_hist,
+            label_low='🟢 repo baixo',
+            label_mid='🟡 repo moderado',
+            label_hi='🔴 repo ATH — alavancagem extrema')
+        # alto repo = mais alavancagem = stress (inverte)
+        _fd_col = ('#f85149' if _fd_col == '#3fb950' else
+                   '#3fb950' if _fd_col == '#f85149' else _fd_col)
+        _fd_lvl = ('🔴 repo ATH — alavancagem extrema' if '🟢' in _fd_lvl else
+                   '🟢 repo baixo'                     if '🔴' in _fd_lvl else _fd_lvl)
+        _vvol_html += (
+            f"<tr><td>FEDPSOR1 (PD Equity Repo)</td>"
+            f"<td><b style='color:{_fd_col};'>{_fed1:.1f}B{_fd_pct}</b></td>"
+            f"<td style='color:{_fd_col};'>{_fd_lvl}</td>"
+            f"<td style='font-size:11px;'>Primary Dealer repo equities outstanding — ATH = funding squeeze sistêmico</td></tr>")
+
+    # ES1 bid-ask spread
+    if _es_ba is not None:
+        _ba_col = '#f85149' if _es_ba > 2.0 else '#ffaa00' if _es_ba > 1.5 else '#3fb950'
+        _ba_lvl = '🔴 liquidez ruim' if _es_ba > 2.0 else '🟡 spread moderado' if _es_ba > 1.5 else '🟢 liquidez ok'
+        _vvol_html += (
+            f"<tr><td>ES1 Bid-Ask Spread</td>"
+            f"<td><b style='color:{_ba_col};'>{_es_ba:.2f} ticks</b></td>"
+            f"<td style='color:{_ba_col};'>{_ba_lvl}</td>"
+            f"<td style='font-size:11px;'>Spread bid-ask do futuro ES — >2 ticks = custo de trade elevado = stress de liquidez</td></tr>")
+
+    # Se nenhum indicador disponível (nenhuma seção)
+    if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi,
+                                _axwa, _fed1, _es_ba]):
         _vvol_html += "<tr><td colspan='4' style='color:#8b949e;'>Indicadores não disponíveis (falha no fetch BBG)</td></tr>"
 
     _vvol_html += "</table></div></div>"
@@ -8445,19 +8551,54 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             showlegend=False, yaxis_title='Vol pts')
         _vrp_chart = _vrp_fig
 
+    # AXWA funding sparkline
+    _axwa_chart = None
+    _axwa_hist2 = _vvol.get('axwa_hist')
+    if _axwa_hist2 is not None and len(_axwa_hist2) > 10:
+        _axwa_fig = go.FigureWidget()
+        _axwa_fig.add_trace(go.Scatter(
+            x=_axwa_hist2.index, y=_axwa_hist2.values,
+            mode='lines', line=dict(color='#e06c75', width=1.5),
+            fill='tozeroy', fillcolor='rgba(224,108,117,0.08)',
+            name='AXWA'))
+        _axwa_fig.update_layout(
+            title='AXWA — SPX Funding Spread (1Y)', height=180, template='plotly_dark',
+            margin=dict(t=30, b=20, l=40, r=10),
+            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+            showlegend=False, yaxis_title='Spread')
+        _axwa_chart = _axwa_fig
+
+    # FEDPSOR1 sparkline
+    _fed1_chart = None
+    _fed1_hist2 = _vvol.get('fedpsor1_hist')
+    if _fed1_hist2 is not None and len(_fed1_hist2) > 10:
+        _fed1_fig = go.FigureWidget()
+        _fed1_fig.add_trace(go.Scatter(
+            x=_fed1_hist2.index, y=_fed1_hist2.values,
+            mode='lines', line=dict(color='#c678dd', width=1.5),
+            fill='tozeroy', fillcolor='rgba(198,120,221,0.08)',
+            name='PD Repo'))
+        _fed1_fig.update_layout(
+            title='FEDPSOR1 — Primary Dealer Equity Repo (1Y)', height=180,
+            template='plotly_dark', margin=dict(t=30, b=20, l=40, r=10),
+            paper_bgcolor=_C['card'], plot_bgcolor=_C['card'],
+            showlegend=False, yaxis_title='$B')
+        _fed1_chart = _fed1_fig
+
     children = [
         wd.HTML(summary_html),
         wd.HBox([gauge_fig, bar_fig],
                 layout={'align_items': 'flex-start'}),
         wd.HTML(_vvol_html),
     ]
-    if _vvix_chart is not None and _vrp_chart is not None:
-        children.append(wd.HBox([_vvix_chart, _vrp_chart],
-                                 layout={'align_items': 'flex-start'}))
-    elif _vvix_chart is not None:
-        children.append(_vvix_chart)
-    elif _vrp_chart is not None:
-        children.append(_vrp_chart)
+    # linha 1: VVIX + VRP
+    _row1 = [c for c in [_vvix_chart, _vrp_chart] if c is not None]
+    if _row1:
+        children.append(wd.HBox(_row1, layout={'align_items': 'flex-start'}))
+    # linha 2: AXWA funding + PD Repo
+    _row2 = [c for c in [_axwa_chart, _fed1_chart] if c is not None]
+    if _row2:
+        children.append(wd.HBox(_row2, layout={'align_items': 'flex-start'}))
     children.append(wd.HTML(_evts_html))
     return wd.VBox(children)
 
