@@ -7181,23 +7181,38 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
             np.where((mness >= 1.00) & (mness <= 1.50), 'CALL', 'OTM-deep')
         )
         df_inst = pd.DataFrame({
-            'Expiry':       df['Exp'].dt.strftime('%d/%b/%y').values,
-            'Strike':       df['Strike'].values.astype(int),
-            'Mnss%':        np.round(mness * 100, 1),
-            'Asa':          wing_lbl,
-            'IV Base%':     np.round(df['IV'].values * 100, 2),
-            'IV Cen.%':     np.round(vol_aft * 100, 2),
-            'Type':         df['Type'].values,
-            'OI':           df['OI'].values.astype(int),
-            'Δ Base':       np.round(g_b['delta'], 4),
-            'Δ Cenário':    np.round(g_a['delta'], 4),
-            'ΔΔ':           np.round(g_a['delta'] - g_b['delta'], 4),
-            'Vega Base':    np.round(g_b['vega'],  3),
-            'Theta/d':      np.round(g_b['theta'] / TRADING_DAYS, 3),
-            'P&L ($)':      np.round(pnl, 0),
-            'Hedge Adj (Δ)':np.round(hedge_adj, 1),
-            '_Exp':         df['Exp'].values,
-            '_exp_flag':    expired_flag,
+            'Expiry':        df['Exp'].dt.strftime('%d/%b/%y').values,
+            'Strike':        df['Strike'].values.astype(int),
+            'Mnss%':         np.round(mness * 100, 1),
+            'Asa':           wing_lbl,
+            'IV Base%':      np.round(df['IV'].values * 100, 2),
+            'IV Cen.%':      np.round(vol_aft * 100, 2),
+            'Type':          df['Type'].values,
+            'OI':            df['OI'].values.astype(int),
+            # ── Delta ────────────────────────────────────────────────────────
+            'Δ Base':        np.round(g_b['delta'], 4),
+            'Δ Cen.':        np.round(g_a['delta'], 4),
+            'ΔΔ':            np.round(g_a['delta'] - g_b['delta'], 4),
+            # ── Gamma ────────────────────────────────────────────────────────
+            'Γ Base':        np.round(g_b['gamma'], 6),
+            'Γ Cen.':        np.round(g_a['gamma'], 6),
+            'ΔΓ':            np.round(g_a['gamma'] - g_b['gamma'], 6),
+            # ── Vega ─────────────────────────────────────────────────────────
+            'Vega Base':     np.round(g_b['vega'],  3),
+            'Vega Cen.':     np.round(g_a['vega'],  3),
+            'ΔVega':         np.round(g_a['vega'] - g_b['vega'], 3),
+            # ── Theta ────────────────────────────────────────────────────────
+            'Theta/d':       np.round(g_b['theta'] / TRADING_DAYS, 3),
+            # ── Vanna ────────────────────────────────────────────────────────
+            'Vanna Base':    np.round(g_b['vanna'], 4),
+            'Vanna Cen.':    np.round(g_a['vanna'], 4),
+            # ── Charm ────────────────────────────────────────────────────────
+            'Charm/d':       np.round(g_b['charm'] / TRADING_DAYS, 6),
+            # ── P&L e Hedge ──────────────────────────────────────────────────
+            'P&L ($)':       np.round(pnl, 0),
+            'Hedge Adj (Δ)': np.round(hedge_adj, 1),
+            '_Exp':          df['Exp'].values,
+            '_exp_flag':     expired_flag,
         })
         # Marca expiradas
         df_inst['Type'] = np.where(expired_flag,
@@ -7208,40 +7223,59 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                    .drop(columns=['_Exp', '_exp_flag']))
 
         INST_COLS  = ['Expiry', 'Strike', 'Mnss%', 'Asa', 'IV Base%', 'IV Cen.%',
-                      'Type', 'OI', 'Δ Base', 'Δ Cenário', 'ΔΔ',
-                      'Vega Base', 'Theta/d', 'P&L ($)', 'Hedge Adj (Δ)']
-        SIGN_COLS  = {'ΔΔ', 'P&L ($)', 'Hedge Adj (Δ)'}
+                      'Type', 'OI',
+                      'Δ Base', 'Δ Cen.', 'ΔΔ',
+                      'Γ Base', 'Γ Cen.', 'ΔΓ',
+                      'Vega Base', 'Vega Cen.', 'ΔVega',
+                      'Theta/d', 'Vanna Base', 'Vanna Cen.', 'Charm/d',
+                      'P&L ($)', 'Hedge Adj (Δ)']
+        SIGN_COLS  = {'ΔΔ', 'ΔΓ', 'ΔVega', 'P&L ($)', 'Hedge Adj (Δ)',
+                      'Vanna Base', 'Vanna Cen.', 'Charm/d', 'Theta/d'}
         MAX_ROWS   = 60
 
         # ── Agregação por vencimento ──────────────────────────────────────────
         df_agg_src = df_orig.copy()
-        df_agg_src['_db']  = dpos_b
-        df_agg_src['_da']  = dpos_a
-        df_agg_src['_pnl'] = pnl
-        df_agg_src['_adj'] = hedge_adj
-        df_agg_src['_vb']  = g_b['vega'] * oi100
-        df_agg_src['_va']  = g_a['vega'] * oi100
+        df_agg_src['_db']    = dpos_b
+        df_agg_src['_da']    = dpos_a
+        df_agg_src['_pnl']   = pnl
+        df_agg_src['_adj']   = hedge_adj
+        df_agg_src['_vb']    = g_b['vega']  * oi100
+        df_agg_src['_va']    = g_a['vega']  * oi100
+        df_agg_src['_gb']    = g_b['gamma'] * oi100
+        df_agg_src['_ga']    = g_a['gamma'] * oi100
+        df_agg_src['_vannb'] = g_b['vanna'] * oi100
+        df_agg_src['_charmb']= g_b['charm'] * oi100 / TRADING_DAYS
 
         grp = df_agg_src.groupby('Exp').agg(
-            _db=('_db', 'sum'), _da=('_da', 'sum'),
+            _db=('_db', 'sum'),   _da=('_da', 'sum'),
             _pnl=('_pnl', 'sum'), _adj=('_adj', 'sum'),
-            _vb=('_vb', 'sum'), _va=('_va', 'sum'),
+            _vb=('_vb', 'sum'),   _va=('_va', 'sum'),
+            _gb=('_gb', 'sum'),   _ga=('_ga', 'sum'),
+            _vannb=('_vannb', 'sum'),
+            _charmb=('_charmb', 'sum'),
             n=('OI', 'count'),
         ).reset_index()
 
         df_agg = pd.DataFrame({
-            'Vencimento':   pd.to_datetime(grp['Exp']).dt.strftime('%d/%b/%Y'),
-            'Δpos Base':    grp['_db'].round(1),
-            'Δpos Cenário': grp['_da'].round(1),
-            'ΔΔ Net':       (grp['_da'] - grp['_db']).round(1),
-            'Vega Base':    grp['_vb'].round(1),
-            'Vega Cen.':    grp['_va'].round(1),
-            'P&L ($)':      grp['_pnl'].round(0),
-            'Hedge Adj (Δ)':grp['_adj'].round(1),
-            '# Strikes':    grp['n'],
+            'Vencimento':    pd.to_datetime(grp['Exp']).dt.strftime('%d/%b/%Y'),
+            'Δpos Base':     grp['_db'].round(1),
+            'Δpos Cen.':     grp['_da'].round(1),
+            'ΔΔ Net':        (grp['_da'] - grp['_db']).round(1),
+            'Γ Base':        grp['_gb'].round(2),
+            'Γ Cen.':        grp['_ga'].round(2),
+            'ΔΓ':            (grp['_ga'] - grp['_gb']).round(2),
+            'Vega Base':     grp['_vb'].round(1),
+            'Vega Cen.':     grp['_va'].round(1),
+            'ΔVega':         (grp['_va'] - grp['_vb']).round(1),
+            'Vanna (pos)':   grp['_vannb'].round(2),
+            'Charm/d (pos)': grp['_charmb'].round(2),
+            'P&L ($)':       grp['_pnl'].round(0),
+            'Hedge Adj (Δ)': grp['_adj'].round(1),
+            '# Strikes':     grp['n'],
         })
         df_agg = df_agg.sort_values('Vencimento')
-        AGG_SIGN = {'ΔΔ Net', 'P&L ($)', 'Hedge Adj (Δ)', 'Δpos Base', 'Δpos Cenário'}
+        AGG_SIGN = {'ΔΔ Net', 'ΔΓ', 'ΔVega', 'P&L ($)', 'Hedge Adj (Δ)',
+                    'Δpos Base', 'Δpos Cen.', 'Vanna (pos)', 'Charm/d (pos)'}
 
         # ── Consolidado ───────────────────────────────────────────────────────
         tot_db  = dpos_b.sum()
