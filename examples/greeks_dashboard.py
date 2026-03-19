@@ -12631,17 +12631,38 @@ def run_analysis(_):
                     f"<h3 style='color:#00d4e8;'>Ajuste Dinâmico do Book</h3>"
                     f"<p style='color:#f85149;'>Erro: {_db_err}</p>")])
 
+            # ── Tab 14: Decision Engine (0DTE Intraday) ───────────────────
+            try:
+                from decision_engine import build_decision_engine_tab
+                # Monta external_scores com o que já foi calculado na sessão
+                _ext_scores = {
+                    'flow_score':    float(fp_score.get('score', 50)) if isinstance(fp_score, dict) else 50.0,
+                    'squeeze_score': float(_sq_result_v1['score']) if '_sq_result_v1' in dir() and _sq_result_v1 else 0.0,
+                    'tail_score':    float(analytics.get('tail_score', 0)) if analytics else 0.0,
+                    'iv_rv_spread':  float((iv_30d - rv_30d) * 100) if pd.notna(iv_30d) and pd.notna(rv_30d) else 0.0,
+                    'skew_level':    float(iv_30d * 100) if pd.notna(iv_30d) else 0.0,
+                }
+                tab14 = build_decision_engine_tab(df, spot, rfr, ticker=ticker,
+                                                   external_scores=_ext_scores)
+            except Exception as _de_err:
+                print(f"⚠️ Decision Engine tab: {_de_err}")
+                import traceback; traceback.print_exc()
+                tab14 = wd.VBox([wd.HTML(
+                    f"<h3 style='color:#00d4e8;'>Decision Engine</h3>"
+                    f"<p style='color:#f85149;'>Erro ao carregar: {_de_err}</p>"
+                    f"<p style='color:#aaa;font-size:10px;'>Verifique se decision_engine.py está no mesmo diretório.</p>")])
+
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
             dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7,
-                                   tab8, tab9, tab10, tab11, tab12, tab13]
+                                   tab8, tab9, tab10, tab11, tab12, tab13, tab14]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
                 'Simulador', 'Relatório', 'Flow Predictor', 'Analytics',
-                'Gamma Squeeze', 'Ajuste Dinâmico',
+                'Gamma Squeeze', 'Ajuste Dinâmico', 'Decision Engine',
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
