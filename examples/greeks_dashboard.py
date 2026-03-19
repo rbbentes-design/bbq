@@ -9613,12 +9613,11 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
                          layout=wd.Layout(width='160px', height='36px'))
     w_pex    = wd.Button(description='📋 Paper Execute', button_style='warning',
                          layout=wd.Layout(width='150px', height='36px'))
-    w_override = wd.ToggleButton(
-        value=False,
+    w_override = wd.Button(
         description='🔒 Trava ON',
         button_style='',
-        layout=wd.Layout(width='130px', height='36px',
-                         border='2px solid #555'))
+        layout=wd.Layout(width='130px', height='36px'))
+    _override_state = [False]  # estado manual (Button não tem .value bool)
 
     out_d = wd.Output()
     orch  = [None]
@@ -9629,7 +9628,7 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
             max_daily_loss_pct=w_daily.value,
             max_positions_open=w_maxpos.value,
             paper_mode=w_paper.value,
-            force_override=w_override.value)
+            force_override=_override_state[0])
         acc = _DE_AccountState(
             net_liquidation=w_nlv.value, available_cash=w_cash.value,
             buying_power=w_bp.value, available_margin=w_margin.value,
@@ -9808,19 +9807,18 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
         w_paper.description  = 'PAPER MODE ON' if change['new'] else '⚠ LIVE MODE'
         w_paper.button_style = 'warning'        if change['new'] else 'danger'
 
-    def _on_override_toggle(change):
-        if change['new']:
-            w_override.description   = '🔓 Trava OFF'
-            w_override.button_style  = 'danger'
-            w_override.layout.border = '2px solid #f85149'
+    def _on_override_click(_):
+        _override_state[0] = not _override_state[0]
+        if _override_state[0]:
+            w_override.description  = '🔓 Trava OFF'
+            w_override.button_style = 'danger'
         else:
-            w_override.description   = '🔒 Trava ON'
-            w_override.button_style  = ''
-            w_override.layout.border = '2px solid #555'
+            w_override.description  = '🔒 Trava ON'
+            w_override.button_style = ''
 
     w_run.on_click(_on_run); w_pex.on_click(_on_pex)
-    w_paper.observe(_on_toggle,          names='value')
-    w_override.observe(_on_override_toggle, names='value')
+    w_paper.observe(_on_toggle, names='value')
+    w_override.on_click(_on_override_click)
     w_auto.observe(_on_auto_toggle, names='value')
 
     with out_d:
