@@ -8916,13 +8916,56 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
 <b style='color:#ffaa00;'>⚠ Regra central:</b> SOMENTE day trade 0DTE. Toda posição é encerrada no mesmo dia.
 </div>"""
 
+    # ── Auto-refresh controls ─────────────────────────────────────────────────
+    import threading as _threading
+    w_auto     = wd.ToggleButton(value=False, description='⟳ Auto OFF',
+                                 button_style='', icon='refresh',
+                                 layout=wd.Layout(width='130px', height='36px'))
+    w_interval = wd.Dropdown(options=[1, 2, 5, 10, 15, 30], value=5,
+                             description='Intervalo (min):',
+                             layout=wd.Layout(width='200px'),
+                             style={'description_width': '110px'})
+    w_last_upd = wd.HTML("<span style='color:#555;font-size:10px;font-family:monospace;'>"
+                         "nunca atualizado</span>")
+    _stop_evt  = [_threading.Event()]
+    _thread    = [None]
+
+    def _run_and_render():
+        try:
+            orch[0] = _make_orch()
+            d = orch[0].run(df, ext)
+            ts = _de_dt.now().strftime('%H:%M:%S')
+            with out_d:
+                out_d.clear_output(wait=True)
+                _disp(_HTML(_render(d)))
+                _disp(_HTML(_guide()))
+            w_last_upd.value = (
+                f"<span style='color:#3fb950;font-size:10px;font-family:monospace;'>"
+                f"✓ atualizado às {ts}</span>")
+        except Exception as _re:
+            w_last_upd.value = (
+                f"<span style='color:#f85149;font-size:10px;font-family:monospace;'>"
+                f"⚠ erro: {_re}</span>")
+
+    def _auto_loop():
+        while not _stop_evt[0].is_set():
+            _run_and_render()
+            _stop_evt[0].wait(timeout=w_interval.value * 60)
+
     def _on_run(_):
-        orch[0] = _make_orch()
-        d = orch[0].run(df, ext)
-        with out_d:
-            out_d.clear_output(wait=True)
-            _disp(_HTML(_render(d)))
-            _disp(_HTML(_guide()))
+        _run_and_render()
+
+    def _on_auto_toggle(change):
+        if change['new']:
+            w_auto.description = '⟳ Auto ON'
+            w_auto.button_style = 'success'
+            _stop_evt[0].clear()
+            _thread[0] = _threading.Thread(target=_auto_loop, daemon=True)
+            _thread[0].start()
+        else:
+            w_auto.description = '⟳ Auto OFF'
+            w_auto.button_style = ''
+            _stop_evt[0].set()
 
     def _on_pex(_):
         if orch[0]:
@@ -8938,6 +8981,7 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
 
     w_run.on_click(_on_run); w_pex.on_click(_on_pex)
     w_paper.observe(_on_toggle, names='value')
+    w_auto.observe(_on_auto_toggle, names='value')
 
     with out_d:
         _disp(_HTML(_guide()))
@@ -8961,8 +9005,10 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
         wd.HBox([w_risk, w_daily, w_maxpos],
                 layout=wd.Layout(flex_flow='row wrap', gap='8px')),
     ])
-    btn_row = wd.HBox([w_paper, w_run, w_pex],
-                      layout=wd.Layout(gap='8px', margin='10px 0 6px 0', align_items='center'))
+    btn_row = wd.HBox(
+        [w_paper, w_run, w_pex, w_auto, w_interval, w_last_upd],
+        layout=wd.Layout(gap='8px', margin='10px 0 6px 0',
+                         align_items='center', flex_flow='row wrap'))
     return wd.VBox([header, acc_row, risk_row, btn_row, out_d])
 
 
