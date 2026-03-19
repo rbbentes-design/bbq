@@ -3449,9 +3449,9 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
     # implied_volatility() direto no VIX Index — mais limpo e confiável
     try:
         _r = bq.execute(bql.Request('VIX Index', {
-            'iv_atm': bq.data.implied_volatility(expiry='45d', delta='50'),
-            'iv_c25': bq.data.implied_volatility(expiry='45d', delta='25'),
-            'iv_p25': bq.data.implied_volatility(expiry='45d', delta='-25'),
+            'iv_atm': bq.data.implied_volatility(expiry='30D', delta='50'),
+            'iv_c25': bq.data.implied_volatility(expiry='30D', delta='25'),
+            'iv_p25': bq.data.implied_volatility(expiry='30D', delta='-25'),
         }))
         _df_iv = pd.concat([r.df()[r.name] for r in _r], axis=1)
         _df_iv = _df_iv.loc[:, ~_df_iv.columns.duplicated()]
@@ -7716,28 +7716,28 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
             return f'rgba({r},{g},{b},{0.5 + t*0.4:.2f})'
 
         _hm_strikes = sorted(_surf_piv.columns.tolist())
-        _th_s = ''.join(f"<th style='padding:2px 6px;font-size:9px;color:rgba(0,212,232,.5);text-align:center;'>{int(k)}</th>"
+        _th_s = ''.join(f"<th style='padding:3px 8px;font-size:11px;color:rgba(0,212,232,.7);text-align:center;'>{int(k)}</th>"
                         for k in _hm_strikes)
         _hm_rows = ''
         for exp, row in _surf_piv.iterrows():
             _exp_lbl = pd.Timestamp(exp).strftime('%d/%b')
-            _hm_rows += f"<tr><td style='padding:2px 6px;font-size:9px;color:rgba(255,255,255,.5);white-space:nowrap;'>{_exp_lbl}</td>"
+            _hm_rows += f"<tr><td style='padding:3px 8px;font-size:11px;color:rgba(255,255,255,.7);white-space:nowrap;font-weight:600;'>{_exp_lbl}</td>"
             for k in _hm_strikes:
                 v = row.get(k, np.nan)
                 bg = _vol_color(v) if pd.notna(v) else 'transparent'
                 txt = f'{v:.1f}' if pd.notna(v) else ''
-                _hm_rows += (f"<td style='padding:1px 5px;font-size:9px;text-align:center;"
-                             f"background:{bg};color:rgba(0,0,0,.7);font-weight:600;'>{txt}</td>")
+                _hm_rows += (f"<td style='padding:3px 7px;font-size:11px;text-align:center;"
+                             f"background:{bg};color:rgba(0,0,0,.85);font-weight:700;'>{txt}</td>")
             _hm_rows += '</tr>'
 
         _hm_html = (
             "<div style='margin:12px 0 6px;'>"
-            "<p style='color:rgba(0,212,232,.7);font-size:11px;margin:0 0 6px;letter-spacing:.5px;'>"
+            "<p style='color:rgba(0,212,232,.7);font-size:12px;margin:0 0 8px;letter-spacing:.5px;'>"
             "VOL SURFACE — IV% base por expiry × strike bucket (média por faixa)</p>"
             "<div style='overflow-x:auto;'><table style='border-collapse:collapse;font-family:monospace;'>"
-            f"<thead><tr><th style='padding:2px 6px;font-size:9px;'></th>{_th_s}</tr></thead>"
+            f"<thead><tr><th style='padding:3px 8px;font-size:11px;'></th>{_th_s}</tr></thead>"
             f"<tbody>{_hm_rows}</tbody></table></div>"
-            "<p style='color:rgba(255,255,255,.25);font-size:9px;margin:4px 0 0;'>"
+            "<p style='color:rgba(255,255,255,.3);font-size:10px;margin:4px 0 0;'>"
             f"Cor: baixa IV = ciano, alta IV = laranja &nbsp;·&nbsp; faixa de strike: {_stride}pts</p></div>"
         )
 
