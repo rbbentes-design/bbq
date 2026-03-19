@@ -12633,6 +12633,12 @@ def run_analysis(_):
 
             # ── Tab 14: Decision Engine (0DTE Intraday) ───────────────────
             try:
+                import sys, os as _os
+                _de_dir = _os.path.dirname(_os.path.abspath(__file__)) \
+                          if '__file__' in dir() else \
+                          _os.path.join(_os.path.expanduser('~'), 'bbg', 'examples')
+                if _de_dir not in sys.path:
+                    sys.path.insert(0, _de_dir)
                 from decision_engine import build_decision_engine_tab
                 # Monta external_scores com o que já foi calculado na sessão
                 _ext_scores = {

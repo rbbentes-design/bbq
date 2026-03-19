@@ -26,6 +26,13 @@ from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
 from scipy.stats import norm
 
+# ── garantir que o diretório deste arquivo está no sys.path ─────────────────
+import sys as _sys
+import os as _os
+_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _THIS_DIR not in _sys.path:
+    _sys.path.insert(0, _THIS_DIR)
+
 # reuse from main dashboard
 try:
     from greeks_dashboard import (
@@ -33,15 +40,23 @@ try:
         black_scholes_price_vec,
         fetch_options_chain,
         compute_walls,
+        compute_strike_exposures,
         fetch_market_data,
         TRADING_DAYS,
         FUTURES_MULTIPLIER,
     )
     _DASHBOARD_AVAILABLE = True
-except Exception:
+except Exception as _de_import_err:
     _DASHBOARD_AVAILABLE = False
     TRADING_DAYS = 252
     FUTURES_MULTIPLIER = 50
+    # stubs para rodar standalone sem o dashboard
+    def calculate_all_greeks(*a, **kw): return {}
+    def black_scholes_price_vec(*a, **kw): return np.zeros(1)
+    def fetch_options_chain(*a, **kw): return None
+    def compute_walls(*a, **kw): return None, None
+    def compute_strike_exposures(*a, **kw): return None
+    def fetch_market_data(*a, **kw): return {}
 
 # ─── logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -321,7 +336,6 @@ class MarketState:
             f['atm_iv_0dte'] = float(iv[np.argmin(np.abs(K - spot))]) if len(iv) > 0 else np.nan
 
         # ── OI Walls ──────────────────────────────────────────────────────────
-        from greeks_dashboard import compute_strike_exposures
         if _DASHBOARD_AVAILABLE:
             try:
                 greeks_all = calculate_all_greeks(spot, K, iv, tte, df['Type'].values)
