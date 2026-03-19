@@ -718,6 +718,40 @@ def calculate_all_greeks(S, K, vol, T, option_types, r=0.0):
     return greeks
 
 
+def black_scholes_price_vec(S, K, vol, T, option_types, r=0.0):
+    """
+    Preço Black-Scholes vetorizado (europeu).
+    Mesma fórmula d1/d2 de calculate_all_greeks — retorna array de preços.
+    Opções com T <= 0 retornam valor intrínseco (max(S-K,0) ou max(K-S,0)).
+    """
+    K_a    = np.asarray(K,            dtype=float)
+    vol_a  = np.asarray(vol,          dtype=float)
+    T_a    = np.asarray(T,            dtype=float)
+    types_a = np.asarray(option_types)
+    prices = np.zeros(len(K_a))
+
+    # opções expiradas → valor intrínseco
+    expired = T_a <= 0
+    if expired.any():
+        prices[expired] = np.where(
+            types_a[expired] == 'Call',
+            np.maximum(S - K_a[expired], 0.0),
+            np.maximum(K_a[expired] - S, 0.0))
+
+    v = (vol_a > 0) & (T_a > 0) & (K_a > 0) & (S > 0) & ~np.isnan(vol_a)
+    if not v.any():
+        return prices
+    with np.errstate(divide='ignore', invalid='ignore'):
+        sq   = np.sqrt(T_a[v])
+        d1   = (np.log(S / K_a[v]) + (r + 0.5 * vol_a[v] ** 2) * T_a[v]) / (vol_a[v] * sq)
+        d2   = d1 - vol_a[v] * sq
+        disc = np.exp(-r * T_a[v])
+        c_px = S * norm.cdf(d1) - K_a[v] * disc * norm.cdf(d2)
+        p_px = K_a[v] * disc * norm.cdf(-d2) - S * norm.cdf(-d1)
+        prices[v] = np.where(types_a[v] == 'Call', c_px, p_px)
+    return prices
+
+
 def calculate_flip(levels, curve):
     """Encontra o ponto onde a curva cruza zero (interpolação linear)."""
     sign_changes = np.where(np.diff(np.sign(curve)))[0]
@@ -6855,6 +6889,280 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
     }
 
 
+def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
+    """
+    Aba Ajuste Dinâmico do Book.
+
+    Lógica (3 níveis):
+      1. Repricing por instrumento via BS após choque de mercado
+      2. Agregação por vencimento (expiry bucket)
+      3. Consolidado total do book
+
+    Inputs de cenário: ΔSpot, ΔVol (pp), ΔRate (bp), Dias à frente.
+    Hedge Adj (por expiry) = −(Δpos_after − Δpos_before)
+    onde Δpos = delta × OI × 100.
+
+    Limitações:
+      - Vol surface: choque uniforme (flat shift). Sem smile/skew diferencial.
+      - Modelo: Black-Scholes europeu (mesmo modelo do dashboard).
+      - OI usado como posição proxy — não há quantity/multiplier separado.
+      - Opções com Tte < 1 dia após dt são tratadas como expiradas (valor intrínseco).
+    """
+    from IPython.display import display as _disp
+
+    _TBL_CSS = (
+        "border-collapse:collapse;width:100%;font-family:'Courier New',monospace;"
+        "font-size:11px;"
+    )
+    _TH_CSS  = (
+        "padding:3px 10px;text-align:right;border-bottom:1px solid rgba(0,212,232,.2);"
+        "color:rgba(0,212,232,.65);white-space:nowrap;"
+    )
+    _TD_CSS  = "padding:2px 10px;text-align:right;white-space:nowrap;"
+    _ROW_CSS = "border-bottom:1px solid rgba(255,255,255,.04);"
+
+    def _html_table(dff, num_cols=None):
+        """Render DataFrame as styled HTML table. num_cols: set of col names to color by sign."""
+        num_cols = num_cols or set()
+        hdrs = ''.join(f"<th style='{_TH_CSS}'>{c}</th>" for c in dff.columns)
+        rows_html = ''
+        for _, row in dff.iterrows():
+            cells = ''
+            for c in dff.columns:
+                v = row[c]
+                if c in num_cols and isinstance(v, float):
+                    color = ('rgba(0,212,232,.95)' if v > 0
+                             else ('rgba(248,81,73,.95)' if v < 0 else 'rgba(255,255,255,.4)'))
+                    txt = f'{v:+,.2f}' if abs(v) < 10000 else f'{v:+,.0f}'
+                else:
+                    color = 'rgba(220,220,220,.85)'
+                    txt = (f'{v:,.0f}' if isinstance(v, float) and abs(v) >= 100
+                           else (f'{v:.4f}' if isinstance(v, float) else str(v)))
+                cells += f"<td style='{_TD_CSS}color:{color};'>{txt}</td>"
+            rows_html += f"<tr style='{_ROW_CSS}'>{cells}</tr>"
+        return (f"<div style='overflow-x:auto;'>"
+                f"<table style='{_TBL_CSS}'>"
+                f"<thead><tr>{hdrs}</tr></thead>"
+                f"<tbody>{rows_html}</tbody></table></div>")
+
+    def _card(label, value, color='rgba(0,212,232,.9)', sub=''):
+        return (f"<div style='background:rgba(0,212,232,.06);"
+                f"border:1px solid rgba(0,212,232,.18);border-radius:6px;"
+                f"padding:10px 18px;min-width:150px;'>"
+                f"<p style='color:rgba(0,212,232,.55);font-size:9px;"
+                f"letter-spacing:1.2px;margin:0;'>{label}</p>"
+                f"<p style='color:{color};font-size:17px;font-weight:700;"
+                f"margin:4px 0 0;font-family:monospace;'>{value}</p>"
+                f"{'<p style=\"color:rgba(255,255,255,.35);font-size:9px;margin:2px 0 0;\">'+sub+'</p>' if sub else ''}"
+                f"</div>")
+
+    # ── Widgets de cenário ────────────────────────────────────────────────────
+    _lyt = wd.Layout(width='195px')
+    _sty = {'description_width': '105px'}
+    w_dspot = wd.FloatText(value=0.0,  description='ΔSpot ($):',   layout=_lyt, style=_sty)
+    w_dvol  = wd.FloatText(value=0.0,  description='ΔVol (p.p):',  layout=_lyt, style=_sty)
+    w_drate = wd.FloatText(value=0.0,  description='ΔRate (bp):',  layout=_lyt, style=_sty)
+    w_days  = wd.IntText( value=0,     description='Dias à frente:', layout=_lyt, style=_sty)
+    w_btn   = wd.Button(description='▶ Aplicar', button_style='primary',
+                        layout=wd.Layout(width='120px', height='34px', margin='2px 0 0 0'))
+    w_reset = wd.Button(description='↺ Reset',  button_style='',
+                        layout=wd.Layout(width='90px',  height='34px', margin='2px 0 0 0'))
+
+    out_cards = wd.Output()
+    out_agg   = wd.Output()
+    out_inst  = wd.Output()
+
+    def _compute_and_render(_):
+        S_new  = spot + w_dspot.value
+        dvol   = w_dvol.value / 100.0           # pp → decimal
+        r_new  = rfr  + w_drate.value / 10000.0  # bp → decimal
+        dt_yr  = max(int(w_days.value), 0) / float(TRADING_DAYS)
+
+        df = df_orig.copy()
+        T_after  = np.maximum(df['Tte'].values - dt_yr, 0.0)  # 0 = expirou
+        vol_aft  = np.maximum(df['IV'].values + dvol, 0.001)
+        oi100    = df['OI'].values * 100.0
+
+        # ── Gregas e preços: base e cenário ──────────────────────────────────
+        g_b  = calculate_all_greeks(spot, df['Strike'].values, df['IV'].values,
+                                    df['Tte'].values, df['Type'].values, r=rfr)
+        px_b = black_scholes_price_vec(spot, df['Strike'].values, df['IV'].values,
+                                       df['Tte'].values, df['Type'].values, r=rfr)
+
+        g_a  = calculate_all_greeks(S_new, df['Strike'].values, vol_aft,
+                                    T_after, df['Type'].values, r=r_new)
+        px_a = black_scholes_price_vec(S_new, df['Strike'].values, vol_aft,
+                                       T_after, df['Type'].values, r=r_new)
+
+        # Δposição = delta unitário × OI × 100
+        dpos_b = g_b['delta'] * oi100
+        dpos_a = g_a['delta'] * oi100
+        pnl    = (px_a - px_b) * oi100
+        # Ajuste incremental: quanto comprar/vender do ativo para rebalancear
+        # Sinal: positivo = comprar underlying, negativo = vender
+        hedge_adj = -(dpos_a - dpos_b)
+
+        # ── Tabela por instrumento ────────────────────────────────────────────
+        expired_flag = T_after <= 0
+        df_inst = pd.DataFrame({
+            'Expiry':       df['Exp'].dt.strftime('%d/%b/%y').values,
+            'Strike':       df['Strike'].values.astype(int),
+            'Type':         df['Type'].values,
+            'OI':           df['OI'].values.astype(int),
+            'Δ Base':       np.round(g_b['delta'], 4),
+            'Δ Cenário':    np.round(g_a['delta'], 4),
+            'ΔΔ':           np.round(g_a['delta'] - g_b['delta'], 4),
+            'Vega Base':    np.round(g_b['vega'],  3),
+            'Theta Base':   np.round(g_b['theta'] / TRADING_DAYS, 3),
+            'P&L ($)':      np.round(pnl, 0),
+            'Hedge Adj (Δ)':np.round(hedge_adj, 1),
+            '_Exp':         df['Exp'].values,
+            '_exp_flag':    expired_flag,
+        })
+        # Marca expiradas
+        df_inst['Type'] = np.where(expired_flag,
+                                   df_inst['Type'] + '✗',
+                                   df_inst['Type'])
+        df_inst = (df_inst
+                   .sort_values(['_Exp', 'OI'], ascending=[True, False])
+                   .drop(columns=['_Exp', '_exp_flag']))
+
+        INST_COLS  = ['Expiry', 'Strike', 'Type', 'OI',
+                      'Δ Base', 'Δ Cenário', 'ΔΔ', 'Vega Base', 'Theta Base',
+                      'P&L ($)', 'Hedge Adj (Δ)']
+        SIGN_COLS  = {'ΔΔ', 'P&L ($)', 'Hedge Adj (Δ)'}
+        MAX_ROWS   = 60
+
+        # ── Agregação por vencimento ──────────────────────────────────────────
+        df_agg_src = df_orig.copy()
+        df_agg_src['_db']  = dpos_b
+        df_agg_src['_da']  = dpos_a
+        df_agg_src['_pnl'] = pnl
+        df_agg_src['_adj'] = hedge_adj
+        df_agg_src['_vb']  = g_b['vega'] * oi100
+        df_agg_src['_va']  = g_a['vega'] * oi100
+
+        grp = df_agg_src.groupby('Exp').agg(
+            _db=('_db', 'sum'), _da=('_da', 'sum'),
+            _pnl=('_pnl', 'sum'), _adj=('_adj', 'sum'),
+            _vb=('_vb', 'sum'), _va=('_va', 'sum'),
+            n=('OI', 'count'),
+        ).reset_index()
+
+        df_agg = pd.DataFrame({
+            'Vencimento':   pd.to_datetime(grp['Exp']).dt.strftime('%d/%b/%Y'),
+            'Δpos Base':    grp['_db'].round(1),
+            'Δpos Cenário': grp['_da'].round(1),
+            'ΔΔ Net':       (grp['_da'] - grp['_db']).round(1),
+            'Vega Base':    grp['_vb'].round(1),
+            'Vega Cen.':    grp['_va'].round(1),
+            'P&L ($)':      grp['_pnl'].round(0),
+            'Hedge Adj (Δ)':grp['_adj'].round(1),
+            '# Strikes':    grp['n'],
+        })
+        df_agg = df_agg.sort_values('Vencimento')
+        AGG_SIGN = {'ΔΔ Net', 'P&L ($)', 'Hedge Adj (Δ)', 'Δpos Base', 'Δpos Cenário'}
+
+        # ── Consolidado ───────────────────────────────────────────────────────
+        tot_db  = dpos_b.sum()
+        tot_da  = dpos_a.sum()
+        tot_pnl = pnl.sum()
+        tot_adj = hedge_adj.sum()
+        tot_vb  = (g_b['vega'] * oi100).sum()
+        tot_va  = (g_a['vega'] * oi100).sum()
+        n_exp   = grp.shape[0]
+
+        adj_lbl  = ('▲ Comprar' if tot_adj > 0 else ('▼ Vender' if tot_adj < 0 else '—'))
+        col_pnl  = 'rgba(0,212,232,.95)'  if tot_pnl >= 0 else 'rgba(248,81,73,.95)'
+        col_adj  = 'rgba(245,166,35,.95)' if abs(tot_adj) > 0 else 'rgba(255,255,255,.35)'
+        col_dd   = 'rgba(0,212,232,.95)'  if (tot_da-tot_db) > 0 else 'rgba(248,81,73,.95)'
+
+        scenario_lbl = (f"ΔSpot {w_dspot.value:+.0f}  |  "
+                        f"ΔVol {w_dvol.value:+.1f}pp  |  "
+                        f"ΔRate {w_drate.value:+.0f}bp  |  "
+                        f"+{w_days.value}d")
+
+        cards_html = (
+            f"<div style='margin:8px 0 12px;'>"
+            f"<p style='color:rgba(255,255,255,.3);font-size:10px;margin:0 0 8px;"
+            f"letter-spacing:.5px;'>CENÁRIO: {scenario_lbl}</p>"
+            f"<div style='display:flex;gap:10px;flex-wrap:wrap;'>"
+            + _card('ΔPOS BASE',     f'{tot_db:+,.1f}')
+            + _card('ΔPOS CENÁRIO',  f'{tot_da:+,.1f}', color=col_dd)
+            + _card('ΔΔ TOTAL',      f'{tot_da-tot_db:+,.1f}', color=col_dd,
+                    sub='Δpos_after − Δpos_before')
+            + _card('HEDGE ADJ TOTAL', f'{adj_lbl} {abs(tot_adj):,.1f}Δ', color=col_adj,
+                    sub='−(ΔΔ) por vencimento')
+            + _card('P&L ESTIMADO', f'${tot_pnl:+,.0f}', color=col_pnl)
+            + _card('VEGA BASE→CEN', f'{tot_vb:+,.1f} → {tot_va:+,.1f}',
+                    sub=f'{n_exp} vencimentos')
+            + "</div></div>"
+        )
+
+        # ── Convenção de sinal ────────────────────────────────────────────────
+        convention_html = (
+            "<div style='background:rgba(245,166,35,.06);border-left:3px solid rgba(245,166,35,.4);"
+            "border-radius:3px;padding:8px 14px;margin:8px 0;font-size:10px;"
+            "color:rgba(255,255,255,.5);font-family:monospace;'>"
+            "<b style='color:rgba(245,166,35,.8);'>Convenção de sinal</b> &nbsp;|&nbsp; "
+            "Δpos = δ × OI × 100 &nbsp;·&nbsp; "
+            "Hedge Adj = −(Δpos_after − Δpos_before) &nbsp;·&nbsp; "
+            "+ = comprar underlying &nbsp;·&nbsp; − = vender &nbsp;·&nbsp; "
+            "OI como proxy de posição (sem quantity/multiplier separado) &nbsp;·&nbsp; "
+            "Vol: choque flat uniforme &nbsp;·&nbsp; Opções com ✗ = expiraram no horizonte"
+            "</div>"
+        )
+
+        # ── Render ────────────────────────────────────────────────────────────
+        with out_cards:
+            out_cards.clear_output(wait=True)
+            _disp(wd.HTML(cards_html + convention_html))
+
+        with out_agg:
+            out_agg.clear_output(wait=True)
+            _disp(wd.HTML(
+                "<p style='color:rgba(0,212,232,.7);font-size:11px;margin:4px 0 6px;"
+                "letter-spacing:.5px;'>AGREGADO POR VENCIMENTO</p>"
+                + _html_table(df_agg, num_cols=AGG_SIGN)
+            ))
+
+        with out_inst:
+            out_inst.clear_output(wait=True)
+            shown = df_inst[INST_COLS].head(MAX_ROWS)
+            suffix = (f" — exibindo {MAX_ROWS} de {len(df_inst)}, ordenado por expiry/OI desc"
+                      if len(df_inst) > MAX_ROWS else '')
+            _disp(wd.HTML(
+                f"<p style='color:rgba(0,212,232,.7);font-size:11px;margin:12px 0 6px;"
+                f"letter-spacing:.5px;'>POR INSTRUMENTO{suffix}</p>"
+                + _html_table(shown, num_cols=SIGN_COLS)
+            ))
+
+    def _reset(_):
+        w_dspot.value = 0.0
+        w_dvol.value  = 0.0
+        w_drate.value = 0.0
+        w_days.value  = 0
+        _compute_and_render(None)
+
+    w_btn.on_click(_compute_and_render)
+    w_reset.on_click(_reset)
+    _compute_and_render(None)  # render cenário zero ao carregar
+
+    header = wd.HTML(
+        f"<div style='padding:10px 0 2px;'>"
+        f"<h3 style='color:#00d4e8;margin:0 0 2px;font-size:15px;'>"
+        f"Ajuste Dinâmico do Book — {ticker}</h3>"
+        f"<p style='color:rgba(255,255,255,.3);font-size:10px;margin:0;'>"
+        f"Repricing BS por instrumento → agregação por expiry → hedge adjustment por vencimento"
+        f"</p></div>"
+    )
+    input_row = wd.HBox(
+        [w_dspot, w_dvol, w_drate, w_days, w_btn, w_reset],
+        layout=wd.Layout(flex_flow='row wrap', gap='8px', margin='4px 0 10px 0'))
+
+    return wd.VBox([header, input_row, out_cards, out_agg, out_inst])
+
+
 def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
                       iv_30d, rv_30d, pc_ratio, _C):
     """Monta widget da aba Gamma Squeeze."""
@@ -11546,16 +11854,26 @@ def run_analysis(_):
                     f"<h3>Gamma Squeeze</h3>"
                     f"<p style='color:red;'>Erro: {_sq_err}</p>")])
 
+            # ── Tab 13: Ajuste Dinâmico do Book ──────────────────────────
+            try:
+                tab13 = build_dynamic_book_tab(df, spot, rfr, ticker=ticker)
+            except Exception as _db_err:
+                print(f"⚠️ Ajuste Dinâmico tab: {_db_err}")
+                tab13 = wd.VBox([wd.HTML(
+                    f"<h3 style='color:#00d4e8;'>Ajuste Dinâmico do Book</h3>"
+                    f"<p style='color:#f85149;'>Erro: {_db_err}</p>")])
+
             # ═════════════════════════════════════════════════════════════
             # MONTAGEM FINAL
             # ═════════════════════════════════════════════════════════════
             dashboard = wd.Tab()
-            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12]
+            dashboard.children = [tab1, tab2, tab3, tab4, tab5, tab6, tab7,
+                                   tab8, tab9, tab10, tab11, tab12, tab13]
             tab_names = [
                 'Visão Geral', 'Exposições', 'Sensibilidade', 'Análise P&L',
                 'Monte Carlo', 'Rebalanceamento', 'Previsão SPX',
                 'Simulador', 'Relatório', 'Flow Predictor', 'Analytics',
-                'Gamma Squeeze',
+                'Gamma Squeeze', 'Ajuste Dinâmico',
             ]
             for i, name in enumerate(tab_names):
                 dashboard.set_title(i, name)
