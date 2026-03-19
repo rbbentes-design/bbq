@@ -3353,6 +3353,11 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
       spx_iv_pct                   — IV Percentile 1Y (0–100)
       spx_skew_hist, spx_skew_cur  — SPX skew 30d (ATM − 90% moneyness)
       spx_skew_pct                 — Skew Percentile 1Y
+      rv_multi                     — dict {10:val, 15:val, 21:val, 30:val} RV SPX annualised %
+      splv5ute_hist/cur/pct        — SPLV5UTE Index: vol-ctrl 5% equity exposure
+      splv10te_hist/cur/pct        — SPLV10TE Index: vol-ctrl 10%
+      splv12te_hist/cur/pct        — SPLV12TE Index: vol-ctrl 12%
+      splv15te_hist/cur/pct        — SPLV15TE Index: vol-ctrl 15%
     """
     out = {k: None for k in [
         'vvix_hist','vvix_cur',
@@ -3361,12 +3366,17 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         'tdex_hist','tdex_cur',
         'vix_skew_c25','vix_skew_p25',
         'vrp_hist','vrp_cur','rv10_cur',
+        'rv_multi',
         'axwa_hist','axwa_cur',
         'fedpsor1_hist','fedpsor1_cur',
         'es_bid_ask_cur',
         'lagidbma_hist','lagidbma_cur',
         'spx_iv_hist','spx_iv_cur','spx_iv_pct',
         'spx_skew_hist','spx_skew_cur','spx_skew_pct',
+        'splv5ute_hist','splv5ute_cur','splv5ute_pct',
+        'splv10te_hist','splv10te_cur','splv10te_pct',
+        'splv12te_hist','splv12te_cur','splv12te_pct',
+        'splv15te_hist','splv15te_cur','splv15te_pct',
     ]}
     dt_range = bq.func.range(f'-{lookback_days}d', '0d')
 
@@ -3484,8 +3494,34 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
         out['vrp_hist'] = _vrp
         out['vrp_cur']  = round(float(_vrp.iloc[-1]),  2) if not _vrp.empty  else None
         out['rv10_cur'] = round(float(_rv10.iloc[-1]), 2) if not _rv10.empty else None
+        # RV multi-window (10, 15, 21, 30d) — mesma série SPX já carregada
+        _log_ret = _spx_s.pct_change().dropna()
+        _rv_multi = {}
+        for _w in (10, 15, 21, 30):
+            _rv_w = _log_ret.rolling(_w).std().mul(np.sqrt(252) * 100).dropna()
+            if not _rv_w.empty:
+                _rv_multi[_w] = round(float(_rv_w.iloc[-1]), 2)
+        out['rv_multi'] = _rv_multi if _rv_multi else None
     except Exception as _e:
         print(f'[VRP] {_e}')
+
+    # ── Vol-Control Fund Exposure (SPLV*TE) ───────────────────────────────────
+    for _splv_ticker, _splv_key in [
+        ('SPLV5UTE Index',  'splv5ute'),
+        ('SPLV10TE Index',  'splv10te'),
+        ('SPLV12TE Index',  'splv12te'),
+        ('SPLV15TE Index',  'splv15te'),
+    ]:
+        try:
+            _r = bq.execute(bql.Request(_splv_ticker,
+                    {'px': bq.data.px_last(fill='PREV', dates=dt_range)}))
+            _s = _bql_ts(_r[0], 'px').dropna()
+            if not _s.empty:
+                out[f'{_splv_key}_hist'] = _s
+                out[f'{_splv_key}_cur']  = round(float(_s.iloc[-1]), 1)
+                out[f'{_splv_key}_pct']  = round(float(np.mean(_s.values < _s.values[-1])) * 100, 1)
+        except Exception as _e:
+            print(f'[{_splv_ticker}] {_e}')
 
     # ── AXWA Index — SPX equity funding spread (financing cost) ──────────────
     # Generic 2nd 'AXW' SPX Funding Future → spread em ticks/bps
@@ -8583,6 +8619,54 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='color:{_ba_col};'>{_ba_lvl}</td>"
             f"<td style='font-size:11px;'>Spread bid-ask do futuro ES — >2 ticks = custo de trade elevado = stress de liquidez</td></tr>")
 
+    # ── Vol-Control Fund Exposure (SPLV*TE) ──────────────────────────────────
+    _splv_items = [
+        ('splv5ute',  'SPLV5UTE',  '5%'),
+        ('splv10te',  'SPLV10TE', '10%'),
+        ('splv12te',  'SPLV12TE', '12%'),
+        ('splv15te',  'SPLV15TE', '15%'),
+    ]
+    _splv_any = any(_vvol.get(f'{k}_cur') is not None for k, _, _ in _splv_items)
+    if _splv_any:
+        _vvol_html += (
+            "<tr style='background:#0d1117;'>"
+            "<td colspan='4' style='color:#58a6ff;font-weight:bold;padding:4px 0 2px;'>"
+            "── Vol-Control Fund Exposure ──</td></tr>")
+        # RV multi-window na mesma seção
+        _rv_m = _vvol.get('rv_multi')
+        if _rv_m:
+            _rv_parts = ' | '.join(f"RV{w}D: {_rv_m[w]:.1f}%" for w in (10, 15, 21, 30) if w in _rv_m)
+            _vvol_html += (
+                f"<tr><td>RV SPX (multi-janela)</td>"
+                f"<td colspan='2'><b style='color:#e6b430;'>{_rv_parts}</b></td>"
+                f"<td style='font-size:11px;'>Volatilidade realizada — vol-ctrl funds reduzem equity quando RV sobe</td></tr>")
+        for _splv_key, _splv_lbl, _splv_tgt in _splv_items:
+            _cur = _vvol.get(f'{_splv_key}_cur')
+            _hist = _vvol.get(f'{_splv_key}_hist')
+            _pct = _vvol.get(f'{_splv_key}_pct')
+            if _cur is None:
+                continue
+            # Exposição baixa = fundos leves = venda forçada iminente se RV sobe
+            _pct_str = f' p{_pct:.0f}' if _pct is not None else ''
+            if _pct is not None:
+                if _pct <= 20:
+                    _sc = '#f85149'; _sl = '🔴 exposição MÍNIMA — venda forçada iminente'
+                elif _pct <= 40:
+                    _sc = '#ffaa00'; _sl = '🟡 exposição baixa — buffer limitado'
+                elif _pct >= 80:
+                    _sc = '#3fb950'; _sl = '🟢 exposição MÁXIMA — fundos comprados'
+                elif _pct >= 60:
+                    _sc = '#3fb950'; _sl = '🟢 exposição elevada'
+                else:
+                    _sc = '#8b949e'; _sl = '— exposição neutra'
+            else:
+                _sc = '#8b949e'; _sl = '—'
+            _vvol_html += (
+                f"<tr><td>{_splv_lbl} (vol-ctrl {_splv_tgt})</td>"
+                f"<td><b style='color:{_sc};'>{_cur:.1f}%{_pct_str}</b></td>"
+                f"<td style='color:{_sc};'>{_sl}</td>"
+                f"<td style='font-size:11px;'>Exposição equity do fundo vol-target {_splv_tgt} — baixo = deslavaancagem ao menor spike de RV</td></tr>")
+
     # LAGIDBMA — Conference Board margin level (ambos os extremos são risco)
     # Alto  → alavancagem excessiva → realizações forçadas se mercado cair
     # Baixo → guarda baixa / sem proteção
@@ -8619,8 +8703,9 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='font-size:11px;'>Margin alta → realizações forçadas se mercado cair; baixa → guarda baixa</td></tr>")
 
     # Se nenhum indicador disponível (nenhuma seção)
+    _splv_any2 = any(_vvol.get(f'{k}_cur') is not None for k, _, _ in _splv_items)
     if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi,
-                                _axwa, _fed1, _es_ba, _lag]):
+                                _axwa, _fed1, _es_ba, _lag]) and not _splv_any2:
         _vvol_html += "<tr><td colspan='4' style='color:#8b949e;'>Indicadores não disponíveis (falha no fetch BBG)</td></tr>"
 
     _vvol_html += "</table></div></div>"
