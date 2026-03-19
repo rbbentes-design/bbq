@@ -8202,102 +8202,768 @@ def create_symmetric_gauge(value, title, scale, unit='$Bn', width=220, height=19
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 14 — DECISION ENGINE (inline loader, no external import)
+# TAB 14 — DECISION ENGINE (fully inline — zero external imports)
+# All classes defined here; reuses calculate_all_greeks, black_scholes_price_vec,
+# compute_walls, compute_strike_exposures already defined in this file.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=None):
-    """
-    Loads decision_engine.py via importlib (avoids ModuleNotFoundError in
-    BQuant kernel where sys.path doesn't include the project directory).
-    Falls back to a minimal informational tab if the file cannot be found.
-    """
-    import importlib.util as _ilu
-    import sys as _sys
-    import os as _os
-    import json as _json
-    import traceback as _tb
+import json as _de_json
+import uuid as _de_uuid
+from datetime import datetime as _de_dt, date as _de_date, timedelta as _de_td
+from dataclasses import dataclass as _de_dc, field as _de_field, asdict as _de_asdict
+from enum import Enum as _de_Enum
 
+# ── DE constants ──────────────────────────────────────────────────────────────
+_DE_ES_PV   = 50.0   # USD/point ES full
+_DE_MES_PV  = 5.0    # USD/point MES micro
+_DE_OPT_MULT= 100    # SPX option multiplier
+_DE_OPEN    = (9, 30)
+_DE_CLOSE   = (16, 0)
+_DE_FLATTEN = 15     # min before close to flatten
+_DE_LAST_EN = 30     # min before close to block new entries
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
+class _DE_Regime(str, _de_Enum):
+    DIRECTIONAL_LONG  = 'directional_long'
+    DIRECTIONAL_SHORT = 'directional_short'
+    NEUTRAL           = 'neutral'
+    LONG_VOL          = 'long_vol'
+    SHORT_VOL         = 'short_vol'
+    NO_TRADE          = 'no_trade'
+
+class _DE_StructureType(str, _de_Enum):
+    LONG_CALL         = 'long_call'
+    LONG_CALL_SPREAD  = 'long_call_spread'
+    SHORT_CALL_SPREAD = 'short_call_spread'
+    LONG_PUT          = 'long_put'
+    LONG_PUT_SPREAD   = 'long_put_spread'
+    SHORT_PUT_SPREAD  = 'short_put_spread'
+    IRON_CONDOR       = 'iron_condor'
+    CALL_FLY          = 'call_fly'
+    IRON_BUTTERFLY    = 'iron_butterfly'
+    PUT_FLY           = 'put_fly'
+    LONG_STRADDLE     = 'long_straddle'
+    ES_LONG           = 'es_long'
+    ES_SHORT          = 'es_short'
+    MES_LONG          = 'mes_long'
+    MES_SHORT         = 'mes_short'
+    NONE              = 'none'
+
+_DE_REGIME_STRUCTS = {
+    _DE_Regime.DIRECTIONAL_LONG:  [_DE_StructureType.LONG_CALL_SPREAD,  _DE_StructureType.LONG_CALL,        _DE_StructureType.SHORT_PUT_SPREAD, _DE_StructureType.ES_LONG,  _DE_StructureType.MES_LONG],
+    _DE_Regime.DIRECTIONAL_SHORT: [_DE_StructureType.LONG_PUT_SPREAD,   _DE_StructureType.LONG_PUT,         _DE_StructureType.SHORT_CALL_SPREAD,_DE_StructureType.ES_SHORT, _DE_StructureType.MES_SHORT],
+    _DE_Regime.NEUTRAL:           [_DE_StructureType.IRON_CONDOR,       _DE_StructureType.IRON_BUTTERFLY,   _DE_StructureType.CALL_FLY,         _DE_StructureType.PUT_FLY],
+    _DE_Regime.LONG_VOL:          [_DE_StructureType.LONG_STRADDLE,     _DE_StructureType.LONG_CALL_SPREAD, _DE_StructureType.LONG_PUT_SPREAD],
+    _DE_Regime.SHORT_VOL:         [_DE_StructureType.IRON_CONDOR,       _DE_StructureType.SHORT_PUT_SPREAD, _DE_StructureType.SHORT_CALL_SPREAD,_DE_StructureType.IRON_BUTTERFLY],
+    _DE_Regime.NO_TRADE:          [],
+}
+
+# ── Dataclasses ───────────────────────────────────────────────────────────────
+@_de_dc
+class _DE_RiskConfig:
+    max_risk_per_trade_pct:   float = 1.0
+    max_daily_loss_pct:       float = 3.0
+    max_total_exposure_pct:   float = 15.0
+    max_margin_usage_pct:     float = 50.0
+    reserve_cash_pct:         float = 10.0
+    max_positions_open:       int   = 4
+    max_contracts_per_trade:  int   = 10
+    min_cash_buffer:          float = 5000.0
+    min_confidence_to_trade:  float = 0.55
+    last_entry_min_before_close: int = _DE_LAST_EN
+    flatten_min_before_close: int   = _DE_FLATTEN
+    paper_mode:               bool  = True
+
+@_de_dc
+class _DE_AccountState:
+    net_liquidation:  float = 100_000.0
+    available_cash:   float = 100_000.0
+    buying_power:     float = 200_000.0
+    available_margin: float = 100_000.0
+    unrealized_pnl:   float = 0.0
+    realized_pnl_day: float = 0.0
+    margin_used:      float = 0.0
+    risk_used_day:    float = 0.0
+    source:           str   = 'manual'
+
+@_de_dc
+class _DE_Leg:
+    instrument:  str
+    side:        int
+    option_type: object = None
+    strike:      object = None
+    iv:          object = None
+    tte:         object = None
+    px:          object = None
+    delta:       float  = 0.0
+    gamma:       float  = 0.0
+    vega:        float  = 0.0
+    theta:       float  = 0.0
+    vanna:       float  = 0.0
+    charm:       float  = 0.0
+    multiplier:  float  = 100.0
+
+@_de_dc
+class _DE_Structure:
+    structure_type:    object
+    legs:              object
+    net_debit:         float = 0.0
+    max_loss:          float = 0.0
+    max_gain:          float = 0.0
+    net_delta:         float = 0.0
+    net_gamma:         float = 0.0
+    net_vega:          float = 0.0
+    net_theta:         float = 0.0
+    net_vanna:         float = 0.0
+    net_charm:         float = 0.0
+    estimated_margin:  float = 0.0
+
+@_de_dc
+class _DE_TradeDecision:
+    decision_id:    str   = _de_field(default_factory=lambda: str(_de_uuid.uuid4())[:8])
+    timestamp:      str   = _de_field(default_factory=lambda: _de_dt.utcnow().isoformat())
+    action:         str   = 'no_trade'
+    instrument:     str   = 'ES'
+    structure:      object = _de_field(default_factory=lambda: _DE_StructureType.NONE)
+    regime:         object = _de_field(default_factory=lambda: _DE_Regime.NO_TRADE)
+    confidence:     float = 0.0
+    regime_proba:   dict  = _de_field(default_factory=dict)
+    entry_price:    object = None
+    stop_loss:      object = None
+    take_profit:    object = None
+    quantity:       int   = 0
+    expiry:         object = None
+    strikes:        dict  = _de_field(default_factory=dict)
+    rationale:      str   = ''
+    risk_metrics:   dict  = _de_field(default_factory=dict)
+    flatten_time:   object = None
+    execution_ready: bool = False
+    block_reason:   object = None
+    capital_available:          float = 0.0
+    margin_available:           float = 0.0
+    risk_budget_trade:          float = 0.0
+    risk_budget_day_remaining:  float = 0.0
+    estimated_trade_cost:       float = 0.0
+    estimated_max_loss:         float = 0.0
+    estimated_margin_usage:     float = 0.0
+    allowed_size:               int   = 0
+    size_block_reason:          object = None
+    structure_obj:              object = None
+
+# ── MarketState ───────────────────────────────────────────────────────────────
+class _DE_MarketState:
+    def __init__(self, ticker, spot, df):
+        self.ticker = ticker; self.spot = spot; self.df = df
+        self.features = {}
+
+    def compute(self):
+        f = {}
+        df = self.df; spot = self.spot
+        if df is None or df.empty:
+            return f
+        is_call = df['Type'] == 'Call'; is_put = df['Type'] == 'Put'
+        K = df['Strike'].values; iv = df['IV'].values
+        oi = df['OI'].values;    tte = df['Tte'].values
+
+        # ATM IV
+        atm_idx = int(np.argmin(np.abs(K - spot)))
+        f['atm_iv_0dte'] = float(iv[atm_idx]) if len(iv) > 0 else 0.15
+
+        # 0DTE skew
+        zero_mask = tte < (2.0 / TRADING_DAYS)
+        if zero_mask.sum() > 4:
+            df0 = df[zero_mask].copy()
+            try:
+                g0 = calculate_all_greeks(spot, df0['Strike'].values,
+                                          df0['IV'].values, df0['Tte'].values,
+                                          df0['Type'].values)
+                c_mask = df0['Type'].values == 'Call'
+                p_mask = df0['Type'].values == 'Put'
+                if g0 and c_mask.sum() > 0 and p_mask.sum() > 0:
+                    c_d = np.abs(g0['delta'][c_mask])
+                    p_d = np.abs(g0['delta'][p_mask])
+                    iv0v = df0['IV'].values
+                    c25 = float(iv0v[c_mask][np.argmin(np.abs(c_d - 0.25))]) if c_mask.sum() > 0 else f['atm_iv_0dte']
+                    p25 = float(iv0v[p_mask][np.argmin(np.abs(p_d - 0.25))]) if p_mask.sum() > 0 else f['atm_iv_0dte']
+                    f['skew_0dte'] = p25 - c25
+                    f['iv_25d_call_0dte'] = c25; f['iv_25d_put_0dte'] = p25
+            except Exception:
+                f['skew_0dte'] = 0.0
+        else:
+            f['skew_0dte'] = 0.0
+
+        # OI
+        oi_c = np.where(is_call, oi, 0); oi_p = np.where(is_put, oi, 0)
+        tot  = oi.sum() + 1e-9
+        f['total_oi']    = float(oi.sum())
+        f['oi_call_pct'] = float(oi_c.sum() / tot)
+        f['pc_oi_ratio'] = float(oi_p.sum() / (oi_c.sum() + 1e-9))
+        atm_mask = np.abs(K - spot) <= spot * 0.01
+        f['atm_oi_pct']  = float(oi[atm_mask].sum() / tot)
+
+        # Walls via existing dashboard function
+        try:
+            greeks_all = calculate_all_greeks(spot, K, iv, tte, df['Type'].values)
+            agg = compute_strike_exposures(df, greeks_all, spot)
+            cw, pw = compute_walls(agg)
+            f['call_wall'] = float(cw) if cw else spot * 1.02
+            f['put_wall']  = float(pw) if pw else spot * 0.98
+            f['dist_to_call_wall'] = (f['call_wall'] - spot) / spot
+            f['dist_to_put_wall']  = (spot - f['put_wall'])  / spot
+            f['wall_range']        = (f['call_wall'] - f['put_wall']) / spot
+            f['net_gex'] = float((agg.get('Call_gamma', pd.Series([0])).sum()
+                                   - agg.get('Put_gamma',  pd.Series([0])).sum()))
+        except Exception:
+            f['call_wall'] = spot * 1.02; f['put_wall'] = spot * 0.98
+            f['dist_to_call_wall'] = 0.02; f['dist_to_put_wall'] = 0.02
+            f['wall_range'] = 0.04; f['net_gex'] = 0.0
+        f.setdefault('net_vanna', 0.0); f.setdefault('net_charm', 0.0)
+
+        # Time
+        now = _de_dt.now()
+        open_t  = now.replace(hour=_DE_OPEN[0],  minute=_DE_OPEN[1],  second=0, microsecond=0)
+        close_t = now.replace(hour=_DE_CLOSE[0], minute=_DE_CLOSE[1], second=0, microsecond=0)
+        elapsed = max(0, (now - open_t).total_seconds() / 60)
+        remain  = max(0, (close_t - now).total_seconds() / 60)
+        total   = (close_t - open_t).total_seconds() / 60
+        f['time_of_day_pct']  = float(elapsed / (total + 1e-9))
+        f['minutes_to_close'] = float(remain)
+        f['minutes_elapsed']  = float(elapsed)
+        f['theta_compression']= float(np.exp(-remain / 60.0))
+        self.features = f
+        return f
+
+# ── DecisionModel (heuristic — no external ML lib required) ───────────────────
+class _DE_DecisionModel:
+    FEATURE_NAMES = [
+        'atm_iv_0dte','skew_0dte','pc_oi_ratio','atm_oi_pct',
+        'dist_to_call_wall','dist_to_put_wall','wall_range',
+        'net_gex','net_vanna','net_charm',
+        'time_of_day_pct','minutes_to_close','theta_compression',
+        'flow_score','squeeze_score','tail_score','iv_rv_spread','skew_level',
+    ]
+
+    def predict(self, f, ext):
+        flow   = ext.get('flow_score', 50)
+        squeeze= ext.get('squeeze_score', 0)
+        tail   = ext.get('tail_score', 0)
+        iv_rv  = ext.get('iv_rv_spread', 0)
+        skew   = f.get('skew_0dte', 0)
+        gex    = f.get('net_gex', 0)
+        min_cl = f.get('minutes_to_close', 390)
+
+        sc = {r: 0.0 for r in _DE_Regime}
+        if flow > 65:    sc[_DE_Regime.DIRECTIONAL_LONG]  += 0.30
+        elif flow < 35:  sc[_DE_Regime.DIRECTIONAL_SHORT] += 0.30
+        if gex > 0:
+            sc[_DE_Regime.NEUTRAL]   += 0.20
+            sc[_DE_Regime.SHORT_VOL] += 0.15
+        else:
+            sc[_DE_Regime.LONG_VOL]  += 0.20
+        if iv_rv > 3:    sc[_DE_Regime.SHORT_VOL]         += 0.25
+        elif iv_rv < -3: sc[_DE_Regime.LONG_VOL]          += 0.25
+        if squeeze > 70: sc[_DE_Regime.LONG_VOL]          += 0.20
+        if tail > 70:    sc[_DE_Regime.NO_TRADE]           += 0.40
+        if skew > 0.03:  sc[_DE_Regime.DIRECTIONAL_SHORT] += 0.10
+        if min_cl < _DE_LAST_EN:
+            sc[_DE_Regime.NO_TRADE] += 1.0
+
+        total = sum(sc.values()) or 1.0
+        proba = {k.value: v / total for k, v in sc.items()}
+        best  = max(sc, key=sc.get)
+        conf  = sc[best] / total
+        return best, conf, proba
+
+# ── StrategySelector ──────────────────────────────────────────────────────────
+class _DE_StrategySelector:
+    def __init__(self, df, spot, rfr=0.05, minutes_to_close=390):
+        self.df = df; self.spot = spot; self.rfr = rfr
+        self.mtc = minutes_to_close
+        self.df0 = df[df['Tte'] < 2.0 / TRADING_DAYS].copy() if df is not None and not df.empty else pd.DataFrame()
+
+    def _atm(self):
+        K = self.df0['Strike'].values if not self.df0.empty else np.array([self.spot])
+        return float(K[np.argmin(np.abs(K - self.spot))])
+
+    def _near(self, t):
+        K = self.df0['Strike'].values if not self.df0.empty else np.array([self.spot])
+        return float(K[np.argmin(np.abs(K - t))])
+
+    def _get_iv(self, k, t):
+        if self.df0.empty: return 0.15
+        sub = self.df0[(np.abs(self.df0['Strike'] - k) < 1e-3) &
+                       (self.df0['Type'] == ('Call' if t == 'C' else 'Put'))]
+        return float(sub['IV'].values[0]) if not sub.empty else 0.15
+
+    def _tte(self):
+        return float(self.df0['Tte'].mean()) if not self.df0.empty else 0.5 / TRADING_DAYS
+
+    def _price_leg(self, strike, opt_type, sign):
+        iv  = self._get_iv(strike, opt_type)
+        tte = self._tte()
+        try:
+            px = float(black_scholes_price_vec(
+                self.spot, np.array([strike]), np.array([iv]),
+                np.array([tte]), np.array([opt_type]), r=self.rfr)[0])
+        except Exception:
+            px = 0.0
+        try:
+            g = calculate_all_greeks(self.spot, np.array([strike]), np.array([iv]),
+                                     np.array([tte]), np.array([opt_type]), r=self.rfr)
+        except Exception:
+            g = {}
+        return _DE_Leg(
+            instrument='option', side=sign, option_type=opt_type,
+            strike=strike, iv=iv, tte=tte, px=px,
+            delta=float(g.get('delta', [0])[0]) if g else 0.0,
+            gamma=float(g.get('gamma', [0])[0]) if g else 0.0,
+            vega =float(g.get('vega',  [0])[0]) if g else 0.0,
+            theta=float(g.get('theta', [0])[0]) if g else 0.0,
+            vanna=float(g.get('vanna', [0])[0]) if g else 0.0,
+            charm=float(g.get('charm', [0])[0]) if g else 0.0,
+            multiplier=_DE_OPT_MULT)
+
+    def _build(self, legs, stype):
+        nd = sum(l.side * (l.px or 0) * l.multiplier for l in legs)
+        # max_loss
+        if stype in (_DE_StructureType.LONG_CALL, _DE_StructureType.LONG_PUT,
+                     _DE_StructureType.LONG_STRADDLE,
+                     _DE_StructureType.LONG_CALL_SPREAD, _DE_StructureType.LONG_PUT_SPREAD,
+                     _DE_StructureType.CALL_FLY, _DE_StructureType.PUT_FLY,
+                     _DE_StructureType.IRON_BUTTERFLY):
+            ml = abs(nd)
+        elif stype in (_DE_StructureType.SHORT_CALL_SPREAD, _DE_StructureType.SHORT_PUT_SPREAD):
+            sk = sorted([l.strike for l in legs if l.strike])
+            ml = abs(sk[-1] - sk[0]) * _DE_OPT_MULT - abs(nd) if len(sk) >= 2 else abs(nd)
+        elif stype == _DE_StructureType.IRON_CONDOR:
+            cl = [l for l in legs if l.option_type == 'C']
+            pl = [l for l in legs if l.option_type == 'P']
+            cw = abs(cl[0].strike - cl[1].strike) * _DE_OPT_MULT if len(cl) == 2 else 500
+            pw = abs(pl[0].strike - pl[1].strike) * _DE_OPT_MULT if len(pl) == 2 else 500
+            ml = max(cw, pw) - abs(nd)
+        else:
+            ml = abs(nd) * 2
+        return _DE_Structure(
+            structure_type=stype, legs=legs, net_debit=nd, max_loss=max(ml, 0.01),
+            net_delta=sum(l.side*l.delta for l in legs),
+            net_gamma=sum(l.side*l.gamma for l in legs),
+            net_vega =sum(l.side*l.vega  for l in legs),
+            net_theta=sum(l.side*l.theta for l in legs),
+            estimated_margin=max(ml, 0.01))
+
+    def build(self, stype):
+        atm = self._atm()
+        sd  = (self.spot * self._get_iv(atm, 'C') *
+               np.sqrt(max(self.mtc / 390.0, 0.01) / TRADING_DAYS))
+        oc1 = self._near(self.spot + sd * 0.5)
+        oc2 = self._near(self.spot + sd * 1.0)
+        op1 = self._near(self.spot - sd * 0.5)
+        op2 = self._near(self.spot - sd * 1.0)
+        try:
+            if stype == _DE_StructureType.LONG_CALL:
+                legs = [self._price_leg(atm, 'C', +1)]
+            elif stype == _DE_StructureType.LONG_PUT:
+                legs = [self._price_leg(atm, 'P', +1)]
+            elif stype == _DE_StructureType.LONG_STRADDLE:
+                legs = [self._price_leg(atm,'C',+1), self._price_leg(atm,'P',+1)]
+            elif stype == _DE_StructureType.LONG_CALL_SPREAD:
+                legs = [self._price_leg(atm,'C',+1), self._price_leg(oc1,'C',-1)]
+            elif stype == _DE_StructureType.LONG_PUT_SPREAD:
+                legs = [self._price_leg(atm,'P',+1), self._price_leg(op1,'P',-1)]
+            elif stype == _DE_StructureType.SHORT_CALL_SPREAD:
+                legs = [self._price_leg(oc1,'C',-1), self._price_leg(oc2,'C',+1)]
+            elif stype == _DE_StructureType.SHORT_PUT_SPREAD:
+                legs = [self._price_leg(op1,'P',-1), self._price_leg(op2,'P',+1)]
+            elif stype == _DE_StructureType.IRON_CONDOR:
+                legs = [self._price_leg(op1,'P',-1), self._price_leg(op2,'P',+1),
+                        self._price_leg(oc1,'C',-1), self._price_leg(oc2,'C',+1)]
+            elif stype == _DE_StructureType.IRON_BUTTERFLY:
+                legs = [self._price_leg(op1,'P',+1), self._price_leg(atm,'P',-1),
+                        self._price_leg(atm,'C',-1), self._price_leg(oc1,'C',+1)]
+            elif stype == _DE_StructureType.CALL_FLY:
+                legs = [self._price_leg(atm,'C',+1), self._price_leg(oc1,'C',-2),
+                        self._price_leg(oc2,'C',+1)]
+            elif stype == _DE_StructureType.PUT_FLY:
+                legs = [self._price_leg(atm,'P',+1), self._price_leg(op1,'P',-2),
+                        self._price_leg(op2,'P',+1)]
+            else:
+                return None
+            return self._build(legs, stype)
+        except Exception:
+            return None
+
+    def select_best(self, regime, confidence, cfg):
+        candidates = _DE_REGIME_STRUCTS.get(regime, [])
+        if self.mtc < 60:
+            simple = {_DE_StructureType.LONG_CALL, _DE_StructureType.LONG_PUT,
+                      _DE_StructureType.LONG_CALL_SPREAD, _DE_StructureType.LONG_PUT_SPREAD,
+                      _DE_StructureType.ES_LONG, _DE_StructureType.ES_SHORT,
+                      _DE_StructureType.MES_LONG, _DE_StructureType.MES_SHORT}
+            candidates = [c for c in candidates if c in simple]
+        if confidence < 0.65:
+            cx = {_DE_StructureType.IRON_CONDOR, _DE_StructureType.CALL_FLY,
+                  _DE_StructureType.PUT_FLY,     _DE_StructureType.IRON_BUTTERFLY}
+            candidates = [c for c in candidates if c not in cx]
+        for stype in candidates:
+            if stype in (_DE_StructureType.ES_LONG,  _DE_StructureType.ES_SHORT,
+                         _DE_StructureType.MES_LONG, _DE_StructureType.MES_SHORT):
+                return None, stype
+            s = self.build(stype)
+            if s and s.max_loss > 0:
+                return s, stype
+        return None, _DE_StructureType.NONE
+
+# ── RiskEngine ────────────────────────────────────────────────────────────────
+class _DE_RiskEngine:
+    def __init__(self, cfg, acc):
+        self.cfg = cfg; self.acc = acc
+
+    @property
+    def _cap(self):   return self.acc.net_liquidation
+    @property
+    def _rb_trade(self): return self._cap * self.cfg.max_risk_per_trade_pct / 100
+    @property
+    def _rb_day(self):   return self._cap * self.cfg.max_daily_loss_pct / 100
+    @property
+    def _rb_day_rem(self):
+        return max(0.0, self._rb_day - abs(min(0.0, self.acc.realized_pnl_day)))
+
+    def size(self, struct, stop_pts, instrument='option', minutes_to_close=390):
+        if instrument in ('ES', 'MES'):
+            pv = _DE_ES_PV if instrument == 'ES' else _DE_MES_PV
+            ml_lot = abs(stop_pts) * pv
+            mg_lot = ml_lot * 2; cost_lot = ml_lot
+        elif struct:
+            ml_lot  = abs(struct.max_loss)
+            mg_lot  = abs(struct.estimated_margin)
+            cost_lot= abs(struct.net_debit) if struct.net_debit > 0 else mg_lot
+        else:
+            return {'allowed_size': 0, 'block_reason': 'no structure'}
+
+        if ml_lot <= 0:
+            return {'allowed_size': 0, 'block_reason': 'max_loss=0',
+                    'capital': self._cap, 'risk_budget_trade': self._rb_trade,
+                    'risk_budget_day_remaining': self._rb_day_rem,
+                    'available_margin': self.acc.available_margin,
+                    'available_cash': self.acc.available_cash,
+                    'estimated_trade_cost': 0, 'estimated_max_loss': 0, 'estimated_margin': 0}
+
+        n_rt = int(self._rb_trade        / ml_lot)
+        n_rd = int(self._rb_day_rem      / ml_lot)
+        n_mg = int(self.acc.available_margin / (mg_lot + 1e-9))
+        n_ca = int((self.acc.available_cash - self.cfg.min_cash_buffer) / (cost_lot + 1e-9))
+        n_mx = self.cfg.max_contracts_per_trade
+        final = max(0, min(n_rt, n_rd, n_mg, n_ca, n_mx))
+        block = None
+        if final == 0:
+            if   n_rd == 0: block = 'Budget diário esgotado'
+            elif n_rt == 0: block = 'Budget por trade insuficiente'
+            elif n_mg == 0: block = 'Margem insuficiente'
+            elif n_ca == 0: block = 'Caixa insuficiente'
+        return {'allowed_size': final, 'block_reason': block,
+                'capital': self._cap, 'risk_budget_trade': self._rb_trade,
+                'risk_budget_day_remaining': self._rb_day_rem,
+                'available_margin': self.acc.available_margin,
+                'available_cash': self.acc.available_cash,
+                'estimated_trade_cost': final * cost_lot,
+                'estimated_max_loss':   final * ml_lot,
+                'estimated_margin':     final * mg_lot}
+
+    def validate(self, decision, struct, minutes_to_close):
+        # Hard blocks
+        if self.acc.available_cash < self.cfg.min_cash_buffer:
+            decision.block_reason = f'Caixa abaixo do buffer: ${self.acc.available_cash:,.0f}'
+            decision.execution_ready = False; return decision
+        if self._rb_day_rem <= 0:
+            decision.block_reason = 'Budget diário esgotado'
+            decision.execution_ready = False; return decision
+        if minutes_to_close < self.cfg.last_entry_min_before_close:
+            decision.block_reason = f'Muito perto do fechamento: {minutes_to_close:.0f} min'
+            decision.execution_ready = False; return decision
+
+        stop_pts = abs((decision.entry_price or 0) - (decision.stop_loss or 0))
+        sz = self.size(struct, stop_pts, decision.instrument, minutes_to_close)
+        decision.allowed_size           = sz['allowed_size']
+        decision.size_block_reason      = sz.get('block_reason')
+        decision.estimated_trade_cost   = sz['estimated_trade_cost']
+        decision.estimated_max_loss     = sz['estimated_max_loss']
+        decision.estimated_margin_usage = sz['estimated_margin']
+        decision.capital_available      = sz['capital']
+        decision.margin_available       = sz['available_margin']
+        decision.risk_budget_trade      = sz['risk_budget_trade']
+        decision.risk_budget_day_remaining = sz['risk_budget_day_remaining']
+        decision.execution_ready = (sz['allowed_size'] > 0 and not self.cfg.paper_mode
+                                    and decision.stop_loss is not None)
+        # flatten time
+        now = _de_dt.now()
+        close = now.replace(hour=_DE_CLOSE[0], minute=_DE_CLOSE[1], second=0, microsecond=0)
+        ft = close - _de_td(minutes=self.cfg.flatten_min_before_close)
+        decision.flatten_time = ft.strftime('%H:%M ET')
+        return decision
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+class _DE_Orchestrator:
+    def __init__(self, ticker, spot, rfr, cfg, acc):
+        self.ticker = ticker; self.spot = spot; self.rfr = rfr
+        self.cfg = cfg; self.acc = acc
+        self.model = _DE_DecisionModel()
+        self._last: object = None
+
+    def run(self, df, ext=None):
+        ext = ext or {}
+        now = _de_dt.now()
+        open_t  = now.replace(hour=_DE_OPEN[0],  minute=_DE_OPEN[1],  second=0, microsecond=0)
+        close_t = now.replace(hour=_DE_CLOSE[0], minute=_DE_CLOSE[1], second=0, microsecond=0)
+        mtc = max(0, (close_t - now).total_seconds() / 60)
+
+        ms       = _DE_MarketState(self.ticker, self.spot, df)
+        features = ms.compute()
+        features['minutes_to_close'] = mtc
+
+        regime, conf, proba = self.model.predict(features, ext)
+        d = _DE_TradeDecision(regime=regime, confidence=conf, regime_proba=proba)
+
+        if regime == _DE_Regime.NO_TRADE or conf < self.cfg.min_confidence_to_trade:
+            d.action = 'no_trade'
+            d.block_reason = ('Regime: no_trade' if regime == _DE_Regime.NO_TRADE
+                              else f'Confiança {conf:.1%} < {self.cfg.min_confidence_to_trade:.1%}')
+            self._last = d; return d
+
+        sel = _DE_StrategySelector(df, self.spot, self.rfr, mtc)
+        struct, stype = sel.select_best(regime, conf, self.cfg)
+        d.structure = stype; d.structure_obj = struct
+        d.instrument = ('ES'  if stype in (_DE_StructureType.ES_LONG,  _DE_StructureType.ES_SHORT)  else
+                        'MES' if stype in (_DE_StructureType.MES_LONG, _DE_StructureType.MES_SHORT) else
+                        'SPX_OPT')
+        d.action = ('buy'  if regime in (_DE_Regime.DIRECTIONAL_LONG,  _DE_Regime.LONG_VOL)  else
+                    'sell' if regime in (_DE_Regime.DIRECTIONAL_SHORT, _DE_Regime.SHORT_VOL) else 'buy')
+
+        if struct:
+            ep = abs(struct.net_debit) / _DE_OPT_MULT
+            sp = ep * 0.5 if struct.net_debit > 0 else ep + struct.max_loss / _DE_OPT_MULT
+            tp = ep * 2.0 if struct.net_debit > 0 else ep * 0.5
+            d.entry_price = round(ep, 2); d.stop_loss = round(sp, 2); d.take_profit = round(tp, 2)
+            d.strikes = {f'leg{i+1}': l.strike for i, l in enumerate(struct.legs) if l.strike}
+            d.risk_metrics = {'net_delta': struct.net_delta, 'net_gamma': struct.net_gamma,
+                              'net_vega': struct.net_vega, 'net_theta': struct.net_theta}
+            try:
+                exp_rows = df[df['Tte'] < 2.0 / TRADING_DAYS]
+                d.expiry = str(exp_rows['Exp'].min()) if not exp_rows.empty else ''
+            except Exception:
+                d.expiry = ''
+        elif stype in (_DE_StructureType.ES_LONG, _DE_StructureType.ES_SHORT,
+                       _DE_StructureType.MES_LONG, _DE_StructureType.MES_SHORT):
+            sp_pts = features.get('atm_iv_0dte', 0.01) * self.spot * 0.5
+            d.entry_price = round(self.spot, 2)
+            d.stop_loss   = round(self.spot - sp_pts if 'LONG' in stype.value.upper() else self.spot + sp_pts, 2)
+            d.take_profit = round(self.spot + sp_pts * 2 if 'LONG' in stype.value.upper() else self.spot - sp_pts * 2, 2)
+
+        d.rationale = (
+            f"Regime={regime.value} conf={conf:.1%} | "
+            f"Flow={ext.get('flow_score',0):.0f} Sq={ext.get('squeeze_score',0):.0f} "
+            f"Tail={ext.get('tail_score',0):.0f} | "
+            f"ATM_IV={features.get('atm_iv_0dte',0)*100:.1f}% "
+            f"Skew={features.get('skew_0dte',0)*100:.1f}pp "
+            f"GEX={features.get('net_gex',0):.1e} | "
+            f"Walls call={features.get('call_wall',self.spot):.0f} "
+            f"put={features.get('put_wall',self.spot):.0f}"
+        )
+
+        risk = _DE_RiskEngine(self.cfg, self.acc)
+        sz = risk.size(struct, abs((d.entry_price or 0) - (d.stop_loss or 0)),
+                       d.instrument, mtc)
+        d.quantity = sz['allowed_size']
+        d = risk.validate(d, struct, mtc)
+        self._last = d
+        return d
+
+    def execute_paper(self):
+        if not self._last: return {'status': 'no_decision'}
+        return {'status': 'paper_logged', 'decision_id': self._last.decision_id,
+                'structure': self._last.structure.value,
+                'quantity': self._last.quantity, 'entry': self._last.entry_price,
+                'stop': self._last.stop_loss, 'target': self._last.take_profit,
+                'timestamp': _de_dt.utcnow().isoformat()}
+
+
+# ── Tab builder ───────────────────────────────────────────────────────────────
+def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=None):
+    """Tab 14 — Decision Engine 0DTE (fully inline, no external file needed)."""
+    from IPython.display import display as _disp, HTML as _HTML
     ext = external_scores or {}
 
-    # ── Step 1: try to get already-loaded module ──────────────────────────────
-    _de_mod = _sys.modules.get('decision_engine', None)
+    # ── Config widgets ────────────────────────────────────────────────────────
+    w_cash   = wd.FloatText(value=100_000, description='Cash ($):',
+                            layout=wd.Layout(width='200px'), style={'description_width':'80px'})
+    w_nlv    = wd.FloatText(value=100_000, description='NLV ($):',
+                            layout=wd.Layout(width='200px'), style={'description_width':'80px'})
+    w_bp     = wd.FloatText(value=200_000, description='Buying Power:',
+                            layout=wd.Layout(width='220px'), style={'description_width':'100px'})
+    w_margin = wd.FloatText(value=100_000, description='Avail Margin:',
+                            layout=wd.Layout(width='220px'), style={'description_width':'100px'})
+    w_rpnl   = wd.FloatText(value=0,       description='Real PnL $:',
+                            layout=wd.Layout(width='200px'), style={'description_width':'80px'})
+    w_risk   = wd.FloatSlider(value=1.0, min=0.1, max=5.0, step=0.1,
+                              description='Risk/Trade %:', readout_format='.1f',
+                              layout=wd.Layout(width='300px'), style={'description_width':'100px'})
+    w_daily  = wd.FloatSlider(value=3.0, min=0.5, max=10.0, step=0.5,
+                              description='Daily Loss %:', readout_format='.1f',
+                              layout=wd.Layout(width='300px'), style={'description_width':'100px'})
+    w_maxpos = wd.IntSlider(value=4, min=1, max=10, description='Max Pos:',
+                            layout=wd.Layout(width='260px'), style={'description_width':'80px'})
+    w_paper  = wd.ToggleButton(value=True, description='PAPER MODE ON',
+                               button_style='warning', icon='shield',
+                               layout=wd.Layout(width='160px', height='36px'))
+    w_run    = wd.Button(description='▶ Gerar Decisão', button_style='primary',
+                         layout=wd.Layout(width='160px', height='36px'))
+    w_pex    = wd.Button(description='📋 Paper Execute', button_style='warning',
+                         layout=wd.Layout(width='150px', height='36px'))
 
-    # ── Step 2: search for decision_engine.py ────────────────────────────────
-    if _de_mod is None:
-        _de_candidates = []
-        # Same directory as a known absolute path (BBG local)
-        for _base in [
-            _os.path.expanduser('~/bbg/examples'),
-            _os.path.expanduser('~/examples'),
-            '/bbg/examples',
-            '/home/user/bbg/examples',
-            '/home/user/examples',
-            _os.getcwd(),
-            _os.path.join(_os.getcwd(), '..'),
-            _os.path.join(_os.getcwd(), '..', 'examples'),
-            # Windows path (for local dev)
-            r'C:\Users\rafael bentes\bbg\examples',
-            '/c/Users/rafael bentes/bbg/examples',
-        ]:
-            _p = _os.path.join(_base, 'decision_engine.py')
-            if _os.path.isfile(_p) and _p not in _de_candidates:
-                _de_candidates.append(_p)
+    out_d = wd.Output()
+    orch  = [None]
 
-        for _path in _de_candidates:
-            try:
-                _spec = _ilu.spec_from_file_location('decision_engine', _path)
-                _mod  = _ilu.module_from_spec(_spec)
-                _sys.modules['decision_engine'] = _mod
-                _spec.loader.exec_module(_mod)
-                _de_mod = _mod
-                print(f"✓ decision_engine carregado de: {_path}")
-                break
-            except Exception as _load_err:
-                _sys.modules.pop('decision_engine', None)
-                print(f"⚠ decision_engine load failed ({_path}): {_load_err}")
-                continue
+    def _make_orch():
+        cfg = _DE_RiskConfig(
+            max_risk_per_trade_pct=w_risk.value,
+            max_daily_loss_pct=w_daily.value,
+            max_positions_open=w_maxpos.value,
+            paper_mode=w_paper.value)
+        acc = _DE_AccountState(
+            net_liquidation=w_nlv.value, available_cash=w_cash.value,
+            buying_power=w_bp.value, available_margin=w_margin.value,
+            realized_pnl_day=w_rpnl.value)
+        return _DE_Orchestrator(ticker, spot, rfr, cfg, acc)
 
-    # ── Step 3: delegate to build_decision_engine_tab ────────────────────────
-    if _de_mod is not None:
-        try:
-            return _de_mod.build_decision_engine_tab(df, spot, rfr, ticker, ext)
-        except Exception as _render_err:
-            _err_html = (
-                "<div style='background:#0d1520;border:1px solid #f85149;"
-                "border-radius:8px;padding:16px;font-family:monospace;'>"
-                "<h3 style='color:#f85149;'>Decision Engine — erro ao renderizar</h3>"
-                f"<pre style='font-size:10px;color:#aaa;white-space:pre-wrap;'>"
-                f"{_tb.format_exc()}</pre></div>"
-            )
-            return wd.VBox([wd.HTML(_err_html)])
-
-    # ── Step 4: fallback tab when file not found ──────────────────────────────
-    _scores_html = ''.join(
-        f"<tr><td style='color:#aaa;padding:4px 12px 4px 0;'>{k}</td>"
-        f"<td style='color:#00d4e8;font-weight:bold;'>{v:.1f}</td></tr>"
-        for k, v in ext.items()
-    )
-    _fallback_html = f"""
-<div style='background:#0d1520;border:1px solid rgba(0,212,232,.25);
-            border-radius:8px;padding:20px;font-family:monospace;max-width:700px;'>
-  <h3 style='color:#00d4e8;margin:0 0 8px;'>Decision Engine — 0DTE Intraday</h3>
-  <p style='color:#f85149;margin:0 0 12px;'>
-    ⚠ <b>decision_engine.py não encontrado</b> no path do kernel BQuant.
-  </p>
-  <p style='color:#aaa;font-size:11px;margin:0 0 8px;'>
-    Verifique que <code>decision_engine.py</code> está na mesma pasta que
-    <code>greeks_dashboard.py</code> e que o kernel tem acesso ao diretório.
-  </p>
-  <p style='color:rgba(0,212,232,.6);font-size:10px;letter-spacing:.8px;
-             margin:12px 0 4px;'>SCORES EXTERNOS RECEBIDOS</p>
-  <table style='font-size:11px;border-collapse:collapse;'>
-    {_scores_html}
-  </table>
-  <p style='color:#aaa;font-size:10px;margin:16px 0 0;'>
-    Paths tentados: {", ".join(_de_candidates) if "_de_candidates" in dir() else "nenhum"}
-  </p>
+    def _render(d):
+        ac = ('#00ff99' if d.action == 'buy' else
+              '#ff4444' if d.action == 'sell' else '#aaaaaa')
+        bc = '#ff4444' if d.block_reason else '#00ff99'
+        cb = int(d.confidence * 180)
+        rb = ''.join(
+            f"<div style='display:flex;align-items:center;margin:1px 0;'>"
+            f"<span style='color:#aaa;font-size:9px;width:130px;'>{k}</span>"
+            f"<div style='background:#00d4e8;height:7px;width:{int(v*110)}px;border-radius:2px;'></div>"
+            f"<span style='color:#aaa;font-size:9px;margin-left:4px;'>{v*100:.0f}%</span></div>"
+            for k, v in sorted(d.regime_proba.items(), key=lambda x: -x[1]))
+        sk = ''.join(f"<b>{k}</b>: {v:.0f} &nbsp;" for k, v in d.strikes.items())
+        return f"""
+<div style='background:#0d1520;border:1px solid rgba(0,212,232,.25);border-radius:8px;
+            padding:16px;font-family:monospace;margin:6px 0;'>
+  <div style='display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;'>
+    <div style='background:#1a2035;border-left:4px solid {ac};padding:10px 18px;border-radius:6px;min-width:160px;'>
+      <div style='color:#aaa;font-size:9px;'>DECISÃO</div>
+      <div style='color:{ac};font-size:20px;font-weight:bold;'>{d.action.upper()}</div>
+      <div style='color:#aaa;font-size:10px;'>{d.instrument} · {d.structure.value}</div>
+    </div>
+    <div style='background:#1a2035;padding:10px 18px;border-radius:6px;min-width:160px;'>
+      <div style='color:#aaa;font-size:9px;'>CONFIANÇA</div>
+      <div style='color:#fff;font-size:18px;font-weight:bold;'>{d.confidence*100:.1f}%</div>
+      <div style='background:#333;height:7px;width:160px;border-radius:4px;margin-top:4px;'>
+        <div style='background:#00d4e8;height:7px;width:{cb}px;border-radius:4px;'></div></div>
+    </div>
+    <div style='background:#1a2035;padding:10px 18px;border-radius:6px;min-width:180px;'>
+      <div style='color:#aaa;font-size:9px;'>PREÇOS</div>
+      <div style='font-size:11px;line-height:1.8;'>
+        <span style='color:#aaa;'>Entrada:</span> <b style='color:#fff;'>{d.entry_price}</b><br>
+        <span style='color:#aaa;'>Stop:</span> <b style='color:#ff4444;'>{d.stop_loss}</b><br>
+        <span style='color:#aaa;'>Alvo:</span> <b style='color:#00ff99;'>{d.take_profit}</b>
+      </div>
+    </div>
+    <div style='background:#1a2035;padding:10px 18px;border-radius:6px;min-width:180px;'>
+      <div style='color:#aaa;font-size:9px;'>SIZING & RISCO</div>
+      <div style='font-size:11px;line-height:1.8;'>
+        <span style='color:#aaa;'>Qtde:</span> <b style='color:#00d4e8;'>{d.quantity}</b><br>
+        <span style='color:#aaa;'>Perda máx:</span> <b style='color:#ff6b35;'>${d.estimated_max_loss:,.0f}</b><br>
+        <span style='color:#aaa;'>Custo est.:</span> <b>${d.estimated_trade_cost:,.0f}</b>
+      </div>
+    </div>
+    <div style='background:#1a2035;padding:10px 18px;border-radius:6px;min-width:180px;'>
+      <div style='color:#aaa;font-size:9px;'>CAPITAL</div>
+      <div style='font-size:11px;line-height:1.8;'>
+        <span style='color:#aaa;'>NLV:</span> <b>${d.capital_available:,.0f}</b><br>
+        <span style='color:#aaa;'>Margem:</span> <b>${d.margin_available:,.0f}</b><br>
+        <span style='color:#aaa;'>Budget dia:</span> <b>${d.risk_budget_day_remaining:,.0f}</b>
+      </div>
+    </div>
+    <div style='background:#1a2035;border-left:4px solid {bc};padding:10px 18px;border-radius:6px;min-width:180px;'>
+      <div style='color:#aaa;font-size:9px;'>STATUS</div>
+      <div style='color:{bc};font-size:12px;font-weight:bold;'>
+        {'✓ Pronto' if d.execution_ready else '✗ Bloqueado'}</div>
+      <div style='color:#aaa;font-size:10px;'>{d.block_reason or 'PAPER MODE'}</div>
+      <div style='color:#ffaa00;font-size:10px;'>Flatten: {d.flatten_time}</div>
+    </div>
+  </div>
+  {'<div style="font-size:10px;color:#aaa;margin-bottom:6px;">Strikes: ' + sk + '</div>' if d.strikes else ''}
+  <div style='margin-bottom:8px;'>
+    <div style='color:#00d4e8;font-size:9px;letter-spacing:.8px;margin-bottom:3px;'>REGIME PROBA</div>
+    {rb}
+  </div>
+  <div style='background:#0a0f1a;padding:7px 10px;border-radius:4px;font-size:10px;color:#aaa;'>
+    {d.rationale}
+  </div>
 </div>"""
-    return wd.VBox([wd.HTML(_fallback_html)])
+
+    def _guide():
+        return """
+<div style='background:#0d1520;border:1px solid rgba(0,212,232,.15);border-radius:6px;
+            padding:12px 16px;font-size:11px;font-family:monospace;line-height:1.8;margin:6px 0;'>
+<span style='color:#00d4e8;font-size:10px;letter-spacing:.8px;'>COMO USAR</span><br><br>
+<b>① Configure a conta</b> — Cash, NLV, Buying Power, Margem disponível com valores reais da IB.<br>
+<b>② Ajuste risco</b> — Risk/Trade % = % do NLV por operação (ex: 1% de $100k = $1.000 por trade).<br>
+<b>③ Gerar Decisão</b> — lê mercado (chain 0DTE, GEX, walls, IV) e produz a decisão de regime.<br>
+<b>④ Leia o output</b>: <span style='color:#00ff99;'>BUY</span> = long / <span style='color:#ff4444;'>SELL</span> = short / <span style='color:#aaa;'>NO_TRADE</span> = sem sinal<br>
+<b>⑤ Paper Execute</b> — loga no journal sem enviar ordens reais. Valide o fluxo primeiro.<br>
+<b style='color:#ffaa00;'>⚠ Regra central:</b> SOMENTE day trade 0DTE. Toda posição é encerrada no mesmo dia.
+</div>"""
+
+    def _on_run(_):
+        orch[0] = _make_orch()
+        d = orch[0].run(df, ext)
+        with out_d:
+            out_d.clear_output(wait=True)
+            _disp(_HTML(_render(d)))
+            _disp(_HTML(_guide()))
+
+    def _on_pex(_):
+        if orch[0]:
+            res = orch[0].execute_paper()
+            with out_d:
+                out_d.clear_output(wait=True)
+                _disp(_HTML(f"<pre style='color:#00d4e8;font-size:10px;'>"
+                            f"PAPER EXECUTE:\n{_de_json.dumps(res, indent=2)}</pre>"))
+
+    def _on_toggle(change):
+        w_paper.description = 'PAPER MODE ON' if change['new'] else '⚠ LIVE MODE'
+        w_paper.button_style = 'warning' if change['new'] else 'danger'
+
+    w_run.on_click(_on_run); w_pex.on_click(_on_pex)
+    w_paper.observe(_on_toggle, names='value')
+
+    with out_d:
+        _disp(_HTML(_guide()))
+
+    header = wd.HTML(
+        "<div style='padding:6px 0 2px;'>"
+        "<h3 style='color:#00d4e8;margin:0 0 2px;font-size:15px;'>"
+        "Decision Engine — 0DTE Intraday</h3>"
+        "<p style='color:rgba(255,255,255,.3);font-size:10px;margin:0;'>"
+        "Day trade only · 0DTE structures · ES / MES / SPX Options · "
+        "Capital-constrained sizing · Flatten antes do fechamento</p></div>")
+    acc_row = wd.VBox([
+        wd.HTML("<p style='color:rgba(0,212,232,.5);font-size:9px;margin:4px 0 2px;"
+                "letter-spacing:.8px;font-family:monospace;'>CONTA & CAPITAL</p>"),
+        wd.HBox([w_cash, w_nlv, w_bp, w_margin, w_rpnl],
+                layout=wd.Layout(flex_flow='row wrap', gap='8px')),
+    ])
+    risk_row = wd.VBox([
+        wd.HTML("<p style='color:rgba(0,212,232,.5);font-size:9px;margin:8px 0 2px;"
+                "letter-spacing:.8px;font-family:monospace;'>LIMITES DE RISCO</p>"),
+        wd.HBox([w_risk, w_daily, w_maxpos],
+                layout=wd.Layout(flex_flow='row wrap', gap='8px')),
+    ])
+    btn_row = wd.HBox([w_paper, w_run, w_pex],
+                      layout=wd.Layout(gap='8px', margin='10px 0 6px 0', align_items='center'))
+    return wd.VBox([header, acc_row, risk_row, btn_row, out_d])
 
 
 def build_greek_overview(greeks_now, df, spot, etf_flows=None):
