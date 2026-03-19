@@ -458,7 +458,7 @@ GREEK_CONFIGS = [
     {'name': 'Delta',  'key': 'delta',  'unit': '$ Mn',            'scale': lambda L: L,              'div': 1e6, 'op': np.add},
     {'name': 'Gamma',  'key': 'gamma',  'unit': '$ Mn / 1% move',  'scale': lambda L: (L**2) * 0.01,  'div': 1e6, 'op': np.subtract},
     {'name': 'Vega',   'key': 'vega',   'unit': '$ Mn / 1% vol',   'scale': lambda L: 1,              'div': 1e6, 'op': np.add},
-    {'name': 'Vanna',  'key': 'vanna',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
+    {'name': 'Vanna',  'key': 'vanna',  'unit': '$ Mn / 1% vol',   'scale': lambda L: L,              'div': 1e6, 'op': np.subtract},
     {'name': 'Theta',  'key': 'theta',  'unit': '$ Mn / dia',      'scale': lambda L: 1.0/TRADING_DAYS, 'div': 1e6, 'op': np.add},
     {'name': 'Charm',  'key': 'charm',  'unit': '$ Mn / dia',      'scale': lambda L: L / 365.0,      'div': 1e6, 'op': np.add},
     {'name': 'Zomma',  'key': 'zomma',  'unit': '$ Mn',            'scale': lambda L: 1,              'div': 1e6, 'op': np.subtract},
@@ -7161,7 +7161,24 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         )
 
         T_after  = np.maximum(df['Tte'].values - dt_yr, 0.0)
-        vol_aft  = np.maximum(df['IV'].values + dvol_arr, 0.001)
+
+        # Sticky-delta: quando spot muda, cada strike usa a IV da NOVA moneyness K/S_new
+        # interpolada do smile original — sem isso o choque de spot ignora o skew.
+        if S_new != spot:
+            iv_sd = df['IV'].values.copy()
+            for _exp in df['Exp'].unique():
+                _m = df['Exp'].values == _exp
+                _k   = df.loc[_m, 'Strike'].values
+                _iv  = df.loc[_m, 'IV'].values
+                _mn_orig = _k / spot
+                _mn_new  = _k / S_new
+                _ord = np.argsort(_mn_orig)
+                iv_sd[_m] = np.interp(_mn_new,
+                                      _mn_orig[_ord], _iv[_ord],
+                                      left=_iv[_ord[0]], right=_iv[_ord[-1]])
+            vol_aft = np.maximum(iv_sd + dvol_arr, 0.001)
+        else:
+            vol_aft = np.maximum(df['IV'].values + dvol_arr, 0.001)
 
         # ── Posição por instrumento ───────────────────────────────────────────
         # Se AUM dos dealers fornecido: escala oi100 para refletir o book real.
@@ -7232,7 +7249,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
             'Vanna Base':    np.round(g_b['vanna'], 4),
             'Vanna Cen.':    np.round(g_a['vanna'], 4),
             # ── Charm ────────────────────────────────────────────────────────
-            'Charm/d':       np.round(g_b['charm'] / TRADING_DAYS, 6),
+            'Charm/d':       np.round(g_b['charm'] / 365.0, 6),
             # ── P&L e Hedge ──────────────────────────────────────────────────
             'P&L ($)':       np.round(pnl, 0),
             'Hedge Adj (Δ)': np.round(hedge_adj, 1),
@@ -7269,7 +7286,7 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         df_agg_src['_gb']    = g_b['gamma'] * oi100
         df_agg_src['_ga']    = g_a['gamma'] * oi100
         df_agg_src['_vannb'] = g_b['vanna'] * oi100
-        df_agg_src['_charmb']= g_b['charm'] * oi100 / TRADING_DAYS
+        df_agg_src['_charmb']= g_b['charm'] * oi100 / 365.0
 
         grp = df_agg_src.groupby('Exp').agg(
             _db=('_db', 'sum'),   _da=('_da', 'sum'),
