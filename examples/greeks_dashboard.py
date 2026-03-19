@@ -8517,21 +8517,40 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
             f"<td style='color:{_ba_col};'>{_ba_lvl}</td>"
             f"<td style='font-size:11px;'>Spread bid-ask do futuro ES — >2 ticks = custo de trade elevado = stress de liquidez</td></tr>")
 
-    # LAGIDBMA — Conference Board margin level
+    # LAGIDBMA — Conference Board margin level (ambos os extremos são risco)
+    # Alto  → alavancagem excessiva → realizações forçadas se mercado cair
+    # Baixo → guarda baixa / sem proteção
     _lag = _vvol.get('lagidbma_cur')
     _lag_hist = _vvol.get('lagidbma_hist')
     if _lag is not None:
-        _lg_col, _lg_lvl, _lg_pct = _pct_color_level(
-            _lag, _lag_hist,
-            label_low='🔴 margin baixa — guarda baixa',
-            label_mid='🟡 margin moderada',
-            label_hi='🟢 margin elevada — mercado confiante')
-        # baixa margin = guarda baixa = stress → lógica direta (baixo pct = vermelho) já está ok
+        if _lag_hist is not None and len(_lag_hist) > 20:
+            _lag_arr = np.asarray(_lag_hist.dropna())
+            _lg_pct  = float(np.mean(_lag_arr < _lag))   # percentil histórico
+            _lg_pct_str = f' p{_lg_pct*100:.0f}'
+            # ambos os extremos = alerta
+            if _lg_pct >= 0.80:
+                _lg_col = '#f85149'
+                _lg_lvl = '🔴 margin ALTA — risco de realizações forçadas'
+            elif _lg_pct >= 0.60:
+                _lg_col = '#ffaa00'
+                _lg_lvl = '🟡 margin elevada — alavancagem crescente'
+            elif _lg_pct <= 0.20:
+                _lg_col = '#f85149'
+                _lg_lvl = '🔴 margin BAIXA — guarda baixa / sem proteção'
+            elif _lg_pct <= 0.40:
+                _lg_col = '#ffaa00'
+                _lg_lvl = '🟡 margin baixa — pouca alavancagem'
+            else:
+                _lg_col = '#3fb950'
+                _lg_lvl = '🟢 margin neutra'
+        else:
+            _lg_pct_str = ''
+            _lg_col, _lg_lvl = '#8b949e', '— sem histórico'
         _vvol_html += (
             f"<tr><td>LAGIDBMA (Conference Board Margin)</td>"
-            f"<td><b style='color:{_lg_col};'>{_lag:.2f}{_lg_pct}</b></td>"
+            f"<td><b style='color:{_lg_col};'>{_lag:.2f}{_lg_pct_str}</b></td>"
             f"<td style='color:{_lg_col};'>{_lg_lvl}</td>"
-            f"<td style='font-size:11px;'>Nível de margin Conference Board — baixo = mercado de guarda baixa / stress de crédito</td></tr>")
+            f"<td style='font-size:11px;'>Margin alta → realizações forçadas se mercado cair; baixa → guarda baixa</td></tr>")
 
     # Se nenhum indicador disponível (nenhuma seção)
     if all(v is None for v in [_vvix, _c25, _p25, _sdex, _tdex, _call_oi, _put_oi,
