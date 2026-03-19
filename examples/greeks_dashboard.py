@@ -2123,36 +2123,43 @@ def compute_dealer_hedging_flow(gex_per_pt, daily_price_change, spot):
 
 def fetch_options_volume_bql(ticker='SPX Index'):
     """
-    Busca volume total de opções e dados de volume via BQL.
-    Substitui a constante OPTIONS_TOTAL_ADC quando possível.
+    Busca volume total de opções e P/C ratio via BQL.
+    P/C ratio: usa PCUSEQTR Index (código BBG oficial do Put/Call ratio).
     Retorna dict com total_adc, put_vol, call_vol, pc_ratio.
     """
     bq = bql.Service()
+    # P/C ratio — PCUSEQTR Index é o código oficial no terminal Bloomberg
+    pcr = 0.0
+    try:
+        pc_req = bql.Request('PCUSEQTR Index', {'v': bq.data.px_last(fill='PREV')})
+        pc_resp = bq.execute(pc_req)
+        pcr = float(pc_resp[0].df()['v'].iloc[-1] or 0)
+        print(f"[PC] PCUSEQTR Index = {pcr:.2f}")
+    except Exception as _pce:
+        print(f"⚠️ PCUSEQTR fetch: {_pce}")
+
+    # Volume de calls/puts
+    cv, pv = 0.0, 0.0
     try:
         req = bql.Request(ticker, {
             'call_vol': bq.data.call_opt_volume(),
-            'put_vol': bq.data.put_opt_volume(),
-            'pc_ratio': bq.data.put_call_open_interest_ratio(fill='PREV'),
+            'put_vol':  bq.data.put_opt_volume(),
         })
         resp = bq.execute(req)
         row = resp[0].df().iloc[0] if len(resp[0].df()) > 0 else {}
         cv = float(row.get('call_vol', 0) or 0)
-        pv = float(row.get('put_vol', 0) or 0)
-        pcr = float(row.get('pc_ratio', 0) or 0)
-        total = cv + pv
-        return {
-            'total_adc': total if total > 0 else OPTIONS_TOTAL_ADC,
-            'call_vol': cv,
-            'put_vol': pv,
-            'pc_ratio': pcr,
-            'source': 'BQL' if total > 0 else 'fallback',
-        }
-    except Exception:
-        return {
-            'total_adc': OPTIONS_TOTAL_ADC,
-            'call_vol': 0, 'put_vol': 0, 'pc_ratio': 0,
-            'source': 'fallback',
-        }
+        pv = float(row.get('put_vol',  0) or 0)
+    except Exception as _ve:
+        print(f"⚠️ Options volume fetch: {_ve}")
+
+    total = cv + pv
+    return {
+        'total_adc': total if total > 0 else OPTIONS_TOTAL_ADC,
+        'call_vol': cv,
+        'put_vol': pv,
+        'pc_ratio': pcr,
+        'source': 'BQL' if pcr > 0 else 'fallback',
+    }
 
 
 def estimate_mm_var_by_book(gex_per_pt, spot, risk_params, oi_total):
