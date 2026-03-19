@@ -9617,7 +9617,6 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
         value=False,
         description='🔒 Trava ON',
         button_style='',
-        style={'button_color': '#444'},
         layout=wd.Layout(width='130px', height='36px',
                          border='2px solid #555'))
 
@@ -9811,13 +9810,13 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
 
     def _on_override_toggle(change):
         if change['new']:
-            w_override.description        = '🔓 Trava OFF'
-            w_override.style.button_color = '#b94040'
-            w_override.layout.border      = '2px solid #f85149'
+            w_override.description   = '🔓 Trava OFF'
+            w_override.button_style  = 'danger'
+            w_override.layout.border = '2px solid #f85149'
         else:
-            w_override.description        = '🔒 Trava ON'
-            w_override.style.button_color = '#444'
-            w_override.layout.border      = '2px solid #555'
+            w_override.description   = '🔒 Trava ON'
+            w_override.button_style  = ''
+            w_override.layout.border = '2px solid #555'
 
     w_run.on_click(_on_run); w_pex.on_click(_on_pex)
     w_paper.observe(_on_toggle,          names='value')
