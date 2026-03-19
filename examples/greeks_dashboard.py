@@ -965,10 +965,15 @@ def compute_strike_exposures(df, greeks, spot):
         df[f'Call_{key}'] = np.where(is_call, raw * oi_100, 0.0)
         df[f'Put_{key}']  = np.where(is_put,  raw * oi_100, 0.0)
 
-    # Agregar por strike — apenas colunas de exposição
+    # OI bruto por tipo — necessário para identificar Call/Put Wall por concentração de OI
+    df['Call_OI'] = np.where(is_call, df['OI'].values, 0.0)
+    df['Put_OI']  = np.where(is_put,  df['OI'].values, 0.0)
+
+    # Agregar por strike — exposições de gregas + OI bruto por tipo
     exp_cols = []
     for cfg in GREEK_CONFIGS:
         exp_cols += [f'Call_{cfg["key"]}', f'Put_{cfg["key"]}']
+    exp_cols += ['Call_OI', 'Put_OI']
     agg = df.groupby('Strike')[exp_cols].sum()
 
     # Computar totais líquidos
@@ -1015,9 +1020,25 @@ def compute_model_curves(df, levels, configs=None, r=0.0):
 
 
 def compute_walls(agg):
-    """Identifica Call Wall e Put Wall (strikes com máxima concentração de gamma)."""
-    call_wall = agg['Call_gamma'].idxmax() if 'Call_gamma' in agg.columns else None
-    put_wall = agg['Put_gamma'].idxmax() if 'Put_gamma' in agg.columns else None
+    """
+    Identifica Call Wall e Put Wall pelo maior Open Interest por strike.
+    GEX (gamma) é usado apenas como critério secundário em caso de empate
+    ou ambiguidade entre strikes com OI muito próximo (dentro de 2% do máximo).
+    """
+    def _wall(oi_col, gamma_col):
+        # Fallback para gamma se OI não estiver disponível
+        if oi_col not in agg.columns or agg[oi_col].max() <= 0:
+            return agg[gamma_col].idxmax() if gamma_col in agg.columns else None
+        max_oi = agg[oi_col].max()
+        # Zona de ambiguidade: strikes dentro de 2% do OI máximo
+        candidates = agg[agg[oi_col] >= max_oi * 0.98]
+        if len(candidates) == 1 or gamma_col not in agg.columns:
+            return int(candidates[oi_col].idxmax())
+        # Tiebreaker: maior GEX entre os candidatos empatados
+        return int(candidates[gamma_col].idxmax())
+
+    call_wall = _wall('Call_OI', 'Call_gamma')
+    put_wall  = _wall('Put_OI',  'Put_gamma')
     return call_wall, put_wall
 
 
