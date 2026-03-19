@@ -8916,56 +8916,83 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
 <b style='color:#ffaa00;'>⚠ Regra central:</b> SOMENTE day trade 0DTE. Toda posição é encerrada no mesmo dia.
 </div>"""
 
-    # ── Auto-refresh controls ─────────────────────────────────────────────────
+    # ── Auto-refresh (5 min fixo, re-busca Bloomberg a cada ciclo) ───────────
     import threading as _threading
-    w_auto     = wd.ToggleButton(value=False, description='⟳ Auto OFF',
-                                 button_style='', icon='refresh',
-                                 layout=wd.Layout(width='130px', height='36px'))
-    w_interval = wd.Dropdown(options=[1, 2, 5, 10, 15, 30], value=5,
-                             description='Intervalo (min):',
-                             layout=wd.Layout(width='200px'),
-                             style={'description_width': '110px'})
-    w_last_upd = wd.HTML("<span style='color:#555;font-size:10px;font-family:monospace;'>"
-                         "nunca atualizado</span>")
-    _stop_evt  = [_threading.Event()]
-    _thread    = [None]
+    _REFRESH_INTERVAL = 300  # 5 minutos em segundos
+
+    w_auto = wd.ToggleButton(
+        value=False,
+        description='🔴 AUTO OFF',
+        button_style='danger',
+        layout=wd.Layout(width='140px', height='40px',
+                         border='2px solid #f85149'))
+    w_last_upd = wd.HTML(
+        "<span style='color:#484f58;font-size:10px;font-family:monospace;"
+        "margin-left:8px;'>● aguardando</span>")
+
+    _stop_evt = [_threading.Event()]
+    _thread   = [None]
+    _live_df  = [df]   # cache do df mais recente
+
+    def _fetch_fresh_data():
+        """Re-busca options chain do Bloomberg."""
+        try:
+            # reutiliza os mesmos parâmetros do run_analysis que gerou o df original
+            new_df = fetch_options_chain(
+                ticker, spot,
+                min_dte=0, max_dte=5,
+                mny_low=-0.10, mny_high=0.10)
+            if new_df is not None and not new_df.empty:
+                _live_df[0] = new_df
+        except Exception as _fe:
+            pass  # mantém df anterior se BBG falhar
 
     def _run_and_render():
         try:
+            w_last_upd.value = ("<span style='color:#d29922;font-size:10px;"
+                                "font-family:monospace;margin-left:8px;'>"
+                                "⟳ buscando dados...</span>")
+            _fetch_fresh_data()
             orch[0] = _make_orch()
-            d = orch[0].run(df, ext)
+            d = orch[0].run(_live_df[0], ext)
             ts = _de_dt.now().strftime('%H:%M:%S')
             with out_d:
                 out_d.clear_output(wait=True)
                 _disp(_HTML(_render(d)))
                 _disp(_HTML(_guide()))
             w_last_upd.value = (
-                f"<span style='color:#3fb950;font-size:10px;font-family:monospace;'>"
-                f"✓ atualizado às {ts}</span>")
+                f"<span style='color:#3fb950;font-size:10px;font-family:monospace;"
+                f"margin-left:8px;'>✓ {ts}</span>")
         except Exception as _re:
             w_last_upd.value = (
-                f"<span style='color:#f85149;font-size:10px;font-family:monospace;'>"
-                f"⚠ erro: {_re}</span>")
+                f"<span style='color:#f85149;font-size:10px;font-family:monospace;"
+                f"margin-left:8px;'>⚠ {_re}</span>")
 
     def _auto_loop():
         while not _stop_evt[0].is_set():
             _run_and_render()
-            _stop_evt[0].wait(timeout=w_interval.value * 60)
+            # espera 5 min ou até ser parado
+            _stop_evt[0].wait(timeout=_REFRESH_INTERVAL)
 
     def _on_run(_):
         _run_and_render()
 
     def _on_auto_toggle(change):
         if change['new']:
-            w_auto.description = '⟳ Auto ON'
+            w_auto.description  = '🟢 AUTO ON'
             w_auto.button_style = 'success'
+            w_auto.layout.border = '2px solid #3fb950'
             _stop_evt[0].clear()
             _thread[0] = _threading.Thread(target=_auto_loop, daemon=True)
             _thread[0].start()
         else:
-            w_auto.description = '⟳ Auto OFF'
-            w_auto.button_style = ''
+            w_auto.description  = '🔴 AUTO OFF'
+            w_auto.button_style = 'danger'
+            w_auto.layout.border = '2px solid #f85149'
             _stop_evt[0].set()
+            w_last_upd.value = ("<span style='color:#484f58;font-size:10px;"
+                                "font-family:monospace;margin-left:8px;'>"
+                                "● parado</span>")
 
     def _on_pex(_):
         if orch[0]:
@@ -8976,11 +9003,11 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
                             f"PAPER EXECUTE:\n{_de_json.dumps(res, indent=2)}</pre>"))
 
     def _on_toggle(change):
-        w_paper.description = 'PAPER MODE ON' if change['new'] else '⚠ LIVE MODE'
-        w_paper.button_style = 'warning' if change['new'] else 'danger'
+        w_paper.description  = 'PAPER MODE ON' if change['new'] else '⚠ LIVE MODE'
+        w_paper.button_style = 'warning'        if change['new'] else 'danger'
 
     w_run.on_click(_on_run); w_pex.on_click(_on_pex)
-    w_paper.observe(_on_toggle, names='value')
+    w_paper.observe(_on_toggle,   names='value')
     w_auto.observe(_on_auto_toggle, names='value')
 
     with out_d:
@@ -9006,7 +9033,7 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
                 layout=wd.Layout(flex_flow='row wrap', gap='8px')),
     ])
     btn_row = wd.HBox(
-        [w_paper, w_run, w_pex, w_auto, w_interval, w_last_upd],
+        [w_paper, w_run, w_pex, w_auto, w_last_upd],
         layout=wd.Layout(gap='8px', margin='10px 0 6px 0',
                          align_items='center', flex_flow='row wrap'))
     return wd.VBox([header, acc_row, risk_row, btn_row, out_d])
