@@ -7526,9 +7526,31 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
             margin=dict(l=60, r=60, t=55, b=30))
         _fig_sens.update_xaxes(title_text='ΔVol (put e call wing)', tickfont=dict(size=9))
         _fig_sens.update_yaxes(title_text='ΔSpot', tickfont=dict(size=9))
+        # ── Valor central (spot=0, vol=0) → referência
+        _adj_zero = float(_sens_adj[len(_sp_pcts)//2, list(_vv_pps).index(0)])
+        _pnl_zero = float(_sens_pnl[len(_sp_pcts)//2, list(_vv_pps).index(0)])
+        _sens_guide = (
+            "<div style='background:#0d1520;border:1px solid rgba(0,212,232,.2);"
+            "border-radius:6px;padding:12px 16px;margin:8px 0;font-size:11px;"
+            "font-family:monospace;line-height:1.7;'>"
+            "<span style='color:#00d4e8;font-size:10px;letter-spacing:.8px;'>COMO LER A MATRIX</span><br>"
+            "<b style='color:#fff;'>Hedge Adj (Δ)</b> — quantidade de contratos do ativo que o dealer precisa negociar para rebalancear o delta hedge.<br>"
+            "&nbsp;&nbsp;<span style='color:#ff4444;'>■ Vermelho = Vender</span> &nbsp;"
+            "<span style='color:#44ff44;'>■ Verde = Comprar</span> &nbsp;·&nbsp; "
+            "Linha 0%/+0pp = cenário atual sem choque.<br>"
+            "<b style='color:#fff;'>P&L ($)</b> — resultado estimado da carteira de opções no cenário (antes do hedge).<br><br>"
+            "<b style='color:#00d4e8;'>O que fazer:</b><br>"
+            "① Identifique o cenário mais provável (ex: spot −1%, vol +5pp) e veja qual ajuste será necessário.<br>"
+            "② Cells vermelhas intensas = você vai <b>vender</b> o ativo — prepare liquidez ou ordens limitadas.<br>"
+            "③ Cells verdes intensas = você vai <b>comprar</b> — útil para pré-posicionar stops de compra.<br>"
+            "④ Use a coluna +0pp como baseline: qualquer choque de vol puro move o hedge na horizontal.<br>"
+            f"⑤ Cenário atual sem choque: Hedge Adj = <b style='color:#00d4e8;'>{_adj_zero:,.0f}Δ</b> &nbsp;·&nbsp; "
+            f"P&L = <b style='color:#ff6b35;'>${_pnl_zero/1e6:.1f}M</b>"
+            "</div>")
         with out_sensitivity:
             out_sensitivity.clear_output(wait=True)
             _disp(go.FigureWidget(_fig_sens))
+            _disp(wd.HTML(_sens_guide))
 
     def _reset(_):
         w_dspot.value     = 0.0
@@ -7779,29 +7801,90 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
                          'Comprar Vol — IV < HAR RV' if _iv_rv_spread and _iv_rv_spread < -2 else
                          'IV ≈ RV — sem sinal claro')
         _gb_color     = '#00ff99' if _gb_pred == 'Sobe' else '#ff4444' if _gb_pred == 'Cai' else '#aaa'
+        # ── Ações sugeridas por modelo ────────────────────────────────────
+        _har_action = (
+            'Venda de vol tem vantagem estatística (IV cara): short strangle / short straddle / venda de puts cobertas. '
+            f'Prêmio de vol = {_iv_rv_spread:+.1f}pp — quanto maior, maior a margem de segurança.'
+            if _rv_fore and _iv_rv_spread > 2 else
+            'Compra de vol tem vantagem estatística (IV barata): long straddle / long calls. '
+            f'IV está {abs(_iv_rv_spread):.1f}pp abaixo do RV esperado.'
+            if _rv_fore and _iv_rv_spread < -2 else
+            'Sem vantagem clara: IV ≈ RV esperado. Foque em estruturas com carry positivo (spreads).'
+            if _rv_fore else 'Dados históricos indisponíveis.')
+        _gb_action = (
+            f'P(IV↑)={_gb_proba*100:.1f}% — alta confiança de alta de vol. '
+            'Posições longas em vol (long straddle, compra de calls/puts, ratio spreads) têm vantagem no curto prazo. '
+            'Atenção: sinal é direcional de vol, não de spot.'
+            if _gb_ok and _gb_pred == 'Sobe' else
+            f'P(IV↑)={_gb_proba*100:.1f}% — modelo aponta queda de vol. '
+            'Venda de vol (short strangle, iron condor, venda de puts) tem vantagem. '
+            'Confirme com HAR antes de executar.'
+            if _gb_ok and _gb_pred == 'Cai' else
+            'Sinal inconclusivo — aguarde confirmação ou reduza tamanho.'
+            if _gb_ok else 'Modelo não calibrado.')
+        _pca_action = (
+            f'PC1 domina com {_pc_expvar[0]:.1f}% da variância — surface se move principalmente em nível (vol up/down paralelo). '
+            + (f'PC2 (skew={_pc_expvar[1]:.1f}%) é relevante — inclinação put vs call está variando, monitore risk reversal. ' if _pca_ok and _pc_expvar[1] > 5 else
+               f'PC2 (skew={_pc_expvar[1]:.1f}%) baixo — surface está relativamente plana entre puts e calls. ' if _pca_ok else '')
+            + (f'PC3 (curv={_pc_expvar[2]:.1f}%) — curvatura/smile insignificante.' if _pca_ok and len(_pc_expvar) > 2 and _pc_expvar[2] < 2 else
+               f'PC3 (curv={_pc_expvar[2]:.1f}%) — smile pronunciado, butterfly spreads podem ser caros.' if _pca_ok and len(_pc_expvar) > 2 else '')
+            if _pca_ok else 'PCA não disponível.')
+
         _signal_html  = (
-            f"<div style='display:flex;gap:16px;margin:8px 0;flex-wrap:wrap;'>"
+            # Cards de sinal
+            f"<div style='display:flex;gap:12px;margin:10px 0 6px;flex-wrap:wrap;'>"
             + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
-               f"border-left:3px solid {_signal_color};'>"
+               f"border-left:3px solid {_signal_color};min-width:200px;'>"
                f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>HAR SIGNAL</div>"
                f"<div style='color:{_signal_color};font-size:14px;font-weight:bold;'>{_signal_text}</div>"
                f"<div style='color:#aaa;font-size:10px;'>IV={_atm_iv*100:.1f}% · RV HAR={_rv_fore:.1f}% · spread={_iv_rv_spread:+.1f}pp</div>"
                f"</div>" if _rv_fore else '')
             + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
-               f"border-left:3px solid {_gb_color};'>"
+               f"border-left:3px solid {_gb_color};min-width:180px;'>"
                f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>CATBOOST/GBM SIGNAL</div>"
                f"<div style='color:{_gb_color};font-size:14px;font-weight:bold;'>IV {_gb_pred}</div>"
                f"<div style='color:#aaa;font-size:10px;'>P(IV↑) = {_gb_proba*100:.1f}%</div>"
                f"</div>" if _gb_ok else '')
             + (f"<div style='background:#1a2035;padding:10px 18px;border-radius:6px;"
-               f"border-left:3px solid #00d4e8;'>"
+               f"border-left:3px solid #00d4e8;min-width:220px;'>"
                f"<div style='color:#aaa;font-size:9px;letter-spacing:.8px;'>SURFACE PCA</div>"
                f"<div style='color:#00d4e8;font-size:13px;'>"
                f"PC1 nível: {_pc_expvar[0]:.1f}% &nbsp;·&nbsp; PC2 skew: {_pc_expvar[1]:.1f}%"
                + (f" &nbsp;·&nbsp; PC3 curv: {_pc_expvar[2]:.1f}%" if len(_pc_expvar) > 2 else '')
                + f"</div></div>" if _pca_ok else '')
             + f"</div>"
-            + f"<p style='color:rgba(255,255,255,.3);font-size:9px;margin:4px 0 0;'>"
+            # Guia de interpretação e ação
+            + f"<div style='background:#0d1520;border:1px solid rgba(0,212,232,.15);"
+            f"border-radius:6px;padding:12px 16px;margin:6px 0;font-size:11px;"
+            f"font-family:monospace;line-height:1.8;'>"
+            f"<span style='color:#00d4e8;font-size:10px;letter-spacing:.8px;'>O QUE FAZER COM ESSES SINAIS</span><br><br>"
+            # HAR
+            f"<b style='color:{_signal_color};'>① HAR (Realized Vol Forecast)</b><br>"
+            f"&nbsp;&nbsp;Modelo: RV_{{t+1}} = α + β_d·RV_t + β_w·RV̄_5d + β_m·RV̄_22d &nbsp;·&nbsp; "
+            f"Captura clustering de vol em horizonte diário/semanal/mensal.<br>"
+            f"&nbsp;&nbsp;→ {_har_action}<br><br>"
+            # CatBoost
+            f"<b style='color:{_gb_color};'>② CatBoost/GBM (Sinal Direcional de IV)</b><br>"
+            f"&nbsp;&nbsp;Features: nível de IV, variação 1d/5d, spread RV-IV, momentum de IV.<br>"
+            f"&nbsp;&nbsp;→ {_gb_action}<br><br>"
+            # PCA
+            f"<b style='color:#00d4e8;'>③ Surface PCA (Estrutura dos Fatores)</b><br>"
+            f"&nbsp;&nbsp;PC1=nível · PC2=skew put/call · PC3=curvatura/smile. "
+            f"Cada fator independente — movimentos misturados são raros.<br>"
+            f"&nbsp;&nbsp;→ {_pca_action}<br><br>"
+            # Consenso
+            f"<b style='color:#fff;'>④ Consenso dos modelos</b><br>"
+            + (f"&nbsp;&nbsp;<span style='color:#00ff99;'>✓ HAR e GBM alinham</span> — "
+               f"sinal reforçado. Execute com maior convicção."
+               if _rv_fore and _gb_ok and
+                  ((_iv_rv_spread > 2 and _gb_pred == 'Sobe') or (_iv_rv_spread < -2 and _gb_pred == 'Cai'))
+               else
+               f"&nbsp;&nbsp;<span style='color:#ffaa00;'>⚠ HAR e GBM divergem</span> — "
+               f"sinais conflitantes. Reduza tamanho ou aguarde próximo pregão."
+               if _rv_fore and _gb_ok else
+               f"&nbsp;&nbsp;Apenas um modelo disponível — use com cautela.")
+            + f"</div>"
+            + f"<p style='color:rgba(255,255,255,.25);font-size:9px;margin:4px 0 0;'>"
             + ' &nbsp;|&nbsp; '.join(_msgs) + f"</p>")
 
         with out_predict:
