@@ -9057,6 +9057,7 @@ class _DE_RiskConfig:
     last_entry_min_before_close: int = _DE_LAST_EN
     flatten_min_before_close: int   = _DE_FLATTEN
     paper_mode:               bool  = True
+    force_override:           bool  = False   # ignora trava NO_TRADE e paper_mode
 
 @_de_dc
 class _DE_AccountState:
@@ -9476,7 +9477,8 @@ class _DE_RiskEngine:
         decision.margin_available       = sz['available_margin']
         decision.risk_budget_trade      = sz['risk_budget_trade']
         decision.risk_budget_day_remaining = sz['risk_budget_day_remaining']
-        decision.execution_ready = (sz['allowed_size'] > 0 and not self.cfg.paper_mode
+        decision.execution_ready = (sz['allowed_size'] > 0
+                                    and (not self.cfg.paper_mode or self.cfg.force_override)
                                     and decision.stop_loss is not None)
         # flatten time
         now = _de_dt.now()
@@ -9508,10 +9510,19 @@ class _DE_Orchestrator:
         d = _DE_TradeDecision(regime=regime, confidence=conf, regime_proba=proba)
 
         if regime == _DE_Regime.NO_TRADE or conf < self.cfg.min_confidence_to_trade:
-            d.action = 'no_trade'
-            d.block_reason = ('Regime: no_trade' if regime == _DE_Regime.NO_TRADE
-                              else f'Confiança {conf:.1%} < {self.cfg.min_confidence_to_trade:.1%}')
-            self._last = d; return d
+            if not self.cfg.force_override:
+                d.action = 'no_trade'
+                d.block_reason = ('Regime: no_trade' if regime == _DE_Regime.NO_TRADE
+                                  else f'Confiança {conf:.1%} < {self.cfg.min_confidence_to_trade:.1%}')
+                self._last = d; return d
+            else:
+                # Override: usa o melhor regime não-NO_TRADE pelo proba
+                _alt = {r: p for r, p in proba.items() if r != _DE_Regime.NO_TRADE}
+                if _alt:
+                    regime = max(_alt, key=_alt.get)
+                    conf   = _alt[regime]
+                    d.regime = regime; d.confidence = conf
+                d.block_reason = f'[OVERRIDE] original: no_trade'
 
         sel = _DE_StrategySelector(df, self.spot, self.rfr, mtc)
         struct, stype = sel.select_best(regime, conf, self.cfg)
@@ -9602,6 +9613,13 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
                          layout=wd.Layout(width='160px', height='36px'))
     w_pex    = wd.Button(description='📋 Paper Execute', button_style='warning',
                          layout=wd.Layout(width='150px', height='36px'))
+    w_override = wd.ToggleButton(
+        value=False,
+        description='🔒 Trava ON',
+        button_style='',
+        style={'button_color': '#444'},
+        layout=wd.Layout(width='130px', height='36px',
+                         border='2px solid #555'))
 
     out_d = wd.Output()
     orch  = [None]
@@ -9611,7 +9629,8 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
             max_risk_per_trade_pct=w_risk.value,
             max_daily_loss_pct=w_daily.value,
             max_positions_open=w_maxpos.value,
-            paper_mode=w_paper.value)
+            paper_mode=w_paper.value,
+            force_override=w_override.value)
         acc = _DE_AccountState(
             net_liquidation=w_nlv.value, available_cash=w_cash.value,
             buying_power=w_bp.value, available_margin=w_margin.value,
@@ -9790,8 +9809,19 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
         w_paper.description  = 'PAPER MODE ON' if change['new'] else '⚠ LIVE MODE'
         w_paper.button_style = 'warning'        if change['new'] else 'danger'
 
+    def _on_override_toggle(change):
+        if change['new']:
+            w_override.description        = '🔓 Trava OFF'
+            w_override.style.button_color = '#b94040'
+            w_override.layout.border      = '2px solid #f85149'
+        else:
+            w_override.description        = '🔒 Trava ON'
+            w_override.style.button_color = '#444'
+            w_override.layout.border      = '2px solid #555'
+
     w_run.on_click(_on_run); w_pex.on_click(_on_pex)
-    w_paper.observe(_on_toggle,   names='value')
+    w_paper.observe(_on_toggle,          names='value')
+    w_override.observe(_on_override_toggle, names='value')
     w_auto.observe(_on_auto_toggle, names='value')
 
     with out_d:
@@ -9817,7 +9847,7 @@ def _build_decision_engine_tab_inline(df, spot, rfr, ticker, external_scores=Non
                 layout=wd.Layout(flex_flow='row wrap', gap='8px')),
     ])
     btn_row = wd.HBox(
-        [w_paper, w_run, w_pex, w_auto, w_last_upd],
+        [w_paper, w_run, w_pex, w_auto, w_override, w_last_upd],
         layout=wd.Layout(gap='8px', margin='10px 0 6px 0',
                          align_items='center', flex_flow='row wrap'))
     return wd.VBox([header, acc_row, risk_row, btn_row, out_d])
