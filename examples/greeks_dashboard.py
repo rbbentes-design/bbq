@@ -9516,13 +9516,15 @@ class _DE_Orchestrator:
                                   else f'Confiança {conf:.1%} < {self.cfg.min_confidence_to_trade:.1%}')
                 self._last = d; return d
             else:
-                # Override: usa o melhor regime não-NO_TRADE pelo proba
-                _alt = {r: p for r, p in proba.items() if r != _DE_Regime.NO_TRADE}
+                # Override: proba tem chaves string (k.value), filtrar por .value
+                _no_val = _DE_Regime.NO_TRADE.value
+                _alt = {r: p for r, p in proba.items() if r != _no_val}
                 if _alt:
-                    regime = max(_alt, key=_alt.get)
-                    conf   = _alt[regime]
+                    _best_str = max(_alt, key=_alt.get)
+                    regime = _DE_Regime(_best_str)   # reconverte para enum
+                    conf   = _alt[_best_str]
                     d.regime = regime; d.confidence = conf
-                d.block_reason = f'[OVERRIDE] original: no_trade'
+                d.block_reason = '[OVERRIDE] original: no_trade'
 
         sel = _DE_StrategySelector(df, self.spot, self.rfr, mtc)
         struct, stype = sel.select_best(regime, conf, self.cfg)
