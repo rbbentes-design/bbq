@@ -6957,30 +6957,50 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                 f"</div>")
 
     # ── Widgets de cenário ────────────────────────────────────────────────────
-    _lyt = wd.Layout(width='195px')
-    _sty = {'description_width': '105px'}
-    w_dspot = wd.FloatText(value=0.0,  description='ΔSpot ($):',   layout=_lyt, style=_sty)
-    w_dvol  = wd.FloatText(value=0.0,  description='ΔVol (p.p):',  layout=_lyt, style=_sty)
-    w_drate = wd.FloatText(value=0.0,  description='ΔRate (bp):',  layout=_lyt, style=_sty)
-    w_days  = wd.IntText( value=0,     description='Dias à frente:', layout=_lyt, style=_sty)
-    w_btn   = wd.Button(description='▶ Aplicar', button_style='primary',
-                        layout=wd.Layout(width='120px', height='34px', margin='2px 0 0 0'))
-    w_reset = wd.Button(description='↺ Reset',  button_style='',
-                        layout=wd.Layout(width='90px',  height='34px', margin='2px 0 0 0'))
+    # Vol surface: choque independente por asa de moneyness (K/S)
+    #   Put wing : 50%–100%  (K/S in [0.50, 1.00))
+    #   Call wing: 100%–150% (K/S in [1.00, 1.50])
+    #   Fora do range: sem choque de vol
+    _lyt  = wd.Layout(width='210px')
+    _lytw = wd.Layout(width='225px')
+    _sty  = {'description_width': '120px'}
+    w_dspot    = wd.FloatText(value=0.0, description='ΔSpot ($):',        layout=_lyt,  style=_sty)
+    w_dvol_put = wd.FloatText(value=0.0, description='ΔVol Put (pp):',    layout=_lytw, style=_sty,
+                              tooltip='Asa de put: moneyness 50%–100% (strikes abaixo do spot)')
+    w_dvol_call= wd.FloatText(value=0.0, description='ΔVol Call (pp):',   layout=_lytw, style=_sty,
+                              tooltip='Asa de call: moneyness 100%–150% (strikes acima do spot)')
+    w_drate    = wd.FloatText(value=0.0, description='ΔRate (bp):',        layout=_lyt,  style=_sty)
+    w_days     = wd.IntText( value=0,    description='Dias à frente:',     layout=_lyt,  style=_sty)
+    w_btn  = wd.Button(description='▶ Aplicar', button_style='primary',
+                       layout=wd.Layout(width='120px', height='34px', margin='2px 0 0 0'))
+    w_reset= wd.Button(description='↺ Reset',  button_style='',
+                       layout=wd.Layout(width='90px',  height='34px', margin='2px 0 0 0'))
 
     out_cards = wd.Output()
     out_agg   = wd.Output()
     out_inst  = wd.Output()
 
     def _compute_and_render(_):
-        S_new  = spot + w_dspot.value
-        dvol   = w_dvol.value / 100.0           # pp → decimal
-        r_new  = rfr  + w_drate.value / 10000.0  # bp → decimal
-        dt_yr  = max(int(w_days.value), 0) / float(TRADING_DAYS)
+        S_new        = spot + w_dspot.value
+        dvol_put_dec = w_dvol_put.value  / 100.0   # pp → decimal, asa de put
+        dvol_call_dec= w_dvol_call.value / 100.0   # pp → decimal, asa de call
+        r_new        = rfr + w_drate.value / 10000.0  # bp → decimal
+        dt_yr        = max(int(w_days.value), 0) / float(TRADING_DAYS)
 
-        df = df_orig.copy()
-        T_after  = np.maximum(df['Tte'].values - dt_yr, 0.0)  # 0 = expirou
-        vol_aft  = np.maximum(df['IV'].values + dvol, 0.001)
+        df    = df_orig.copy()
+        mness = df['Strike'].values / spot   # moneyness K/S
+
+        # Vol shift por asa de moneyness:
+        #   Put  wing: K/S in [0.50, 1.00)  → dvol_put
+        #   Call wing: K/S in [1.00, 1.50]  → dvol_call
+        #   Fora do range (deep OTM além de 50%/150%): sem choque
+        dvol_arr = np.where(
+            (mness >= 0.50) & (mness < 1.00), dvol_put_dec,
+            np.where((mness >= 1.00) & (mness <= 1.50), dvol_call_dec, 0.0)
+        )
+
+        T_after  = np.maximum(df['Tte'].values - dt_yr, 0.0)
+        vol_aft  = np.maximum(df['IV'].values + dvol_arr, 0.001)
         oi100    = df['OI'].values * 100.0
 
         # ── Gregas e preços: base e cenário ──────────────────────────────────
@@ -7004,16 +7024,25 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
 
         # ── Tabela por instrumento ────────────────────────────────────────────
         expired_flag = T_after <= 0
+        # Rótulo da asa aplicada por instrumento
+        wing_lbl = np.where(
+            (mness >= 0.50) & (mness < 1.00), 'PUT',
+            np.where((mness >= 1.00) & (mness <= 1.50), 'CALL', 'OTM-deep')
+        )
         df_inst = pd.DataFrame({
             'Expiry':       df['Exp'].dt.strftime('%d/%b/%y').values,
             'Strike':       df['Strike'].values.astype(int),
+            'Mnss%':        np.round(mness * 100, 1),
+            'Asa':          wing_lbl,
+            'IV Base%':     np.round(df['IV'].values * 100, 2),
+            'IV Cen.%':     np.round(vol_aft * 100, 2),
             'Type':         df['Type'].values,
             'OI':           df['OI'].values.astype(int),
             'Δ Base':       np.round(g_b['delta'], 4),
             'Δ Cenário':    np.round(g_a['delta'], 4),
             'ΔΔ':           np.round(g_a['delta'] - g_b['delta'], 4),
             'Vega Base':    np.round(g_b['vega'],  3),
-            'Theta Base':   np.round(g_b['theta'] / TRADING_DAYS, 3),
+            'Theta/d':      np.round(g_b['theta'] / TRADING_DAYS, 3),
             'P&L ($)':      np.round(pnl, 0),
             'Hedge Adj (Δ)':np.round(hedge_adj, 1),
             '_Exp':         df['Exp'].values,
@@ -7027,9 +7056,9 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                    .sort_values(['_Exp', 'OI'], ascending=[True, False])
                    .drop(columns=['_Exp', '_exp_flag']))
 
-        INST_COLS  = ['Expiry', 'Strike', 'Type', 'OI',
-                      'Δ Base', 'Δ Cenário', 'ΔΔ', 'Vega Base', 'Theta Base',
-                      'P&L ($)', 'Hedge Adj (Δ)']
+        INST_COLS  = ['Expiry', 'Strike', 'Mnss%', 'Asa', 'IV Base%', 'IV Cen.%',
+                      'Type', 'OI', 'Δ Base', 'Δ Cenário', 'ΔΔ',
+                      'Vega Base', 'Theta/d', 'P&L ($)', 'Hedge Adj (Δ)']
         SIGN_COLS  = {'ΔΔ', 'P&L ($)', 'Hedge Adj (Δ)'}
         MAX_ROWS   = 60
 
@@ -7078,7 +7107,8 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
         col_dd   = 'rgba(0,212,232,.95)'  if (tot_da-tot_db) > 0 else 'rgba(248,81,73,.95)'
 
         scenario_lbl = (f"ΔSpot {w_dspot.value:+.0f}  |  "
-                        f"ΔVol {w_dvol.value:+.1f}pp  |  "
+                        f"ΔVol Put {w_dvol_put.value:+.1f}pp (50–100%)  |  "
+                        f"ΔVol Call {w_dvol_call.value:+.1f}pp (100–150%)  |  "
                         f"ΔRate {w_drate.value:+.0f}bp  |  "
                         f"+{w_days.value}d")
 
@@ -7109,7 +7139,9 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
             "Hedge Adj = −(Δpos_after − Δpos_before) &nbsp;·&nbsp; "
             "+ = comprar underlying &nbsp;·&nbsp; − = vender &nbsp;·&nbsp; "
             "OI como proxy de posição (sem quantity/multiplier separado) &nbsp;·&nbsp; "
-            "Vol: choque flat uniforme &nbsp;·&nbsp; Opções com ✗ = expiraram no horizonte"
+            "Vol: choque por asa — Put wing K/S∈[50%,100%) / Call wing K/S∈[100%,150%] / deep OTM sem choque &nbsp;·&nbsp; "
+            "IV base já reflete o smile completo da surface (per-instrument BQL) &nbsp;·&nbsp; "
+            "Opções com ✗ = expiraram no horizonte"
             "</div>"
         )
 
@@ -7126,8 +7158,55 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
                 + _html_table(df_agg, num_cols=AGG_SIGN)
             ))
 
+        # ── Heatmap compacto da vol surface (expiry × strike bucket) ─────────
+        # Agrupa IV base por expiry e faixas de strike arredondadas
+        _stride = max(int(round((df_orig['Strike'].max() - df_orig['Strike'].min()) / 20)), 5)
+        _sbins  = np.arange(df_orig['Strike'].min() // _stride * _stride,
+                            df_orig['Strike'].max() + _stride, _stride)
+        _surf   = df_orig.copy()
+        _surf['_sb'] = ((_surf['Strike'] // _stride) * _stride).astype(int)
+        _surf_piv = (_surf.groupby(['Exp', '_sb'])['IV']
+                     .mean()
+                     .unstack('_sb') * 100)
+
+        # Monta HTML do heatmap
+        def _vol_color(v, lo=15, hi=40):
+            # cyan (baixo) → laranja (alto)
+            t = max(0.0, min(1.0, (v - lo) / (hi - lo))) if pd.notna(v) else 0.5
+            r = int(t * 245 + (1-t) * 0)
+            g = int(t * 166 + (1-t) * 212)
+            b = int(t * 35  + (1-t) * 232)
+            return f'rgba({r},{g},{b},{0.5 + t*0.4:.2f})'
+
+        _hm_strikes = sorted(_surf_piv.columns.tolist())
+        _th_s = ''.join(f"<th style='padding:2px 6px;font-size:9px;color:rgba(0,212,232,.5);text-align:center;'>{int(k)}</th>"
+                        for k in _hm_strikes)
+        _hm_rows = ''
+        for exp, row in _surf_piv.iterrows():
+            _exp_lbl = pd.Timestamp(exp).strftime('%d/%b')
+            _hm_rows += f"<tr><td style='padding:2px 6px;font-size:9px;color:rgba(255,255,255,.5);white-space:nowrap;'>{_exp_lbl}</td>"
+            for k in _hm_strikes:
+                v = row.get(k, np.nan)
+                bg = _vol_color(v) if pd.notna(v) else 'transparent'
+                txt = f'{v:.1f}' if pd.notna(v) else ''
+                _hm_rows += (f"<td style='padding:1px 5px;font-size:9px;text-align:center;"
+                             f"background:{bg};color:rgba(0,0,0,.7);font-weight:600;'>{txt}</td>")
+            _hm_rows += '</tr>'
+
+        _hm_html = (
+            "<div style='margin:12px 0 6px;'>"
+            "<p style='color:rgba(0,212,232,.7);font-size:11px;margin:0 0 6px;letter-spacing:.5px;'>"
+            "VOL SURFACE — IV% base por expiry × strike bucket (média por faixa)</p>"
+            "<div style='overflow-x:auto;'><table style='border-collapse:collapse;font-family:monospace;'>"
+            f"<thead><tr><th style='padding:2px 6px;font-size:9px;'></th>{_th_s}</tr></thead>"
+            f"<tbody>{_hm_rows}</tbody></table></div>"
+            "<p style='color:rgba(255,255,255,.25);font-size:9px;margin:4px 0 0;'>"
+            f"Cor: baixa IV = ciano, alta IV = laranja &nbsp;·&nbsp; faixa de strike: {_stride}pts</p></div>"
+        )
+
         with out_inst:
             out_inst.clear_output(wait=True)
+            _disp(wd.HTML(_hm_html))
             shown = df_inst[INST_COLS].head(MAX_ROWS)
             suffix = (f" — exibindo {MAX_ROWS} de {len(df_inst)}, ordenado por expiry/OI desc"
                       if len(df_inst) > MAX_ROWS else '')
@@ -7138,10 +7217,11 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
             ))
 
     def _reset(_):
-        w_dspot.value = 0.0
-        w_dvol.value  = 0.0
-        w_drate.value = 0.0
-        w_days.value  = 0
+        w_dspot.value     = 0.0
+        w_dvol_put.value  = 0.0
+        w_dvol_call.value = 0.0
+        w_drate.value     = 0.0
+        w_days.value      = 0
         _compute_and_render(None)
 
     w_btn.on_click(_compute_and_render)
@@ -7153,12 +7233,21 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker=''):
         f"<h3 style='color:#00d4e8;margin:0 0 2px;font-size:15px;'>"
         f"Ajuste Dinâmico do Book — {ticker}</h3>"
         f"<p style='color:rgba(255,255,255,.3);font-size:10px;margin:0;'>"
-        f"Repricing BS por instrumento → agregação por expiry → hedge adjustment por vencimento"
+        f"Repricing BS por instrumento → agregação por expiry → hedge adjustment por vencimento &nbsp;·&nbsp; "
+        f"Vol surface: choque independente por asa (put wing 50–100% / call wing 100–150%)"
         f"</p></div>"
     )
-    input_row = wd.HBox(
-        [w_dspot, w_dvol, w_drate, w_days, w_btn, w_reset],
-        layout=wd.Layout(flex_flow='row wrap', gap='8px', margin='4px 0 10px 0'))
+    vol_label = wd.HTML(
+        "<p style='color:rgba(0,212,232,.5);font-size:9px;margin:0 0 2px;"
+        "letter-spacing:.8px;font-family:monospace;'>"
+        "VOL SURFACE SHOCK</p>",
+        layout=wd.Layout(margin='6px 0 0 0'))
+    input_row = wd.VBox([
+        wd.HBox([w_dspot, w_drate, w_days, w_btn, w_reset],
+                layout=wd.Layout(flex_flow='row wrap', gap='8px')),
+        wd.HBox([vol_label, w_dvol_put, w_dvol_call],
+                layout=wd.Layout(flex_flow='row wrap', gap='8px', align_items='center')),
+    ], layout=wd.Layout(margin='4px 0 10px 0'))
 
     return wd.VBox([header, input_row, out_cards, out_agg, out_inst])
 
