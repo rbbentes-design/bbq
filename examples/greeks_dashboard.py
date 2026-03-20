@@ -7095,6 +7095,12 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
     """
     components = {}
 
+    # Sanitize inputs que podem chegar como None
+    gamma_flip = gamma_flip if (gamma_flip is not None and not (isinstance(gamma_flip, float) and np.isnan(gamma_flip))) else None
+    iv_30d     = iv_30d  if pd.notna(iv_30d)  else 0.20
+    rv_30d     = rv_30d  if pd.notna(rv_30d)  else 0.15
+    skew       = skew    if pd.notna(skew)    else 0.0
+
     # 1. GEX negativity (0–30): quanto mais negativo, maior o score
     _gex_score = min(30, max(0, abs(min(0, net_gex_bn)) / 20.0 * 30))
     components['gex'] = {
