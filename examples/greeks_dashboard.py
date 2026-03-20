@@ -3458,10 +3458,12 @@ def _fetch_vol_of_vol_indicators(lookback_days=252):
     # ── VIX 25-delta Call/Put skew vs ATM ─────────────────────────────────
     # implied_volatility() direto no VIX Index — mais limpo e confiável
     try:
+        # VIX não suporta delta negativo nem put_call — usa pct_moneyness como proxy
+        # 110% moneyness ≈ 25d call, 90% moneyness ≈ 25d put no VIX
         _r = bq.execute(bql.Request('VIX Index', {
-            'iv_atm': bq.data.implied_volatility(expiry='30D', delta='50'),
-            'iv_c25': bq.data.implied_volatility(expiry='30D', delta='25'),
-            'iv_p25': bq.data.implied_volatility(expiry='30D', delta='-25'),
+            'iv_atm': bq.data.implied_volatility(expiry='30D', pct_moneyness='100'),
+            'iv_c25': bq.data.implied_volatility(expiry='30D', pct_moneyness='110'),
+            'iv_p25': bq.data.implied_volatility(expiry='30D', pct_moneyness='90'),
         }))
         _df_iv = pd.concat([r.df()[r.name] for r in _r], axis=1)
         _df_iv = _df_iv.loc[:, ~_df_iv.columns.duplicated()]
@@ -7126,7 +7128,7 @@ def compute_gamma_squeeze_score(net_gex_bn, pc_ratio, iv_30d, rv_30d, gamma_flip
     _flip_side = 'ACIMA' if (gamma_flip and gamma_flip > spot) else 'ABAIXO'
     components['flip_proximity'] = {
         'label': 'Distância Gamma Flip',
-        'value': f'{gamma_flip:,.0f} ({_flip_dist:.1%} do spot) — Flip {_flip_side}',
+        'value': f'{gamma_flip:,.0f} ({_flip_dist:.1%} do spot) — Flip {_flip_side}' if gamma_flip else f'N/A ({_flip_dist:.1%} do spot)',
         'score': round(_flip_score, 1),
         'max': 25,
         'desc': 'Próximo ao flip → qualquer rali pode cruzar e virar auto-reforçado',
@@ -8353,7 +8355,7 @@ def build_squeeze_tab(squeeze_result, net_gex_bn, spot, gamma_flip,
         f"<p><b style='color:{alert_color}'>{interp}</b></p>"
         f"<table class='mm-table' style='width:auto;font-size:12px;'>"
         f"<tr><td>GEX NET</td><td><b>{net_gex_bn:+.2f}B</b></td></tr>"
-        f"<tr><td>Gamma Flip</td><td><b>{gamma_flip:,.0f}</b> ({_fd:.1f}% {_flip_dir} do spot)</td></tr>"
+        f"<tr><td>Gamma Flip</td><td><b>{f'{gamma_flip:,.0f}' if gamma_flip else 'N/A'}</b> ({_fd:.1f}% {_flip_dir} do spot)</td></tr>"
         f"<tr><td>P/C OI Ratio</td><td><b>{pc_ratio:.2f}x</b></td></tr>"
         f"<tr><td>IV-RV Gap</td><td><b>{(iv_30d-rv_30d)*100:+.1f} vol pts</b></td></tr>"
         + _sk3_row + _v9d_row
