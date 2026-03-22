@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     auth_timeout_ms: int = 120_000
     debug_auth: bool = False
 
+    # ── Chrome Profile ────────────────────────────────────────────────────────
+    # Reutiliza perfil Chrome existente (ja autenticado) em vez de login manual.
+    chrome_user_data_dir: Path = Field(
+        default=Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
+        description="Caminho do User Data do Chrome (pasta que contem os perfis).",
+    )
+    chrome_profile: str = Field(
+        default="Default",
+        description="Nome do perfil Chrome a usar (ex: 'Default', 'Profile 1').",
+    )
+
     # ── ZeroHedge ─────────────────────────────────────────────────────────────
     zerohedge_base_url: str = "https://www.zerohedge.com"
     zerohedge_market_ear_url: str = "https://www.zerohedge.com/the-market-ear"
