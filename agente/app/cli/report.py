@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from app.storage.bundle_store import bundle_store
-from app.views.report import generate_markdown, generate_json_summary
+from app.views.report import generate_markdown, generate_json_summary, generate_html
 
 app = typer.Typer(name="report", help="Gera e exibe relatorios de ingestao.")
 console = Console()
@@ -27,7 +27,7 @@ console = Console()
 @app.command()
 def show(
     run_id: str = typer.Option("", "--run-id", help="ID do run (vazio = ultimo)"),
-    fmt: str = typer.Option("md", "--format", "-f", help="Formato: md | json"),
+    fmt: str = typer.Option("md", "--format", "-f", help="Formato: md | json | html"),
 ) -> None:
     """Exibe o relatorio do bundle mais recente (ou do run_id especificado)."""
     bundles = bundle_store.list_bundles()
@@ -58,6 +58,18 @@ def show(
     if fmt == "json":
         summary = generate_json_summary(bundle)
         console.print_json(json.dumps(summary, ensure_ascii=False, indent=2))
+    elif fmt == "html":
+        import tempfile, webbrowser
+        html = generate_html(bundle)
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".html", delete=False,
+            prefix=f"agente_report_{bundle.run_date}_",
+            mode="w", encoding="utf-8",
+        )
+        tmp.write(html)
+        tmp.flush()
+        console.print(f"[green]Abrindo no browser:[/green] {tmp.name}")
+        webbrowser.open(f"file:///{tmp.name}")
     else:
         md = generate_markdown(bundle)
         console.print(Markdown(md))
