@@ -251,15 +251,16 @@ def generate_html(bundle: DailyIngestionBundle) -> str:
     return _HTML_TEMPLATE.format(date=date_str, body=full_body)
 
 
-def save_reports(bundle: DailyIngestionBundle) -> tuple[Path, Path]:
+def save_reports(bundle: DailyIngestionBundle) -> tuple[Path, Path, Path]:
     """
-    Salva markdown e JSON resumido no workspace.
+    Salva markdown, JSON resumido e HTML no workspace.
 
     Returns:
-        (markdown_path, json_path)
+        (markdown_path, json_path, html_path)
     """
     md_path = workspace.markdown_report_path(bundle.run_date, bundle.run_id)
     json_path = workspace.json_report_path(bundle.run_date, bundle.run_id)
+    html_path = workspace.html_report_path(bundle.run_date, bundle.run_id)
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(generate_markdown(bundle), encoding="utf-8")
@@ -267,5 +268,6 @@ def save_reports(bundle: DailyIngestionBundle) -> tuple[Path, Path]:
         json.dumps(generate_json_summary(bundle), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    html_path.write_text(generate_html(bundle), encoding="utf-8")
 
-    return md_path, json_path
+    return md_path, json_path, html_path

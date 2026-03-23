@@ -168,14 +168,15 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
 
     # ── Relatorios ─────────────────────────────────────────────────────────────
     from app.views.report import save_reports
-    md_path, json_path = save_reports(bundle)
+    md_path, json_path, html_path = save_reports(bundle)
     artifact_paths["markdown"] = str(md_path)
     artifact_paths["json_summary"] = str(json_path)
+    artifact_paths["html_report"] = str(html_path)
     # Atualiza bundle com paths dos relatorios
     bundle = bundle.model_copy(update={"artifact_paths": artifact_paths})
     bundle_store.save(bundle)  # re-salva com paths completos
     audit.write(rec.ok(run_id, "pipeline", "reports_saved",
-                       markdown=str(md_path), json=str(json_path)))
+                       markdown=str(md_path), json=str(json_path), html=str(html_path)))
 
     _log.info("pipeline_done", run_id=run_id,
               zh_blocks=len(zh_blocks), x_items=len(x_items),

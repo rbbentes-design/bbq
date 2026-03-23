@@ -110,6 +110,11 @@ class WorkspacePaths:
         date_str = run_date.isoformat()
         return self.bundles / date_str / f"{run_id}_summary.json"
 
+    def html_report_path(self, run_date: date, run_id: str) -> Path:
+        """Caminho para o relatório HTML."""
+        date_str = run_date.isoformat()
+        return self.bundles / date_str / f"{run_id}_report.html"
+
     def audit_log_path(self, run_date: date) -> Path:
         """Caminho para o log de auditoria diário (JSONL)."""
         return self.logs / f"audit_{run_date.isoformat()}.jsonl"

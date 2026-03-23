@@ -59,17 +59,15 @@ def show(
         summary = generate_json_summary(bundle)
         console.print_json(json.dumps(summary, ensure_ascii=False, indent=2))
     elif fmt == "html":
-        import tempfile, webbrowser
-        html = generate_html(bundle)
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".html", delete=False,
-            prefix=f"agente_report_{bundle.run_date}_",
-            mode="w", encoding="utf-8",
-        )
-        tmp.write(html)
-        tmp.flush()
-        console.print(f"[green]Abrindo no browser:[/green] {tmp.name}")
-        webbrowser.open(f"file:///{tmp.name}")
+        import webbrowser
+        from app.storage.paths import workspace
+        html_path = workspace.html_report_path(bundle.run_date, bundle.run_id)
+        if not html_path.exists():
+            # Gera se ainda nao existe (bundle antigo)
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(generate_html(bundle), encoding="utf-8")
+        console.print(f"[green]Abrindo:[/green] {html_path}")
+        webbrowser.open(html_path.as_uri())
     else:
         md = generate_markdown(bundle)
         console.print(Markdown(md))
