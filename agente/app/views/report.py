@@ -140,6 +140,14 @@ def generate_json_summary(bundle: DailyIngestionBundle) -> dict:
     }
 
 
+def _img_src(url_or_path: str) -> str:
+    """Retorna URI usavel em <img src>: file:/// para paths locais, URL para remotas."""
+    p = Path(url_or_path)
+    if p.exists():
+        return p.as_uri()
+    return url_or_path
+
+
 def generate_html(bundle: DailyIngestionBundle) -> str:
     """Gera o relatorio completo em HTML estilizado, com imagens."""
     from html import escape
@@ -236,7 +244,7 @@ def generate_html(bundle: DailyIngestionBundle) -> str:
             if unique_imgs:
                 parts.append('<div class="imgs">')
                 for url in unique_imgs:
-                    parts.append(f'<img src="{escape(url)}" loading="lazy" alt="">')
+                    parts.append(f'<img src="{escape(_img_src(url))}" loading="lazy" alt="">')
                 parts.append("</div>")
             parts.append("<hr></div>")
 
@@ -259,7 +267,7 @@ def generate_html(bundle: DailyIngestionBundle) -> str:
             if it.media_refs:
                 parts.append('<div class="tweet-media">')
                 for url in it.media_refs[:4]:
-                    parts.append(f'<img src="{escape(url)}" loading="lazy" alt="">')
+                    parts.append(f'<img src="{escape(_img_src(url))}" loading="lazy" alt="">')
                 parts.append("</div>")
             parts.append(
                 f'<div class="tweet-eng">'

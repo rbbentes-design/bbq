@@ -141,6 +141,35 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
         finally:
             ctx.close()
 
+    # ── Download de imagens ────────────────────────────────────────────────────
+    try:
+        from app.utils.image_downloader import download_images
+        img_dir = workspace.bundles / str(run_date) / "images"
+
+        all_img_urls = [u for b in zh_blocks for u in b.image_refs]
+        all_img_urls += [u for it in x_items for u in it.media_refs]
+
+        img_map = download_images(list(dict.fromkeys(all_img_urls)), img_dir)  # preserva ordem, deduplica
+
+        # Atualiza refs nos blocos para paths locais
+        zh_blocks = [
+            b.model_copy(update={"image_refs": [
+                str(img_map[u]) if u in img_map else u for u in b.image_refs
+            ]}) for b in zh_blocks
+        ]
+        x_items = [
+            it.model_copy(update={"media_refs": [
+                str(img_map[u]) if u in img_map else u for u in it.media_refs
+            ]}) for it in x_items
+        ]
+        artifact_paths["images_dir"] = str(img_dir)
+        audit.write(rec.ok(run_id, "pipeline", "images_downloaded",
+                           total=len(all_img_urls), saved=len(img_map)))
+    except Exception as exc:
+        msg = f"Image download failed: {exc}"
+        errors.append(msg)
+        _log.warning("image_download_error", error=str(exc))
+
     # ── Bundle ─────────────────────────────────────────────────────────────────
     audit_summary = AuditSummary(
         total_records=len(zh_blocks) + len(x_items),
