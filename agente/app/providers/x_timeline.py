@@ -1,16 +1,21 @@
 """
-Provider: X (Twitter) Timeline
+Provider: X (Twitter) — Notificacoes de novos posts
 
-Coleta tweets do timeline do usuario via Playwright (requer sessao auth_token).
-Faz scroll para carregar mais tweets conforme o limite configurado.
+Estrategia:
+  1. Navega para /notifications e extrai handles das contas com sino ativo
+     ("New post notifications for X and N others")
+  2. Para cada handle navega ate o perfil e coleta tweets recentes
+  3. Deduplica por URL e limita ao settings.x_timeline_limit
 
 Estrutura do DOM do X (inspecionada em 2026-03):
+- Notificacoes em [data-testid="notification"]
+- Texto de notificacao de novo post: contem "New post notification"
+- Handles: links a[href^="/"] dentro do bloco de notificacao
 - Tweets em [data-testid="tweet"]
-- Autor em [data-testid="User-Name"] (primeiro = autor principal)
+- Autor em [data-testid="User-Name"]
 - Texto em [data-testid="tweetText"]
 - Timestamp em time[datetime]
 - Engajamento em [data-testid="reply|retweet|like"]
-- URL em a[href*="/status/"]
 """
 
 from __future__ import annotations
@@ -30,31 +35,42 @@ _log = get_logger("providers.x_timeline")
 
 SOURCE_NAME = "x"
 _X_BASE = "https://x.com"
-_TIMELINE_URL = "https://x.com/i/timeline"
+_NOTIFICATIONS_URL = "https://x.com/notifications"
+# Mantido para collect_html (snapshot da pagina de notificacoes)
+_TIMELINE_URL = _NOTIFICATIONS_URL
 
 
 def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     """
-    Coleta tweets do timeline do usuario.
+    Coleta tweets das contas com notificacao ativa (sino).
 
-    Args:
-        page: Page Playwright com sessao X ativa (auth_token).
-        source_doc: SourceDocument ja criado pelo pipeline.
-
-    Returns:
-        Lista de XTimelineItem (ate settings.x_timeline_limit itens).
+    1. Abre /notifications
+    2. Clica no item "New post notifications for X and N others"
+    3. Scrape os tweets do feed resultante
     """
     limit = settings.x_timeline_limit
-    _log.info("collect_start", source=SOURCE_NAME, limit=limit)
+    _log.info("collect_start", source=SOURCE_NAME, mode="notifications_click", limit=limit)
 
-    page.goto(_TIMELINE_URL, timeout=30_000)
+    page.goto(_NOTIFICATIONS_URL, timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=15_000)
-    time.sleep(5)  # Aguarda carregamento inicial do React
+    time.sleep(4)
 
+    # Localiza e clica no item de notificacao de novo post
+    clicked = _click_new_post_notification(page)
+    if not clicked:
+        _log.warning("notification_not_found", msg="Item 'New post notifications' nao encontrado")
+        return []
+
+    # Aguarda feed carregar
+    page.wait_for_load_state("domcontentloaded", timeout=15_000)
+    time.sleep(4)
+    _log.info("notification_clicked", url=page.url)
+
+    # Scrape tweets do feed aberto
     items: list[XTimelineItem] = []
     seen_urls: set[str] = set()
     scroll_attempts = 0
-    max_scrolls = 20
+    max_scrolls = 15
 
     while len(items) < limit and scroll_attempts < max_scrolls:
         tweets = page.locator('[data-testid="tweet"]')
@@ -71,14 +87,12 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
             except Exception as exc:
                 _log.warning("parse_tweet_error", idx=i, error=str(exc))
 
-        prev_count = count
         page.keyboard.press("End")
         time.sleep(2)
         scroll_attempts += 1
 
         new_count = page.locator('[data-testid="tweet"]').count()
-        if new_count == prev_count:
-            # Nenhum novo tweet carregou — fim do feed
+        if new_count == count:
             break
 
     _log.info("collect_done", source=SOURCE_NAME, items=len(items), scrolls=scroll_attempts)
@@ -86,31 +100,53 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
 
 
 def collect_html(page: Page) -> str:
-    """Retorna o HTML da timeline apos carregamento inicial."""
-    page.goto(_TIMELINE_URL, timeout=30_000)
+    """Retorna o HTML da pagina de notificacoes apos carregamento."""
+    page.goto(_NOTIFICATIONS_URL, timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=15_000)
-    time.sleep(5)
+    time.sleep(4)
     return page.content()
+
+
+# ── Notificacoes ───────────────────────────────────────────────────────────────
+
+def _click_new_post_notification(page: Page) -> bool:
+    """
+    Localiza e clica no primeiro item 'New post notifications for ...'
+    na pagina de notificacoes ja carregada.
+
+    Retorna True se clicou, False se nao encontrou.
+    """
+    notifs = page.locator('[data-testid="notification"]')
+    count = notifs.count()
+
+    for i in range(count):
+        try:
+            notif = notifs.nth(i)
+            text = notif.inner_text()
+            if "post notification" in text.lower() or "new post" in text.lower():
+                _log.info("notification_found", idx=i, text=text[:80])
+                notif.click()
+                return True
+        except Exception as exc:
+            _log.warning("notif_click_error", idx=i, error=str(exc))
+
+    return False
 
 
 # ── Parsing ────────────────────────────────────────────────────────────────────
 
 def _parse_tweet(tweet: Locator, source_doc: SourceDocument) -> XTimelineItem | None:
-    # Autor: primeiro User-Name (evita quoted tweet author)
     author = _extract_handle(tweet)
     if not author:
         return None
 
-    # URL do tweet
     tweet_url = _extract_tweet_url(tweet, author)
     if not tweet_url:
         return None
 
-    # Texto
     text_el = tweet.locator('[data-testid="tweetText"]').first
     text = text_el.inner_text().strip() if text_el.count() > 0 else ""
 
-    # Timestamp
     created_at = None
     time_el = tweet.locator("time").first
     if time_el.count() > 0:
@@ -122,10 +158,8 @@ def _parse_tweet(tweet: Locator, source_doc: SourceDocument) -> XTimelineItem | 
             except (ValueError, TypeError):
                 pass
 
-    # Engajamento
     engagement = _extract_engagement(tweet)
 
-    # Midia: imagens no tweet
     media_refs: list[str] = []
     imgs = tweet.locator('img[src*="pbs.twimg.com/media"]')
     for j in range(min(imgs.count(), 4)):
@@ -146,18 +180,15 @@ def _parse_tweet(tweet: Locator, source_doc: SourceDocument) -> XTimelineItem | 
 
 
 def _extract_handle(tweet: Locator) -> str:
-    """Extrai @handle do primeiro User-Name do tweet."""
     try:
         author_el = tweet.locator('[data-testid="User-Name"]').first
         if author_el.count() == 0:
             return ""
         raw = author_el.inner_text()
-        # Formato: "Display Name\n@handle\n..."
         for line in raw.splitlines():
             line = line.strip()
             if line.startswith("@"):
                 return line
-        # Fallback: link com href="/handle"
         links = tweet.locator('[data-testid="User-Name"] a[href^="/"]')
         if links.count() > 0:
             href = links.first.get_attribute("href") or ""
@@ -170,7 +201,6 @@ def _extract_handle(tweet: Locator) -> str:
 
 
 def _extract_tweet_url(tweet: Locator, author: str) -> str:
-    """Extrai a URL canonica do tweet (https://x.com/handle/status/id)."""
     try:
         handle = author.lstrip("@")
         links = tweet.locator(f'a[href*="/{handle}/status/"]')
@@ -179,7 +209,6 @@ def _extract_tweet_url(tweet: Locator, author: str) -> str:
             if href.startswith("/"):
                 return f"{_X_BASE}{href}"
             return href
-        # Fallback: qualquer link /status/
         links2 = tweet.locator('a[href*="/status/"]')
         if links2.count() > 0:
             href = links2.first.get_attribute("href") or ""
@@ -191,12 +220,10 @@ def _extract_tweet_url(tweet: Locator, author: str) -> str:
 
 
 def _extract_engagement(tweet: Locator) -> EngagementInfo:
-    """Extrai metricas de engajamento do tweet."""
     def _parse_count(text: str) -> int:
         text = text.strip().replace(",", "")
         if not text:
             return 0
-        # "1.2K" -> 1200, "3.5M" -> 3500000
         m = re.match(r"^([\d.]+)([KkMm]?)$", text)
         if m:
             val = float(m.group(1))
