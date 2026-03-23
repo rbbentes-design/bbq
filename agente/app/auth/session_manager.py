@@ -70,11 +70,11 @@ class SessionManager:
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
 
     def open(self) -> None:
-        """Abre o Playwright e o BrowserContext com o perfil Chrome."""
+        """Abre o Playwright e o BrowserContext com o perfil do workspace."""
         self._playwright = sync_playwright().start()
         self._context = open_context(self._playwright, headless=self._headless)
         self._page = self._context.new_page()
-        _log.info("browser_opened", profile="Chrome/Default")
+        _log.info("browser_opened", profile="workspace/browser")
 
     def close(self) -> None:
         """Fecha o contexto e o Playwright."""

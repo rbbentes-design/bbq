@@ -1,11 +1,13 @@
 """
 Validadores de sessao por site.
 
-Cada funcao recebe uma Page aberta e retorna True se a sessao esta ativa,
-False se o usuario esta deslogado (ex: pagina de login apareceu).
+ZeroHedge: usa Coral Talk para auth — detecta por cookie coral_talk_sess.
+X: detecta por cookie auth_token.
 """
 
 from __future__ import annotations
+
+import time
 
 from playwright.sync_api import Page
 
@@ -14,44 +16,53 @@ from app.config.settings import settings
 
 def is_zerohedge_logged_in(page: Page) -> bool:
     """
-    Navega para ZeroHedge Market Ear e verifica se ha sessao ativa.
+    Navega para ZeroHedge e verifica sessao por cookie coral_talk_sess.
 
-    Indicadores de sessao ativa: ausencia de link /login, presenca de conteudo editorial.
+    ZeroHedge usa o sistema Coral Talk para autenticacao de usuarios.
+    O cookie coral_talk_sess (JWT, ~1200+ chars) e criado no login e
+    persiste no perfil do browser.
     """
     try:
         page.goto(settings.zerohedge_market_ear_url, timeout=settings.auth_timeout_ms)
         page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        time.sleep(3)
 
-        # Se aparece formulario de login, sessao nao esta ativa
-        login_form = page.locator("form[action*='login'], input[name='pass']")
-        if login_form.count() > 0:
+        url = page.url
+        if "zerohedge.com" not in url:
+            return False
+        if "/user/login" in url:
             return False
 
-        # Verifica se tem conteudo editorial (qualquer artigo/bloco)
-        content = page.locator("article, .node--type-zh-blog-entry, .market-ear")
-        return content.count() > 0
+        cookies = page.context.cookies()
+        for c in cookies:
+            if c.get("domain", "").endswith("zerohedge.com"):
+                if c.get("name") == "coral_talk_sess" and len(c.get("value", "")) > 100:
+                    return True
+        return False
     except Exception:
         return False
 
 
 def is_x_logged_in(page: Page) -> bool:
     """
-    Navega para X (Twitter) e verifica se ha sessao ativa.
-
-    Indicadores de sessao ativa: ausencia de botao Sign In na home, presenca de timeline.
+    Navega para X e verifica sessao por cookie auth_token.
     """
     try:
         page.goto("https://x.com/home", timeout=settings.auth_timeout_ms)
         page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        time.sleep(3)
 
-        # Se redirecionou para /i/flow/login ou login page, nao esta logado
-        if "/login" in page.url or "/i/flow/" in page.url:
+        url = page.url
+        if "/login" in url or "/i/flow/" in url:
             return False
 
-        # Verifica presenca de elementos da timeline autenticada
-        timeline = page.locator(
-            '[data-testid="primaryColumn"], [aria-label="Timeline: Your Home Timeline"]'
-        )
-        return timeline.count() > 0
+        cookies = page.context.cookies()
+        for c in cookies:
+            domain = c.get("domain", "")
+            if domain.endswith("x.com") or domain.endswith("twitter.com"):
+                if c.get("name") == "auth_token" and c.get("value"):
+                    return True
+
+        return page.locator('[data-testid="primaryColumn"]').count() > 0
     except Exception:
         return False
