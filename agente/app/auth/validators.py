@@ -48,7 +48,7 @@ def is_x_logged_in(page: Page) -> bool:
     Navega para X e verifica sessao por cookie auth_token.
     """
     try:
-        page.goto("https://x.com/home", timeout=settings.auth_timeout_ms)
+        page.goto("https://x.com/i/timeline", timeout=settings.auth_timeout_ms)
         page.wait_for_load_state("domcontentloaded", timeout=15_000)
         time.sleep(3)
 

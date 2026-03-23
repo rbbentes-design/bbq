@@ -110,7 +110,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
 
                 x_doc, x_html_path = raw_store.build_document(
                     source_name=x_prov.SOURCE_NAME,
-                    source_url="https://x.com/home",
+                    source_url=x_prov._TIMELINE_URL,
                     access_method="playwright",
                     html=x_html,
                 )

@@ -30,6 +30,7 @@ _log = get_logger("providers.x_timeline")
 
 SOURCE_NAME = "x"
 _X_BASE = "https://x.com"
+_TIMELINE_URL = "https://x.com/i/timeline"
 
 
 def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
@@ -46,7 +47,7 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     limit = settings.x_timeline_limit
     _log.info("collect_start", source=SOURCE_NAME, limit=limit)
 
-    page.goto(f"{_X_BASE}/home", timeout=30_000)
+    page.goto(_TIMELINE_URL, timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=15_000)
     time.sleep(5)  # Aguarda carregamento inicial do React
 
@@ -85,8 +86,8 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
 
 
 def collect_html(page: Page) -> str:
-    """Retorna o HTML da pagina home apos carregamento inicial."""
-    page.goto(f"{_X_BASE}/home", timeout=30_000)
+    """Retorna o HTML da timeline apos carregamento inicial."""
+    page.goto(_TIMELINE_URL, timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=15_000)
     time.sleep(5)
     return page.content()
