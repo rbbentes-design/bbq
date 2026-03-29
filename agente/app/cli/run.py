@@ -95,13 +95,36 @@ def ingest(
         for m in bundle.audit_summary.error_messages:
             console.print(f"  [red][X] {m}[/red]")
 
-    # ── HTML ──────────────────────────────────────────────────────────────────
+    # ── HTML Relatório ────────────────────────────────────────────────────────
     html_path = bundle.artifact_paths.get("html_report")
     if html_path and not no_open:
         p = Path(html_path)
         if p.exists():
             console.print(f"\n[green]Abrindo relatorio:[/green] {p.name}")
             webbrowser.open(p.as_uri())
+
+    # ── Macro Desk HTML ───────────────────────────────────────────────────────
+    curation_obj = None
+    curation_path = bundle.artifact_paths.get("curation")
+    if curation_path:
+        try:
+            import json as _json
+            from app.curation.models import CurationResult
+            curation_obj = CurationResult.model_validate(
+                _json.loads(Path(curation_path).read_text(encoding="utf-8"))
+            )
+        except Exception:
+            pass
+
+    try:
+        from app.views.report import save_macro_desk
+        with console.status("[cyan]Macro Desk processando...[/cyan]"):
+            desk_path = save_macro_desk(bundle, curation_obj)
+        console.print(f"[green]Abrindo Macro Desk:[/green] {desk_path.name}")
+        if not no_open:
+            webbrowser.open(desk_path.as_uri())
+    except Exception as exc:
+        console.print(f"[yellow]Macro Desk falhou: {exc}[/yellow]")
 
     console.print(Panel.fit(
         f"[bold green]Run concluido[/bold green] — {bundle.run_date} | id={bundle.run_id[:12]}",

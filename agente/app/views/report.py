@@ -1022,6 +1022,170 @@ def _render_enrichment_html(
     return "\n".join(parts)
 
 
+def generate_macro_desk_html(
+    bundle: DailyIngestionBundle,
+    curation_result: "CurationResult | None" = None,
+) -> str:
+    """Gera HTML standalone do Macro Desk — scoreboard + narrativa."""
+    from html import escape
+
+    # ── Roda o diagnóstico ────────────────────────────────────────────────────
+    from app.curation.investment_agent import diagnose
+    result = diagnose(bundle, curation_result)
+    scores    = result.get("scores", {})
+    narrative = result.get("narrative", "")
+    run_date  = result.get("run_date", str(bundle.run_date))
+
+    # ── Sinal do writer ───────────────────────────────────────────────────────
+    writer_signal = ""
+    if curation_result:
+        sig = curation_result.narrative.primary_signal
+        writer_signal = f"{sig.label} ({sig.confidence:.0%})"
+
+    # ── Scores ────────────────────────────────────────────────────────────────
+    score_labels = {
+        "rational":          "Rational Engine",
+        "behavioral":        "Behavioral Engine",
+        "entropy":           "Entropy Engine",
+        "valuation_gap":     "Valuation Gap",
+        "regime_confidence": "Regime Confidence",
+    }
+
+    def score_color(v: int) -> str:
+        return {2: "#34d399", 1: "#6ee7b7", 0: "#fbbf24", -1: "#f87171", -2: "#ef4444"}.get(v, "#8892a4")
+
+    def score_bar_html(v: int | None) -> str:
+        if v is None:
+            return "<span style='color:#8892a4'>—</span>"
+        pct = int((v + 2) / 4 * 100)
+        color = score_color(v)
+        sign = f"+{v}" if v > 0 else str(v)
+        return (
+            f"<div style='display:flex;align-items:center;gap:10px'>"
+            f"<div style='flex:1;background:#1a1d27;border-radius:4px;height:10px;overflow:hidden'>"
+            f"<div style='width:{pct}%;background:{color};height:100%;border-radius:4px;transition:width .3s'></div>"
+            f"</div>"
+            f"<span style='font-size:1rem;font-weight:700;color:{color};min-width:28px;text-align:right'>{sign}</span>"
+            f"</div>"
+        )
+
+    scores_html = ""
+    for key, label in score_labels.items():
+        val = scores.get(key)
+        scores_html += (
+            f"<div style='display:grid;grid-template-columns:180px 1fr;align-items:center;"
+            f"gap:12px;padding:8px 0;border-bottom:1px solid #2a2d3a'>"
+            f"<span style='color:#8892a4;font-size:0.85rem'>{label}</span>"
+            f"{score_bar_html(val)}"
+            f"</div>"
+        )
+
+    # ── Preços de mercado ─────────────────────────────────────────────────────
+    prices_html = ""
+    if bundle.market_prices:
+        rows = ""
+        for ticker, info in list(bundle.market_prices.items())[:10]:
+            if not isinstance(info, dict):
+                continue
+            name  = info.get("name", ticker)
+            price = info.get("price")
+            ret1d = info.get("return_1d")
+            if price is None:
+                continue
+            ret_color = "#34d399" if (ret1d or 0) >= 0 else "#f87171"
+            ret_str = f"<span style='color:{ret_color}'>{ret1d:+.1f}%</span>" if ret1d is not None else ""
+            rows += (
+                f"<tr><td style='color:#e2e8f0'>{escape(name)}</td>"
+                f"<td style='text-align:right;font-variant-numeric:tabular-nums'>{price:.2f}</td>"
+                f"<td style='text-align:right'>{ret_str}</td></tr>"
+            )
+        prices_html = (
+            f"<h2 style='font-size:0.9rem;color:#60a5fa;margin:2rem 0 0.8rem;"
+            f"text-transform:uppercase;letter-spacing:.08em'>Mercado</h2>"
+            f"<table style='width:100%;border-collapse:collapse;font-size:0.85rem'>"
+            f"<thead><tr style='color:#8892a4;border-bottom:1px solid #2a2d3a'>"
+            f"<th style='text-align:left;padding:4px 0'>Ativo</th>"
+            f"<th style='text-align:right'>Preço</th>"
+            f"<th style='text-align:right'>1d</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+
+    # ── Narrativa formatada ───────────────────────────────────────────────────
+    import re
+    # Bold markdown **texto** → <strong>
+    narrative_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(narrative))
+    # Parágrafos
+    paragraphs = [p.strip() for p in narrative_html.split("\n\n") if p.strip()]
+    narrative_html = "".join(f"<p>{p}</p>" for p in paragraphs)
+
+    from datetime import datetime
+    now = datetime.now().strftime("%H:%M")
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Macro Desk — {run_date}</title>
+<style>
+  :root {{
+    --bg:#0f1117; --surface:#1a1d27; --border:#2a2d3a;
+    --text:#e2e8f0; --muted:#8892a4; --accent:#22d3ee;
+  }}
+  * {{ box-sizing:border-box; margin:0; padding:0 }}
+  body {{ background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    font-size:15px; line-height:1.7; padding:2rem;
+    max-width:860px; margin:0 auto }}
+  h2 {{ font-size:0.8rem; color:var(--accent); margin:2rem 0 0.8rem;
+       text-transform:uppercase; letter-spacing:.08em }}
+  p {{ margin-bottom:0.9rem; color:var(--text) }}
+  strong {{ color:#fbbf24 }}
+</style>
+</head>
+<body>
+
+<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:0.3rem">
+  <h1 style="font-size:1.8rem;font-weight:900;color:var(--accent);
+             letter-spacing:-.02em">MACRO DESK</h1>
+  <span style="color:var(--muted);font-size:0.85rem">{run_date} &nbsp; {now}</span>
+</div>
+
+{f'<p style="color:#8892a4;font-size:0.85rem;margin-bottom:1.5rem">Writer signal: <span style="color:#60a5fa">{escape(writer_signal)}</span></p>' if writer_signal else ""}
+
+<div style="background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;padding:1.2rem 1.5rem;margin-bottom:2rem">
+  <h2 style="margin-top:0">Engines</h2>
+  {scores_html}
+</div>
+
+<h2>Diagnóstico</h2>
+<div style="background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;padding:1.5rem 1.8rem">
+  {narrative_html}
+</div>
+
+{prices_html}
+
+</body></html>"""
+
+    return html
+
+
+def save_macro_desk(
+    bundle: DailyIngestionBundle,
+    curation_result: "CurationResult | None" = None,
+) -> Path:
+    """Gera e salva o HTML do Macro Desk. Retorna o path do arquivo."""
+    html_path = workspace.html_report_path(bundle.run_date, bundle.run_id)
+    desk_path = html_path.parent / f"{bundle.run_id}_macro_desk.html"
+    desk_path.write_text(
+        generate_macro_desk_html(bundle, curation_result),
+        encoding="utf-8",
+    )
+    return desk_path
+
+
 def save_reports(
     bundle: DailyIngestionBundle,
     curation_result: "CurationResult | None" = None,
