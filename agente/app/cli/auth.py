@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from app.audit.logger import configure_logging
-from app.auth.bootstrap import login_x, login_zerohedge
+from app.auth.bootstrap import login_deepvue, login_spectra, login_spotgamma, login_x, login_zerohedge
 from app.auth.browser_profile import open_context, profile_dir
 from app.auth.session_manager import SessionManager
 from app.config.settings import settings
@@ -79,9 +79,9 @@ def login(
     """
     configure_logging("DEBUG" if verbose else "WARNING")
 
-    valid_sites = {"zerohedge", "x", "all"}
+    valid_sites = {"zerohedge", "x", "spotgamma", "spectra", "deepvue", "all"}
     if site not in valid_sites:
-        console.print(f"[red]Site invalido:[/red] {site}. Use: zerohedge, x, ou all")
+        console.print(f"[red]Site invalido:[/red] {site}. Use: zerohedge, x, spotgamma, spectra, deepvue, ou all")
         raise typer.Exit(1)
 
     console.print(f"[bold]Login manual — site: {site}[/bold]")
@@ -98,6 +98,15 @@ def login(
 
             if site in ("x", "all"):
                 results["x"] = login_x(context)
+
+            if site in ("spotgamma", "all"):
+                results["spotgamma"] = login_spotgamma(context)
+
+            if site in ("spectra", "all"):
+                results["spectra"] = login_spectra(context)
+
+            if site in ("deepvue", "all"):
+                results["deepvue"] = login_deepvue(context)
         finally:
             context.close()
 

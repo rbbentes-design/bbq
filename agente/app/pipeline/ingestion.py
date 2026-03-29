@@ -26,6 +26,9 @@ from app.config.settings import settings
 from app.models.daily_ingestion_bundle import AuditSummary, DailyIngestionBundle
 from app.models.market_ear_block import MarketEarBlock
 from app.models.x_timeline_item import XTimelineItem
+from app.providers import deepvue as deepvue_prov
+from app.providers import spectra as spectra_prov
+from app.providers import spotgamma as sg_prov
 from app.providers import x_timeline as x_prov
 from app.providers import zerohedge as zh_prov
 from app.storage.bundle_store import bundle_store
@@ -60,10 +63,20 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
     _log.info("pipeline_start", run_id=run_id, run_date=str(run_date))
     audit.write(rec.ok(run_id, "pipeline", "start"))
 
+    from app.models.rss_item import RSSItem
+    from app.models.spotgamma_report import SpotGammaReport
     zh_blocks: list[MarketEarBlock] = []
     x_items: list[XTimelineItem] = []
+    sg_reports: list[SpotGammaReport] = []
+    rss_items: list[RSSItem] = []
+    polymarket_markets: list[dict] = []
+    fred_data: dict = {}
+    damodaran_data: dict = {}
+    global_liquidity_data: dict = {}
+    market_prices_data: dict = {}
     artifact_paths: dict[str, str] = {}
     errors: list[str] = []
+    _x_source_doc = None  # usado para coleta semanal de perfis
 
     with sync_playwright() as p:
         ctx = open_context(p, headless=headless)
@@ -86,7 +99,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                                    html_bytes=len(html)))
 
                 from bs4 import BeautifulSoup
-                zh_blocks = zh_prov._parse_blocks(html, zh_doc)
+                zh_blocks = zh_prov._parse_blocks(html, zh_doc)[:settings.zerohedge_blocks_limit]
                 norm_path = normalized_store.write_all(
                     zh_prov.SOURCE_NAME, run_id, zh_blocks
                 )
@@ -114,6 +127,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                     access_method="playwright",
                     html=x_html,
                 )
+                _x_source_doc = x_doc  # guardado para coleta semanal
                 artifact_paths["x_html"] = str(x_html_path)
                 audit.write(rec.ok(run_id, "collect", "x_html_saved",
                                    source=x_prov.SOURCE_NAME,
@@ -138,8 +152,216 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                 audit.write(rec.error(run_id, "collect", "x_failed",
                                       msg=msg, source=x_prov.SOURCE_NAME))
 
+            # ── SpotGamma FlowPatrol ────────────────────────────────────────────
+            try:
+                sg_page = ctx.new_page()
+                sg_report = sg_prov.collect_flow_patrol(sg_page)
+                sg_page.close()
+                if sg_report:
+                    sg_reports.append(sg_report)
+                    audit.write(rec.ok(run_id, "collect", "spotgamma_flowpatrol_done",
+                                       source=sg_prov.SOURCE_NAME,
+                                       sections=len(sg_report.sections)))
+                else:
+                    _log.warning("spotgamma_no_report", date=str(run_date))
+            except Exception as exc:
+                msg = f"SpotGamma FlowPatrol failed: {exc}"
+                errors.append(msg)
+                _log.warning("spotgamma_flowpatrol_error", error=str(exc))
+                audit.write(rec.error(run_id, "collect", "spotgamma_flowpatrol_failed",
+                                      msg=msg, source=sg_prov.SOURCE_NAME))
+
+            # ── Spectra Markets am/FX ──────────────────────────────────────────
+            try:
+                spectra_page = ctx.new_page()
+                spectra_items = spectra_prov.collect(spectra_page, max_articles=3)
+                spectra_page.close()
+                rss_items.extend(spectra_items)
+                audit.write(rec.ok(run_id, "collect", "spectra_done",
+                                   source=spectra_prov.SOURCE_NAME,
+                                   items=len(spectra_items)))
+            except Exception as exc:
+                msg = f"Spectra collect failed: {exc}"
+                errors.append(msg)
+                _log.warning("spectra_collect_error", error=str(exc))
+
+            # ── DeepVue ───────────────────────────────────────────────────────────
+            try:
+                dv_page = ctx.new_page()
+                dv_items = deepvue_prov.collect(dv_page)
+                dv_page.close()
+                rss_items.extend(dv_items)
+                if dv_items:
+                    audit.write(rec.ok(run_id, "collect", "deepvue_done",
+                                       source=deepvue_prov.SOURCE_NAME,
+                                       items=len(dv_items)))
+                else:
+                    _log.info("deepvue_no_items_or_not_authenticated")
+            except Exception as exc:
+                msg = f"DeepVue collect failed: {exc}"
+                errors.append(msg)
+                _log.warning("deepvue_collect_error", error=str(exc))
+
+            # ── SpotGamma Founder's Notes ───────────────────────────────────────
+            try:
+                fn_page = ctx.new_page()
+                fn_reports = sg_prov.collect_founders_notes(fn_page, max_notes=2)
+                fn_page.close()
+                sg_reports.extend(fn_reports)
+                audit.write(rec.ok(run_id, "collect", "spotgamma_founders_done",
+                                   source=sg_prov.SOURCE_NAME,
+                                   notes=len(fn_reports)))
+            except Exception as exc:
+                msg = f"SpotGamma Founders Notes failed: {exc}"
+                errors.append(msg)
+                _log.warning("spotgamma_founders_error", error=str(exc))
+                audit.write(rec.error(run_id, "collect", "spotgamma_founders_failed",
+                                      msg=msg, source=sg_prov.SOURCE_NAME))
+
+            # ── ZeroHedge Main Page (somente sábado — podcast) ────────────────
+            if run_date.weekday() == 5:  # 5 = sábado
+                try:
+                    zh_main_page = ctx.new_page()
+                    zh_main_items = zh_prov.collect_main_page(zh_main_page, max_articles=5)
+                    zh_main_page.close()
+                    rss_items.extend(zh_main_items)
+                    if zh_main_items:
+                        audit.write(rec.ok(run_id, "collect", "zh_main_done",
+                                           articles=len(zh_main_items)))
+                        _log.info("zh_main_done", articles=len(zh_main_items))
+                except Exception as exc:
+                    msg = f"ZeroHedge Main collect failed: {exc}"
+                    errors.append(msg)
+                    _log.warning("zh_main_error", error=str(exc))
+
+            # ── Perfis semanais (somente sexta-feira) ──────────────────────────
+            if run_date.weekday() == 4:  # 4 = sexta-feira
+                try:
+                    weekly_page = ctx.new_page()
+                    from app.providers.x_timeline import (
+                        collect_profile_week,
+                        WEEKLY_RECAP_ACCOUNTS,
+                    )
+                    from app.models.source_document import SourceDocument as _SD
+                    from app.utils.timestamps import new_ulid as _ulid
+                    # Usa x_doc capturado anteriormente, ou cria documento mínimo
+                    _weekly_doc = _x_source_doc or _SD(
+                        id=_ulid(),
+                        source_name="x_weekly",
+                        source_url="https://x.com",
+                        access_method="playwright",
+                        html="",
+                    )
+                    existing_urls = {it.url for it in x_items}
+                    weekly_items: list[XTimelineItem] = []
+                    for handle in WEEKLY_RECAP_ACCOUNTS:
+                        w_items = collect_profile_week(
+                            weekly_page, _weekly_doc, handle, days_back=7, max_tweets=25
+                        )
+                        # Insere no início de x_items (maior prioridade no contexto)
+                        for it in w_items:
+                            if it.url not in existing_urls:
+                                existing_urls.add(it.url)
+                                weekly_items.append(it)
+                    weekly_page.close()
+                    # Prepend — tweets semanais aparecem primeiro no bundle
+                    x_items = weekly_items + x_items
+                    audit.write(rec.ok(run_id, "collect", "weekly_profiles_done",
+                                       accounts=len(WEEKLY_RECAP_ACCOUNTS),
+                                       new_items=len(weekly_items)))
+                    _log.info("weekly_profiles_done",
+                              accounts=len(WEEKLY_RECAP_ACCOUNTS),
+                              new_items=len(weekly_items))
+                except Exception as exc:
+                    msg = f"Weekly profiles collect failed: {exc}"
+                    errors.append(msg)
+                    _log.warning("weekly_profiles_error", error=str(exc))
+
         finally:
             ctx.close()
+
+    # ── RSS Feeds ──────────────────────────────────────────────────────────────
+    try:
+        from app.providers.rss_feed import collect as rss_collect
+        from app.cli.sources import _load as load_sources
+        src = load_sources()
+        rss_urls = src.get("rss_feeds") or None   # None = usa defaults
+        rss_items.extend(rss_collect(feed_urls=rss_urls))
+        audit.write(rec.ok(run_id, "collect", "rss_done", items=len(rss_items)))
+    except Exception as exc:
+        msg = f"RSS collect failed: {exc}"
+        errors.append(msg)
+        _log.warning("rss_collect_error", error=str(exc))
+
+    # ── Polymarket Prediction Markets ──────────────────────────────────────────
+    try:
+        from app.providers.polymarket import collect as poly_collect
+        polymarket_markets = poly_collect(max_results=10)
+        audit.write(rec.ok(run_id, "collect", "polymarket_done",
+                           markets=len(polymarket_markets)))
+        _log.info("polymarket_done", markets=len(polymarket_markets))
+    except Exception as exc:
+        msg = f"Polymarket collect failed: {exc}"
+        errors.append(msg)
+        _log.warning("polymarket_error", error=str(exc))
+
+    # ── FRED — Séries macro + agenda econômica ─────────────────────────────────
+    try:
+        from app.providers.fred import collect as fred_collect, collect_release_calendar
+        from app.config.settings import settings as _s
+        if _s.fred_api_key:
+            fred_series = fred_collect(lookback_days=180)
+            fred_calendar = collect_release_calendar(days_ahead=10)
+            fred_data = {"series": fred_series, "calendar": fred_calendar}
+            audit.write(rec.ok(run_id, "collect", "fred_done",
+                               categories=len(fred_series),
+                               calendar_items=len(fred_calendar)))
+            _log.info("fred_done", categories=len(fred_series), calendar_items=len(fred_calendar))
+    except Exception as exc:
+        _log.warning("fred_error", error=str(exc))
+
+    # ── Damodaran — ERP, Country Risk, WACC ───────────────────────────────────
+    try:
+        from app.providers.damodaran import collect as damo_collect
+        damodaran_data = damo_collect()
+        audit.write(rec.ok(run_id, "collect", "damodaran_done",
+                           sectors=len(damodaran_data.get("wacc_sectors", [])),
+                           countries=len(damodaran_data.get("country_risk", []))))
+        _log.info("damodaran_done",
+                  erp=damodaran_data.get("erp_current"),
+                  sectors=len(damodaran_data.get("wacc_sectors", [])),
+                  countries=len(damodaran_data.get("country_risk", [])))
+    except Exception as exc:
+        _log.warning("damodaran_error", error=str(exc))
+
+    # ── Global Liquidity ───────────────────────────────────────────────────────
+    try:
+        from app.providers.global_liquidity import collect as liq_collect
+        global_liquidity_data = liq_collect(lookback_days=365)
+        summary = global_liquidity_data.get("summary", {})
+        nfl = summary.get("net_fed_liquidity", {})
+        mmf = summary.get("money_market_total", {})
+        _log.info("global_liquidity_done",
+                  net_fed_liquidity=nfl.get("value"),
+                  mmf_total=mmf.get("value") if mmf else None,
+                  ecb_ok=bool(global_liquidity_data.get("ecb")))
+        audit.write(rec.ok(run_id, "collect", "global_liquidity_done",
+                           net_fed=nfl.get("value"),
+                           ecb=bool(global_liquidity_data.get("ecb"))))
+    except Exception as exc:
+        _log.warning("global_liquidity_error", error=str(exc))
+
+    # ── Market Prices (yfinance) ───────────────────────────────────────────────
+    try:
+        from app.providers.market_prices import collect as prices_collect
+        market_prices_data = prices_collect()
+        audit.write(rec.ok(run_id, "collect", "market_prices_done",
+                           tickers=len(market_prices_data)))
+        _log.info("market_prices_done", tickers=len(market_prices_data))
+    except Exception as exc:
+        msg = f"Market prices collect failed: {exc}"
+        errors.append(msg)
+        _log.warning("market_prices_error", error=str(exc))
 
     # ── Download de imagens ────────────────────────────────────────────────────
     try:
@@ -183,7 +405,14 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
         created_at=utcnow(),
         market_ear_blocks=zh_blocks,
         x_items=x_items,
+        rss_items=rss_items,
+        spotgamma_reports=sg_reports,
         candidate_signals=[],
+        polymarket_markets=polymarket_markets,
+        fred_data=fred_data,
+        damodaran_data=damodaran_data,
+        global_liquidity=global_liquidity_data,
+        market_prices=market_prices_data,
         audit_summary=audit_summary,
         artifact_paths=artifact_paths,
     )
@@ -195,9 +424,36 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                        zh_blocks=len(zh_blocks),
                        x_items=len(x_items)))
 
+    # ── Curação LLM ────────────────────────────────────────────────────────────
+    curation_result = None
+    if settings.curation_enabled:
+        try:
+            from app.curation.orchestrator import run_curation
+            curation_result = run_curation(bundle, run_id, str(run_date))
+            artifact_paths["curation"] = str(
+                workspace.curation_result_path(run_date, run_id)
+            )
+            audit.write(rec.ok(run_id, "curation", "done",
+                               verdict=curation_result.verification.overall_verdict,
+                               primary=curation_result.narrative.primary_signal.label,
+                               confidence=curation_result.narrative.primary_signal.confidence))
+        except Exception as exc:
+            msg = f"Curation failed: {exc}"
+            errors.append(msg)
+            _log.warning("curation_error", error=str(exc))
+            audit.write(rec.error(run_id, "curation", "failed", msg=msg))
+
+    # ── Tracking de narrativas ─────────────────────────────────────────────────
+    trend = None
+    try:
+        from app.curation.narrative_tracker import load_trend
+        trend = load_trend(days=7)
+    except Exception as exc:
+        _log.warning("trend_load_error", error=str(exc))
+
     # ── Relatorios ─────────────────────────────────────────────────────────────
     from app.views.report import save_reports
-    md_path, json_path, html_path = save_reports(bundle)
+    md_path, json_path, html_path = save_reports(bundle, curation_result=curation_result, trend=trend)
     artifact_paths["markdown"] = str(md_path)
     artifact_paths["json_summary"] = str(json_path)
     artifact_paths["html_report"] = str(html_path)

@@ -9,7 +9,14 @@ from pydantic import BaseModel, Field
 from app.models.audit_record import AuditRecord
 from app.models.market_ear_block import MarketEarBlock
 from app.models.signal_candidate import SignalCandidate
+from app.models.spotgamma_report import SpotGammaReport
 from app.models.x_timeline_item import XTimelineItem
+from app.models.rss_item import RSSItem
+
+
+# ── Tipos para dados enrichment ───────────────────────────────────────────────
+PolymarketMarket = dict[str, Any]
+MarketPriceEntry = dict[str, Any]
 
 
 class AuditSummary(BaseModel):
@@ -31,7 +38,30 @@ class DailyIngestionBundle(BaseModel):
     created_at: datetime = Field(description="Timestamp UTC de criação do bundle")
     market_ear_blocks: list[MarketEarBlock] = Field(default_factory=list)
     x_items: list[XTimelineItem] = Field(default_factory=list)
+    rss_items: list[RSSItem] = Field(default_factory=list)
+    spotgamma_reports: list[SpotGammaReport] = Field(default_factory=list)
     candidate_signals: list[SignalCandidate] = Field(default_factory=list)
+    # ── Enrichment (providers adicionais) ─────────────────────────────────────
+    polymarket_markets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Mercados de predição macro do Polymarket",
+    )
+    fred_data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Séries macro FRED + agenda econômica da semana",
+    )
+    damodaran_data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dados Damodaran: ERP implícito, country risk premiums, WACC por setor",
+    )
+    global_liquidity: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Liquidez global: Net Fed Liquidity, MMF, ECB BS, M2 G4, balanços BCx",
+    )
+    market_prices: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Preços e retornos de ativos-chave via yfinance",
+    )
     audit_summary: AuditSummary = Field(default_factory=AuditSummary)
     artifact_paths: dict[str, str] = Field(
         default_factory=dict,

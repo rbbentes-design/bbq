@@ -39,14 +39,34 @@ _NOTIFICATIONS_URL = "https://x.com/notifications"
 # Mantido para collect_html (snapshot da pagina de notificacoes)
 _TIMELINE_URL = _NOTIFICATIONS_URL
 
+# Contas prioritárias — sempre coletadas independentemente do feed de notificações
+PRIORITY_ACCOUNTS: list[str] = [
+    "LizAnnSonders",    # Chief Investment Strategist Schwab — economic data analysis
+    "LanceRoberts",     # RealInvestmentAdvice — macro, technicals, portfolio
+    "dailychartbook",   # Charts quantitativos diários
+    "SubuTrade",        # Quant data, flow analysis
+    "BlacklionCTA",     # CTA/trend signals, contrarian
+    "SethCL",           # Stock picking, special sits
+    "saxena_puru",      # Volatility, options flow
+    "AndreasSteno",     # Macro liquidity, rates (Steno Research)
+    "JonahLupton",      # Macro, EM
+    "profplum99",       # Options, derivatives
+    "jam_croissant",    # Macro, rates
+    "Mayhem4Markets",   # Market structure, flow
+    "WisemanCap",       # Capital markets
+    "steve_donze",      # Head of Investments Pictet Japan — global liquidity lag effect
+]
+_PRIORITY_TWEETS_PER_ACCOUNT = 3  # últimos N tweets de cada conta prioritária
+
 
 def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     """
-    Coleta tweets das contas com notificacao ativa (sino).
+    Coleta tweets das contas com notificacao ativa (sino) + contas prioritárias.
 
     1. Abre /notifications
     2. Clica no item "New post notifications for X and N others"
     3. Scrape os tweets do feed resultante
+    4. Visita cada conta prioritária e coleta tweets recentes (garante inclusão)
     """
     limit = settings.x_timeline_limit
     _log.info("collect_start", source=SOURCE_NAME, mode="notifications_click", limit=limit)
@@ -59,44 +79,185 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     clicked = _click_new_post_notification(page)
     if not clicked:
         _log.warning("notification_not_found", msg="Item 'New post notifications' nao encontrado")
-        return []
+        items: list[XTimelineItem] = []
+        seen_urls: set[str] = set()
+    else:
+        # Aguarda feed carregar
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        time.sleep(4)
+        _log.info("notification_clicked", url=page.url)
 
-    # Aguarda feed carregar
-    page.wait_for_load_state("domcontentloaded", timeout=15_000)
-    time.sleep(4)
-    _log.info("notification_clicked", url=page.url)
+        # Scrape tweets do feed aberto
+        items = []
+        seen_urls: set[str] = set()
+        scroll_attempts = 0
+        max_scrolls = 15
 
-    # Scrape tweets do feed aberto
+        while len(items) < limit and scroll_attempts < max_scrolls:
+            tweets = page.locator('[data-testid="tweet"]')
+            count = tweets.count()
+
+            for i in range(count):
+                if len(items) >= limit:
+                    break
+                try:
+                    item = _parse_tweet(tweets.nth(i), source_doc)
+                    if item and item.url not in seen_urls:
+                        seen_urls.add(item.url)
+                        items.append(item)
+                except Exception as exc:
+                    _log.warning("parse_tweet_error", idx=i, error=str(exc))
+
+            page.keyboard.press("End")
+            time.sleep(2)
+            scroll_attempts += 1
+
+            new_count = page.locator('[data-testid="tweet"]').count()
+            if new_count == count:
+                break
+
+    _log.info("notifications_done", items=len(items))
+
+    # ── Contas prioritárias (sempre coletadas) ──────────────────────────────────
+    priority_items = _collect_priority_accounts(page, source_doc, seen_urls)
+    _log.info("priority_done", priority_items=len(priority_items))
+
+    all_items = priority_items + items  # prioritárias primeiro
+    _log.info("collect_done", source=SOURCE_NAME, total=len(all_items), scrolls=scroll_attempts if clicked else 0)
+    return all_items[:limit + len(priority_items)]  # não corta as prioritárias pelo limit
+
+
+def _collect_priority_accounts(
+    page: Page, source_doc: SourceDocument, seen_urls: set[str]
+) -> list[XTimelineItem]:
+    """Visita cada conta prioritária e coleta os N tweets mais recentes."""
+    collected: list[XTimelineItem] = []
+
+    for handle in PRIORITY_ACCOUNTS:
+        try:
+            profile_url = f"{_X_BASE}/{handle}"
+            page.goto(profile_url, timeout=25_000)
+            page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            time.sleep(3)
+
+            tweets = page.locator('[data-testid="tweet"]')
+            found = 0
+            for i in range(min(tweets.count(), 10)):
+                if found >= _PRIORITY_TWEETS_PER_ACCOUNT:
+                    break
+                try:
+                    item = _parse_tweet(tweets.nth(i), source_doc)
+                    if item and item.url not in seen_urls:
+                        seen_urls.add(item.url)
+                        collected.append(item)
+                        found += 1
+                except Exception as exc:
+                    _log.warning("priority_parse_error", handle=handle, idx=i, error=str(exc))
+
+            _log.info("priority_account_done", handle=handle, found=found)
+        except Exception as exc:
+            _log.warning("priority_account_error", handle=handle, error=str(exc))
+
+    return collected
+
+
+# Contas cujo histórico semanal é coletado nas sextas-feiras
+WEEKLY_RECAP_ACCOUNTS: list[str] = [
+    "LizAnnSonders",   # economic data commentary — semana inteira
+    "LanceRoberts",    # macro weekly wrap
+    "AndreasSteno",    # liquidity & rates weekly view
+]
+_WEEKLY_DAYS_BACK = 7    # janela de dias para coleta semanal
+_WEEKLY_MAX_TWEETS = 25  # máximo de tweets por conta
+
+
+def collect_profile_week(
+    page: Page,
+    source_doc: SourceDocument,
+    handle: str,
+    days_back: int = _WEEKLY_DAYS_BACK,
+    max_tweets: int = _WEEKLY_MAX_TWEETS,
+) -> list[XTimelineItem]:
+    """
+    Coleta tweets de um perfil específico nos últimos N dias.
+
+    Estratégia:
+      - Visita x.com/{handle}
+      - Scrola a página coletando tweets
+      - Para quando encontra tweets mais velhos que `days_back` dias
+        ou quando atinge `max_tweets`
+
+    Args:
+        page:       Playwright page já autenticada.
+        source_doc: SourceDocument de referência.
+        handle:     Handle sem @ (ex: "LizAnnSonders").
+        days_back:  Janela de dias para trás.
+        max_tweets: Máximo de tweets a coletar.
+
+    Returns:
+        Lista de XTimelineItem dentro da janela de tempo.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    profile_url = f"{_X_BASE}/{handle}"
     items: list[XTimelineItem] = []
     seen_urls: set[str] = set()
-    scroll_attempts = 0
-    max_scrolls = 15
 
-    while len(items) < limit and scroll_attempts < max_scrolls:
+    try:
+        page.goto(profile_url, timeout=30_000)
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        time.sleep(3)
+    except Exception as exc:
+        _log.warning("profile_week_goto_error", handle=handle, error=str(exc))
+        return []
+
+    scroll_attempts = 0
+    max_scrolls = 20
+    stop_collecting = False
+
+    while not stop_collecting and len(items) < max_tweets and scroll_attempts < max_scrolls:
         tweets = page.locator('[data-testid="tweet"]')
         count = tweets.count()
 
         for i in range(count):
-            if len(items) >= limit:
+            if len(items) >= max_tweets:
+                stop_collecting = True
                 break
             try:
                 item = _parse_tweet(tweets.nth(i), source_doc)
-                if item and item.url not in seen_urls:
-                    seen_urls.add(item.url)
-                    items.append(item)
-            except Exception as exc:
-                _log.warning("parse_tweet_error", idx=i, error=str(exc))
+                if not item or item.url in seen_urls:
+                    continue
+                # Verifica se está dentro da janela de tempo
+                if item.created_at and item.created_at < cutoff:
+                    stop_collecting = True  # chegou em tweets antigos demais
+                    break
+                seen_urls.add(item.url)
+                items.append(item)
+            except Exception:
+                pass
 
+        if stop_collecting:
+            break
+
+        # Scroll
+        prev_count = count
         page.keyboard.press("End")
         time.sleep(2)
         scroll_attempts += 1
 
         new_count = page.locator('[data-testid="tweet"]').count()
-        if new_count == count:
-            break
+        if new_count == prev_count:
+            break  # página não carregou mais conteúdo
 
-    _log.info("collect_done", source=SOURCE_NAME, items=len(items), scrolls=scroll_attempts)
-    return items[:limit]
+    _log.info(
+        "profile_week_done",
+        handle=handle,
+        found=len(items),
+        days_back=days_back,
+        scrolls=scroll_attempts,
+    )
+    return items
 
 
 def collect_html(page: Page) -> str:

@@ -1,43 +1,6 @@
-# Ambiente virtual
-.venv/
-venv/
-env/
-
-# Python
+.env
+*.env
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
+.venv/
 *.egg-info/
-dist/
-build/
-
-# Testes e qualidade
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Variáveis de ambiente — NUNCA versionar
-.env
-
-# Playwright — binários e perfis de browser
-playwright/
-/playwright-report/
-
-# Estado de autenticação — NUNCA versionar (cookies, tokens, storage state)
-state/
-
-# Dados operacionais — ficam no WORKSPACE_DIR externo
-data/
-raw/
-normalized/
-bundles/
-logs/
-debug/
-
-# IDEs
-.vscode/settings.json
-.idea/
-*.swp

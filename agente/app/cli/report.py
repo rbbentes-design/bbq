@@ -42,8 +42,8 @@ def show(
             raise typer.Exit(1)
         bundle_path = matches[0]
     else:
-        # Prefere o bundle mais recente com conteudo (maior arquivo)
-        bundle_path = max(bundles, key=lambda p: p.stat().st_size)
+        # Bundle mais recente: ordena por data da pasta + ULID (ambos lexicograficos)
+        bundle_path = max(bundles, key=lambda p: (p.parent.name, p.stem))
 
     from datetime import date
     stem = bundle_path.stem

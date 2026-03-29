@@ -113,6 +113,130 @@ def login_zerohedge(context: BrowserContext) -> bool:
         page.close()
 
 
+def _sg_has_session(page: Page) -> bool:
+    """
+    Verifica sessão SpotGamma.
+    Detecta login bem-sucedido pela URL — após autenticar o browser redireciona
+    para o dashboard (sai de /login). Cookie name varia por provedor de auth.
+    """
+    try:
+        url = page.url
+        # Ainda na página de login/auth → não logado
+        if any(p in url for p in ["/login", "/signin", "/callback", "about:blank", "auth0", "cognito"]):
+            return False
+        # Redirecionou para qualquer página do dashboard → logado
+        if "dashboard.spotgamma.com" in url:
+            return True
+        # Fallback: qualquer cookie com valor longo no domínio spotgamma
+        for c in page.context.cookies():
+            if "spotgamma" in c.get("domain", "") and len(c.get("value", "")) > 20:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def login_spectra(context: BrowserContext) -> bool:
+    """Abre Spectra Markets e aguarda login."""
+    page = context.new_page()
+    try:
+        _log.info("bootstrap_start", site="spectra")
+        page.goto("https://www.spectramarkets.com/my-account/", timeout=30_000)
+        page.wait_for_load_state("domcontentloaded")
+        print("\n[Spectra] Pagina de login aberta.")
+        print("[Spectra] Entre com seu email/senha.")
+        print("[Spectra] O script detecta o redirecionamento para o dashboard.\n")
+        ok = _wait_for_login(page, "Spectra", _spectra_has_session)
+        _log.info("bootstrap_ok" if ok else "bootstrap_timeout", site="spectra")
+        return ok
+    finally:
+        page.close()
+
+
+def _spectra_has_session(page: Page) -> bool:
+    try:
+        url = page.url
+        if "my-account" in url and "login" not in url:
+            # Verifica se mostra menu de usuário logado (não formulário de login)
+            content = page.content()
+            return "Log Out" in content or "logout" in content
+        return False
+    except Exception:
+        return False
+
+
+def login_spotgamma(context: BrowserContext) -> bool:
+    """
+    Abre o SpotGamma dashboard e aguarda login.
+    Detecta por cookie de sessão ou URL autenticada.
+    """
+    page = context.new_page()
+    try:
+        _log.info("bootstrap_start", site="spotgamma")
+        page.goto("https://dashboard.spotgamma.com/login", timeout=30_000)
+        page.wait_for_load_state("domcontentloaded")
+
+        print("\n[SpotGamma] Pagina de login aberta.")
+        print("[SpotGamma] Entre com seu email/senha.")
+        print("[SpotGamma] O script detecta o cookie de sessao automaticamente.\n")
+
+        ok = _wait_for_login(page, "SpotGamma", _sg_has_session)
+        _log.info("bootstrap_ok" if ok else "bootstrap_timeout", site="spotgamma")
+        return ok
+    finally:
+        page.close()
+
+
+def _deepvue_has_session(page: Page) -> bool:
+    """
+    Detecta login no DeepVue verificando localStorage (auth token JWT).
+    DeepVue armazena sessão em localStorage, não em cookies.
+    """
+    try:
+        # Verifica se há token de auth no localStorage
+        token = page.evaluate("""
+            () => {
+                for (let k of Object.keys(localStorage)) {
+                    let v = localStorage.getItem(k);
+                    if (v && v.length > 50 && (
+                        k.toLowerCase().includes('token') ||
+                        k.toLowerCase().includes('auth') ||
+                        k.toLowerCase().includes('user') ||
+                        k.toLowerCase().includes('session') ||
+                        (v.startsWith('ey') && v.includes('.'))  // JWT
+                    )) return v.substring(0, 20);
+                }
+                return null;
+            }
+        """)
+        if token:
+            return True
+        # Fallback: URL já saiu do login
+        url = page.url
+        if "app.deepvue.com" in url and "/login" not in url:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def login_deepvue(context: BrowserContext) -> bool:
+    """Abre DeepVue e aguarda login."""
+    page = context.new_page()
+    try:
+        _log.info("bootstrap_start", site="deepvue")
+        page.goto("https://app.deepvue.com/login", timeout=30_000)
+        page.wait_for_load_state("domcontentloaded")
+        print("\n[DeepVue] Pagina de login aberta.")
+        print("[DeepVue] Entre com seu email/senha.")
+        print("[DeepVue] O script detecta o redirecionamento para o dashboard.\n")
+        ok = _wait_for_login(page, "DeepVue", _deepvue_has_session, timeout_s=600)
+        _log.info("bootstrap_ok" if ok else "bootstrap_timeout", site="deepvue")
+        return ok
+    finally:
+        page.close()
+
+
 def login_x(context: BrowserContext) -> bool:
     """
     Abre X.com login e aguarda autenticacao por cookie auth_token.

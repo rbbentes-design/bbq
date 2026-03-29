@@ -14,9 +14,12 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE if _ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -51,14 +54,53 @@ class Settings(BaseSettings):
     # ── ZeroHedge ─────────────────────────────────────────────────────────────
     zerohedge_base_url: str = "https://www.zerohedge.com"
     zerohedge_market_ear_url: str = "https://www.zerohedge.com/the-market-ear"
+    zerohedge_blocks_limit: int = 30
     zerohedge_state_path: Path | None = None
     zerohedge_profile_dir: Path | None = None
 
     # ── X ─────────────────────────────────────────────────────────────────────
     x_provider_mode: Literal["browser", "api"] = "browser"
-    x_timeline_limit: int = 50
+    x_timeline_limit: int = 100
     x_state_path: Path | None = None
     x_profile_dir: Path | None = None
+
+    # ── ElevenLabs TTS ────────────────────────────────────────────────────────
+    elevenlabs_api_key: str = Field(default="", description="ElevenLabs API key")
+    elevenlabs_voice_id: str = Field(default="XrMNSxvVxLkUlaSeEuLM", description="ElevenLabs voice ID")
+    podcast_intro_path: Path = Field(
+        default=Path.home() / "agente-workspace/podcast/começo.mpeg",
+        description="Intro do podcast (mpeg/mp3)",
+    )
+    podcast_outro_path: Path = Field(
+        default=Path.home() / "agente-workspace/podcast/final.mpeg",
+        description="Outro do podcast (mpeg/mp3)",
+    )
+
+    # ── FRED ──────────────────────────────────────────────────────────────────
+    fred_api_key: str = Field(default="", description="FRED API key")
+
+    # ── Curation ──────────────────────────────────────────────────────────────
+    anthropic_api_key: str = Field(default="", description="Anthropic API key")
+    rss_feeds: str = Field(default="", description="URLs de feeds RSS separadas por virgula")
+
+    @property
+    def resolved_anthropic_api_key(self) -> str:
+        """Returns the API key, preferring the .env file over system env vars."""
+        key = self.anthropic_api_key
+        if key.startswith("sk-ant-"):
+            return key
+        # System env var is corrupt — read directly from .env file
+        if _ENV_FILE.exists():
+            for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val.startswith("sk-ant-"):
+                        return val
+        return key
+    curation_enabled: bool = True
+    curation_confidence_threshold: float = 0.65
+    curation_max_evidence_iterations: int = 3
 
     # ── Storage ───────────────────────────────────────────────────────────────
     enable_sqlite: bool = False
