@@ -150,5 +150,17 @@ def _print_curation_summary(curation_path: str) -> None:
         console.print("[dim]Resumo de curação indisponivel.[/dim]")
 
 
+@app.command()
+def desk(
+    date: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD (padrão: mais recente)"),
+    focus: str = typer.Option(None, "--focus", "-f", help="Instrução específica do operador"),
+    save: bool = typer.Option(False, "--save", "-s", help="Salva diagnóstico em .txt"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Macro Desk — diagnóstico macro acionável sobre o bundle do dia."""
+    from app.cli.invest import main as desk_main
+    desk_main(date=date, focus=focus, save=save, log_level="DEBUG" if verbose else "WARNING")
+
+
 if __name__ == "__main__":
     app()

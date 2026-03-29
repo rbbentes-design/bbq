@@ -17,6 +17,8 @@ Arquitetura interna (5 motores):
 
 from __future__ import annotations
 
+import json as _json
+import re as _re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -121,11 +123,14 @@ peso — priorize os que têm sinal mais forte):
 
 ═══ FORMATO DE SAÍDA ═══
 
-Escreva em português. Texto corrido, curto, denso, opinativo.
-Tom de analista experiente, cético com narrativas rasas, focado em regime,
-fluxo, valuation e assimetria.
+PRIMEIRA LINHA obrigatória — JSON com os 5 scores (sem texto antes ou depois nessa linha):
+SCORES: {"rational": X, "behavioral": X, "entropy": X, "valuation_gap": X, "regime_confidence": X}
 
-A resposta deve conter, mesmo sem títulos:
+Em seguida, o diagnóstico completo em português. Texto corrido, curto, denso, opinativo.
+Tom de analista experiente, cético com narrativas rasas, focado em regime, fluxo, valuation
+e assimetria.
+
+O diagnóstico deve conter, mesmo sem títulos explícitos:
 
 1. Diagnóstico do regime atual
 2. Para onde o fluxo real está indo
@@ -349,7 +354,7 @@ def diagnose(
     bundle: DailyIngestionBundle,
     curation: CurationResult | None = None,
     focus: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """
     Executa o diagnóstico de investimento sobre o bundle do dia.
 
@@ -359,7 +364,13 @@ def diagnose(
         focus    : instrução específica do operador (ex: "foque em crédito HY")
 
     Returns:
-        Texto final em português — diagnóstico acionável.
+        {
+          "scores"   : {"rational": int, "behavioral": int, "entropy": int,
+                        "valuation_gap": int, "regime_confidence": int}
+          "narrative": str  — diagnóstico completo em português
+          "run_date" : str
+          "raw"      : str  — output bruto do LLM
+        }
     """
     data_ctx = _build_data_context(bundle, curation)
 
@@ -373,7 +384,7 @@ def diagnose(
     _log.info("investment_agent_start", run_date=str(bundle.run_date),
               data_chars=len(data_ctx))
 
-    result = call_claude(
+    raw = call_claude(
         _SYSTEM,
         user_prompt,
         model=_MODEL,
@@ -381,5 +392,22 @@ def diagnose(
         temperature=0.3,
     )
 
-    _log.info("investment_agent_done", chars=len(result))
-    return result
+    # ── Extrai scores da primeira linha ────────────────────────────────────────
+    scores: dict[str, int] = {}
+    narrative = raw
+    m = _re.search(r"SCORES:\s*(\{[^}]+\})", raw)
+    if m:
+        try:
+            scores = {k: int(v) for k, v in _json.loads(m.group(1)).items()}
+        except Exception:
+            pass
+        # Remove a linha de scores do texto narrativo
+        narrative = _re.sub(r"SCORES:\s*\{[^}]+\}\n?", "", raw).strip()
+
+    _log.info("investment_agent_done", chars=len(raw), scores=scores)
+    return {
+        "scores":    scores,
+        "narrative": narrative,
+        "run_date":  str(bundle.run_date),
+        "raw":       raw,
+    }
