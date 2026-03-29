@@ -185,6 +185,17 @@ def _build_data_context(
             lines.append("  " + "".join(parts))
         sections.append("\n".join(lines))
 
+    # ── Network / Econophysics ─────────────────────────────────────────────────
+    if bundle.market_prices:
+        try:
+            from app.analysis.network import analyze as net_analyze, format_summary as net_fmt
+            net_result = net_analyze(bundle.market_prices, lookback_days=90, lasso_alpha=0.1)
+            net_summary = net_fmt(net_result, bundle.market_prices)
+            if net_summary:
+                sections.append(net_summary)
+        except Exception:
+            pass
+
     # ── FRED macro ────────────────────────────────────────────────────────────
     if bundle.fred_data:
         series = bundle.fred_data.get("series", {})
