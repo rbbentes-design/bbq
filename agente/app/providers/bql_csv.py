@@ -30,10 +30,17 @@ BQL_DATA_DIR = Path(r"C:\Users\rafael bentes\agente-workspace\bql_data")
 _STALE_MINUTES = 30
 
 
-def _read_csv(filename: str) -> list[dict[str, str]]:
-    path = BQL_DATA_DIR / filename
+def _read_csv(prefix: str) -> list[dict[str, str]]:
+    """Lê o CSV mais recente com nome prefix_YYYY-MM-DD.csv ou prefix.csv (fallback)."""
+    # Procura arquivos datados primeiro: fundamentals_2026-04-02.csv
+    dated = sorted(BQL_DATA_DIR.glob(f"{prefix}_*.csv"), reverse=True)
+    if dated:
+        path = dated[0]
+    else:
+        # fallback: nome fixo (sem data)
+        path = BQL_DATA_DIR / f"{prefix}.csv"
     if not path.exists():
-        _log.warning("bql_csv_missing", file=filename)
+        _log.warning("bql_csv_missing", prefix=prefix)
         return []
     with open(path, encoding="utf-8") as f:
         return list(csv.DictReader(f))
@@ -50,7 +57,7 @@ def _float(val: str | None) -> float | None:
 
 def _check_freshness() -> bool:
     """True se os dados foram gerados nos últimos STALE_MINUTES minutos."""
-    rows = _read_csv("meta.csv")
+    rows = _read_csv("meta")
     if not rows:
         return False
     ts = rows[0].get("generated_at", "")

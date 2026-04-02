@@ -189,7 +189,8 @@ def run(
         try:
             from app.providers.bql_csv import load_all, BQL_DATA_DIR
             from pathlib import Path
-            meta = BQL_DATA_DIR / "meta.csv"
+            _meta_dated = sorted(Path(BQL_DATA_DIR).glob("meta_*.csv"), reverse=True)
+            meta = _meta_dated[0] if _meta_dated else Path(BQL_DATA_DIR) / "meta.csv"
             mtime = meta.stat().st_mtime if meta.exists() else 0.0
             data = load_all()
             _anatomy_map = data.get("fundamentals", {})
@@ -306,7 +307,9 @@ def run(
             try:
                 from app.providers.bql_csv import BQL_DATA_DIR
                 from pathlib import Path as _Path
-                _meta = _Path(BQL_DATA_DIR) / "meta.csv"
+                # Suporta tanto meta_YYYY-MM-DD.csv (com data) quanto meta.csv (legado)
+                _meta_dated = sorted(_Path(BQL_DATA_DIR).glob("meta_*.csv"), reverse=True)
+                _meta = _meta_dated[0] if _meta_dated else _Path(BQL_DATA_DIR) / "meta.csv"
                 if _meta.exists():
                     _new_mtime = _meta.stat().st_mtime
                     if _new_mtime > _bql_mtime:
