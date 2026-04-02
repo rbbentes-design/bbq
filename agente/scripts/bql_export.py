@@ -197,21 +197,28 @@ def export_gex_mag7():
             lo, hi = px * 0.95, px * 1.05  # ±5% do spot
 
             univ  = bq.univ.options(s)
-            req_g = bq.execute('get(OPEN_INT,GAMMA) for(@u)', {'@u': univ})
+            # bql.Request em vez de string — evita o FutureExt
+            req_g = bq.execute(bql.Request(univ, {
+                'OPEN_INT': bq.data.open_interest(),
+                'GAMMA':    bq.data.gamma(),
+            }))
             df_g  = _norm(_bql(req_g).reset_index())
 
-            dc  = next((c for c in df_g.columns if 'DATE'    in c.upper() or 'EXPIRE' in c.upper()), None)
-            pcc = next((c for c in df_g.columns if 'PUT_CALL' in c.upper()), None)
+            # Detecta colunas de data, put_call e strike (nomes variam no BQuant)
+            dc  = next((c for c in df_g.columns if 'DATE'     in c.upper() or 'EXPIR' in c.upper()), None)
+            pcc = next((c for c in df_g.columns if 'PUT_CALL' in c.upper() or 'TYPE'  in c.upper()), None)
             skc = next((c for c in df_g.columns if 'STRIKE'   in c.upper()), None)
+            oic = next((c for c in df_g.columns if 'OPEN_INT' in c.upper() or c == 'OPEN_INT'), 'OPEN_INT')
+            gmc = next((c for c in df_g.columns if c == 'GAMMA' or 'GAMMA' in c.upper()), 'GAMMA')
 
             ticker_gex = 0.0
             for _, r in df_g.iterrows():
-                stk = float(r.get(skc) or 0)
-                if not (lo <= stk <= hi):
+                stk = float(r.get(skc) or 0) if skc else 0
+                if skc and not (lo <= stk <= hi):
                     continue
-                oi  = float(r.get('OPEN_INT') or 0)
-                gm  = float(r.get('GAMMA')    or 0)
-                pc  = str(r.get(pcc, '')).upper()
+                oi  = float(r.get(oic) or 0)
+                gm  = float(r.get(gmc) or 0)
+                pc  = str(r.get(pcc, '')).upper() if pcc else ''
                 gex = oi * gm * px ** 2 / 1e9 * (1 if pc == 'CALL' else -1)
                 ticker_gex += gex
                 rows_all.append({
