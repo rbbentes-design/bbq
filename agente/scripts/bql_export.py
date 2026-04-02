@@ -26,9 +26,14 @@ from pathlib import Path
 # CONFIGURACAO
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pasta de saida — Path.home() funciona tanto no BQuant cloud quanto local
-OUT = Path.home() / 'bql_data'
+# Pasta de saida — Windows (bqlData.bat) salva direto no projeto; Linux (BQuant cloud) salva no home
+import platform as _platform
+if _platform.system() == 'Windows':
+    OUT = Path(r'C:\Users\rafael bentes\bbg\agente\bql_data')
+else:
+    OUT = Path.home() / 'bql_data'
 OUT.mkdir(parents=True, exist_ok=True)
+print(f'Sistema: {_platform.system()} | Salvando em: {OUT}')
 
 INTERVAL = 180  # segundos entre exports (3 min)
 
