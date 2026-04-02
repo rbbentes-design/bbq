@@ -1,0 +1,24 @@
+# Dados
+data/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ambiente
+.env
+.env.example
+.venv
+venv/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Git
+.git/
+
+# Logs e outputs
+*.log
