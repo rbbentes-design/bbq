@@ -1,34 +1,36 @@
 """
 BQL Export — MacroDesk
 ======================
-Cole este script inteiro em uma célula do Jupyter (BQuant) e rode.
-Exporta fundamentais, IV, GEX e LETF para CSV a cada 3 minutos.
+Cole este script inteiro em uma celula do Jupyter (BQuant) e rode.
+Exporta fundamentais, IV e LETF para CSV a cada 3 minutos.
 
-Kernel → Interrupt (■) para parar o loop.
+Kernel -> Interrupt (■) para parar o loop.
 
-Arquivos gerados (com data no nome):
-    fundamentals_2026-04-02.csv
-    options_iv_2026-04-02.csv
-    gex_spx_2026-04-02.csv
-    gex_summary_2026-04-02.csv
-    letf_flows_2026-04-02.csv
-    meta_2026-04-02.csv
+Arquivos gerados (na pasta home do BQuant):
+    ~/bql_data/fundamentals_2026-04-02.csv
+    ~/bql_data/options_iv_2026-04-02.csv
+    ~/bql_data/letf_flows_2026-04-02.csv
+    ~/bql_data/meta_2026-04-02.csv
+
+Depois baixe os CSVs do Jupyter (botao direito -> Download)
+e coloque em: C:\\Users\\rafael bentes\\bbg\\agente\\bql_data\\
 """
 
 import bql
 import pandas as pd
 import csv, math, time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
-# ── Configuração ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURACAO
+# ─────────────────────────────────────────────────────────────────────────────
 
-bq = bql.Service()
-
-OUT = Path(r'C:\Users\rafael bentes\bbg\agente\bql_data')
+# Pasta de saida — Path.home() funciona tanto no BQuant cloud quanto local
+OUT = Path.home() / 'bql_data'
 OUT.mkdir(parents=True, exist_ok=True)
 
-INTERVAL = 180  # segundos entre cada export (3 min)
+INTERVAL = 180  # segundos entre exports (3 min)
 
 STOCKS = [
     'AAPL US Equity', 'MSFT US Equity', 'NVDA US Equity', 'AMZN US Equity', 'META US Equity',
@@ -40,10 +42,11 @@ STOCKS = [
 
 TICKER = {s: s.replace(' US Equity', '').replace('BRK/B', 'BRK-B') for s in STOCKS}
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _v(row, col):
-    """Lê float de um row, retorna None se ausente/NaN."""
     try:
         v = float(row[col])
         return None if math.isnan(v) else v
@@ -51,40 +54,42 @@ def _v(row, col):
         return None
 
 def _bql(req):
-    """Substitui bql.combined_df (deprecated no BQuant)."""
+    """Substitui bql.combined_df (deprecated)."""
     return pd.concat([x.df()[x.name] for x in req], axis=1)
 
 def _norm(df):
-    """Remove parênteses dos nomes de colunas: PE_RATIO() -> PE_RATIO."""
+    """Remove parenteses: PE_RATIO() -> PE_RATIO."""
     df.columns = [c.split('(')[0].strip() for c in df.columns]
     return df
 
 def _csv(name, rows, fields):
     """Salva CSV com data no nome: fundamentals_2026-04-02.csv"""
-    today = date.today().isoformat()
-    filename = f"{name}_{today}.csv"
-    with open(OUT / filename, 'w', newline='', encoding='utf-8') as f:
+    filename = f"{name}_{date.today().isoformat()}.csv"
+    path = OUT / filename
+    with open(path, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
         w.writeheader()
         w.writerows(rows)
-    print(f'  {filename}: {len(rows)} linhas')
+    print(f'  OK: {path}  ({len(rows)} linhas)')
 
-# ── 1. Fundamentais ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. FUNDAMENTAIS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_fundamentals():
+    print('Fundamentais...')
     tstr = ', '.join(f'"{s}"' for s in STOCKS)
     try:
         req = bq.execute(
-            f'get(PE_RATIO, CUR_MKT_CAP, BETA, PROF_MARGIN,'
-            f' TOT_DEBT_TO_TOT_EQY, RETURN_COM_EQY, EQY_DVD_YLD_IND, PX_LAST,'
-            f' PX_TO_BOOK_RATIO)'
+            f'get(PE_RATIO, PX_TO_BOOK_RATIO, CUR_MKT_CAP, BETA, PROF_MARGIN,'
+            f' TOT_DEBT_TO_TOT_EQY, RETURN_COM_EQY, EQY_DVD_YLD_IND, PX_LAST)'
             f' for([{tstr}])'
         )
         df = _norm(_bql(req).groupby(level=0).last())
 
         req2 = bq.execute(
             f'get(PX_HIGH(dates=range(-365D,0D),frq=Y),'
-            f' PX_LOW(dates=range(-365D,0D),frq=Y))'
+            f'    PX_LOW(dates=range(-365D,0D),frq=Y))'
             f' for([{tstr}])'
         )
         df2 = _norm(_bql(req2).groupby(level=0).last())
@@ -119,34 +124,37 @@ def export_fundamentals():
     except Exception as e:
         print(f'  [ERRO] fundamentals: {e}')
 
-# ── 2. Options IV / Skew / PCR ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. OPTIONS IV / SKEW / PCR
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_options_iv():
+    print('Options IV...')
     eq = [s for s in STOCKS if 'Equity' in s]
     try:
-        req3 = bq.execute(bql.Request(eq, {
+        req = bq.execute(bql.Request(eq, {
             'atm_iv': bq.data.implied_volatility(expiry='30D', pct_moneyness='100'),
             'put25':  bq.data.implied_volatility(expiry='30D', delta='25', put_call='PUT'),
             'call25': bq.data.implied_volatility(expiry='30D', delta='25', put_call='CALL'),
         }))
-        df3 = _bql(req3).groupby(level=0).last()
+        df = _bql(req).groupby(level=0).last()
 
         try:
-            req4 = bq.execute(bql.Request(eq, bq.data.put_call_open_interest_ratio()))
-            df4 = _bql(req4).groupby(level=0).last()
-            pcr_col = df4.columns[0]
+            req_pcr = bq.execute(bql.Request(eq, bq.data.put_call_open_interest_ratio()))
+            df_pcr  = _bql(req_pcr).groupby(level=0).last()
+            pcr_col = df_pcr.columns[0]
         except:
-            df4 = None
+            df_pcr  = None
             pcr_col = None
 
         rows = []
         for s in eq:
             t   = TICKER[s]
-            row = df3.loc[s] if s in df3.index else pd.Series(dtype=float)
+            row = df.loc[s] if s in df.index else pd.Series(dtype=float)
             va  = _v(row, 'atm_iv')
             vp  = _v(row, 'put25')
             vc  = _v(row, 'call25')
-            pcr = _v(df4.loc[s], pcr_col) if (df4 is not None and s in df4.index and pcr_col) else None
+            pcr = _v(df_pcr.loc[s], pcr_col) if (df_pcr is not None and s in df_pcr.index and pcr_col) else None
             rows.append({
                 'ticker':   t,
                 'atm_iv':   round(va / 100, 4)        if va else '',
@@ -157,69 +165,81 @@ def export_options_iv():
     except Exception as e:
         print(f'  [ERRO] options_iv: {e}')
 
-# ── 3. GEX SPX ────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. GEX — MAG 7 (options individuais, muito mais rapido que SPX inteiro)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def export_gex():
+MAG7 = [
+    'AAPL US Equity', 'MSFT US Equity', 'NVDA US Equity', 'AMZN US Equity',
+    'META US Equity', 'GOOGL US Equity', 'TSLA US Equity',
+]
+MAG7_TICKER = {s: s.replace(' US Equity', '') for s in MAG7}
+
+def export_gex_mag7():
+    print('GEX Mag7...')
+    rows_all = []
+    summary  = []
     try:
-        spot_req = bq.execute('get(PX_LAST) for(["SPX Index"])')
-        spot = float(_norm(_bql(spot_req).groupby(level=0).last()).iloc[0]['PX_LAST'])
-        lo, hi_s = spot * 0.97, spot * 1.03
-        exp_lim  = date.today() + timedelta(days=10)
-
-        # Sem parametros extras — filtra no Python abaixo
-        univ  = bq.univ.options('SPX Index')
-        req_g = bq.execute('get(PX_LAST,OPEN_INT,DELTA,GAMMA) for(@u)', {'@u': univ})
-        df_g  = _norm(_bql(req_g).reset_index())
-
-        dc  = next((c for c in df_g.columns if 'DATE'    in c.upper() or 'EXPIRE' in c.upper()), None)
-        pcc = next((c for c in df_g.columns if 'PUT_CALL' in c.upper()), None)
-        skc = next((c for c in df_g.columns if 'STRIKE'   in c.upper()), None)
-
-        rows = []
-        for _, r in df_g.iterrows():
-            try:
-                exp_dt = date.fromisoformat(str(r.get(dc, ''))[:10])
-                if exp_dt > exp_lim:
-                    continue
-            except:
-                continue
-            stk = float(r.get(skc) or 0)
-            if not (lo <= stk <= hi_s):
-                continue
-            oi  = float(r.get('OPEN_INT') or 0)
-            gm  = float(r.get('GAMMA') or 0)
-            pc  = str(r.get(pcc, '')).upper()
-            gex = oi * gm * spot ** 2 / 1e9 * (1 if pc == 'CALL' else -1)
-            rows.append({
-                'expiry':   str(r.get(dc, ''))[:10],
-                'strike':   round(stk, 2),
-                'put_call': pc,
-                'open_int': int(oi),
-                'gamma':    round(gm, 6),
-                'gex_bn':   round(gex, 4),
-            })
-
-        _csv('gex_spx', rows, ['expiry','strike','put_call','open_int','gamma','gex_bn'])
-
-        tot   = sum(r['gex_bn'] for r in rows)
-        calls = sum(r['gex_bn'] for r in rows if r['put_call'] == 'CALL')
-        puts  = sum(r['gex_bn'] for r in rows if r['put_call'] == 'PUT')
-        _csv('gex_summary', [{
-            'date':         str(date.today()),
-            'spot':         round(spot, 2),
-            'gex_total_bn': round(tot, 4),
-            'gex_call_bn':  round(calls, 4),
-            'gex_put_bn':   round(puts, 4),
-            'direction':    'buy'  if tot >  0.5 else ('sell' if tot < -0.5 else 'flat'),
-            'gamma_regime': 'long' if tot >  0   else ('short' if tot < 0   else 'flat'),
-            'n_options':    len(rows),
-        }], ['date','spot','gex_total_bn','gex_call_bn','gex_put_bn','direction','gamma_regime','n_options'])
+        spot_req = bq.execute(
+            'get(PX_LAST) for(["' + '","'.join(MAG7) + '"])'
+        )
+        spots = _norm(_bql(spot_req).groupby(level=0).last())
     except Exception as e:
-        print(f'  [ERRO] gex: {e}')
+        print(f'  [ERRO] GEX spot: {e}')
+        return
 
-# ── 4. LETF Flows ────────────────────────────────────────────────────────────
+    for s in MAG7:
+        t = MAG7_TICKER[s]
+        try:
+            px = float(spots.loc[s, 'PX_LAST']) if s in spots.index else None
+            if not px:
+                continue
+            lo, hi = px * 0.95, px * 1.05  # ±5% do spot
+
+            univ  = bq.univ.options(s)
+            req_g = bq.execute('get(OPEN_INT,GAMMA) for(@u)', {'@u': univ})
+            df_g  = _norm(_bql(req_g).reset_index())
+
+            dc  = next((c for c in df_g.columns if 'DATE'    in c.upper() or 'EXPIRE' in c.upper()), None)
+            pcc = next((c for c in df_g.columns if 'PUT_CALL' in c.upper()), None)
+            skc = next((c for c in df_g.columns if 'STRIKE'   in c.upper()), None)
+
+            ticker_gex = 0.0
+            for _, r in df_g.iterrows():
+                stk = float(r.get(skc) or 0)
+                if not (lo <= stk <= hi):
+                    continue
+                oi  = float(r.get('OPEN_INT') or 0)
+                gm  = float(r.get('GAMMA')    or 0)
+                pc  = str(r.get(pcc, '')).upper()
+                gex = oi * gm * px ** 2 / 1e9 * (1 if pc == 'CALL' else -1)
+                ticker_gex += gex
+                rows_all.append({
+                    'ticker':   t,
+                    'strike':   round(stk, 2),
+                    'put_call': pc,
+                    'open_int': int(oi),
+                    'gamma':    round(gm, 6),
+                    'gex_bn':   round(gex, 4),
+                })
+            direction = 'buy' if ticker_gex > 0 else 'sell'
+            summary.append({'ticker': t, 'spot': round(px, 2),
+                            'gex_bn': round(ticker_gex, 4), 'direction': direction})
+            print(f'    {t}: GEX={ticker_gex:+.3f}B ({direction})')
+        except Exception as e:
+            print(f'    [ERRO] GEX {t}: {e}')
+
+    if rows_all:
+        _csv('gex_mag7', rows_all, ['ticker','strike','put_call','open_int','gamma','gex_bn'])
+    if summary:
+        _csv('gex_mag7_summary', summary, ['ticker','spot','gex_bn','direction'])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. LETF FLOWS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_letf():
+    print('LETF flows...')
     LF = {
         'TQQQ US Equity': ('TQQQ',  3, 'NDX'),
         'SQQQ US Equity': ('SQQQ', -3, 'NDX'),
@@ -230,8 +250,8 @@ def export_letf():
     }
     try:
         lstr  = ', '.join(f'"{t}"' for t in LF)
-        req_l = bq.execute(f'get(PX_LAST,FUND_TOTAL_ASSETS,FUND_NET_ASSET_VAL) for([{lstr}])')
-        dl    = _norm(_bql(req_l).groupby(level=0).last())
+        req   = bq.execute(f'get(PX_LAST, FUND_TOTAL_ASSETS, FUND_NET_ASSET_VAL) for([{lstr}])')
+        dl    = _norm(_bql(req).groupby(level=0).last())
         rows  = []
         for b, (sym, lev, idx) in LF.items():
             r   = dl.loc[b] if b in dl.index else pd.Series(dtype=float)
@@ -248,19 +268,25 @@ def export_letf():
     except Exception as e:
         print(f'  [ERRO] letf: {e}')
 
-# ── Loop principal ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LOOP PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_all():
     export_fundamentals()
     export_options_iv()
-    export_gex()
+    export_gex_mag7()
     export_letf()
     _csv('meta',
          [{'generated_at': datetime.now().isoformat(), 'date': str(date.today())}],
          ['generated_at','date'])
 
-print(f'Salvando em: {OUT}')
+# ─────────────────────────────────────────────────────────────────────────────
+print(f'Pasta de saida: {OUT}')
 print(f'Intervalo: {INTERVAL}s | Kernel Interrupt (■) para parar\n')
+
+bq = bql.Service()
+print('BQL conectado.\n')
 
 cycle = 0
 while True:
@@ -270,5 +296,5 @@ while True:
     export_all()
     elapsed = time.time() - t0
     sleep   = max(10, INTERVAL - elapsed)
-    print(f'OK em {elapsed:.0f}s — proxima em {sleep:.0f}s\n')
+    print(f'Pronto em {elapsed:.0f}s — proxima em {sleep:.0f}s\n')
     time.sleep(sleep)
