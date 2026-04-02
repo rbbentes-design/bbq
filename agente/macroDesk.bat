@@ -29,6 +29,11 @@ if not exist "%BUNDLE_DIR%" (
     exit /b 1
 )
 
+:: BQL Receiver — recebe CSVs do BQuant automaticamente (porta 8766)
+echo Iniciando BQL Receiver em porta 8766...
+start "BQL-Receiver" /min cmd /c "uv run python scripts\bql_receiver.py"
+timeout /t 2 /nobreak >nul
+
 :: HTTP server — serve toda a pasta de bundles (acesso por data/arquivo)
 echo Iniciando HTTP server em http://localhost:8765 ...
 start "MacroDesk-HTTP" /B cmd /c "uv run python -m http.server 8765 --directory \"%BUNDLE_DIR%\" 2>nul"
