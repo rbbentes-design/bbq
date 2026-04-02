@@ -127,7 +127,7 @@ def main(
 
     bundle_files = sorted(target_dir.glob("*.json"))
     bundle_files = [f for f in bundle_files if not any(
-        s in f.name for s in ("_curation", "_summary", "_written", "_investment")
+        s in f.name for s in ("_curation", "_summary", "_written", "_investment", "_decision_log", "_flow_inspector", "_macro_desk", "_desk_v2", "_analysis", "_isq_diagram")
     )]
     if not bundle_files:
         console.print(f"[red]Bundle JSON não encontrado em {target_dir}[/red]")

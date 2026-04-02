@@ -121,11 +121,16 @@ def _sg_has_session(page: Page) -> bool:
     """
     try:
         url = page.url
-        # Ainda na página de login/auth → não logado
-        if any(p in url for p in ["/login", "/signin", "/callback", "about:blank", "auth0", "cognito"]):
+        # Ainda na página de login externa (não do dashboard) → não logado
+        if "about:blank" in url:
             return False
-        # Redirecionou para qualquer página do dashboard → logado
-        if "dashboard.spotgamma.com" in url:
+        if any(p in url for p in ["/login", "/signin"]) and "dashboard.spotgamma.com" not in url:
+            return False
+        # Auth0/Cognito redirect no próprio domínio externo → aguarda
+        if any(p in url for p in ["auth0.com", "cognito", "okta"]) and "dashboard.spotgamma.com" not in url:
+            return False
+        # Redirecionou para qualquer página do dashboard (inclui /callback OAuth) → logado
+        if "dashboard.spotgamma.com" in url and "/login" not in url:
             return True
         # Fallback: qualquer cookie com valor longo no domínio spotgamma
         for c in page.context.cookies():

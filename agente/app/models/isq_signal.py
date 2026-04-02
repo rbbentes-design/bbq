@@ -10,7 +10,7 @@ Representa um sinal de investimento estruturado com:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone as _tz
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -58,4 +58,4 @@ class ISQSignal(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, description="Confiança no sinal 0-1")
     intensity: int = Field(ge=1, le=5, description="Intensidade do sinal 1-5 (5 = extremo)")
     reasoning: str = Field(description="Análise qualitativa do sinal")
-    generated_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(_tz.utc))

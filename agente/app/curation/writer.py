@@ -684,8 +684,9 @@ def _build_fred_context(fred_data: dict, mode: str) -> str:
         "job openings", "retail sales", "pce", "personal consumption",
         "ism manufactur", "ism non-manufactur", "trade in goods",
         "unemployment insurance", "adp national", "case-shiller",
-        "chicago fed", "financial conditions", "st. louis fed financial",
-        "ppi", "producer price",
+        "chicago fed", "chicago pmi", "financial conditions", "st. louis fed financial",
+        "ppi", "producer price", "michigan consumer", "housing starts",
+        "existing home", "treasury", "personal income",
     ]
     high_impact = [
         r for r in calendar
@@ -1411,14 +1412,16 @@ class WriterOutput:
 
 
 def write(result: CurationResult, bundle: DailyIngestionBundle | None = None,
-          tema_hint: str | None = None) -> WriterOutput:
+          tema_hint: str | None = None,
+          mode_override: str | None = None) -> WriterOutput:
     """
     Pipeline de escrita.
     Modo determinado pelo dia da semana (calendário editorial).
     Ângulo e foco determinados pelo conteúdo do dia.
     tema_hint: tema forçado (ex: "After Hormuz — novo regime energético")
+    mode_override: força modo editorial (ex: "week_ahead")
     """
-    mode = _mode_for_date(result.run_date)
+    mode = mode_override or _mode_for_date(result.run_date)
     _log.info("writer_start", run_id=result.run_id, run_date=result.run_date,
               mode=mode, has_bundle=bundle is not None)
 

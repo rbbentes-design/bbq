@@ -7,7 +7,7 @@ gerados pelo analysis.scenarios.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone as _tz
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -33,7 +33,7 @@ class MarketScenario(BaseModel):
     bull: ScenarioCase
     base: ScenarioCase
     bear: ScenarioCase
-    generated_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(_tz.utc))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], run_id: str, narrative: str) -> "MarketScenario":

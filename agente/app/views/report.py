@@ -1112,11 +1112,84 @@ def generate_macro_desk_html(
 
     # ── Narrativa formatada ───────────────────────────────────────────────────
     import re
-    # Bold markdown **texto** → <strong>
     narrative_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(narrative))
-    # Parágrafos
     paragraphs = [p.strip() for p in narrative_html.split("\n\n") if p.strip()]
     narrative_html = "".join(f"<p>{p}</p>" for p in paragraphs)
+
+    # ── Gráficos (network + radar + heatmap) ─────────────────────────────────
+    from app.analysis.network import analyze as net_analyze
+    from app.analysis.charts import mst_network_chart, engine_scores_radar, rmt_correlation_heatmap
+
+    charts_dir = workspace.html_report_path(bundle.run_date, bundle.run_id).parent / "enrichment"
+    charts_dir.mkdir(parents=True, exist_ok=True)
+
+    charts_html = ""
+    if bundle.market_prices:
+        net = net_analyze(bundle.market_prices, lookback_days=90)
+        rmt = net.get("rmt", {})
+        mst = net.get("mst", {})
+        reg = net.get("regime", {})
+
+        # Regime badge
+        regime_str = reg.get("regime", "")
+        regime_color = {"risk_on": "#34d399", "risk_off": "#f87171",
+                        "transition": "#fbbf24", "chaotic": "#a78bfa"}.get(regime_str, "#8892a4")
+        regime_badge = (
+            f'<span style="background:{regime_color}22;color:{regime_color};'
+            f'border:1px solid {regime_color}55;border-radius:6px;'
+            f'padding:2px 10px;font-size:0.8rem;font-weight:700;text-transform:uppercase">'
+            f'{regime_str} {reg.get("confidence", 0):.0%}</span>'
+        ) if regime_str else ""
+
+        # Network graph
+        p_net = mst_network_chart(mst, rmt, bundle.market_prices,
+                                   charts_dir / "desk_network.html")
+        # Radar dos scores
+        p_radar = engine_scores_radar(scores, charts_dir / "desk_radar.html") if scores else None
+        # Heatmap correlação
+        p_heat = rmt_correlation_heatmap(rmt.get("corr_clean", {}), bundle.market_prices,
+                                          charts_dir / "desk_heatmap.html") if rmt.get("corr_clean") else None
+
+        def _iframe(path: Path | None, h: int = 520) -> str:
+            if not path or not path.exists():
+                return ""
+            rel = path.relative_to(charts_dir.parent)
+            return (f'<iframe src="{rel.as_posix()}" style="width:100%;height:{h}px;'
+                    f'border:none;border-radius:10px;background:#0f1117"></iframe>')
+
+        nf = rmt.get("n_signal_factors", "?")
+        na = rmt.get("n_assets", "?")
+        avg_rho = reg.get("avg_correlation", 0)
+        entropy = reg.get("corr_entropy", 0)
+        hub_top = mst.get("hubs", [("—", 0)])[0]
+        hub_name = bundle.market_prices.get(hub_top[0], {}).get("name", hub_top[0]) if hub_top else "—"
+
+        charts_html = f"""
+<h2>Rede de Ativos</h2>
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;
+            padding:1rem 1.5rem;margin-bottom:1rem">
+  <div style="display:flex;gap:1.5rem;flex-wrap:wrap;font-size:0.82rem;color:var(--muted);margin-bottom:1rem">
+    <span>Fatores reais: <strong style="color:var(--text)">{nf}/{na}</strong></span>
+    <span>rho médio: <strong style="color:var(--text)">{avg_rho:+.3f}</strong></span>
+    <span>Entropia: <strong style="color:var(--text)">{entropy:.2f}</strong></span>
+    <span>Hub: <strong style="color:#60a5fa">{hub_name}</strong></span>
+    {f'<span>Regime: {regime_badge}</span>' if regime_badge else ""}
+  </div>
+  {_iframe(p_net, 540)}
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:2rem">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem">
+    <div style="font-size:0.75rem;color:var(--accent);text-transform:uppercase;
+                letter-spacing:.08em;margin-bottom:0.5rem">Engine Scores</div>
+    {_iframe(p_radar, 380)}
+  </div>
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem">
+    <div style="font-size:0.75rem;color:var(--accent);text-transform:uppercase;
+                letter-spacing:.08em;margin-bottom:0.5rem">Correlação RMT</div>
+    {_iframe(p_heat, 380)}
+  </div>
+</div>"""
 
     from datetime import datetime
     now = datetime.now().strftime("%H:%M")
@@ -1136,7 +1209,7 @@ def generate_macro_desk_html(
   body {{ background:var(--bg); color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
     font-size:15px; line-height:1.7; padding:2rem;
-    max-width:860px; margin:0 auto }}
+    max-width:1100px; margin:0 auto }}
   h2 {{ font-size:0.8rem; color:var(--accent); margin:2rem 0 0.8rem;
        text-transform:uppercase; letter-spacing:.08em }}
   p {{ margin-bottom:0.9rem; color:var(--text) }}
@@ -1153,19 +1226,23 @@ def generate_macro_desk_html(
 
 {f'<p style="color:#8892a4;font-size:0.85rem;margin-bottom:1.5rem">Writer signal: <span style="color:#60a5fa">{escape(writer_signal)}</span></p>' if writer_signal else ""}
 
-<div style="background:var(--surface);border:1px solid var(--border);
-            border-radius:10px;padding:1.2rem 1.5rem;margin-bottom:2rem">
-  <h2 style="margin-top:0">Engines</h2>
-  {scores_html}
+<div style="display:grid;grid-template-columns:1fr 340px;gap:1.5rem;margin-bottom:2rem">
+  <div style="background:var(--surface);border:1px solid var(--border);
+              border-radius:10px;padding:1.5rem 1.8rem">
+    <h2 style="margin-top:0">Diagnóstico</h2>
+    {narrative_html}
+  </div>
+  <div>
+    <div style="background:var(--surface);border:1px solid var(--border);
+                border-radius:10px;padding:1.2rem 1.5rem;margin-bottom:1rem">
+      <h2 style="margin-top:0">Engines</h2>
+      {scores_html}
+    </div>
+    {prices_html}
+  </div>
 </div>
 
-<h2>Diagnóstico</h2>
-<div style="background:var(--surface);border:1px solid var(--border);
-            border-radius:10px;padding:1.5rem 1.8rem">
-  {narrative_html}
-</div>
-
-{prices_html}
+{charts_html}
 
 </body></html>"""
 

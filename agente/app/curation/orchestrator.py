@@ -24,6 +24,7 @@ def run_curation(
     bundle: DailyIngestionBundle,
     run_id: str,
     run_date: str,
+    mode_override: str | None = None,
 ) -> CurationResult:
     _log.info("curation_start", run_id=run_id, run_date=run_date)
 
@@ -100,7 +101,7 @@ def run_curation(
     _log.info("writing_editorial")
     output = None
     try:
-        output = write_editorial(result, bundle)
+        output = write_editorial(result, bundle, mode_override=mode_override)
         written_path = _save_written(output, run_date, run_id)
         result.artifact_paths["written"] = str(written_path)
         result.artifact_paths["written_mode"] = output.mode
