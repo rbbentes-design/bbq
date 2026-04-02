@@ -35,6 +35,21 @@ from app.audit.logger import get_logger
 _log = get_logger("analysis.network")
 
 
+# ── Universo SPX Core (~50 tickers) ───────────────────────────────────────────
+# Indices, sector ETFs e top stocks por peso no S&P 500.
+# Suficientemente pequeno para MST legível e rápido (yfinance sem rate-limit).
+SPX_CORE: set[str] = {
+    # Top 20 SPX por peso de mercado (abr/2026)
+    "AAPL", "MSFT", "NVDA", "AMZN", "META",
+    "GOOGL", "TSLA", "BRK-B", "AVGO", "JPM",
+    "LLY", "UNH", "XOM", "COST", "V",
+    "MA", "WMT", "NFLX", "JNJ", "PG",
+    # Referências de índice e macro
+    "^GSPC", "^VIX", "SPY", "QQQ",
+    "GLD", "TLT", "HYG", "CL=F",
+}
+
+
 # ── 1. RMT — Random Matrix Theory ─────────────────────────────────────────────
 
 def marchenko_pastur_threshold(n_assets: int, n_obs: int, sigma: float = 1.0) -> float:
@@ -414,6 +429,7 @@ def analyze(
     lookback_days: int = 90,
     lasso_alpha: float = 0.1,
     corr_threshold: float = 0.5,
+    universe: str = "spx",  # "spx" = usa SPX_CORE; "all" = todos os tickers
 ) -> dict[str, Any]:
     """
     Executa análise completa de rede financeira:
@@ -438,7 +454,6 @@ def analyze(
     """
     try:
         import pandas as pd
-        import yfinance as yf
     except ImportError as e:
         _log.error("network_import_error", error=str(e))
         return {}
@@ -447,16 +462,18 @@ def analyze(
     if not tickers:
         return {}
 
-    # ── Baixa histórico ────────────────────────────────────────────────────────
-    period = f"{lookback_days}d"
+    # ── Filtra universo ────────────────────────────────────────────────────────
+    if universe == "spx":
+        tickers = sorted(SPX_CORE)
+        _log.info("network_universe_spx", tickers=len(tickers))
+
+    # ── Baixa histórico via IBKR ───────────────────────────────────────────────
     closes: dict[str, list[float]] = {}
-    for sym in tickers:
-        try:
-            hist = yf.Ticker(sym).history(period=period, auto_adjust=True)
-            if len(hist) >= 20:
-                closes[sym] = hist["Close"].tolist()
-        except Exception as exc:
-            _log.debug("network_ticker_error", sym=sym, error=str(exc))
+    try:
+        from app.providers.ibkr import fetch_historical_closes
+        closes = fetch_historical_closes(tickers, lookback_days=lookback_days)
+    except Exception as exc:
+        _log.warning("network_ibkr_failed", error=str(exc))
 
     if len(closes) < 4:
         _log.warning("network_too_few_tickers", n=len(closes))
