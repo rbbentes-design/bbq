@@ -166,80 +166,102 @@ def export_options_iv():
         print(f'  [ERRO] options_iv: {e}')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. GEX — MAG 7 (options individuais, muito mais rapido que SPX inteiro)
+# 3. GEX — Maiores empresas dos EUA (AAPL MSFT NVDA AMZN META GOOGL TSLA)
+#    Gamma nao existe como campo BQL — calcula via Black-Scholes com VIX como IV
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAG7 = [
+BIG_TECH = [
     'AAPL US Equity', 'MSFT US Equity', 'NVDA US Equity', 'AMZN US Equity',
     'META US Equity', 'GOOGL US Equity', 'TSLA US Equity',
 ]
-MAG7_TICKER = {s: s.replace(' US Equity', '') for s in MAG7}
 
-def export_gex_mag7():
-    print('GEX Mag7...')
-    rows_all = []
-    summary  = []
+def _bs_gamma(S, K, T, vol):
+    """Gamma Black-Scholes — identico para call e put."""
+    if T <= 0 or vol <= 0 or S <= 0 or K <= 0:
+        return 0.0
     try:
-        spot_req = bq.execute(
-            'get(PX_LAST) for(["' + '","'.join(MAG7) + '"])'
-        )
-        spots = _norm(_bql(spot_req).groupby(level=0).last())
+        import math as _math
+        d1 = (_math.log(S / K) + 0.5 * vol * vol * T) / (vol * _math.sqrt(T))
+        return _math.exp(-0.5 * d1 * d1) / (_math.sqrt(2 * _math.pi) * S * vol * _math.sqrt(T))
+    except:
+        return 0.0
+
+def export_gex_bigtech():
+    print('GEX maiores empresas...')
+
+    # VIX como proxy de IV (evita buscar ivol() para cada opcao)
+    vix_iv = 0.20
+    try:
+        vix_df = _norm(_bql(bq.execute('get(PX_LAST) for(["VIX Index"])')).groupby(level=0).last())
+        vix_val = _v(vix_df.iloc[0], 'PX_LAST')
+        if vix_val: vix_iv = vix_val / 100.0
+        print(f'  VIX: {vix_iv:.1%}')
     except Exception as e:
-        print(f'  [ERRO] GEX spot: {e}')
-        return
+        print(f'  VIX fallback 20%: {e}')
 
-    for s in MAG7:
-        t = MAG7_TICKER[s]
+    # Precos spot
+    try:
+        tstr  = ', '.join(f'"{s}"' for s in BIG_TECH)
+        spots = _norm(_bql(bq.execute(f'get(PX_LAST) for([{tstr}])')).groupby(level=0).last())
+    except Exception as e:
+        print(f'  [ERRO] GEX spot: {e}'); return
+
+    rows_all = []; summary = []
+    today = date.today()
+
+    for s in BIG_TECH:
+        t = s.replace(' US Equity', '')
         try:
-            px = float(spots.loc[s, 'PX_LAST']) if s in spots.index else None
-            if not px:
-                continue
-            lo, hi = px * 0.95, px * 1.05  # ±5% do spot
+            px = _v(spots.loc[s], 'PX_LAST') if s in spots.index else None
+            if not px: continue
+            lo, hi = px * 0.95, px * 1.05
 
-            univ  = bq.univ.options(s)
-            # bql.Request em vez de string — evita o FutureExt
-            req_g = bq.execute(bql.Request(univ, {
-                'OPEN_INT': bq.data.open_interest(),
-                'GAMMA':    bq.data.gamma(),
-            }))
-            df_g  = _norm(_bql(req_g).reset_index())
+            # Busca chain: OI + metadados (STRIKE_PX, PUT_CALL, EXPIRE_DT vem do universo)
+            req_g  = bq.execute(bql.Request(bq.univ.options([s]), {'OI': bq.data.open_int()}))
+            df_g   = _bql(req_g).reset_index()
+            df_g.columns = [c.split('(')[0].strip() for c in df_g.columns]
 
-            # Detecta colunas de data, put_call e strike (nomes variam no BQuant)
-            dc  = next((c for c in df_g.columns if 'DATE'     in c.upper() or 'EXPIR' in c.upper()), None)
-            pcc = next((c for c in df_g.columns if 'PUT_CALL' in c.upper() or 'TYPE'  in c.upper()), None)
-            skc = next((c for c in df_g.columns if 'STRIKE'   in c.upper()), None)
-            oic = next((c for c in df_g.columns if 'OPEN_INT' in c.upper() or c == 'OPEN_INT'), 'OPEN_INT')
-            gmc = next((c for c in df_g.columns if c == 'GAMMA' or 'GAMMA' in c.upper()), 'GAMMA')
+            # Renomeia colunas padrao do universo de opcoes
+            renames = {}
+            for c in df_g.columns:
+                cu = c.upper()
+                if 'STRIKE' in cu: renames[c] = 'Strike'
+                elif 'PUT_CALL' in cu or 'TYPE' in cu: renames[c] = 'Type'
+                elif 'EXPIRE' in cu or ('DATE' in cu and c != 'date'): renames[c] = 'Expire'
+            df_g.rename(columns=renames, inplace=True)
 
             ticker_gex = 0.0
             for _, r in df_g.iterrows():
-                stk = float(r.get(skc) or 0) if skc else 0
-                if skc and not (lo <= stk <= hi):
-                    continue
-                oi  = float(r.get(oic) or 0)
-                gm  = float(r.get(gmc) or 0)
-                pc  = str(r.get(pcc, '')).upper() if pcc else ''
-                gex = oi * gm * px ** 2 / 1e9 * (1 if pc == 'CALL' else -1)
+                stk = r.get('Strike')
+                pc  = str(r.get('Type', '')).upper()
+                oi  = r.get('OI')
+                exp = r.get('Expire')
+
+                if stk is None or oi is None or not pc: continue
+                stk = float(stk); oi = float(oi)
+                if oi <= 0 or not (lo <= stk <= hi): continue
+
+                # DTE em anos
+                try:
+                    exp_date = exp.date() if hasattr(exp, 'date') else date.fromisoformat(str(exp)[:10])
+                    T = max((exp_date - today).days, 0) / 365.0
+                except:
+                    T = 30 / 365.0  # fallback 30 dias
+
+                gm  = _bs_gamma(px, stk, T, vix_iv)
+                gex = oi * gm * px**2 / 1e9 * (1 if pc == 'CALL' else -1)
                 ticker_gex += gex
-                rows_all.append({
-                    'ticker':   t,
-                    'strike':   round(stk, 2),
-                    'put_call': pc,
-                    'open_int': int(oi),
-                    'gamma':    round(gm, 6),
-                    'gex_bn':   round(gex, 4),
-                })
+                rows_all.append({'ticker': t, 'strike': round(stk, 2), 'put_call': pc,
+                                 'open_int': int(oi), 'gamma': round(gm, 6), 'gex_bn': round(gex, 4)})
+
             direction = 'buy' if ticker_gex > 0 else 'sell'
-            summary.append({'ticker': t, 'spot': round(px, 2),
-                            'gex_bn': round(ticker_gex, 4), 'direction': direction})
+            summary.append({'ticker': t, 'spot': round(px, 2), 'gex_bn': round(ticker_gex, 4), 'direction': direction})
             print(f'    {t}: GEX={ticker_gex:+.3f}B ({direction})')
         except Exception as e:
             print(f'    [ERRO] GEX {t}: {e}')
 
-    if rows_all:
-        _csv('gex_mag7', rows_all, ['ticker','strike','put_call','open_int','gamma','gex_bn'])
-    if summary:
-        _csv('gex_mag7_summary', summary, ['ticker','spot','gex_bn','direction'])
+    if rows_all: _csv('gex_bigtech', rows_all, ['ticker','strike','put_call','open_int','gamma','gex_bn'])
+    if summary:  _csv('gex_bigtech_summary', summary, ['ticker','spot','gex_bn','direction'])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. LETF FLOWS
@@ -282,7 +304,7 @@ def export_letf():
 def export_all():
     export_fundamentals()
     export_options_iv()
-    export_gex_mag7()
+    export_gex_bigtech()
     export_letf()
     _csv('meta',
          [{'generated_at': datetime.now().isoformat(), 'date': str(date.today())}],
