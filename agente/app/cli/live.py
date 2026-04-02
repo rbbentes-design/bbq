@@ -303,6 +303,15 @@ def run(
             except Exception:
                 pass
 
+            # Sincroniza CSVs do GitHub Gist (publicado pelo BQuant cloud)
+            try:
+                from app.providers.bql_gist import sync_from_gist
+                if sync_from_gist():
+                    _bql_mtime = _load_bql_csvs()
+                    console.print(f"[green]Gist sincronizado — {len(_anatomy_map)} fundamentais[/green]")
+            except Exception:
+                pass
+
             # Recarrega CSVs BQL se o arquivo foi atualizado pelo BQuant
             try:
                 from app.providers.bql_csv import BQL_DATA_DIR
