@@ -305,19 +305,16 @@ def run(
             except Exception:
                 pass
 
-            # Extrai zip do BQuant se houver novo em Downloads
+            # Processa zip do BQuant se houver novo em Downloads
             try:
-                import sys as _sys
-                from pathlib import Path as _Path
-                _scripts = str(_Path(__file__).parent.parent.parent / "scripts")
-                if _scripts not in _sys.path:
-                    _sys.path.insert(0, _scripts)
-                from bql_unzip import extract_if_new
-                if extract_if_new():
+                from core.bloomberg_main_agent import BloombergMainAgent
+                _agent = BloombergMainAgent()
+                _result = _agent.run()
+                if _result.status in ("ok", "partial"):
                     _bql_mtime = _load_bql_csvs()
-                    console.print(f"[green]BQL zip extraído — {len(_anatomy_map)} fundamentais[/green]")
+                    console.print(f"[green]Bloomberg atualizado — {_result.rows_ingested} linhas[/green]")
             except Exception as _e:
-                console.print(f"[yellow]bql_unzip erro: {_e}[/yellow]")
+                console.print(f"[yellow]bloomberg agent erro: {_e}[/yellow]")
 
             # Recarrega CSVs BQL se o arquivo foi atualizado pelo BQuant
             try:
