@@ -159,10 +159,25 @@ def refresh(
     tickers = [k for k in bundle_prices.keys() if not k.startswith("__")]
     _log.info("live_refresh_start", tickers=len(tickers))
 
-    # 1. IBKR snapshot
-    fresh = _from_ibkr(tickers)
+    # 1. Bloomberg CSV (BQuant export a cada 3min) — fonte primária
+    fresh: dict[str, dict[str, Any]] = {}
+    try:
+        from app.providers.bql_csv import load_prices
+        bbg = load_prices()
+        if bbg:
+            for sym, d in bbg.items():
+                if sym in tickers and "price" in d:
+                    fresh[sym] = {**d, "source": "bloomberg_csv"}
+            _log.info("live_bloomberg_csv", tickers=len(fresh))
+    except Exception as exc:
+        _log.warning("live_bloomberg_csv_error", error=str(exc))
 
-    # 2. yfinance fast_info para o que faltou
+    # 2. IBKR para o que faltou
+    missing = [t for t in tickers if t not in fresh]
+    if missing:
+        fresh.update(_from_ibkr(missing))
+
+    # 3. yfinance fast_info para o que ainda faltou
     missing = [t for t in tickers if t not in fresh]
     if missing:
         fresh.update(_from_yfinance_fast(missing))

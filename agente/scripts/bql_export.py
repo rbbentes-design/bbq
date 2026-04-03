@@ -171,7 +171,143 @@ def export_options_iv():
         print(f'  [ERRO] options_iv: {e}')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. GEX — Maiores empresas dos EUA (AAPL MSFT NVDA AMZN META GOOGL TSLA)
+# 3. PRECOS E RETORNOS (todas as classes de ativos)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Bloomberg → (yf_ticker, friendly_name)
+_ALL_PRICES = {
+    # Indices
+    'SPX Index':   ('^GSPC',     'S&P 500'),
+    'NDX Index':   ('^NDX',      'Nasdaq 100'),
+    'RTY Index':   ('^RUT',      'Russell 2000'),
+    'VIX Index':   ('^VIX',      'VIX'),
+    # ETFs de renda fixa e commodities
+    'TLT US Equity': ('TLT',     'Treasury 20yr'),
+    'HYG US Equity': ('HYG',     'High Yield'),
+    'GLD US Equity': ('GLD',     'Gold ETF'),
+    'SPY US Equity': ('SPY',     'S&P 500 ETF'),
+    'QQQ US Equity': ('QQQ',     'Nasdaq 100 ETF'),
+    # Commodities
+    'GC1 Comdty':  ('GC=F',      'Gold Futures'),
+    'CL1 Comdty':  ('CL=F',      'WTI Crude'),
+    # Crypto
+    'XBT Curncy':  ('BTC-USD',   'Bitcoin'),
+    # FX
+    'DXY Curncy':  ('DX-Y.NYB',  'USD Index'),
+    # Equities (Mag7 + blue chips)
+    'AAPL US Equity':  ('AAPL',  'Apple'),
+    'MSFT US Equity':  ('MSFT',  'Microsoft'),
+    'NVDA US Equity':  ('NVDA',  'NVIDIA'),
+    'AMZN US Equity':  ('AMZN',  'Amazon'),
+    'META US Equity':  ('META',  'Meta'),
+    'GOOGL US Equity': ('GOOGL', 'Alphabet'),
+    'TSLA US Equity':  ('TSLA',  'Tesla'),
+    'BRK/B US Equity': ('BRK-B', 'Berkshire B'),
+    'AVGO US Equity':  ('AVGO',  'Broadcom'),
+    'JPM US Equity':   ('JPM',   'JPMorgan'),
+    'LLY US Equity':   ('LLY',   'Eli Lilly'),
+    'UNH US Equity':   ('UNH',   'UnitedHealth'),
+    'XOM US Equity':   ('XOM',   'ExxonMobil'),
+    'COST US Equity':  ('COST',  'Costco'),
+    'V US Equity':     ('V',     'Visa'),
+    'MA US Equity':    ('MA',    'Mastercard'),
+    'WMT US Equity':   ('WMT',   'Walmart'),
+    'NFLX US Equity':  ('NFLX',  'Netflix'),
+    'JNJ US Equity':   ('JNJ',   'Johnson & Johnson'),
+    'PG US Equity':    ('PG',    'Procter & Gamble'),
+}
+
+
+def export_prices():
+    print('Precos e retornos...')
+    bbg_list   = list(_ALL_PRICES.keys())
+    today_dt   = date.today()
+    ytd_start  = f"{today_dt.year}-01-02"   # primeiro dia util do ano
+
+    try:
+        items = {
+            'px_now':  bq.data.px_last(),
+            'px_prev': bq.data.px_last(dates=bq.func.range('-2D', '-1D'), fill='PREV'),
+            'px_week': bq.data.px_last(dates=bq.func.range('-7D', '-6D'), fill='PREV'),
+        }
+        req = bq.execute(bql.Request(bbg_list, items))
+        df  = _bql(req).groupby(level=0).last()
+        _norm(df)
+
+        # YTD start (primeira sessao de janeiro)
+        px_ytd_map = {}
+        try:
+            ytd_item  = bq.data.px_last(dates=bq.func.range(ytd_start, ytd_start), fill='PREV')
+            req_ytd   = bq.execute(bql.Request(bbg_list, ytd_item))
+            df_ytd    = _bql(req_ytd).groupby(level=0).last()
+            ytd_col   = df_ytd.columns[0] if len(df_ytd.columns) else None
+            if ytd_col:
+                for t, row in df_ytd.iterrows():
+                    v = _v(row, ytd_col)
+                    if v:
+                        px_ytd_map[t] = v
+        except Exception as e:
+            print(f'  YTD fallback: {e}')
+
+        rows = []
+        for bbg, (yf_tk, name) in _ALL_PRICES.items():
+            if bbg not in df.index:
+                continue
+            row     = df.loc[bbg]
+            px_now  = _v(row, 'px_now')
+            px_prev = _v(row, 'px_prev')
+            px_wk   = _v(row, 'px_week')
+            px_ytd  = px_ytd_map.get(bbg)
+
+            if not px_now:
+                continue
+
+            daily  = round((px_now - px_prev) / px_prev, 4) if px_prev and px_prev > 0 else ''
+            weekly = round((px_now - px_wk)   / px_wk,   4) if px_wk   and px_wk   > 0 else ''
+            ytd    = round((px_now - px_ytd)  / px_ytd,  4) if px_ytd  and px_ytd  > 0 else ''
+
+            rows.append({
+                'yf_ticker':     yf_tk,
+                'name':          name,
+                'price':         round(px_now, 4),
+                'daily_return':  daily,
+                'weekly_return': weekly,
+                'ytd_return':    ytd,
+            })
+
+        _csv('prices', rows, ['yf_ticker', 'name', 'price', 'daily_return', 'weekly_return', 'ytd_return'])
+    except Exception as e:
+        print(f'  [ERRO] prices: {e}')
+
+
+def export_price_history():
+    """Exporta o fechamento de HOJE para todos os tickers. O banco local acumula dia a dia."""
+    print('Historico de precos (hoje)...')
+    bbg_list  = list(_ALL_PRICES.keys())
+    today_str = date.today().isoformat()
+
+    try:
+        req = bq.execute(bql.Request(bbg_list, bq.data.px_last()))
+        df  = _bql(req).groupby(level=0).last()
+        col = df.columns[0] if len(df.columns) else None
+        if not col:
+            return
+
+        rows = []
+        for bbg, (yf_tk, _) in _ALL_PRICES.items():
+            if bbg not in df.index:
+                continue
+            px = _v(df.loc[bbg], col)
+            if px:
+                rows.append({'date': today_str, 'yf_ticker': yf_tk, 'price': round(px, 4)})
+
+        _csv('price_history', rows, ['date', 'yf_ticker', 'price'])
+    except Exception as e:
+        print(f'  [ERRO] price_history: {e}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. GEX — Maiores empresas dos EUA (AAPL MSFT NVDA AMZN META GOOGL TSLA)
 #    Gamma nao existe como campo BQL — calcula via Black-Scholes com VIX como IV
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -268,6 +404,35 @@ def export_gex_bigtech():
     if rows_all: _csv('gex_bigtech', rows_all, ['ticker','strike','put_call','open_int','gamma','gex_bn'])
     if summary:  _csv('gex_bigtech_summary', summary, ['ticker','spot','gex_bn','direction'])
 
+    # ── Escreve gex_summary e gex_spx no formato que bql_csv.py espera ────────
+    if summary:
+        total_gex = sum(s['gex_bn'] for s in summary)
+        call_gex  = sum(r['gex_bn'] for r in rows_all if r['put_call'] == 'CALL') if rows_all else 0.0
+        put_gex   = sum(r['gex_bn'] for r in rows_all if r['put_call'] == 'PUT')  if rows_all else 0.0
+        direction = 'buy' if total_gex > 0.1 else ('sell' if total_gex < -0.1 else 'flat')
+        gamma_reg = 'long' if total_gex > 0.5 else ('short' if total_gex < -0.5 else 'flat')
+        # Pega preco spot do SPX (aproximado pelo maior ticker da lista)
+        spot_spx  = next((s['spot'] for s in summary if s['ticker'] in ('AAPL','MSFT')), 0)
+        _csv('gex_summary', [{
+            'date':          str(date.today()),
+            'spot':          spot_spx,
+            'gex_total_bn':  round(total_gex, 3),
+            'gex_call_bn':   round(call_gex,  3),
+            'gex_put_bn':    round(put_gex,   3),
+            'direction':     direction,
+            'gamma_regime':  gamma_reg,
+            'n_options':     len(rows_all),
+        }], ['date','spot','gex_total_bn','gex_call_bn','gex_put_bn','direction','gamma_regime','n_options'])
+
+    # gex_spx: usa as mesmas linhas de todas as empresas, expiry vazio (nao temos expiry individual)
+    if rows_all:
+        gex_spx_rows = [
+            {'expiry': '', 'strike': r['strike'], 'put_call': r['put_call'],
+             'open_int': r['open_int'], 'gamma': r['gamma'], 'gex_bn': r['gex_bn']}
+            for r in rows_all
+        ]
+        _csv('gex_spx', gex_spx_rows, ['expiry','strike','put_call','open_int','gamma','gex_bn'])
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. LETF FLOWS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,6 +476,8 @@ def export_all():
     export_options_iv()
     export_gex_bigtech()
     export_letf()
+    export_prices()
+    export_price_history()
     _csv('meta',
          [{'generated_at': datetime.now().isoformat(), 'date': str(date.today())}],
          ['generated_at','date'])

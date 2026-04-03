@@ -467,13 +467,44 @@ def analyze(
         tickers = sorted(SPX_CORE)
         _log.info("network_universe_spx", tickers=len(tickers))
 
-    # ── Baixa histórico via IBKR ───────────────────────────────────────────────
+    # ── 1. Bloomberg CSV (BQuant export) — fonte primária ─────────────────────
     closes: dict[str, list[float]] = {}
     try:
-        from app.providers.ibkr import fetch_historical_closes
-        closes = fetch_historical_closes(tickers, lookback_days=lookback_days)
+        from app.providers.bql_csv import load_price_history
+        bbg_hist = load_price_history()
+        if bbg_hist:
+            closes = bbg_hist
+            _log.info("network_bloomberg_csv", tickers=len(closes))
     except Exception as exc:
-        _log.warning("network_ibkr_failed", error=str(exc))
+        _log.warning("network_bloomberg_csv_failed", error=str(exc))
+
+    # ── 2. IBKR — fallback ────────────────────────────────────────────────────
+    if len(closes) < 4:
+        try:
+            from app.providers.ibkr import fetch_historical_closes
+            closes = fetch_historical_closes(tickers, lookback_days=lookback_days)
+        except Exception as exc:
+            _log.warning("network_ibkr_failed", error=str(exc))
+
+    # ── Fallback yfinance para tickers sem dados do IBKR ──────────────────────
+    missing = [t for t in tickers if t not in closes]
+    if missing:
+        try:
+            import yfinance as yf
+            import pandas as pd
+            raw = yf.download(missing, period=f"{lookback_days}d",
+                              auto_adjust=True, progress=False, threads=True)
+            close_df = raw["Close"] if "Close" in raw.columns else raw
+            if isinstance(close_df, pd.Series):
+                close_df = close_df.to_frame(missing[0])
+            for sym in missing:
+                if sym in close_df.columns:
+                    s = close_df[sym].dropna()
+                    if len(s) >= 10:
+                        closes[sym] = [float(v) for v in s.values]
+            _log.info("network_yf_fallback", filled=len(closes) - (len(tickers) - len(missing)))
+        except Exception as exc:
+            _log.warning("network_yf_fallback_failed", error=str(exc))
 
     if len(closes) < 4:
         _log.warning("network_too_few_tickers", n=len(closes))
