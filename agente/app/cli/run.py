@@ -141,8 +141,8 @@ def ingest(
     except Exception as exc:
         console.print(f"[yellow]HTML diario falhou: {exc}[/yellow]")
 
-    # ── Abre UM único HTML — brief tem prioridade, fallback para desk2 ────────
-    _final_html = brief_path or desk2_path
+    # ── Abre UM único HTML — MacroDesk tem prioridade (tem auto-refresh) ────────
+    _final_html = desk2_path or brief_path
     if _final_html and not no_open:
         webbrowser.open(_final_html.as_uri())
 
@@ -154,10 +154,9 @@ def ingest(
     if bundle.audit_summary.errors > 0:
         raise typer.Exit(1)
 
-    # ── Live price loop ───────────────────────────────────────────────────────
-    live_path = fi_path or desk2_path
-    if not no_live and portfolio and live_path:
-        _run_live_loop(bundle, live_path, portfolio, signals, interval=interval, desk2_path=desk2_path)
+    # ── Live price loop — MacroDesk como alvo principal (tem auto-refresh) ──────
+    if not no_live and desk2_path:
+        _run_live_loop(bundle, fi_path, portfolio, signals, interval=interval, desk2_path=desk2_path)
 
 
 def _check_bloomberg_live(bundle) -> bool:
@@ -299,42 +298,29 @@ def _run_live_loop(
             except Exception:
                 pass
 
-            # Regenera flow inspector HTML com preco/P&L atualizados
-            if fi_path and _cached_portfolio and _cached_signals:
-                try:
-                    from app.views.flow_inspector import generate_flow_inspector_html
-                    fi_html = generate_flow_inspector_html(
-                        _cached_portfolio, _cached_signals,
-                        bundle_date=str(bundle.run_date),
-                        live_mode=True,
-                        refresh_interval=interval + 2,
-                        options_strategy=_cached_options,
-                        rrg_result=_cached_rrg,
-                        pairs_result=_cached_pairs,
-                        market_prices=bundle.market_prices,
-                    )
-                    fi_path.write_text(fi_html, encoding="utf-8")
-                except Exception:
-                    pass
-
-            # Regenera MacroDesk v2 apenas quando Bloomberg CSV foi atualizado
-            if desk2_path and _cached_graph_data and _bbg_updated:
+            # Regenera MacroDesk com precos + portfolio atualizados todo ciclo
+            if desk2_path and _cached_graph_data:
                 try:
                     from app.views.macro_desk_v2 import generate_macro_desk_v2_html
-                    _d2_html = generate_macro_desk_v2_html(bundle, graph_data=_cached_graph_data, live_mode=True)
+                    _d2_html = generate_macro_desk_v2_html(
+                        bundle,
+                        graph_data=_cached_graph_data,
+                        live_mode=True,
+                        portfolio=_cached_portfolio,
+                    )
                     desk2_path.write_text(_d2_html, encoding="utf-8")
                 except Exception:
                     pass
 
             elapsed = _time.time() - t0
-            _html_tag = " [green]HTML↑[/green]" if (_bbg_updated and desk2_path) else ""
+            _bbg_tag = " [green]BBG↑[/green]" if _bbg_updated else ""
             console.print(
                 f"[dim]#{cycle:03d}[/dim] {refreshed_at} "
-                f"[dim]{elapsed:.1f}s[/dim]{pnl_str}{_html_tag}"
+                f"[dim]{elapsed:.1f}s[/dim]{pnl_str}{_bbg_tag}"
             )
 
             # A cada 15 ciclos (~15min): rebuild completo de sinais + portfolio
-            if cycle % 15 == 0 and fi_path:
+            if cycle % 15 == 0 and desk2_path:
                 console.print("[yellow]Rebuild completo (sinais + portfolio)...[/yellow]")
                 try:
                     from app.pipeline.portfolio_pipeline import run_portfolio_pipeline

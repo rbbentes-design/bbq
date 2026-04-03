@@ -432,16 +432,28 @@ def _build_polymarket_html(markets: list) -> str:
 
 
 def _build_risk_html(risk_data: dict) -> str:
-    """Tabela Risk Radar: apenas índices principais + destaques relevantes."""
+    """Tabela Risk Radar: Mag 7 + índices principais."""
     tickers_data = risk_data.get("tickers", {})
     if not tickers_data:
         return ""
 
-    # Exibe apenas índices macro principais — ativos individuais ficam internos
+    # Magnificent 7 + índices macro principais — nada mais
     _INDICES = {
-        "^GSPC": "S&P 500", "^NDX": "Nasdaq 100", "^RUT": "Russell 2000",
-        "TLT": "TLT 20yr", "HYG": "HY Credit", "GLD": "Gold",
-        "CL=F": "WTI", "BTC-USD": "Bitcoin", "DX-Y.NYB": "DXY", "^VIX": "VIX",
+        # Mag 7
+        "AAPL":      "Apple",
+        "MSFT":      "Microsoft",
+        "AMZN":      "Amazon",
+        "GOOGL":     "Alphabet",
+        "META":      "Meta",
+        "NVDA":      "Nvidia",
+        # Índices
+        "^GSPC":     "S&P 500",
+        "^NDX":      "Nasdaq 100",
+        "^DJI":      "Dow Jones",
+        "^RUT":      "Russell 2000",
+        "^VIX":      "VIX",
+        "DX-Y.NYB":  "DXY",
+        "^TNX":      "TNX 10Y",
     }
     _LABELS = _INDICES
 
@@ -493,15 +505,27 @@ def _build_risk_html(risk_data: dict) -> str:
 
 
 def _build_monte_carlo_html(mc_data: dict) -> str:
-    """Tabela Monte Carlo GBM — apenas índices principais."""
+    """Tabela Monte Carlo GBM — Mag 7 + índices principais."""
     if not mc_data:
         return ""
 
-    # Exibe apenas índices macro — ativos individuais processados internamente mas não exibidos
+    # Magnificent 7 + índices macro — mesma seleção do Risk Radar
     _INDICES = {
-        "^GSPC": "S&P 500", "^NDX": "Nasdaq 100", "^RUT": "Russell 2000",
-        "TLT": "TLT 20yr", "HYG": "HY Credit", "GLD": "Gold",
-        "CL=F": "WTI Crude", "BTC-USD": "Bitcoin", "DX-Y.NYB": "DXY",
+        # Mag 7
+        "AAPL":      "Apple",
+        "MSFT":      "Microsoft",
+        "AMZN":      "Amazon",
+        "GOOGL":     "Alphabet",
+        "META":      "Meta",
+        "NVDA":      "Nvidia",
+        # Índices
+        "^GSPC":     "S&P 500",
+        "^NDX":      "Nasdaq 100",
+        "^DJI":      "Dow Jones",
+        "^RUT":      "Russell 2000",
+        "^VIX":      "VIX",
+        "DX-Y.NYB":  "DXY",
+        "^TNX":      "TNX 10Y",
     }
     _LABELS = _INDICES
 
@@ -582,15 +606,14 @@ def _img_src(img_path: str, out_dir: Path) -> str:
 
 def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
     """
-    Galeria de imagens inline — ZeroHedge Market Ear + X Timeline.
-    Cada bloco ZH aparece como: título → imagem → corpo (como no Word).
-    Posts X com imagem aparecem como cards com foto + texto.
+    Market Gossip — ZeroHedge Market Ear + X Timeline com imagens.
+    Sem nome de autor. Foco em imagem + comentário editorial curto.
     """
-    # ── ZeroHedge blocks com imagem ──────────────────────────────────────────
-    zh_cards = []
     _gallery_seen: set[str] = set()
+    all_cards: list[str] = []
+
+    # ── ZeroHedge blocks com imagem ──────────────────────────────────────────
     for block in bundle.market_ear_blocks:
-        # dedup: pega só refs únicas deste bloco
         unique_refs = list(dict.fromkeys(block.image_refs))
         local_imgs = [p for p in unique_refs if Path(p).exists() and not p.startswith("http")]
         if not local_imgs:
@@ -598,38 +621,61 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
         if not local_imgs:
             continue
 
-        title_html = f'<div class="mg-block-title">{block.title}</div>' if block.title else ""
-        body_snippet = block.body_text[:400].strip() if block.body_text else ""
-        if len(block.body_text) > 400:
-            body_snippet += "…"
-        body_html = f'<p class="mg-block-body">{body_snippet}</p>' if body_snippet else ""
-
         imgs_html = ""
-        for img_path in local_imgs[:1]:  # 1 imagem por bloco na galeria
+        for img_path in local_imgs[:1]:
             key = Path(img_path).name if Path(img_path).exists() else img_path
             if key in _gallery_seen:
                 continue
             _gallery_seen.add(key)
             src = _img_src(img_path, out_dir)
-            imgs_html += f'<img src="{src}" class="mg-img" loading="lazy" alt="{block.title}">'
+            imgs_html += f'<img src="{src}" class="mg-img" loading="lazy" alt="">'
 
         if not imgs_html:
             continue
 
-        zh_cards.append(f"""
+        title_html = f'<div class="mg-block-title">{block.title}</div>' if block.title else ""
+        body_snippet = (block.body_text[:280].strip() + "…") if len(block.body_text) > 280 else block.body_text.strip()
+        body_html = f'<p class="mg-block-body">{body_snippet}</p>' if body_snippet else ""
+
+        all_cards.append(f"""
         <div class="mg-block">
           {title_html}
           {imgs_html}
           {body_html}
         </div>""")
 
-    if not zh_cards:
+    # ── X Timeline posts com imagens ─────────────────────────────────────────
+    for item in bundle.x_items:
+        media = item.media_refs or []
+        if not media:
+            continue
+        img_url = media[0]
+        # Só URLs de imagem (não vídeo)
+        if not any(img_url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", "format=jpg", "format=png")):
+            if "pbs.twimg.com" not in img_url and "twimg.com/media" not in img_url:
+                continue
+
+        key = img_url.split("?")[0].split("/")[-1] or img_url
+        if key in _gallery_seen:
+            continue
+        _gallery_seen.add(key)
+
+        text_snippet = (item.text[:240].strip() + "…") if len(item.text) > 240 else item.text.strip()
+        body_html = f'<p class="mg-block-body">{text_snippet}</p>' if text_snippet else ""
+
+        all_cards.append(f"""
+        <div class="mg-block">
+          <img src="{img_url}" class="mg-img" loading="lazy" alt="">
+          {body_html}
+        </div>""")
+
+    if not all_cards:
         return ""
 
     return f"""
     <div class="mg-wrap">
       <div class="section-title">📰 Market Gossip</div>
-      <div class="mg-zh-grid">{''.join(zh_cards)}</div>
+      <div class="mg-zh-grid">{''.join(all_cards)}</div>
     </div>"""
 
 
