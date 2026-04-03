@@ -299,7 +299,7 @@ class BloombergMainAgent:
             stats["success"] = True
 
             notify(
-                f"  {zi.zip_name} → {stats['rows_inserted']} linhas ingeridas, "
+                f"  {zi.zip_name} | {stats['rows_inserted']} linhas ingeridas, "
                 f"{stats['rows_skipped']} duplicatas ignoradas."
             )
 

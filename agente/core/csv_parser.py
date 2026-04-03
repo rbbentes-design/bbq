@@ -73,7 +73,7 @@ _REQUIRED_COLS: dict[str, list[str]] = {
     "letf_flows":    ["ticker", "nav"],
     "macro_series":  ["bbg_ticker", "px_last"],
     "macro_history": ["date", "bbg_ticker", "value"],
-    "meta":          ["key", "value"],
+    "meta":          ["generated_at"],
 }
 
 
