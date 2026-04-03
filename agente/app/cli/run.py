@@ -122,7 +122,9 @@ def ingest(
             desk2_path = save_macro_desk_v2(bundle, curation_obj)
         console.print(f"[green]MacroDesk v2:[/green] {desk2_path.name}")
     except Exception as exc:
-        console.print(f"[yellow]MacroDesk v2 falhou: {exc}[/yellow]")
+        import traceback
+        console.print(f"[red]MacroDesk v2 falhou: {exc}[/red]")
+        console.print(f"[dim]{traceback.format_exc()[-800:]}[/dim]")
 
     # ── Verificação Bloomberg Live ─────────────────────────────────────────────
     # Obrigatório antes de prosseguir — emite aviso explícito se indisponível
@@ -155,8 +157,9 @@ def ingest(
         raise typer.Exit(1)
 
     # ── Live price loop — MacroDesk como alvo principal (tem auto-refresh) ──────
-    if not no_live and desk2_path:
-        _run_live_loop(bundle, fi_path, portfolio, signals, interval=interval, desk2_path=desk2_path)
+    _live_target = desk2_path or brief_path
+    if not no_live and _live_target:
+        _run_live_loop(bundle, fi_path, portfolio, signals, interval=interval, desk2_path=_live_target)
 
 
 def _check_bloomberg_live(bundle) -> bool:
