@@ -1429,36 +1429,58 @@ def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
 
 def _banco_bloomberg_status_html() -> str:
     """
-    Retorna HTML de aviso quando o banco Bloomberg estiver vazio ou desatualizado.
-    Exibido como banner dentro do MacroDesk, não como tela bloqueante.
+    Banner de status do banco Bloomberg.
+    - Verde: dados frescos (< STALE_MINUTES)
+    - Amarelo: banco tem dados mas desatualizados — exibe último snapshot
+    - Vermelho: banco não existe ou está vazio
     """
     try:
-        import sys as _sys
-        from pathlib import Path as _P
-        _root = _P(__file__).parent.parent.parent
-        if str(_root) not in _sys.path:
-            _sys.path.insert(0, str(_root))
         from app.query_layer import BloombergQueryLayer
         ql = BloombergQueryLayer()
-        if ql.is_data_available():
-            status = ql.get_last_ingestion_status()
-            age    = status.get("age_minutes", "?")
-            rows   = status.get("rows_ingested", 0)
+        snap = ql.get_snapshot_info()
+
+        if not snap["has_data"]:
+            # Banco vazio ou inexistente — erro real
+            return (
+                '<div style="background:#450a0a;border:1px solid #ef4444;border-radius:6px;'
+                'padding:10px 14px;font-size:12px;color:#fca5a5;margin-bottom:8px">'
+                '<strong>[!] Banco Bloomberg sem dados.</strong> '
+                'Execute o Bloomberg Agent para popular o banco. '
+                '<span style="color:#94a3b8;font-size:10px">'
+                'agente run ingest</span>'
+                '</div>'
+            )
+
+        # Banco tem dados — formata timestamp legível
+        last_upd = snap.get("last_update", "")
+        age = snap.get("age_minutes")
+        tickers = snap.get("tickers_count", 0)
+
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            dt = _dt.fromisoformat(last_upd.replace("Z", "+00:00"))
+            last_str = dt.astimezone().strftime("%d/%m %H:%M")
+        except Exception:
+            last_str = last_upd[:16] if last_upd else "—"
+
+        age_str = f"{age:.0f} min" if age is not None else "—"
+
+        if snap["is_fresh"]:
+            # Dados frescos
             return (
                 f'<div style="background:#064e3b;border:1px solid #059669;border-radius:6px;'
-                f'padding:8px 14px;font-size:11px;color:#34d399;margin-bottom:8px">'
-                f'&#9679; Bloomberg: {rows:,} linhas — atualizado há {age:.0f} min'
+                f'padding:7px 14px;font-size:11px;color:#34d399;margin-bottom:8px">'
+                f'Bloomberg: {tickers} tickers — atualizado há {age_str} ({last_str})'
                 f'</div>'
             )
         else:
+            # Snapshot válido mas não fresco
             return (
-                '<div style="background:#451a03;border:1px solid #f59e0b;border-radius:6px;'
-                'padding:10px 14px;font-size:12px;color:#fbbf24;margin-bottom:8px">'
-                '<strong>⚠ Banco Bloomberg não atualizado.</strong> '
-                'Execute o Bloomberg Agent antes de usar o MacroDesk. '
-                '<span style="color:#94a3b8;font-size:10px">'
-                'launcher/run_bloomberg_agent.bat</span>'
-                '</div>'
+                f'<div style="background:#1c1505;border:1px solid #78350f;border-radius:6px;'
+                f'padding:7px 14px;font-size:11px;color:#fbbf24;margin-bottom:8px">'
+                f'Bloomberg: snapshot de {last_str} ({age_str} atrás) &middot; {tickers} tickers &middot; '
+                f'<span style="color:#94a3b8">execute bql_export.py para atualizar</span>'
+                f'</div>'
             )
     except Exception:
         return ""
@@ -1481,7 +1503,18 @@ def generate_macro_desk_v2_html(
     rmt_meta = graph_data.get("rmt_meta", {})
     scores   = graph_data.get("agent_scores") or {}
     stats    = graph_data.get("stats", {})
-    mp       = bundle.market_prices or {}
+    mp       = dict(bundle.market_prices or {})
+    # Fallback: se bundle nao tem precos, carrega do banco (snapshot mais recente)
+    if not any(k for k in mp if not k.startswith("__")):
+        try:
+            from app.query_layer import BloombergQueryLayer
+            _ql = BloombergQueryLayer()
+            if _ql.has_any_data():
+                _db_prices = _ql.get_latest_prices()
+                if _db_prices:
+                    mp.update(_db_prices)
+        except Exception:
+            pass
     _bbg_status_html = _banco_bloomberg_status_html()
     vix_term       = graph_data.get("vix_term") or {}
     live_network   = graph_data.get("live_network") or {}

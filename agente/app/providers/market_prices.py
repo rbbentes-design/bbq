@@ -72,7 +72,8 @@ def collect(
         from app.query_layer import BloombergQueryLayer
         ql = BloombergQueryLayer()
 
-        if not ql.is_data_available():
+        # Carrega do banco independente de idade — banco é fonte de verdade
+        if not ql.has_any_data():
             status = ql.get_last_ingestion_status()
             if not status:
                 _log.warning(
@@ -81,13 +82,21 @@ def collect(
                     action="python -m core.bloomberg_main_agent",
                 )
             else:
-                age = status.get("age_minutes", "?")
                 _log.warning(
-                    "bloomberg_data_stale",
-                    age_minutes=age,
-                    hint="Dados Bloomberg desatualizados. Execute o Bloomberg Agent.",
+                    "bloomberg_banco_sem_dados",
+                    hint="Banco existe mas sem precos. Execute o Bloomberg Agent.",
                 )
             return {}
+
+        # Aviso não-bloqueante se dados desatualizados
+        if not ql.is_data_available():
+            snap = ql.get_snapshot_info()
+            _log.info(
+                "bloomberg_usando_snapshot",
+                age_minutes=snap.get("age_minutes"),
+                tickers=snap.get("tickers_count"),
+                hint="Usando ultimo snapshot valido do banco.",
+            )
 
         prices = ql.get_latest_prices()
 

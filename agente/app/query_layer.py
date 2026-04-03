@@ -63,10 +63,23 @@ class BloombergQueryLayer:
 
     # ── Status e Disponibilidade ─────────────────────────────────────────────
 
+    def has_any_data(self) -> bool:
+        """
+        Retorna True se o banco existe e tem pelo menos 1 registro em bql_latest.
+        Não leva em conta a idade dos dados — só verifica se há algo no banco.
+        """
+        try:
+            with self._connect() as conn:
+                n = conn.execute("SELECT COUNT(*) FROM bql_latest").fetchone()[0]
+                return n > 0
+        except Exception:
+            return False
+
     def is_data_available(self) -> bool:
         """
         Retorna True se o banco tem dados recentes (menos de STALE_MINUTES atrás).
         False = banco vazio, arquivo não existe, ou dados desatualizados.
+        Usar has_any_data() para verificar existência sem checar idade.
         """
         status = self.get_last_ingestion_status()
         if not status or status.get("status") not in ("ok", "partial"):
@@ -80,6 +93,50 @@ class BloombergQueryLayer:
             return age < timedelta(minutes=STALE_MINUTES)
         except Exception:
             return False
+
+    def get_snapshot_info(self) -> dict[str, Any]:
+        """
+        Retorna informações do último snapshot válido no banco.
+        Usado para exibir status no MacroDesk sem depender de refresh recente.
+
+        Returns:
+            {
+              "has_data": bool,
+              "is_fresh": bool,
+              "last_update": str,    # ISO timestamp
+              "age_minutes": float,
+              "rows_total": int,
+              "tickers_count": int,
+            }
+        """
+        result: dict[str, Any] = {
+            "has_data": False,
+            "is_fresh": False,
+            "last_update": "",
+            "age_minutes": None,
+            "rows_total": 0,
+            "tickers_count": 0,
+        }
+        try:
+            with self._connect() as conn:
+                n = conn.execute("SELECT COUNT(*) FROM bql_latest").fetchone()[0]
+                result["rows_total"] = n
+                result["has_data"] = n > 0
+                if n > 0:
+                    tickers = conn.execute(
+                        "SELECT COUNT(DISTINCT ticker) FROM bql_latest"
+                    ).fetchone()[0]
+                    result["tickers_count"] = tickers
+                    # Última atualização via ingestion_log
+                    status = self.get_last_ingestion_status()
+                    if status:
+                        result["last_update"] = status.get("finished_at", "")
+                        result["age_minutes"] = status.get("age_minutes")
+                        age = result["age_minutes"]
+                        result["is_fresh"] = (age is not None and age < STALE_MINUTES)
+        except Exception:
+            pass
+        return result
 
     def get_last_ingestion_status(self) -> dict[str, Any]:
         """
