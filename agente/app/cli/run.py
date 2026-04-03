@@ -174,7 +174,7 @@ def _check_bloomberg_live(bundle) -> bool:
         return True
     else:
         console.print(Panel(
-            "[bold yellow]⚠ Macro Desk Live não carregado automaticamente.[/bold yellow]\n"
+            "[bold yellow][!] Macro Desk Live nao carregado automaticamente.[/bold yellow]\n"
             "Necessário puxar cotações Bloomberg antes de continuar a análise completa.\n\n"
             "[dim]Para corrigir: rode o script BQuant (bql_export.py) e aguarde o zip ser extraído.[/dim]",
             border_style="yellow",
