@@ -145,6 +145,20 @@ def ingest(
 
     # ── Abre UM único HTML — MacroDesk tem prioridade (tem auto-refresh) ────────
     _final_html = desk2_path or brief_path
+    # Fallback: se nenhum HTML foi gerado hoje, abre o mais recente do workspace
+    if not _final_html:
+        try:
+            from app.storage.paths import workspace
+            _all = sorted(
+                list(Path(workspace.bundles).glob("**/*_desk_v2.html")) +
+                list(Path(workspace.bundles).glob("**/*_brief.html")),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            if _all:
+                _final_html = _all[0]
+                console.print(f"[yellow]Abrindo ultimo HTML disponivel: {_final_html.name}[/yellow]")
+        except Exception:
+            pass
     if _final_html and not no_open:
         webbrowser.open(_final_html.as_uri())
 
@@ -157,7 +171,7 @@ def ingest(
         raise typer.Exit(1)
 
     # ── Live price loop — MacroDesk como alvo principal (tem auto-refresh) ──────
-    _live_target = desk2_path or brief_path
+    _live_target = desk2_path or brief_path or _final_html
     if not no_live and _live_target:
         _run_live_loop(bundle, fi_path, portfolio, signals, interval=interval, desk2_path=_live_target)
 
