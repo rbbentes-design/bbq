@@ -121,7 +121,33 @@ def collect(
     price_map = price_map or {}
     equity_tickers = [t for t in tickers if _is_equity(t)]
     _log.info("anatomy_start", total=len(tickers), equity=len(equity_tickers))
-    return _collect_bql(equity_tickers, price_map)
+
+    # 1. Tenta DB Bloomberg (bql_latest) — dados já ingeridos pelo pipeline
+    try:
+        from app.query_layer import BloombergQueryLayer
+        ql = BloombergQueryLayer()
+        if ql.has_any_data():
+            funds = ql.get_fundamentals()
+            if funds:
+                # Adiciona drawdown com preço atualizado
+                for sym, entry in funds.items():
+                    price = price_map.get(sym) or entry.get("price")
+                    hi = entry.get("hi_52w")
+                    if price and hi and hi > 0:
+                        entry["drawdown_52w"] = round((float(price) - hi) / hi, 4)
+                _log.info("anatomy_from_db", collected=len(funds))
+                return funds
+    except Exception as exc:
+        _log.debug("anatomy_db_failed", error=str(exc))
+
+    # 2. Tenta BQuant subprocess (script BQL)
+    result = _collect_bql(equity_tickers, price_map)
+    if result:
+        return result
+
+    # 3. Fallback yfinance
+    _log.info("anatomy_yfinance_fallback", tickers=len(equity_tickers))
+    return _collect_yfinance(equity_tickers, price_map)
 
 
 _OPTIONS_FIELDS = {"atm_iv", "skew_5pct", "pcr_oi"}

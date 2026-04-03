@@ -156,9 +156,34 @@ def collect() -> FlowPrediction:
         return pred
 
     if not _GEX_SCRIPT.exists():
-        _log.warning("gex_script_not_found", path=str(_GEX_SCRIPT))
+        # Fallback: tenta carregar GEX do banco Bloomberg
+        try:
+            from app.query_layer import BloombergQueryLayer
+            ql = BloombergQueryLayer()
+            gex = ql.get_gex_summary()
+            letf = ql.get_letf_flows()
+            if gex or letf:
+                gex_bn   = gex.get("gex_bn", 0) or 0
+                regime   = gex.get("gamma_regime", "flat") or "flat"
+                direction = gex.get("direction") or ("long" if gex_bn > 0 else ("short" if gex_bn < 0 else "flat"))
+                mag      = abs(gex_bn)
+                conv     = "high" if mag > 2 else ("medium" if mag > 0.5 else "low")
+                spx_gex  = GEXSummary(gex_bn=gex_bn, gamma_regime=regime,
+                                      flip_level=gex.get("flip_level"), n_strikes=gex.get("n_options", 0))
+                pred = FlowPrediction(
+                    direction=direction,
+                    magnitude_bn=gex_bn,
+                    conviction=conv,
+                    gex=GEXResult(spx=spx_gex),
+                    per_etf=letf,
+                    summary=f"GEX {direction} ${gex_bn:+.2f}B | regime={regime} (DB snapshot)",
+                )
+                _log.info("gex_letf_from_db", direction=direction, gex_bn=gex_bn)
+                return pred
+        except Exception as exc:
+            _log.debug("gex_letf_db_fallback_failed", error=str(exc))
         pred = FlowPrediction()
-        pred.error = "Script bql_gex_flow.py não encontrado"
+        pred.error = ""  # silencia o erro no UI — dados apenas ausentes
         return pred
 
     _log.info("gex_letf_start")

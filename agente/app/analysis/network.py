@@ -472,9 +472,14 @@ def analyze(
     try:
         from app.providers.bql_csv import load_price_history
         bbg_hist = load_price_history()
-        if bbg_hist:
+        # Só usa se tiver historico suficiente (>= 20 observacoes por ticker)
+        if bbg_hist and min((len(v) for v in bbg_hist.values()), default=0) >= 20:
             closes = bbg_hist
             _log.info("network_bloomberg_csv", tickers=len(closes))
+        elif bbg_hist:
+            _log.info("network_bloomberg_csv_insuf", tickers=len(bbg_hist),
+                      min_obs=min((len(v) for v in bbg_hist.values()), default=0),
+                      hint="historico curto, usando yfinance")
     except Exception as exc:
         _log.warning("network_bloomberg_csv_failed", error=str(exc))
 
