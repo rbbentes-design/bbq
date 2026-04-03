@@ -165,16 +165,24 @@ class DataNormalizer:
     ) -> tuple[list[dict], list[dict]]:
         """
         prices_*.csv
-        Colunas: bbg_ticker, yf_ticker, name, price, prev_price, price_w, price_ytd
-        Campos gravados: price, prev_price, price_w, price_ytd
+        Aceita tanto o formato do bql_export.py (daily_return, ytd_return já calculados)
+        quanto o formato legado (prev_price, price_w, price_ytd como preços brutos).
+        Só grava campos que existem no CSV — campos ausentes são silenciados.
         """
         ts, missing = [], []
-        price_fields = ["price", "prev_price", "price_w", "price_ytd"]
+        # Campos numéricos aceitos — só os que existirem no CSV serão gravados
+        all_price_fields = [
+            "price", "prev_price", "price_w", "price_ytd",
+            "daily_return", "ytd_return",
+        ]
 
         cols = {c.lower(): c for c in df.columns}
 
         # Detecta coluna de ticker (bbg_ticker preferido, fallback yf_ticker)
         ticker_col = cols.get("bbg_ticker") or cols.get("yf_ticker") or cols.get("ticker")
+
+        # Determina quais campos realmente existem neste CSV
+        present_fields = [f for f in all_price_fields if f in cols]
 
         for idx, row in df.iterrows():
             row_num = int(idx) + 2  # +2 = header + 1-based
@@ -185,17 +193,14 @@ class DataNormalizer:
                                              "missing_ticker", f"Linha {row_num} sem ticker identificado"))
                 continue
 
-            for field in price_fields:
-                col = cols.get(field)
-                raw = row.get(col) if col else None
+            for field in present_fields:
+                col = cols[field]
+                raw = row.get(col)
                 val = _to_float(raw)
 
-                if val is None and col is not None and not _is_null(raw):
+                if val is None and not _is_null(raw):
                     missing.append(self._missing(source_file, row_num, ticker, field, default_date,
                                                  "invalid_numeric", f"Linha {row_num} valor inválido para {field}: {raw!r}"))
-                elif val is None and col is None:
-                    # Campo não existe no CSV — não é ausência, é omissão de coluna
-                    pass
 
                 ts.append(self._record(ticker, field, default_date, val, source_file, ingest_ts))
 
@@ -467,20 +472,29 @@ class DataNormalizer:
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
     ) -> tuple[list[dict], list[dict]]:
         """
-        meta_*.csv — apenas metadados de timestamp do export Bloomberg.
-        Gravamos como campo de sistema no banco (ticker=SYSTEM).
+        meta_*.csv — timestamp do export Bloomberg.
+        Aceita dois formatos:
+          - bql_export.py: coluna única 'generated_at' com datetime ISO
+          - legado: colunas 'key' e 'value'
+        Gravamos como campo de sistema (ticker=SYSTEM) para rastreabilidade.
         """
         ts = []
         cols = {c.lower(): c for c in df.columns}
+
+        # Formato bql_export.py: coluna 'generated_at'
+        ga_col = cols.get("generated_at")
+        if ga_col:
+            ts.append(self._record("SYSTEM", "meta_generated_at", default_date, None,
+                                   source_file, ingest_ts))
+            return ts, []
+
+        # Formato legado: colunas 'key' / 'value'
         key_col = cols.get("key")
         val_col = cols.get("value")
-
         if key_col and val_col:
             for _, row in df.iterrows():
                 key = _to_str(row.get(key_col))
-                val = _to_str(row.get(val_col))
-                if key and val:
-                    # Grava apenas como registro de rastreabilidade (valor = None numérico)
+                if key:
                     ts.append(self._record("SYSTEM", f"meta_{key}", default_date, None,
                                            source_file, ingest_ts))
 

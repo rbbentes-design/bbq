@@ -48,7 +48,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 # ── Garante que o root do projeto está no sys.path ────────────────────────────
 _ROOT = Path(__file__).parent.parent
@@ -329,7 +329,13 @@ class BloombergMainAgent:
             _log.info("csv_type_unknown_skipped", file=csv_path.name)
             return empty_stats
 
-        # Normaliza
+        # macro_series: grava também em macro_series_latest (tabela dedicada)
+        if dataset_type == "macro_series":
+            snap = self._extract_macro_snapshot(df)
+            if snap:
+                self._writer.write_macro_series(run_id, snap, [])
+
+        # Normaliza para bql_timeseries / bql_latest
         ts_records, missing_records = self._normalizer.normalize(
             dataset_type, df, csv_path.name
         )
@@ -342,6 +348,36 @@ class BloombergMainAgent:
             run_id, ts_records, missing_records, csv_path.name
         )
         return write_stats
+
+    def _extract_macro_snapshot(self, df: "Any") -> list[dict]:
+        """
+        Extrai snapshot de macro_series_*.csv para gravar em macro_series_latest.
+        Formato esperado: bbg_ticker, description, category, px_last
+        """
+        from datetime import date
+        from core.data_normalizer import _to_str, _to_float
+
+        cols = {c.lower(): c for c in df.columns}
+        ticker_col = cols.get("bbg_ticker") or cols.get("ticker")
+        desc_col   = cols.get("description")
+        cat_col    = cols.get("category")
+        val_col    = cols.get("px_last") or cols.get("value")
+        date_col   = cols.get("date")
+        today      = date.today().isoformat()
+
+        snap = []
+        for _, row in df.iterrows():
+            ticker = _to_str(row.get(ticker_col)) if ticker_col else None
+            if not ticker:
+                continue
+            snap.append({
+                "bbg_ticker":  ticker,
+                "description": _to_str(row.get(desc_col))  if desc_col else ticker,
+                "category":    _to_str(row.get(cat_col))   if cat_col  else "other",
+                "px_last":     _to_float(row.get(val_col)) if val_col  else None,
+                "date":        _to_str(row.get(date_col))  if date_col else today,
+            })
+        return snap
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

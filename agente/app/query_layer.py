@@ -132,29 +132,33 @@ class BloombergQueryLayer:
         """
         Retorna preços e retornos no formato compatível com market_prices.collect().
 
+        Aceita dois formatos vindos do banco:
+          - bql_export.py: 'price', 'daily_return', 'ytd_return' (já calculados)
+          - legado: 'price', 'prev_price', 'price_w', 'price_ytd' (preços brutos)
+
         Returns:
             {
               "^GSPC": {
-                "name":           "S&P 500",         # do bql_latest se disponível
+                "name":           "S&P 500",
                 "price":          5100.23,
-                "daily_return":   -0.0122,            # calculado de price/prev_price
-                "weekly_return":  -0.034,             # calculado de price/price_w
-                "ytd_return":     -0.085,             # calculado de price/price_ytd
+                "daily_return":   -0.0122,
+                "ytd_return":     -0.085,
                 "source":         "bloomberg",
               },
               ...
             }
             Retorna {} se não houver dados de preço no banco.
         """
-        # Busca todos os campos de preço na bql_latest
-        fields = ["price", "prev_price", "price_w", "price_ytd", "name"]
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
                     SELECT ticker, field, latest_value
                     FROM bql_latest
-                    WHERE field IN ('price', 'prev_price', 'price_w', 'price_ytd')
+                    WHERE field IN (
+                        'price', 'daily_return', 'ytd_return',
+                        'prev_price', 'price_w', 'price_ytd'
+                    )
                     """
                 ).fetchall()
         except Exception:
@@ -172,26 +176,37 @@ class BloombergQueryLayer:
         # Monta resultado final
         result: dict[str, dict[str, Any]] = {}
         for ticker, vals in raw.items():
-            price      = vals.get("price")
-            prev_price = vals.get("prev_price")
-            price_w    = vals.get("price_w")
-            price_ytd  = vals.get("price_ytd")
-
+            price = vals.get("price")
             if price is None:
                 continue
 
+            price = float(price)
             entry: dict[str, Any] = {
-                "name":   ticker,   # nome pode ser enriquecido abaixo
-                "price":  round(float(price), 4),
+                "name":   ticker,
+                "price":  round(price, 4),
                 "source": "bloomberg",
             }
 
-            if prev_price and prev_price != 0:
-                entry["daily_return"] = round((price - prev_price) / prev_price, 4)
-            if price_w and price_w != 0:
-                entry["weekly_return"] = round((price - price_w) / price_w, 4)
-            if price_ytd and price_ytd != 0:
-                entry["ytd_return"] = round((price - price_ytd) / price_ytd, 4)
+            # Retorno diário: usa campo direto (bql_export.py) ou calcula de prev_price
+            dr = vals.get("daily_return")
+            prev_price = vals.get("prev_price")
+            if dr is not None:
+                entry["daily_return"] = round(float(dr), 6)
+            elif prev_price and float(prev_price) != 0:
+                entry["daily_return"] = round((price - float(prev_price)) / float(prev_price), 6)
+
+            # Retorno YTD: usa campo direto (bql_export.py) ou calcula de price_ytd
+            ytdr = vals.get("ytd_return")
+            price_ytd = vals.get("price_ytd")
+            if ytdr is not None:
+                entry["ytd_return"] = round(float(ytdr), 6)
+            elif price_ytd and float(price_ytd) != 0:
+                entry["ytd_return"] = round((price - float(price_ytd)) / float(price_ytd), 6)
+
+            # Retorno semanal: só no formato legado
+            price_w = vals.get("price_w")
+            if price_w and float(price_w) != 0:
+                entry["weekly_return"] = round((price - float(price_w)) / float(price_w), 6)
 
             result[ticker] = entry
 

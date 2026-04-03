@@ -229,6 +229,72 @@ def export_price_history():
     pd.DataFrame(rows).to_csv(OUT / f'price_history_{hoje}.csv', index=False)
     _log(f'price_history — {len(rows)} tickers')
 
+# ── macro series (curva de juros, VIX, spreads, FX) ──────
+MACRO_TICKERS = [
+    # Curva de juros EUA
+    ('USGG1M Index',   'US Treasury 1M',       'rates_usd'),
+    ('USGG3M Index',   'US Treasury 3M',       'rates_usd'),
+    ('USGG6M Index',   'US Treasury 6M',       'rates_usd'),
+    ('USGG1YR Index',  'US Treasury 1Y',       'rates_usd'),
+    ('USGG2YR Index',  'US Treasury 2Y',       'rates_usd'),
+    ('USGG5YR Index',  'US Treasury 5Y',       'rates_usd'),
+    ('USGG10YR Index', 'US Treasury 10Y',      'rates_usd'),
+    ('USGG30YR Index', 'US Treasury 30Y',      'rates_usd'),
+    # Volatilidade
+    ('VIX Index',      'VIX Spot',             'volatility'),
+    ('VIX9D Index',    'VIX 9-Day',            'volatility'),
+    ('VIX3M Index',    'VIX 3-Month',          'volatility'),
+    ('VVIX Index',     'Vol of VIX',           'volatility'),
+    ('MOVE Index',     'MOVE (bond vol)',       'volatility'),
+    # Spreads de crédito
+    ('LUACOAS Index',  'IG OAS Spread',        'credit_spread'),
+    ('LF98OAS Index',  'HY OAS Spread',        'credit_spread'),
+    # FX
+    ('DXY Curncy',     'Dollar Index',         'fx'),
+    # Juros de curto prazo
+    ('SOFRRATE Index', 'SOFR Rate',            'monetary'),
+    # Inflação implícita
+    ('USGGBE10 Index', 'US 10Y Breakeven',     'inflation'),
+]
+
+def export_macro():
+    rows   = []
+    px_map = {}
+    for tk, desc, cat in MACRO_TICKERS:
+        try:
+            r  = bq.execute(bql.Request(bq.univ.list([tk]), {'px': bq.data.px_last()}))[0].df()
+            px = float(r.select_dtypes('number').iloc[-1, 0])
+            rows.append({'bbg_ticker': tk, 'description': desc,
+                         'category': cat, 'px_last': round(px, 4)})
+            px_map[tk] = px
+        except Exception as e:
+            _log(f'macro warn {tk}: {e}')
+
+    # Derivados calculados localmente
+    y2  = px_map.get('USGG2YR Index')
+    y5  = px_map.get('USGG5YR Index')
+    y10 = px_map.get('USGG10YR Index')
+    y30 = px_map.get('USGG30YR Index')
+    vix = px_map.get('VIX Index')
+    v9d = px_map.get('VIX9D Index')
+    v3m = px_map.get('VIX3M Index')
+
+    if y2 and y10:
+        rows.append({'bbg_ticker': 'US_2Y10Y_SPREAD', 'description': '2Y-10Y Spread',
+                     'category': 'rates_derived', 'px_last': round(y10 - y2, 4)})
+    if y5 and y30:
+        rows.append({'bbg_ticker': 'US_5Y30Y_SPREAD', 'description': '5Y-30Y Spread',
+                     'category': 'rates_derived', 'px_last': round(y30 - y5, 4)})
+    if vix and v9d and vix > 0:
+        rows.append({'bbg_ticker': 'VIX_TERM_9D_SP', 'description': 'VIX 9D/Spot ratio',
+                     'category': 'volatility_derived', 'px_last': round(v9d / vix, 4)})
+    if vix and v3m and vix > 0:
+        rows.append({'bbg_ticker': 'VIX_TERM_3M_SP', 'description': 'VIX 3M/Spot ratio',
+                     'category': 'volatility_derived', 'px_last': round(v3m / vix, 4)})
+
+    pd.DataFrame(rows).to_csv(OUT / f'macro_series_{hoje}.csv', index=False)
+    _log(f'macro_series — {len(rows)} séries')
+
 # ── meta ──────────────────────────────────────────────────
 def export_meta():
     pd.DataFrame([{'generated_at': datetime.now().isoformat()}])\
@@ -259,6 +325,7 @@ def export_all():
     print('LETF...');            export_letf()
     print('Prices...');          export_prices()
     print('Price history...');   export_price_history()
+    print('Macro series...');    export_macro()
     export_meta()
     auto_download()
     print('Pronto.')
