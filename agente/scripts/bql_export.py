@@ -258,19 +258,29 @@ MACRO_TICKERS = [
 ]
 
 def export_macro():
+    tickers = [t[0] for t in MACRO_TICKERS]
+    info    = {t[0]: (t[1], t[2]) for t in MACRO_TICKERS}
+
+    # Uma única chamada BQL para todos os tickers macro
+    df_macro = _bql(bq.univ.list(tickers), {'px_last': bq.data.px_last()})
+
     rows   = []
     px_map = {}
-    for tk, desc, cat in MACRO_TICKERS:
+    for idx in df_macro.index:
+        if idx not in info:
+            continue
         try:
-            r  = bq.execute(bql.Request(bq.univ.list([tk]), {'px': bq.data.px_last()}))[0].df()
-            px = float(r.select_dtypes('number').iloc[-1, 0])
-            rows.append({'bbg_ticker': tk, 'description': desc,
-                         'category': cat, 'px_last': round(px, 4)})
-            px_map[tk] = px
-        except Exception as e:
-            _log(f'macro warn {tk}: {e}')
+            px = float(pd.to_numeric(df_macro.loc[idx, 'px_last'], errors='coerce'))
+            if pd.isna(px):
+                continue
+        except Exception:
+            continue
+        desc, cat = info[idx]
+        rows.append({'bbg_ticker': idx, 'description': desc,
+                     'category': cat, 'px_last': round(px, 4)})
+        px_map[idx] = px
 
-    # Derivados calculados localmente
+    # Derivados calculados localmente a partir dos valores BQL
     y2  = px_map.get('USGG2YR Index')
     y5  = px_map.get('USGG5YR Index')
     y10 = px_map.get('USGG10YR Index')
