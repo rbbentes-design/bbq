@@ -281,12 +281,14 @@ def run(
         console.print(f"[yellow]Graph cache inicial falhou: {exc}[/yellow]")
 
     cycle = 0
+    _last_bbg_mtime: float = _bql_mtime  # rastreia última atualização Bloomberg
     console.print(f"\n[bold]Loop live ativo[/bold] — Ctrl+C para parar\n")
 
     try:
         while True:
             cycle += 1
             t0 = time.time()
+            _cycle_bql_mtime = _bql_mtime  # captura antes dos reloads
 
             # Atualiza só preços (rápido: IBKR snapshot ou yfinance fast_info)
             refresh_prices(bundle.market_prices)
@@ -303,14 +305,19 @@ def run(
             except Exception:
                 pass
 
-            # Sincroniza CSVs do GitHub Gist (publicado pelo BQuant cloud)
+            # Extrai zip do BQuant se houver novo em Downloads
             try:
-                from app.providers.bql_gist import sync_from_gist
-                if sync_from_gist():
+                import sys as _sys
+                from pathlib import Path as _Path
+                _scripts = str(_Path(__file__).parent.parent.parent / "scripts")
+                if _scripts not in _sys.path:
+                    _sys.path.insert(0, _scripts)
+                from bql_unzip import extract_if_new
+                if extract_if_new():
                     _bql_mtime = _load_bql_csvs()
-                    console.print(f"[green]Gist sincronizado — {len(_anatomy_map)} fundamentais[/green]")
-            except Exception:
-                pass
+                    console.print(f"[green]BQL zip extraído — {len(_anatomy_map)} fundamentais[/green]")
+            except Exception as _e:
+                console.print(f"[yellow]bql_unzip erro: {_e}[/yellow]")
 
             # Recarrega CSVs BQL se o arquivo foi atualizado pelo BQuant
             try:
@@ -327,28 +334,32 @@ def run(
             except Exception:
                 pass
 
-            # Regenera HTML unificado com graph_data cacheado + precos atualizados + portfolio
-            from app.views.macro_desk_v2 import generate_macro_desk_v2_html
-            html = generate_macro_desk_v2_html(
-                bundle, _cached_graph or None,
-                live_mode=True,
-                portfolio=_cached_portfolio,
-                flow_pred=_cached_flow,
-            )
-            out_path.write_text(html, encoding="utf-8")
+            # Regenera HTML apenas quando Bloomberg (BQL CSV) teve novos dados
+            _bbg_updated = _bql_mtime > _cycle_bql_mtime
+            if _bbg_updated:
+                _last_bbg_mtime = _bql_mtime
+                from app.views.macro_desk_v2 import generate_macro_desk_v2_html
+                html = generate_macro_desk_v2_html(
+                    bundle, _cached_graph or None,
+                    live_mode=True,
+                    portfolio=_cached_portfolio,
+                    flow_pred=_cached_flow,
+                )
+                out_path.write_text(html, encoding="utf-8")
 
             elapsed = time.time() - t0
             src_keys = [k for k in bundle.market_prices.keys() if not k.startswith("__")]
             src = bundle.market_prices.get(src_keys[0], {}).get("source", "?") if src_keys else "?"
 
+            _html_status = "[green]HTML atualizado[/green]" if _bbg_updated else "[dim]sem novos dados BBG[/dim]"
             console.print(
                 f"[dim]#{cycle:03d}[/dim] [{refreshed_at}] "
                 f"src=[cyan]{src}[/cyan] "
                 f"[dim]{elapsed:.1f}s[/dim]"
-                f"{pnl_str}"
+                f"{pnl_str} {_html_status}"
             )
 
-            # A cada 15 ciclos (~15min), refaz o graph_data (sem network re-download)
+            # A cada 15 ciclos (~15min), refaz o graph_data — só grava HTML se BBG atualizou
             if cycle % 15 == 0:
                 console.print("[yellow]Ciclo 15 — rebuild graph...[/yellow]")
                 try:
@@ -362,8 +373,11 @@ def run(
                         cached_options=_options_map or None,
                         cached_prob=_prob_map or None,
                     ) or {}
-                    kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio)
-                    console.print(f"[green]Rebuild: {kb}KB[/green]")
+                    if _last_bbg_mtime > 0:
+                        kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio)
+                        console.print(f"[green]Rebuild: {kb}KB[/green]")
+                    else:
+                        console.print("[dim]Rebuild graph ok — HTML aguarda dados BBG[/dim]")
                 except Exception as exc:
                     console.print(f"[yellow]Rebuild falhou: {exc}[/yellow]")
 

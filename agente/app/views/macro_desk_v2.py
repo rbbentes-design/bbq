@@ -1397,6 +1397,73 @@ def _render_portfolio_tab(portfolio, market_prices: "dict | None", flow_pred) ->
 
 # ── HTML builder ──────────────────────────────────────────────────────────────
 
+def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
+    """
+    Carrega o editorial diário (brief HTML) para embutir na aba Informações de Mercado.
+    Procura o _brief.html mais recente do dia no diretório do bundle.
+    Retorna HTML completo do body do brief, ou string vazia se não encontrado.
+    """
+    import re as _re
+    try:
+        from app.storage.paths import workspace
+        from pathlib import Path as _P
+        bundle_dir = _P(workspace.bundles) / str(bundle.run_date)
+        # Prefere _brief.html mais recente, depois qualquer _week_ahead_brief.html
+        candidates = sorted(
+            list(bundle_dir.glob("*_brief.html")) + list(bundle_dir.glob("*_week_ahead_brief.html")),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if not candidates:
+            return ""
+        raw = candidates[0].read_text(encoding="utf-8")
+        # Extrai apenas o conteúdo entre <body> e </body>
+        m = _re.search(r"<body[^>]*>(.*?)</body>", raw, _re.DOTALL | _re.IGNORECASE)
+        content = m.group(1).strip() if m else raw
+        # Remove scripts de auto-refresh e navegação independente
+        content = _re.sub(r"<script[^>]*>.*?</script>", "", content, flags=_re.DOTALL | _re.IGNORECASE)
+        content = _re.sub(r"<style[^>]*>.*?</style>", "", content, flags=_re.DOTALL | _re.IGNORECASE)
+        return content
+    except Exception:
+        return ""
+
+
+def _banco_bloomberg_status_html() -> str:
+    """
+    Retorna HTML de aviso quando o banco Bloomberg estiver vazio ou desatualizado.
+    Exibido como banner dentro do MacroDesk, não como tela bloqueante.
+    """
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _root = _P(__file__).parent.parent.parent
+        if str(_root) not in _sys.path:
+            _sys.path.insert(0, str(_root))
+        from app.query_layer import BloombergQueryLayer
+        ql = BloombergQueryLayer()
+        if ql.is_data_available():
+            status = ql.get_last_ingestion_status()
+            age    = status.get("age_minutes", "?")
+            rows   = status.get("rows_ingested", 0)
+            return (
+                f'<div style="background:#064e3b;border:1px solid #059669;border-radius:6px;'
+                f'padding:8px 14px;font-size:11px;color:#34d399;margin-bottom:8px">'
+                f'&#9679; Bloomberg: {rows:,} linhas — atualizado há {age:.0f} min'
+                f'</div>'
+            )
+        else:
+            return (
+                '<div style="background:#451a03;border:1px solid #f59e0b;border-radius:6px;'
+                'padding:10px 14px;font-size:12px;color:#fbbf24;margin-bottom:8px">'
+                '<strong>⚠ Banco Bloomberg não atualizado.</strong> '
+                'Execute o Bloomberg Agent antes de usar o MacroDesk. '
+                '<span style="color:#94a3b8;font-size:10px">'
+                'launcher/run_bloomberg_agent.bat</span>'
+                '</div>'
+            )
+    except Exception:
+        return ""
+
+
 def generate_macro_desk_v2_html(
     bundle: "DailyIngestionBundle",
     graph_data: "dict | None" = None,
@@ -1404,6 +1471,7 @@ def generate_macro_desk_v2_html(
     live_mode: bool = False,
     portfolio=None,   # PortfolioResult | None
     flow_pred=None,   # FlowPrediction | None
+    editorial_html: str | None = None,  # override; None = carrega automaticamente
 ) -> str:
     if graph_data is None:
         from app.desk.graph_engine import build_from_bundle
@@ -1414,6 +1482,7 @@ def generate_macro_desk_v2_html(
     scores   = graph_data.get("agent_scores") or {}
     stats    = graph_data.get("stats", {})
     mp       = bundle.market_prices or {}
+    _bbg_status_html = _banco_bloomberg_status_html()
     vix_term       = graph_data.get("vix_term") or {}
     live_network   = graph_data.get("live_network") or {}
     flow_pred_panel = graph_data.get("flow_pred") or {}
@@ -1437,6 +1506,20 @@ def generate_macro_desk_v2_html(
     flow_panel_html   = _flow_panel_html(flow_pred_panel)
 
     portfolio_tab_html = _render_portfolio_tab(portfolio, bundle.market_prices if bundle else None, _pt_flow_pred)
+
+    # ── Editorial diário — aba Informações de Mercado ─────────────────────────
+    if editorial_html is None:
+        editorial_html = _load_editorial_html(bundle)
+
+    if editorial_html:
+        editorial_content = editorial_html
+    else:
+        editorial_content = (
+            '<div style="color:#475569;font-size:13px;padding:40px;text-align:center">'
+            'Editorial diário não disponível.<br>'
+            '<span style="font-size:11px">Rode <code>agente writer</code> para gerar o conteúdo.</span>'
+            '</div>'
+        )
 
     top_hubs = mst_meta.get("top_hubs") or []
     hubs_str = ", ".join(f"{t}({d})" for t, d in top_hubs[:3]) if top_hubs else "—"
@@ -1470,6 +1553,7 @@ def generate_macro_desk_v2_html(
 </head>
 <body>
 
+{_bbg_status_html}
 <div id="topbar">
   <span class="brand">MACRO DESK</span>
   <span class="run-date">{run_date} &middot; {refreshed} &middot; {live_badge}</span>
@@ -1494,8 +1578,9 @@ def generate_macro_desk_v2_html(
 </div>
 
 <div id="main-tabs-bar">
-  <button class="main-tab active" onclick="switchMainTab('desk',this)">Desk</button>
-  <button class="main-tab" onclick="switchMainTab('portfolio',this)">Portfolio</button>
+  <button class="main-tab active" onclick="switchMainTab('desk',this)">Desk Portfólio</button>
+  <button class="main-tab" onclick="switchMainTab('portfolio',this)">Alocação</button>
+  <button class="main-tab" onclick="switchMainTab('editorial',this)">Informações de Mercado</button>
 </div>
 
 <div id="desk-view" class="main-view active">
@@ -1595,6 +1680,12 @@ def generate_macro_desk_v2_html(
 
 <div id="portfolio-view" class="main-view" style="flex-direction:column;overflow-y:auto;padding:18px 24px;gap:16px;background:#060a12">
   {portfolio_tab_html}
+</div>
+
+<div id="editorial-view" class="main-view" style="flex-direction:column;overflow-y:auto;background:#060a12">
+  <div style="max-width:900px;margin:0 auto;padding:24px 32px;width:100%">
+    {editorial_content}
+  </div>
 </div>
 
 <script>

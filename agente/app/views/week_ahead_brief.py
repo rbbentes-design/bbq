@@ -432,16 +432,23 @@ def _build_polymarket_html(markets: list) -> str:
 
 
 def _build_risk_html(risk_data: dict) -> str:
-    """Tabela Risk Radar: VaR, CVaR, MaxDD, Sharpe."""
+    """Tabela Risk Radar: apenas índices principais + destaques relevantes."""
     tickers_data = risk_data.get("tickers", {})
     if not tickers_data:
         return ""
 
-    _LABELS = {
+    # Exibe apenas índices macro principais — ativos individuais ficam internos
+    _INDICES = {
         "^GSPC": "S&P 500", "^NDX": "Nasdaq 100", "^RUT": "Russell 2000",
         "TLT": "TLT 20yr", "HYG": "HY Credit", "GLD": "Gold",
         "CL=F": "WTI", "BTC-USD": "Bitcoin", "DX-Y.NYB": "DXY", "^VIX": "VIX",
     }
+    _LABELS = _INDICES
+
+    # Filtro: só índices; se nenhum encontrado, silencioso
+    filtered = {t: v for t, v in tickers_data.items() if t in _INDICES}
+    if not filtered:
+        return ""
 
     def risk_color(v, invert=False):
         if v is None: return "#9ca3af"
@@ -450,7 +457,7 @@ def _build_risk_html(risk_data: dict) -> str:
         return "#ef4444" if v < -0.05 else ("#f59e0b" if v < -0.02 else "#22c55e")
 
     rows = ""
-    for ticker, r in tickers_data.items():
+    for ticker, r in filtered.items():
         label = _LABELS.get(ticker, ticker)
         var = r.get("var_95")
         cvar = r.get("cvar_95")
@@ -486,24 +493,31 @@ def _build_risk_html(risk_data: dict) -> str:
 
 
 def _build_monte_carlo_html(mc_data: dict) -> str:
-    """Tabela Monte Carlo GBM."""
+    """Tabela Monte Carlo GBM — apenas índices principais."""
     if not mc_data:
         return ""
 
-    _LABELS = {
+    # Exibe apenas índices macro — ativos individuais processados internamente mas não exibidos
+    _INDICES = {
         "^GSPC": "S&P 500", "^NDX": "Nasdaq 100", "^RUT": "Russell 2000",
         "TLT": "TLT 20yr", "HYG": "HY Credit", "GLD": "Gold",
-        "CL=F": "WTI Crude", "BTC-USD": "Bitcoin", "DX-Y.NYB": "DXY", "^VIX": "VIX",
+        "CL=F": "WTI Crude", "BTC-USD": "Bitcoin", "DX-Y.NYB": "DXY",
     }
+    _LABELS = _INDICES
+
+    # Filtra apenas índices
+    mc_filtered = {t: v for t, v in mc_data.items() if t in _INDICES}
+    if not mc_filtered:
+        return ""
 
     # Info do primeiro ticker
-    sample = next(iter(mc_data.values()), {})
+    sample = next(iter(mc_filtered.values()), {})
     horizon = sample.get("horizon_days", 20)
     paths = sample.get("paths_count", 500)
-    subtitle = f'<div class="dim" style="font-size:11.5px;padding:8px 14px;background:var(--surface2);border-bottom:1px solid var(--border)">GBM com {paths} caminhos · {horizon} dias úteis · P50 = retorno mediano esperado</div>'
+    subtitle = f'<div class="dim" style="font-size:11.5px;padding:8px 14px;background:var(--surface2);border-bottom:1px solid var(--border)">GBM · {paths} caminhos · {horizon} dias úteis · P50 = retorno mediano esperado</div>'
 
     rows = ""
-    for ticker, d in mc_data.items():
+    for ticker, d in mc_filtered.items():
         label = _LABELS.get(ticker, ticker)
         price = d.get("current_price", 0)
         prob_up = d.get("prob_up", 0)
@@ -1828,24 +1842,14 @@ def _save_publicacao(
 ) -> Path | None:
     """Gera HTML separado com Texto Gratuito + WhatsApp + Micro Posts."""
 
-    free_text = sections.get("TEXTO GRATUITO", "")
+    # Texto gratuito desativado — somente versão paga/premium é oficial
     wa_text = sections.get("VERSÃO WHATSAPP", "")
     micro_raw = sections.get("MICRO POSTS", "")
 
-    if not free_text and not micro_raw:
+    if not micro_raw and not wa_text:
         return None
 
-    # ── Texto gratuito ────────────────────────────────────────────────────────
-    free_section = ""
-    if free_text:
-        paras = [p.strip() for p in free_text.split("\n\n") if p.strip()]
-        body = "".join(f"<p>{p}</p>" for p in paras)
-        free_section = f"""
-        <div class="free-section">
-          <div class="section-label">✍️ Texto Gratuito — Substack</div>
-          <div class="free-text" id="free-text">{body}</div>
-          <button class="copy-btn" onclick="copyText('free-text', this)">⎘ Copiar</button>
-        </div>"""
+    free_section = ""  # desativado
 
     # ── WhatsApp ──────────────────────────────────────────────────────────────
     wa_section = ""
@@ -1935,15 +1939,7 @@ def _build_editorial_sections_html(
           <div class="editorial-body">{body}</div>
         </div>""")
 
-    # ── Texto Gratuito ────────────────────────────────────────────────────────
-    free = rich_sections.get("TEXTO GRATUITO")
-    if free:
-        body = _rich_to_html(free)
-        parts.append(f"""
-        <div class="card" style="margin-bottom:20px">
-          <div class="card-header">🔓 Texto Gratuito — Substack</div>
-          <div class="card-body editorial-body">{body}</div>
-        </div>""")
+    # Texto Gratuito desativado — apenas versão paga/premium é exibida no relatório
 
     # ── Podcast: Título + Descrição + Script ──────────────────────────────────
     if mode == "podcast_sabado":

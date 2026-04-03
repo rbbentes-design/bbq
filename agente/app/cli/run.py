@@ -101,15 +101,8 @@ def ingest(
         for m in bundle.audit_summary.error_messages:
             console.print(f"  [red][X] {m}[/red]")
 
-    # ── HTML Relatório ────────────────────────────────────────────────────────
-    html_path = bundle.artifact_paths.get("html_report")
-    if html_path and not no_open:
-        p = Path(html_path)
-        if p.exists():
-            console.print(f"\n[green]Abrindo relatorio:[/green] {p.name}")
-            webbrowser.open(p.as_uri())
-
-    # ── Macro Desk HTML ───────────────────────────────────────────────────────
+    # ── MacroDesk v2 ─────────────────────────────────────────────────────────
+    # Flow Inspector está embutido no MacroDesk — não abre separado
     desk2_path = None
     curation_obj = None
     curation_path = bundle.artifact_paths.get("curation")
@@ -124,44 +117,34 @@ def ingest(
             pass
 
     try:
-        from app.views.report import save_macro_desk
-        with console.status("[cyan]Macro Desk processando...[/cyan]"):
-            desk_path = save_macro_desk(bundle, curation_obj)
-        console.print(f"[green]Macro Desk (v1):[/green] {desk_path.name}")
-        if not no_open:
-            webbrowser.open(desk_path.as_uri())
-    except Exception as exc:
-        console.print(f"[yellow]Macro Desk v1 falhou: {exc}[/yellow]")
-
-    try:
         from app.views.macro_desk_v2 import save_macro_desk_v2
         with console.status("[cyan]MacroDesk v2 (grafo interativo)...[/cyan]"):
             desk2_path = save_macro_desk_v2(bundle, curation_obj)
         console.print(f"[green]MacroDesk v2:[/green] {desk2_path.name}")
-        if not no_open:
-            webbrowser.open(desk2_path.as_uri())
     except Exception as exc:
         console.print(f"[yellow]MacroDesk v2 falhou: {exc}[/yellow]")
 
-    # Week Ahead Brief — gerado automaticamente às segundas
-    import datetime as _dt
-    if _dt.date.today().weekday() == 0:  # segunda-feira
-        try:
-            from app.views.week_ahead_brief import save_week_ahead_brief
-            with console.status("[cyan]Week Ahead Brief...[/cyan]"):
-                brief_path = save_week_ahead_brief(bundle, curation_path)
-            console.print(f"[green]Week Ahead Brief:[/green] {brief_path.name}")
-            if not no_open:
-                webbrowser.open(brief_path.as_uri())
-        except Exception as exc:
-            console.print(f"[yellow]Week Ahead Brief falhou: {exc}[/yellow]")
+    # ── Verificação Bloomberg Live ─────────────────────────────────────────────
+    # Obrigatório antes de prosseguir — emite aviso explícito se indisponível
+    _bloomberg_live_ok = _check_bloomberg_live(bundle)
 
-    # ── Portfolio Allocation ──────────────────────────────────────────────────
+    # ── Portfolio Allocation (sem abrir Flow Inspector standalone) ────────────
     fi_path, portfolio, signals = _run_portfolio_after_ingest(bundle)
 
-    # Abre o Flow Inspector — usa path do pipeline ou busca o mais recente no disco
-    # Retorna o path efetivamente aberto (pode ser fallback do disco)
-    opened_path = _open_flow_inspector(fi_path, bundle, open_browser=not no_open)
+    # ── Writer Brief — HTML principal do dia (padrão Wiki Recap) ─────────────
+    brief_path = None
+    try:
+        from app.views.week_ahead_brief import save_writer_brief
+        with console.status("[cyan]HTML diario (Wiki Recap)...[/cyan]"):
+            brief_path = save_writer_brief(bundle, curation_path)
+        console.print(f"[green]HTML diario:[/green] {brief_path.name}")
+    except Exception as exc:
+        console.print(f"[yellow]HTML diario falhou: {exc}[/yellow]")
+
+    # ── Abre UM único HTML — brief tem prioridade, fallback para desk2 ────────
+    _final_html = brief_path or desk2_path
+    if _final_html and not no_open:
+        webbrowser.open(_final_html.as_uri())
 
     console.print(Panel.fit(
         f"[bold green]Run concluido[/bold green] — {bundle.run_date} | id={bundle.run_id[:12]}",
@@ -172,10 +155,33 @@ def ingest(
         raise typer.Exit(1)
 
     # ── Live price loop ───────────────────────────────────────────────────────
-    # Usa o path aberto (pipeline ou disco) para o live loop reescrever o arquivo
-    live_path = opened_path or fi_path
+    live_path = fi_path or desk2_path
     if not no_live and portfolio and live_path:
         _run_live_loop(bundle, live_path, portfolio, signals, interval=interval, desk2_path=desk2_path)
+
+
+def _check_bloomberg_live(bundle) -> bool:
+    """
+    Verifica se os preços Bloomberg foram carregados no bundle.
+    Emite aviso explícito se indisponível — nunca falha silenciosamente.
+    """
+    prices = bundle.market_prices or {}
+    bbg_count = sum(
+        1 for v in prices.values()
+        if isinstance(v, dict) and v.get("source") == "bloomberg_csv"
+    )
+    if bbg_count >= 10:
+        console.print(f"[dim]Bloomberg Live: {bbg_count} tickers carregados[/dim]")
+        return True
+    else:
+        console.print(Panel(
+            "[bold yellow]⚠ Macro Desk Live não carregado automaticamente.[/bold yellow]\n"
+            "Necessário puxar cotações Bloomberg antes de continuar a análise completa.\n\n"
+            "[dim]Para corrigir: rode o script BQuant (bql_export.py) e aguarde o zip ser extraído.[/dim]",
+            border_style="yellow",
+            title="[yellow]Aviso Operacional[/yellow]",
+        ))
+        return False
 
 
 def _run_portfolio_after_ingest(bundle):
@@ -195,42 +201,7 @@ def _run_portfolio_after_ingest(bundle):
         return None, None, {}
 
 
-def _open_flow_inspector(
-    fi_path: "Path | None",
-    bundle,
-    open_browser: bool = True,
-) -> "Path | None":
-    """
-    Abre o Flow Inspector no browser.
-    Fallback: busca HTML mais recente no disco.
-    Retorna o Path efetivamente usado (para o live loop reescrever).
-    """
-    target = Path(fi_path) if fi_path and Path(fi_path).exists() else None
-
-    if target is None:
-        # Busca o flow_inspector mais recente no workspace
-        try:
-            from app.storage.paths import workspace
-            ws_path = Path(workspace.bundles)
-            candidates = sorted(
-                ws_path.rglob("*flow_inspector*.html"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if candidates:
-                target = candidates[0]
-                console.print(f"[dim]Flow Inspector (disco): {target.name}[/dim]")
-        except Exception:
-            pass
-
-    if target and target.exists():
-        if open_browser:
-            console.print(f"[green]Abrindo Flow Inspector:[/green] {target.name}")
-            webbrowser.open(target.as_uri())
-        return target
-    else:
-        console.print("[yellow]Flow Inspector HTML nao encontrado.[/yellow]")
-        return None
+# Flow Inspector está embutido no MacroDesk — não existe mais como janela separada
 
 
 def _run_live_loop(
@@ -285,6 +256,19 @@ def _run_live_loop(
         except Exception as exc:
             console.print(f"[yellow]Options cache falhou: {exc}[/yellow]")
 
+    # Rastreia mtime dos CSVs BQL para detectar novos dados Bloomberg
+    def _bql_current_mtime() -> float:
+        try:
+            from app.providers.bql_csv import BQL_DATA_DIR
+            from pathlib import Path as _P
+            _dated = sorted(_P(BQL_DATA_DIR).glob("meta_*.csv"), reverse=True)
+            _meta = _dated[0] if _dated else _P(BQL_DATA_DIR) / "meta.csv"
+            return _meta.stat().st_mtime if _meta.exists() else 0.0
+        except Exception:
+            return 0.0
+
+    _last_bbg_mtime = _bql_current_mtime()
+
     cycle = 0
     try:
         while True:
@@ -294,6 +278,12 @@ def _run_live_loop(
             # Refresh precos (IBKR snapshot ou yfinance fast_info)
             refresh_prices(bundle.market_prices)
             refreshed_at = bundle.market_prices.get("__refreshed_at__", "?")
+
+            # Detecta se Bloomberg CSV foi atualizado neste ciclo
+            _cur_bbg_mtime = _bql_current_mtime()
+            _bbg_updated = _cur_bbg_mtime > _last_bbg_mtime
+            if _bbg_updated:
+                _last_bbg_mtime = _cur_bbg_mtime
 
             # Atualiza P&L snapshot
             pnl_str = ""
@@ -327,8 +317,8 @@ def _run_live_loop(
                 except Exception:
                     pass
 
-            # Regenera MacroDesk v2 com precos atualizados (usa graph_data cacheado)
-            if desk2_path and _cached_graph_data:
+            # Regenera MacroDesk v2 apenas quando Bloomberg CSV foi atualizado
+            if desk2_path and _cached_graph_data and _bbg_updated:
                 try:
                     from app.views.macro_desk_v2 import generate_macro_desk_v2_html
                     _d2_html = generate_macro_desk_v2_html(bundle, graph_data=_cached_graph_data, live_mode=True)
@@ -337,9 +327,10 @@ def _run_live_loop(
                     pass
 
             elapsed = _time.time() - t0
+            _html_tag = " [green]HTML↑[/green]" if (_bbg_updated and desk2_path) else ""
             console.print(
                 f"[dim]#{cycle:03d}[/dim] {refreshed_at} "
-                f"[dim]{elapsed:.1f}s[/dim]{pnl_str}"
+                f"[dim]{elapsed:.1f}s[/dim]{pnl_str}{_html_tag}"
             )
 
             # A cada 15 ciclos (~15min): rebuild completo de sinais + portfolio
@@ -595,13 +586,7 @@ def writer(
     except Exception as exc:
         console.print(f"[yellow]Writer Brief falhou: {exc}[/yellow]")
 
-    # ── Abre relatórios ───────────────────────────────────────────────────────
-    if not no_open:
-        import webbrowser as _wb
-        for key in ("html_report", "macro_desk"):
-            p_str = bundle.artifact_paths.get(key)
-            if p_str and _Path(p_str).exists():
-                _wb.open(_Path(p_str).as_uri())
+    # Writer Brief já aberto acima — não reabrir html_report nem macro_desk separado
 
 
 @app.command()
@@ -654,9 +639,8 @@ def allocate(
     _print_portfolio_summary(portfolio)
 
     if html_path:
-        console.print(f"\n[green]Flow Inspector:[/green] {html_path.name}")
-        if not no_open:
-            webbrowser.open(html_path.as_uri())
+        console.print(f"\n[green]Flow Inspector gerado:[/green] {html_path.name}")
+        console.print("[dim]Flow Inspector embutido no MacroDesk — use 'agente run live' para visualizar.[/dim]")
 
 
 @app.command()
