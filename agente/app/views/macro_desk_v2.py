@@ -1527,6 +1527,18 @@ def generate_macro_desk_v2_html(
     run_date = str(bundle.run_date)
     gen_time = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
 
+    # Data da última coleta Bloomberg do banco
+    _bbg_last_coleta = ""
+    try:
+        from app.query_layer import BloombergQueryLayer as _BQL
+        _snap = _BQL().get_snapshot_info()
+        if _snap.get("last_update"):
+            from datetime import datetime as _dtt, timezone as _tzz
+            _dt = _dtt.fromisoformat(_snap["last_update"].replace("Z", "+00:00"))
+            _bbg_last_coleta = _dt.astimezone().strftime("%d/%m %H:%M")
+    except Exception:
+        pass
+
     regime_html  = _regime_badge(regime)
     score_labels = {"rational":"Rational","behavioral":"Behavioral",
                     "entropy":"Entropy","arbitration":"Arbitration","allocation":"Allocation"}
@@ -1590,6 +1602,7 @@ def generate_macro_desk_v2_html(
 <div id="topbar">
   <span class="brand">MACRO DESK</span>
   <span class="run-date">{run_date} &middot; {refreshed} &middot; {live_badge}</span>
+  {'<span style="font-size:10px;color:#334155;white-space:nowrap">BBG ' + _bbg_last_coleta + '</span>' if _bbg_last_coleta else ''}
   <div class="sep"></div>
   <input id="search-input" type="text" placeholder="&#128269; ticker / label" autocomplete="off" spellcheck="false">
   <div class="sep"></div>
