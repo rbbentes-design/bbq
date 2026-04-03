@@ -230,57 +230,48 @@ def export_price_history():
     _log(f'price_history — {len(rows)} tickers')
 
 # ── macro series (curva de juros, VIX, spreads, FX) ──────
+# Mesmo padrão de export_prices: uma chamada BQL por ticker, try/except por ticker
 MACRO_TICKERS = [
     # Curva de juros EUA
-    ('USGG1M Index',   'US Treasury 1M',       'rates_usd'),
-    ('USGG3M Index',   'US Treasury 3M',       'rates_usd'),
-    ('USGG6M Index',   'US Treasury 6M',       'rates_usd'),
-    ('USGG1YR Index',  'US Treasury 1Y',       'rates_usd'),
-    ('USGG2YR Index',  'US Treasury 2Y',       'rates_usd'),
-    ('USGG5YR Index',  'US Treasury 5Y',       'rates_usd'),
-    ('USGG10YR Index', 'US Treasury 10Y',      'rates_usd'),
-    ('USGG30YR Index', 'US Treasury 30Y',      'rates_usd'),
+    ('USGG1M Index',   'US Treasury 1M',    'rates_usd'),
+    ('USGG3M Index',   'US Treasury 3M',    'rates_usd'),
+    ('USGG6M Index',   'US Treasury 6M',    'rates_usd'),
+    ('USGG1YR Index',  'US Treasury 1Y',    'rates_usd'),
+    ('USGG2YR Index',  'US Treasury 2Y',    'rates_usd'),
+    ('USGG5YR Index',  'US Treasury 5Y',    'rates_usd'),
+    ('USGG10YR Index', 'US Treasury 10Y',   'rates_usd'),
+    ('USGG30YR Index', 'US Treasury 30Y',   'rates_usd'),
     # Volatilidade
-    ('VIX Index',      'VIX Spot',             'volatility'),
-    ('VIX9D Index',    'VIX 9-Day',            'volatility'),
-    ('VIX3M Index',    'VIX 3-Month',          'volatility'),
-    ('VVIX Index',     'Vol of VIX',           'volatility'),
-    ('MOVE Index',     'MOVE (bond vol)',       'volatility'),
+    ('VIX Index',      'VIX Spot',          'volatility'),
+    ('VIX9D Index',    'VIX 9-Day',         'volatility'),
+    ('VIX3M Index',    'VIX 3-Month',       'volatility'),
+    ('VVIX Index',     'Vol of VIX',        'volatility'),
+    ('MOVE Index',     'MOVE (bond vol)',    'volatility'),
     # Spreads de crédito
-    ('LUACOAS Index',  'IG OAS Spread',        'credit_spread'),
-    ('LF98OAS Index',  'HY OAS Spread',        'credit_spread'),
+    ('LUACOAS Index',  'IG OAS Spread',     'credit_spread'),
+    ('LF98OAS Index',  'HY OAS Spread',     'credit_spread'),
     # FX
-    ('DXY Curncy',     'Dollar Index',         'fx'),
+    ('DXY Curncy',     'Dollar Index',      'fx'),
     # Juros de curto prazo
-    ('SOFRRATE Index', 'SOFR Rate',            'monetary'),
+    ('SOFRRATE Index', 'SOFR Rate',         'monetary'),
     # Inflação implícita
-    ('USGGBE10 Index', 'US 10Y Breakeven',     'inflation'),
+    ('USGGBE10 Index', 'US 10Y Breakeven',  'inflation'),
 ]
 
 def export_macro():
-    tickers = [t[0] for t in MACRO_TICKERS]
-    info    = {t[0]: (t[1], t[2]) for t in MACRO_TICKERS}
-
-    # Uma única chamada BQL para todos os tickers macro
-    df_macro = _bql(bq.univ.list(tickers), {'px_last': bq.data.px_last()})
-
     rows   = []
     px_map = {}
-    for idx in df_macro.index:
-        if idx not in info:
-            continue
+    for tk, desc, cat in MACRO_TICKERS:
         try:
-            px = float(pd.to_numeric(df_macro.loc[idx, 'px_last'], errors='coerce'))
-            if pd.isna(px):
-                continue
-        except Exception:
-            continue
-        desc, cat = info[idx]
-        rows.append({'bbg_ticker': idx, 'description': desc,
-                     'category': cat, 'px_last': round(px, 4)})
-        px_map[idx] = px
+            r  = bq.execute(bql.Request(bq.univ.list([tk]), {'px': bq.data.px_last()}))[0].df()
+            px = float(r.select_dtypes('number').iloc[-1, 0])
+            rows.append({'bbg_ticker': tk, 'description': desc,
+                         'category': cat, 'px_last': round(px, 4)})
+            px_map[tk] = px
+        except Exception as e:
+            _log(f'macro warn {tk}: {e}')
 
-    # Derivados calculados localmente a partir dos valores BQL
+    # Derivados calculados localmente a partir dos valores BQL já coletados
     y2  = px_map.get('USGG2YR Index')
     y5  = px_map.get('USGG5YR Index')
     y10 = px_map.get('USGG10YR Index')
