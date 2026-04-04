@@ -281,7 +281,8 @@ def _panel_levels(snap: "OptionsSnapshot") -> str:
 
     def row(label: str, val: str, color: str = "") -> str:
         style = f" style='color:{color}'" if color else ""
-        return f"<tr><td style='color:rgba(0,212,232,.5);font-size:10px;padding:3px 8px 3px 0'>{label}</td><td{style} style='font-size:12px;font-weight:600;color:{color or \"#e2e8f0\"};font-family:monospace'>{val}</td></tr>"
+        fc = color or "#e2e8f0"
+        return f"<tr><td style='color:rgba(0,212,232,.5);font-size:10px;padding:3px 8px 3px 0'>{label}</td><td{style} style='font-size:12px;font-weight:600;color:{fc};font-family:monospace'>{val}</td></tr>"
 
     table = (
         "<table style='width:100%;border-collapse:collapse'>"
