@@ -767,26 +767,47 @@ def positions(
 
 @app.command(name="options-import")
 def options_import(
-    zip_path: str = typer.Argument(..., help="Caminho para o ZIP exportado do Greeks Dashboard."),
-    no_open: bool = typer.Option(False, "--no-open", help="Não regenera o MacroDesk após importar."),
-    date: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD do bundle a regenerar (padrão: hoje)."),
+    zip_path: str = typer.Argument(
+        None,
+        help="Caminho para o ZIP ou diretorio (usa o ZIP mais recente). Padrao: ~/Downloads",
+    ),
+    no_open: bool = typer.Option(False, "--no-open", help="Nao regenera o MacroDesk apos importar."),
+    date: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD do bundle a regenerar (padrao: hoje)."),
 ) -> None:
     """Importa snapshot do Greeks Dashboard (BQuant ZIP) para o workspace e regenera o MacroDesk."""
+    import glob as _glob
+    from pathlib import Path as _Path
+
     from app.providers.options_store import options_store
 
+    # Resolve caminho: None ou diretorio -> ZIP greeks_*.zip mais recente
+    resolved: str = zip_path or ""
+    if not resolved or _Path(resolved).is_dir():
+        search_dir = _Path(resolved) if resolved else _Path.home() / "Downloads"
+        candidates = sorted(
+            _glob.glob(str(search_dir / "greeks_*.zip")),
+            key=lambda p: _Path(p).stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            console.print(f"[red]Nenhum greeks_*.zip encontrado em {search_dir}[/red]")
+            raise typer.Exit(1)
+        resolved = candidates[0]
+        console.print(f"[dim]ZIP mais recente: {_Path(resolved).name}[/dim]")
+
     console.print(Panel.fit(
-        f"[bold cyan]Options Import[/bold cyan]\n[dim]{zip_path}[/dim]",
+        f"[bold cyan]Options Import[/bold cyan]\n[dim]{resolved}[/dim]",
         border_style="cyan",
     ))
 
     with console.status("[cyan]Importando ZIP...[/cyan]"):
         try:
-            snap = options_store.import_from_zip(zip_path)
+            snap = options_store.import_from_zip(resolved)
         except Exception as exc:
             console.print(f"[red]Erro ao importar ZIP: {exc}[/red]")
             raise typer.Exit(1)
 
-    console.print(f"[green]✓[/green] Importado: [bold]{snap.ticker}[/bold] spot={snap.spot:,.0f}  ts={snap.ts}")
+    console.print(f"[green]OK[/green] Importado: [bold]{snap.ticker}[/bold] spot={snap.spot:,.0f}  ts={snap.ts}")
     console.print(f"   GEX: {snap.gex_net_bn:+.1f}B  |  IV 30D: {snap.iv_30d*100:.2f}%  |  Squeeze: {snap.squeeze_score:.0f}/100")
     console.print(f"   Gamma Flip: {snap.gamma_flip:,.0f}  |  Call Wall: {snap.call_wall:,.0f}  |  Put Wall: {snap.put_wall:,.0f}")
     if snap.has_jarvis_html:
