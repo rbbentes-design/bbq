@@ -8,8 +8,10 @@ Coleta snapshot de opções para ativos líquidos:
   - GEX (Gamma Exposure) estimado em $B
   - Term structure: IV a 7d, 30d, 60d (expirations mais próximas)
 
-Fonte primária : IBKR (reqSecDefOptParams + reqMktData snapshot)
-Fonte fallback  : yfinance (gratuito, sem auth) — quando IBKR indisponível
+Hierarquia de fontes:
+  1. IBKR          — Greeks completos, live chain (requer TWS)
+  2. OCC           — PCR + OI diário (gratuito, sem credenciais)
+  3. Cboe All Access — Greeks completos (OAuth, requer CBOE_API_KEY)
 
 Tickers cobertos: índices proxy + top liquid stocks.
 Não cobre todos os 200+ tickers — foco em liquidez de opções.
@@ -169,7 +171,7 @@ def _gex(calls: Any, puts: Any, spot: float, expiry: str | None = None) -> float
             df = df[df["impliedVolatility"] > 0.001].copy()
             for _, row in df.iterrows():
                 try:
-                    # OI é EOD no yfinance — usa volume como proxy quando OI=0
+                    # OI é EOD — usa volume como proxy quando OI=0
                     oi  = float(row.get("openInterest", 0) or 0)
                     vol = float(row.get("volume", 0) or 0)
                     effective_oi = oi if oi > 0 else vol * 0.1
@@ -184,69 +186,6 @@ def _gex(calls: Any, puts: Any, spot: float, expiry: str | None = None) -> float
 
         return round(gex_total / 1e9, 3)  # em bilhões
     except Exception:
-        return None
-
-
-def _collect_ticker_yf(sym: str, label: str) -> dict[str, Any] | None:
-    """Coleta snapshot de opções de um único ticker via yfinance."""
-    try:
-        import yfinance as yf
-        t = yf.Ticker(sym)
-        expiries = t.options
-        if not expiries:
-            return None
-
-        # Preço spot
-        info  = t.fast_info
-        spot  = float(getattr(info, "last_price", None) or getattr(info, "previousClose", 0))
-        if spot <= 0:
-            hist = t.history(period="2d")
-            if hist.empty:
-                return None
-            spot = float(hist["Close"].iloc[-1])
-
-        nearest = _nearest_expiries(list(expiries), n=3)
-        if not nearest:
-            return None
-
-        result: dict[str, Any] = {
-            "label":        label,
-            "spot":         round(spot, 4),
-            "next_expiry":  nearest[0],
-            "expiries":     nearest,
-        }
-
-        # IV por expiração (term structure)
-        term_ivs: dict[str, float | None] = {}
-        for exp in nearest:
-            try:
-                chain = t.option_chain(exp)
-                iv = _atm_iv(chain.calls, spot)
-                if iv is not None:
-                    days = (date.fromisoformat(exp) - date.today()).days
-                    term_ivs[f"iv_{max(days,1)}d"] = iv
-            except Exception:
-                continue
-
-        result["term_structure"] = term_ivs
-
-        # ATM IV, skew, PCR, GEX — da 1ª expiração (mais líquida)
-        try:
-            chain0 = t.option_chain(nearest[0])
-            calls, puts = chain0.calls, chain0.puts
-
-            result["atm_iv"]    = _atm_iv(calls, spot)
-            result["skew_5pct"] = _skew(calls, puts, spot)
-            result["pcr_oi"]    = _pcr(calls, puts)
-            result["gex_b"]     = _gex(calls, puts, spot, expiry=nearest[0])
-        except Exception as exc:
-            _log.debug("options_chain_error", sym=sym, error=str(exc))
-
-        _log.debug("options_ok", sym=sym, atm_iv=result.get("atm_iv"))
-        return result
-
-    except Exception as exc:
-        _log.debug("options_ticker_error", sym=sym, error=str(exc))
         return None
 
 
@@ -382,16 +321,13 @@ def _collect_ticker_ibkr(
 
 def collect(
     tickers: list[str] | None = None,
-    max_workers: int = 8,
 ) -> dict[str, dict[str, Any]]:
     """
     Coleta snapshot de opções.
-    Primário: IBKR (reqSecDefOptParams + reqMktData snapshot).
-    Fallback: yfinance quando IBKR indisponível.
+    Hierarquia: IBKR → OCC (free, PCR/OI) → Cboe (Greeks completos).
 
     Args:
-        tickers:     lista de símbolos. None = OPTIONS_UNIVERSE.
-        max_workers: threads paralelas para fallback yfinance.
+        tickers: lista de símbolos. None = OPTIONS_UNIVERSE.
 
     Returns:
         {ticker: {atm_iv, skew_5pct, pcr_oi, gex_b, term_structure, ...}}
@@ -410,19 +346,16 @@ def collect(
             ib = _connect_ib()
             if ib is not None:
                 _log.info("options_ibkr_session", tickers=len(universe))
-                # Precisa de preços spot — tenta fast_info ou market_prices do bundle
+                # Precisa de preços spot — usa Bloomberg DB ou IBKR collect
                 spot_map: dict[str, float] = {}
                 try:
-                    import yfinance as yf
+                    from app.providers.market_prices import collect as _prices
+                    raw_prices = _prices()
                     for sym in universe:
-                        try:
-                            fi = yf.Ticker(sym).fast_info
-                            p = getattr(fi, "last_price", None)
-                            if p and float(p) > 0:
-                                spot_map[sym] = float(p)
-                        except Exception:
-                            pass
-                        time.sleep(0.05)
+                        etf = INDEX_TO_ETF.get(sym, sym)
+                        p = (raw_prices.get(sym) or raw_prices.get(etf) or {}).get("price")
+                        if p and float(p) > 0:
+                            spot_map[sym] = float(p)
                 except Exception:
                     pass
 
@@ -445,27 +378,43 @@ def collect(
                 _log.info("options_ibkr_collected", collected=len(results))
                 if results:
                     return results
-                # IBKR conectou mas sem dados (sem subscrição) — usa yfinance
+                # IBKR conectou mas sem dados (sem subscrição) — cai para OCC/Cboe
 
     except Exception as exc:
         _log.warning("ibkr_options_failed", error=str(exc))
 
-    # ── Fallback: yfinance ─────────────────────────────────────────────────────
-    _log.info("options_yfinance_fallback", tickers=len(universe))
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # ── Fallback tier 2: OCC (gratuito — PCR + OI, sem Greeks) ───────────────
+    _log.info("options_occ_fallback", tickers=len(universe))
+    try:
+        from app.providers.occ import collect_daily_stats
+        occ_stats = collect_daily_stats()
+        for sym in universe:
+            key = INDEX_TO_ETF.get(sym, sym)
+            if key in occ_stats and sym not in results:
+                results[sym] = {**occ_stats[key], "label": OPTIONS_UNIVERSE.get(sym, sym)}
+        if occ_stats:
+            _log.info("options_occ_collected", collected=len([s for s in universe if s in results]))
+    except Exception as exc:
+        _log.warning("occ_options_failed", error=str(exc))
 
-    def _fetch(sym: str) -> tuple[str, dict | None]:
-        label = OPTIONS_UNIVERSE.get(sym, sym)
-        return sym, _collect_ticker_yf(sym, label)
+    # ── Fallback tier 3: Cboe All Access (Greeks completos, requer credenciais) ─
+    from app.config.settings import settings
+    if settings.cboe_api_key and settings.cboe_api_secret:
+        missing = [s for s in universe if s not in results]
+        if missing:
+            _log.info("options_cboe_fallback", tickers=len(missing))
+            try:
+                from app.providers.cboe import collect as cboe_collect
+                cboe_data = cboe_collect(missing)
+                for sym, d in cboe_data.items():
+                    if sym not in results:
+                        results[sym] = d
+                if cboe_data:
+                    _log.info("options_cboe_collected", collected=len(cboe_data))
+            except Exception as exc:
+                _log.warning("cboe_options_failed", error=str(exc))
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_fetch, sym): sym for sym in universe}
-        for fut in as_completed(futures):
-            sym, data = fut.result()
-            if data:
-                results[sym] = data
-
-    _log.info("options_done", collected=len(results), source="yfinance")
+    _log.info("options_done", collected=len(results))
     return results
 
 

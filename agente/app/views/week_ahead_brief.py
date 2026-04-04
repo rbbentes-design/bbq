@@ -612,17 +612,51 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
     _gallery_seen: set[str] = set()
     all_cards: list[str] = []
 
+    # Padrões de banner/logo que não são gráficos reais
+    _BANNER_PATTERNS = (
+        "themarketary", "marketary", "market_ear", "marketear",
+        "logo", "banner", "header", "favicon", "placeholder",
+    )
+    _MIN_CHART_BYTES = 25_000  # < 25KB → provável logo/banner
+    _MAX_BANNER_RATIO = 3.5    # width/height > 3.5 → banner/logo horizontal
+
+    def _is_chart(img_path: str) -> bool:
+        """True se parece um gráfico real (não logo/banner)."""
+        p = Path(img_path)
+        name_lower = p.name.lower()
+        if any(pat in name_lower for pat in _BANNER_PATTERNS):
+            return False
+        try:
+            if p.stat().st_size < _MIN_CHART_BYTES:
+                return False
+        except OSError:
+            pass
+        # Verifica dimensões: banners têm aspect ratio muito largo
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(p) as im:
+                w, h = im.size
+                if h > 0 and w / h > _MAX_BANNER_RATIO:
+                    return False
+                # Imagens muito pequenas em altura também são logos
+                if h < 80:
+                    return False
+        except Exception:
+            pass
+        return True
+
     # ── ZeroHedge blocks com imagem ──────────────────────────────────────────
     for block in bundle.market_ear_blocks:
         unique_refs = list(dict.fromkeys(block.image_refs))
-        local_imgs = [p for p in unique_refs if Path(p).exists() and not p.startswith("http")]
+        local_imgs = [
+            p for p in unique_refs
+            if Path(p).exists() and not p.startswith("http") and _is_chart(p)
+        ]
         if not local_imgs:
-            local_imgs = [u for u in unique_refs if u.startswith("http")]
-        if not local_imgs:
-            continue
+            continue  # sem gráfico local → sem card
 
         imgs_html = ""
-        for img_path in local_imgs[:1]:
+        for img_path in local_imgs:
             key = Path(img_path).name if Path(img_path).exists() else img_path
             if key in _gallery_seen:
                 continue
@@ -641,31 +675,6 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
         <div class="mg-block">
           {title_html}
           {imgs_html}
-          {body_html}
-        </div>""")
-
-    # ── X Timeline posts com imagens ─────────────────────────────────────────
-    for item in bundle.x_items:
-        media = item.media_refs or []
-        if not media:
-            continue
-        img_url = media[0]
-        # Só URLs de imagem (não vídeo)
-        if not any(img_url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", "format=jpg", "format=png")):
-            if "pbs.twimg.com" not in img_url and "twimg.com/media" not in img_url:
-                continue
-
-        key = img_url.split("?")[0].split("/")[-1] or img_url
-        if key in _gallery_seen:
-            continue
-        _gallery_seen.add(key)
-
-        text_snippet = (item.text[:240].strip() + "…") if len(item.text) > 240 else item.text.strip()
-        body_html = f'<p class="mg-block-body">{text_snippet}</p>' if text_snippet else ""
-
-        all_cards.append(f"""
-        <div class="mg-block">
-          <img src="{img_url}" class="mg-img" loading="lazy" alt="">
           {body_html}
         </div>""")
 
@@ -1975,7 +1984,17 @@ def _build_editorial_sections_html(
     parts: list[str] = []
 
     # ── Texto Principal ───────────────────────────────────────────────────────
-    sec = rich_sections.get("TEXTO PRINCIPAL")
+    # Each mode may use a different section name as main body
+    _MAIN_ALIASES = {
+        "week_recap":     "WEEK RECAP",
+        "week_ahead":     "WEEK AHEAD",
+        "growth":         "GROWTH STOCKS",
+        "flow_show":      "THE FLOW SHOW",
+        "tese":           "TESE DO DIA",
+        "tese_livre":     "TESE LIVRE",
+        "morning_call":   "MORNING CALL",
+    }
+    sec = rich_sections.get("TEXTO PRINCIPAL") or rich_sections.get(_MAIN_ALIASES.get(mode, ""))
     if sec:
         body = _rich_to_html(sec, inline_images=zh_inline_imgs)
         emoji, title, _ = _MODE_META.get(mode, ("✍️", mode.title(), ""))

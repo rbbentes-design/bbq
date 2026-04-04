@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from app.audit.logger import get_logger
 
@@ -111,7 +111,10 @@ def _fetch_vix_data() -> dict:
     return result
 
 
-def compute_vol_regime(market_prices: dict | None = None) -> VolRegimeResult:
+def compute_vol_regime(
+    market_prices: dict | None = None,
+    options_snapshot: "Any | None" = None,   # OptionsSnapshot | None (BBQ data)
+) -> VolRegimeResult:
     """
     Calcula o regime de volatilidade.
     market_prices: usado como fallback se fetch falhar.
@@ -276,10 +279,100 @@ def compute_vol_regime(market_prices: dict | None = None) -> VolRegimeResult:
         res.hedge_asset = "VXX"
         res.crisis_indicator = True
 
+    # ── Enriquecimento com dados do Greeks Dashboard (BBG) ────────────────────
+    if options_snapshot is not None:
+        try:
+            _enrich_from_options_snapshot(res, options_snapshot)
+        except Exception as exc:
+            _log.debug("vol_regime_options_enrich_failed", error=str(exc))
+
     _log.info("vol_regime_computed",
               regime=res.regime,
-              stress=round(stress, 3),
-              vix=vix,
+              stress=round(res.stress_score, 3),
+              vix=res.vix,
               ts_ratio=res.term_structure_ratio)
 
     return res
+
+
+def _enrich_from_options_snapshot(res: VolRegimeResult, snap: "Any") -> None:
+    """
+    Enriquece VolRegimeResult com dados BBG do Greeks Dashboard.
+
+    Prioridade BBG > yfinance para VIX.
+    GEX negativo aumenta stress (amplificação).
+    Squeeze/Tail elevados elevam stress_score.
+    Flow score positivo reduz levemente stress.
+    """
+    # VIX BBG é mais preciso que yfinance
+    vix_bbg = float(snap.vix or 0)
+    if vix_bbg > 0 and (res.vix is None or abs(vix_bbg - (res.vix or 0)) > 0.5):
+        res.vix = vix_bbg
+        res.reasons.append(f"VIX BBG={vix_bbg:.2f} (fonte Bloomberg)")
+
+    # IV/RV premium — BBG é referência
+    iv_rv = float(snap.iv_rv_pp or 0)
+    if iv_rv > 0:
+        res.vol_risk_premium = iv_rv
+        if iv_rv > 6:
+            res.vrp_signal = 0.5
+            res.reasons.append(f"VRP BBG={iv_rv:+.1f}pp — IV muito premium, sell vol")
+        elif iv_rv > 3:
+            res.vrp_signal = 0.25
+        elif iv_rv < -3:
+            res.vrp_signal = -0.5
+            res.reasons.append(f"VRP BBG={iv_rv:+.1f}pp — IV barata, buy vol")
+
+    # GEX ajusta stress: short gamma → amplifica → mais stress
+    gex = float(snap.gex_net_bn or 0)
+    gex_adj = 0.0
+    if gex < -3.0:
+        gex_adj = 0.15
+        res.reasons.append(f"GEX={gex:+.1f}B extremamente negativo — amplificação, +stress")
+    elif gex < -0.5:
+        gex_adj = 0.06
+    elif gex > 3.0:
+        gex_adj = -0.08  # long gamma forte → amortece → menos stress
+        res.reasons.append(f"GEX={gex:+.1f}B muito positivo — amortecimento, -stress")
+    elif gex > 0.5:
+        gex_adj = -0.04
+
+    # Squeeze + Tail
+    sq   = float(snap.squeeze_score or 0)
+    tail = float(snap.tail_score or 0)
+    sq_adj   = min(sq / 100, 1.0) * 0.12
+    tail_adj = min(tail / 100, 1.0) * 0.15
+
+    if sq > 75:
+        res.reasons.append(f"Squeeze={sq:.0f}/100 — compressão extrema, +stress")
+    if tail > 65:
+        res.reasons.append(f"Tail Risk={tail:.0f}/100 — risco de cauda alto, +stress")
+        if not res.crisis_indicator and tail > 80:
+            res.crisis_indicator = True
+
+    # Flow score negativo adiciona stress
+    flow = float(snap.flow_score_total or 50)
+    flow_adj = 0.0
+    if flow < 30:
+        flow_adj = 0.05
+    elif flow > 70:
+        flow_adj = -0.03
+
+    # Aplica ajuste ao stress_score
+    new_stress = res.stress_score + gex_adj + sq_adj + tail_adj + flow_adj
+    res.stress_score = max(0.0, min(1.0, new_stress))
+
+    # Re-classifica regime se stress mudou
+    s = res.stress_score
+    if s >= 0.65:
+        res.regime = "crisis" if s >= 0.80 else "stress"
+        res.hedge_required = True
+        res.position_scalar = 0.55 if s >= 0.80 else 0.75
+        res.hedge_asset = "VXX"
+    elif s >= 0.40:
+        if res.regime not in ("stress", "crisis"):
+            res.regime = "elevated"
+            res.position_scalar = min(res.position_scalar, 1.00)
+    elif s < 0.20:
+        res.regime = "calm"
+        res.position_scalar = min(res.position_scalar, 1.10)

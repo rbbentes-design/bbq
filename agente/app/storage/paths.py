@@ -52,6 +52,11 @@ class WorkspacePaths:
         return self._s.resolved_debug_dir()
 
     @property
+    def options(self) -> Path:
+        """Snapshots importados do Greeks Dashboard (BQuant ZIP exports)."""
+        return self.workspace / "options"
+
+    @property
     def state(self) -> Path:
         return self._s.resolved_state_dir()
 
@@ -118,6 +123,11 @@ class WorkspacePaths:
     def curation_result_path(self, run_date: date, run_id: str) -> Path:
         return self.bundles / run_date.isoformat() / f"{run_id}_curation.json"
 
+    def options_day_dir(self, for_date: date | None = None) -> Path:
+        """Diretório diário para snapshots de opções."""
+        d = for_date or date.today()
+        return self.options / d.isoformat()
+
     def corrections_path(self) -> Path:
         return self.workspace / "corrections" / "corrections.yaml"
 
@@ -140,6 +150,7 @@ class WorkspacePaths:
             self.bundles,
             self.logs,
             self.debug,
+            self.options,
             self.state_zerohedge,
             self.state_x,
             self.zerohedge_profile_dir,

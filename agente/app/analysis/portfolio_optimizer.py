@@ -374,6 +374,8 @@ def optimize_portfolio(
     min_position: float = 0.02,
     regime_override: str | None = None,
     vol_regime: Any = None,              # VolRegimeResult | None
+    vol_options_regime: Any = None,      # VolOptionsRegime | None (GEX + IV + Greeks)
+    zone_signals: dict | None = None,    # dict[ticker, ZoneSignal] from tv_zone_filter
 ) -> PortfolioResult:
     """
     Constrói portfolio maximizando Sharpe ajustado por regime.
@@ -606,6 +608,84 @@ def optimize_portfolio(
 
     positions.sort(key=lambda p: abs(p.allocation_pct), reverse=True)
 
+    # ── Vol Options Regime overlay (GEX + IV/RV + Squeeze + Tail — BBQ data) ─────
+    # Aplica ANTES do vol_regime scalar para que o scalar final seja composto
+    _vor_adj = 0.0
+    _vor_hedge_required = False
+    _vor_hedge_asset = None
+    _vor_hedge_alloc = 0.0
+    _vor_rationale: list[str] = []
+    if vol_options_regime is not None:
+        _vor = vol_options_regime
+        _vor_adj = getattr(_vor, "position_scalar_adj", 0.0)
+        _vor_hedge_required = getattr(_vor, "hedge_required", False)
+        _vor_hedge_asset = getattr(_vor, "hedge_asset", None)
+        _vor_hedge_alloc = getattr(_vor, "hedge_alloc_pct", 0.0)
+
+        if _vor_adj != 0.0:
+            _vor_scalar = max(0.30, 1.0 + _vor_adj)  # nunca abaixo de 30%
+            for p in positions:
+                p.allocation_pct = round(p.allocation_pct * _vor_scalar, 4)
+                p.allocation_usd = round(p.allocation_usd * _vor_scalar, 2)
+                if p.shares_approx:
+                    p.shares_approx = round(p.shares_approx * _vor_scalar, 2)
+
+            _vor_rationale.append(
+                f"Options regime adj={_vor_adj:+.0%} "
+                f"(GEX={_vor.gex_net_bn:+.1f}B, IV-RV={_vor.iv_rv_pp:+.1f}pp, "
+                f"squeeze={_vor.squeeze_score:.0f}, tail={_vor.tail_score:.0f})"
+            )
+            _log.info("vol_options_overlay", adj=_vor_adj, decision=getattr(_vor, "vol_decision", ""))
+
+    # ── TV Zone Filter overlay — allocation_scalar por ativo ─────────────────
+    # Aplica ANTES do vol_regime para que o scalar final seja composto
+    # "ideal" → 1.25x  |  "acceptable" → 1.0x  |  "stretched" → 0.7x  |  "avoid" → 0.5x
+    if zone_signals:
+        for p in positions:
+            zs = zone_signals.get(p.ticker)
+            if zs is None:
+                # Tenta via _zone_signal guardado no signal
+                sig_ = signals.get(p.ticker) if signals else None
+                if sig_:
+                    zs = getattr(sig_, "_zone_signal", None)
+            if zs is None:
+                continue
+
+            scalar = getattr(zs, "allocation_scalar", 1.0)
+            if scalar == 1.0:
+                continue
+
+            p.allocation_pct = round(p.allocation_pct * scalar, 4)
+            p.allocation_usd = round(p.allocation_usd * scalar, 2)
+            if p.shares_approx:
+                p.shares_approx = round(p.shares_approx * scalar, 2)
+
+            # Refina stop/target se TV forneceu
+            refined_stop = getattr(zs, "refined_stop", None)
+            if refined_stop and refined_stop > 0 and p.entry_price:
+                ep = p.entry_price
+                if p.direction == "long" and refined_stop < ep:
+                    p.stop_loss = refined_stop
+                elif p.direction == "short" and refined_stop > ep:
+                    p.stop_loss = refined_stop
+                if p.stop_loss and p.entry_price and p.stop_loss != p.entry_price:
+                    p.stop_pct = abs(ep - p.stop_loss) / ep
+                    if p.take_profit:
+                        p.risk_reward = abs(p.take_profit - ep) / abs(ep - p.stop_loss)
+
+            first_target = getattr(zs, "first_target", None)
+            if first_target and first_target > 0 and not p.take_profit:
+                p.take_profit = first_target
+
+            # Appenda rationale
+            rationale_text = getattr(zs, "rationale", "")
+            if rationale_text:
+                if not isinstance(p.rationale, list):
+                    p.rationale = []
+                p.rationale.append(f"TV Zone: {rationale_text[:100]}")
+
+        _log.info("tv_zone_overlay_applied", positions=len([p for p in positions if zone_signals.get(p.ticker)]))
+
     # ── Vol regime overlay: scale positions + inject VXX hedge ────────────────
     if vol_regime and vol_position_scalar != 1.0:
         for p in positions:
@@ -614,8 +694,65 @@ def optimize_portfolio(
             if p.shares_approx:
                 p.shares_approx = round(p.shares_approx * vol_position_scalar, 2)
 
+    # Injeta VXX/SPTS como hedge de vol (vol_options_regime tem prioridade se mais específico)
+    _hedge_injected = False
+    if vol_options_regime is not None and _vor_hedge_required and _vor_hedge_asset:
+        hedge_ticker = _vor_hedge_asset
+        hedge_exists = any(p.ticker == hedge_ticker for p in positions)
+        if not hedge_exists and _vor_hedge_alloc > 0:
+            hedge_price_data = market_prices.get(hedge_ticker) or {}
+            hedge_price = hedge_price_data.get("price") if isinstance(hedge_price_data, dict) else None
+            if not hedge_price or hedge_price <= 0:
+                try:
+                    import yfinance as yf
+                    hedge_price = float(yf.Ticker(hedge_ticker).fast_info["lastPrice"])
+                except Exception:
+                    hedge_price = 25.0
+            hedge_usd = _vor_hedge_alloc * budget
+            hedge_stop, hedge_target, hedge_stop_pct, hedge_tgt_pct, hedge_rr = \
+                _compute_operational_levels(
+                    ticker=hedge_ticker, direction="long",
+                    entry_price=hedge_price, conviction="medium",
+                    market_prices=market_prices,
+                )
+            _vor = vol_options_regime
+            rationale_lines = [
+                f"Options hedge: {getattr(_vor, 'vol_decision', '')} | "
+                f"GEX={_vor.gex_net_bn:+.1f}B | tail={_vor.tail_score:.0f} | "
+                f"squeeze={_vor.squeeze_score:.0f}",
+            ]
+            if getattr(_vor, "strategy_rationale", ""):
+                rationale_lines.append(_vor.strategy_rationale[:120])
+            positions.append(PositionResult(
+                ticker=hedge_ticker,
+                name=f"Hedge — {getattr(_vor, 'gex_regime', '')}",
+                direction="long",
+                conviction="medium",
+                allocation_pct=round(_vor_hedge_alloc, 4),
+                allocation_usd=round(hedge_usd, 2),
+                shares_approx=round(hedge_usd / hedge_price, 2),
+                expected_return_ann=0.20,
+                risk_score=0.50,
+                sharpe_implied=0.35,
+                composite=0.30,
+                asset_class="volatility",
+                cluster_id="VOL",
+                rationale=rationale_lines,
+                entry_price=round(hedge_price, 2),
+                stop_loss=hedge_stop,
+                take_profit=hedge_target,
+                stop_pct=hedge_stop_pct,
+                target_pct=hedge_tgt_pct,
+                risk_reward=hedge_rr,
+            ))
+            positions.sort(key=lambda p: abs(p.allocation_pct), reverse=True)
+            _log.info("options_hedge_injected",
+                      ticker=hedge_ticker, alloc=_vor_hedge_alloc,
+                      decision=getattr(vol_options_regime, "vol_decision", ""))
+            _hedge_injected = True
+
     # Injeta VXX em stress/crisis como hedge de vol (similar ao safe-haven em bear)
-    if vol_regime and vol_regime.hedge_required:
+    if vol_regime and vol_regime.hedge_required and not _hedge_injected:
         vxx_ticker = vol_regime.hedge_asset  # "VXX"
         vxx_exists = any(p.ticker == vxx_ticker for p in positions)
         if not vxx_exists:

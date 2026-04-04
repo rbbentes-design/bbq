@@ -21,7 +21,6 @@ dependencies = [
     "python-ulid>=2.2",
     "pyyaml>=6.0",
     # ── Enrichment / Analysis ──────────────────────────────────────────────────
-    "yfinance>=0.2",              # market prices & OHLCV history
     "pandas>=2.0",                # time-series analysis (technical, risk, MC)
     "numpy>=1.26",                # numerical computations
     "duckduckgo-search>=6.0",     # web search provider

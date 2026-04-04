@@ -78,6 +78,9 @@ _CONTRACT_MAP: dict[str, tuple] = {
     # ── Crypto ───────────────────────────────────────────────────────────────
     "BTC-USD":    ("crypto",  "BTC",        "PAXOS",   "USD"),
     "ETH-USD":    ("crypto",  "ETH",        "PAXOS",   "USD"),
+    # ── US Equities com nome especial ────────────────────────────────────────
+    "BRK-B":      ("stk",    "BRK B",      "NYSE",    "USD"),
+    "BRK-A":      ("stk",    "BRK A",      "NYSE",    "USD"),
     # ── EU Equity Indices ─────────────────────────────────────────────────────
     "^STOXX50E":  ("index",   "STOXX50E",   "DTB"),
     "^GDAXI":     ("index",   "DAX",        "DTB"),
@@ -147,7 +150,7 @@ def _what_to_show(contract) -> str:
 # ── Conexão ───────────────────────────────────────────────────────────────────
 
 def _connect_ib():
-    """Conecta ao TWS. Retorna IB instance ou None."""
+    """Conecta ao TWS. Tenta client IDs 20-29 até encontrar um livre."""
     import asyncio
     try:
         asyncio.get_event_loop()
@@ -155,14 +158,29 @@ def _connect_ib():
         asyncio.set_event_loop(asyncio.new_event_loop())
     try:
         from ib_insync import IB, util
-        util.logToConsole('ERROR')   # silencia logs internos do ib_insync
-        ib = IB()
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID,
-                   timeout=CONNECT_TIMEOUT, readonly=True)
-        if ib.isConnected():
-            _log.info("ibkr_connected", host=IBKR_HOST, port=IBKR_PORT)
-            return ib
-        _log.warning("ibkr_connect_failed")
+        util.logToConsole('ERROR')
+        for cid in range(IBKR_CLIENT_ID, IBKR_CLIENT_ID + 10):
+            try:
+                ib = IB()
+                ib.connect(IBKR_HOST, IBKR_PORT, clientId=cid,
+                           timeout=CONNECT_TIMEOUT, readonly=True)
+                if ib.isConnected():
+                    _log.info("ibkr_connected", host=IBKR_HOST, port=IBKR_PORT, clientId=cid)
+                    return ib
+                # Conectou mas isConnected=False — tenta próximo
+                try: ib.disconnect()
+                except Exception: pass
+                continue
+            except Exception as e:
+                err = str(e).lower()
+                # Sempre continua: erro vazio ou "already in use" ou "326" ou timeout
+                if not err or "already in use" in err or "326" in err or "timeout" in err:
+                    _log.debug("ibkr_cid_skip", cid=cid, reason=err[:60] or "empty")
+                    continue
+                # Erro inesperado (ex: connection refused = TWS não está rodando)
+                _log.warning("ibkr_connect_error", cid=cid, error=err[:120])
+                return None
+        _log.warning("ibkr_connect_failed", reason="all_client_ids_in_use", range="20-29")
         return None
     except Exception as exc:
         _log.warning("ibkr_connect_error", error=str(exc))

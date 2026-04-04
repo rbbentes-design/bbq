@@ -37,7 +37,7 @@ _log = get_logger("analysis.network")
 
 # ── Universo SPX Core (~50 tickers) ───────────────────────────────────────────
 # Indices, sector ETFs e top stocks por peso no S&P 500.
-# Suficientemente pequeno para MST legível e rápido (yfinance sem rate-limit).
+# Suficientemente pequeno para MST legível e rápido (IBKR/Bloomberg).
 SPX_CORE: set[str] = {
     # Top 20 SPX por peso de mercado (abr/2026)
     "AAPL", "MSFT", "NVDA", "AMZN", "META",
@@ -433,7 +433,7 @@ def analyze(
 ) -> dict[str, Any]:
     """
     Executa análise completa de rede financeira:
-      1. Busca histórico de preços via yfinance
+      1. Busca histórico de preços via Bloomberg CSV ou IBKR
       2. Limpa correlação via RMT
       3. Constrói MST de Mantegna
       4. Detecta regime via topologia
@@ -467,49 +467,15 @@ def analyze(
         tickers = sorted(SPX_CORE)
         _log.info("network_universe_spx", tickers=len(tickers))
 
-    # ── 1. Bloomberg CSV (BQuant export) — fonte primária ─────────────────────
+    # ── Coleta histórico via chain de fallbacks ───────────────────────────────
+    # Bloomberg CSV → IBKR → Alpha Vantage → Twelve Data → Finnhub
     closes: dict[str, list[float]] = {}
     try:
-        from app.providers.bql_csv import load_price_history
-        bbg_hist = load_price_history()
-        # Só usa se tiver historico suficiente (>= 20 observacoes por ticker)
-        if bbg_hist and min((len(v) for v in bbg_hist.values()), default=0) >= 20:
-            closes = bbg_hist
-            _log.info("network_bloomberg_csv", tickers=len(closes))
-        elif bbg_hist:
-            _log.info("network_bloomberg_csv_insuf", tickers=len(bbg_hist),
-                      min_obs=min((len(v) for v in bbg_hist.values()), default=0),
-                      hint="historico curto, usando yfinance")
+        from app.providers.market_data_chain import collect_historical
+        closes = collect_historical(tickers, lookback_days=lookback_days)
+        _log.info("network_hist_collected", tickers=len(closes))
     except Exception as exc:
-        _log.warning("network_bloomberg_csv_failed", error=str(exc))
-
-    # ── 2. IBKR — fallback ────────────────────────────────────────────────────
-    if len(closes) < 4:
-        try:
-            from app.providers.ibkr import fetch_historical_closes
-            closes = fetch_historical_closes(tickers, lookback_days=lookback_days)
-        except Exception as exc:
-            _log.warning("network_ibkr_failed", error=str(exc))
-
-    # ── Fallback yfinance para tickers sem dados do IBKR ──────────────────────
-    missing = [t for t in tickers if t not in closes]
-    if missing:
-        try:
-            import yfinance as yf
-            import pandas as pd
-            raw = yf.download(missing, period=f"{lookback_days}d",
-                              auto_adjust=True, progress=False, threads=True)
-            close_df = raw["Close"] if "Close" in raw.columns else raw
-            if isinstance(close_df, pd.Series):
-                close_df = close_df.to_frame(missing[0])
-            for sym in missing:
-                if sym in close_df.columns:
-                    s = close_df[sym].dropna()
-                    if len(s) >= 10:
-                        closes[sym] = [float(v) for v in s.values]
-            _log.info("network_yf_fallback", filled=len(closes) - (len(tickers) - len(missing)))
-        except Exception as exc:
-            _log.warning("network_yf_fallback_failed", error=str(exc))
+        _log.warning("network_hist_chain_failed", error=str(exc))
 
     if len(closes) < 4:
         _log.warning("network_too_few_tickers", n=len(closes))

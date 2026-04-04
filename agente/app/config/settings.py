@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     # ── FRED ──────────────────────────────────────────────────────────────────
     fred_api_key: str = Field(default="", description="FRED API key")
 
+    # ── Market Data (fallback chain) ──────────────────────────────────────────
+    alpha_vantage_api_key: str = Field(default="", description="Alpha Vantage API key")
+    twelve_data_api_key:   str = Field(default="", description="Twelve Data API key")
+    finnhub_api_key:       str = Field(default="", description="Finnhub API key")
+
+    # ── CME DataServices (OAuth) ──────────────────────────────────────────────
+    cme_api_id:     str = Field(default="", description="CME OAuth API ID")
+    cme_api_secret: str = Field(default="", description="CME OAuth secret")
+
+    # ── Cboe All Access (OAuth) ───────────────────────────────────────────────
+    cboe_api_key:    str = Field(default="", description="Cboe All Access client_id")
+    cboe_api_secret: str = Field(default="", description="Cboe All Access client_secret")
+
     # ── Curation ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
     rss_feeds: str = Field(default="", description="URLs de feeds RSS separadas por virgula")

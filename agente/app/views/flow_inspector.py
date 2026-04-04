@@ -187,6 +187,7 @@ def generate_flow_inspector_html(
     pnl_by_ticker  = pnl_summary.get("pnl_by_ticker", {}) if pnl_summary else {}
     pnl_color      = "#10b981" if pnl_total >= 0 else "#ef4444"
     pnl_sign       = "+" if pnl_total >= 0 else ""
+    pnl_pct        = pnl_total / por.budget if por.budget else 0.0
     pnl_history_js = json.dumps([h["pnl_pct"] * 100 for h in pnl_history])
     # Equity cumulativa = budget + realized P&L (reflete trades fechados)
     equity = por.budget + pnl_realized

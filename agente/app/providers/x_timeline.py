@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import time
+import time as _time_mod
 
 from playwright.sync_api import Locator, Page
 
@@ -59,6 +60,23 @@ PRIORITY_ACCOUNTS: list[str] = [
 _PRIORITY_TWEETS_PER_ACCOUNT = 3  # últimos N tweets de cada conta prioritária
 
 
+_X_SESSION_INVALID_PATHS = {"/", "/home", "/login", "/i/flow/login"}
+_X_COLLECT_BUDGET_SECS = 300  # 5 min máximo para toda a coleta X
+
+
+def _is_session_valid(page: Page) -> bool:
+    """Retorna False se o X redirecionou para login/home (sessão expirada)."""
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(page.url).path.rstrip("/") or "/"
+        if path in _X_SESSION_INVALID_PATHS:
+            _log.warning("x_session_invalid", url=page.url)
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     """
     Coleta tweets das contas com notificacao ativa (sino) + contas prioritárias.
@@ -69,11 +87,16 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     4. Visita cada conta prioritária e coleta tweets recentes (garante inclusão)
     """
     limit = settings.x_timeline_limit
+    deadline = _time_mod.monotonic() + _X_COLLECT_BUDGET_SECS
     _log.info("collect_start", source=SOURCE_NAME, mode="notifications_click", limit=limit)
 
     page.goto(_NOTIFICATIONS_URL, timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=15_000)
     time.sleep(4)
+
+    if not _is_session_valid(page):
+        _log.warning("x_collect_skipped", reason="session_invalid")
+        return []
 
     # Localiza e clica no item de notificacao de novo post
     clicked = _click_new_post_notification(page)
@@ -119,7 +142,7 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
     _log.info("notifications_done", items=len(items))
 
     # ── Contas prioritárias (sempre coletadas) ──────────────────────────────────
-    priority_items = _collect_priority_accounts(page, source_doc, seen_urls)
+    priority_items = _collect_priority_accounts(page, source_doc, seen_urls, deadline=deadline)
     _log.info("priority_done", priority_items=len(priority_items))
 
     all_items = priority_items + items  # prioritárias primeiro
@@ -128,17 +151,25 @@ def collect(page: Page, source_doc: SourceDocument) -> list[XTimelineItem]:
 
 
 def _collect_priority_accounts(
-    page: Page, source_doc: SourceDocument, seen_urls: set[str]
+    page: Page, source_doc: SourceDocument, seen_urls: set[str],
+    deadline: float | None = None,
 ) -> list[XTimelineItem]:
     """Visita cada conta prioritária e coleta os N tweets mais recentes."""
     collected: list[XTimelineItem] = []
 
     for handle in PRIORITY_ACCOUNTS:
+        if deadline and _time_mod.monotonic() > deadline:
+            _log.warning("x_priority_deadline", remaining=PRIORITY_ACCOUNTS[PRIORITY_ACCOUNTS.index(handle):])
+            break
         try:
             profile_url = f"{_X_BASE}/{handle}"
             page.goto(profile_url, timeout=25_000)
             page.wait_for_load_state("domcontentloaded", timeout=10_000)
             time.sleep(3)
+
+            if not _is_session_valid(page):
+                _log.warning("x_priority_session_invalid", handle=handle)
+                break
 
             tweets = page.locator('[data-testid="tweet"]')
             found = 0

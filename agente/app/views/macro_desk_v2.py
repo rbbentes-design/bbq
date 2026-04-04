@@ -318,19 +318,27 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060a12;
        color: #e2e8f0; height: 100vh; overflow: hidden;
        display: flex; flex-direction: column; font-size: 12px; }
 
-#topbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px;
+#topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
           background: #0a0f1a; border-bottom: 1px solid #1a2535;
-          flex-shrink: 0; height: 52px; }
+          flex-shrink: 0; height: 52px; overflow-x: auto; overflow-y: hidden; }
 .brand { font-size: 14px; font-weight: 700; color: #38bdf8;
          letter-spacing: 2.5px; white-space: nowrap; }
 .run-date { font-size: 11px; color: #64748b; white-space: nowrap; }
 .spacer { flex: 1; }
-.ctrl-btn { padding: 4px 12px; border-radius: 5px; border: 1px solid #2d3f55;
+.ctrl-btn { padding: 4px 9px; border-radius: 5px; border: 1px solid #2d3f55;
             background: transparent; color: #64748b; cursor: pointer;
             font-size: 12px; font-weight: 600; transition: all 0.15s;
             white-space: nowrap; }
 .ctrl-btn:hover { border-color: #38bdf8; color: #94a3b8; }
 .ctrl-btn.danger:hover { border-color: #ef4444; color: #ef4444; }
+/* Layer toggle buttons */
+.layer-btn { padding: 3px 9px; border-radius: 4px; border: 1px solid #1e3a5f;
+             background: transparent; color: #4a6380; cursor: pointer;
+             font-size: 11px; font-weight: 700; transition: all 0.15s; letter-spacing: 0.3px; }
+.layer-btn:hover { opacity: 0.9; }
+.layer-btn.active[data-layer="structure"] { border-color: #818cf8; color: #818cf8; background: #818cf820; }
+.layer-btn.active[data-layer="flow"]      { border-color: #22c55e; color: #22c55e; background: #22c55e20; }
+.layer-btn.active[data-layer="convexity"] { border-color: #f59e0b; color: #f59e0b; background: #f59e0b20; }
 .sep { width: 1px; height: 20px; background: #2d3f55; }
 #expand-count { font-size: 11px; color: #4a6380; min-width: 60px; text-align: right; }
 
@@ -396,6 +404,41 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060a12;
 #nd-rows .nd-key, .nd-tab-panel .nd-key { color: #64748b; }
 #nd-rows .nd-val, .nd-tab-panel .nd-val { font-weight: 700; color: #e2e8f0; }
 .nd-na { color: #64748b; font-size: 11px; }
+
+/* Contagion panel */
+#contagion-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 300px;
+  background: rgba(6,10,18,0.97); border-left: 1px solid #1a2535;
+  display: flex; flex-direction: column; z-index: 300;
+  transform: translateX(100%); transition: transform 0.25s ease;
+  pointer-events: none;
+}
+#contagion-panel.open {
+  transform: translateX(0); pointer-events: all;
+}
+#cp-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px 8px; border-bottom: 1px solid #1a2535;
+}
+#cp-title { font-size: 12px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: .06em; }
+#cp-asset { font-size: 16px; font-weight: 700; color: #38bdf8; margin-bottom: 2px; }
+#cp-close { background: none; border: none; color: #64748b; font-size: 18px; cursor: pointer; padding: 0; line-height: 1; }
+#cp-close:hover { color: #e2e8f0; }
+#cp-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.cp-hop { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 6px; }
+.cp-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0; border-bottom: 1px solid #0d1520;
+  font-size: 12px;
+}
+.cp-row-label { width: 70px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.cp-bar-wrap { flex: 1; height: 8px; background: #0d1520; border-radius: 4px; overflow: hidden; }
+.cp-bar { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.cp-rho { width: 38px; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; flex-shrink: 0; }
+#cp-toggle { padding: 4px 12px; border-radius: 5px; border: 1px solid #2d3f55;
+  background: transparent; color: #64748b; font-size: 12px; cursor: pointer; font-family: inherit; }
+#cp-toggle.active { border-color: #38bdf8; color: #38bdf8; background: #0f1f2e; }
+#cp-toggle:hover { border-color: #38bdf8; color: #94a3b8; }
 
 /* Hint bar */
 #hint-bar { position: absolute; bottom: 10px; left: 10px; right: 10px;
@@ -622,19 +665,26 @@ function currentElements() {
       && DATA_IDS.has(e.data.source)
       && DATA_IDS.has(e.data.target)
     );
-    // Só mostrar nós que aparecem em pelo menos uma aresta MST
-    const mstNodeIds = new Set();
-    mst.forEach(e => { mstNodeIds.add(e.data.source); mstNodeIds.add(e.data.target); });
+    const hasMst = mst.length > 0;
 
-    // Se isolamento ativo: manter só nó + 1-hop
+    // Se isolamento ativo: manter só nó + 1-hop (MST + hierarquia)
     const isoNeighbors = isolateId != null
-      ? new Set(mst.filter(e => e.data.source === isolateId || e.data.target === isolateId)
+      ? new Set(GD.elements.edges
+          .filter(e => (e.data.type === 'mst' || e.data.type === 'hierarchy')
+                    && (e.data.source === isolateId || e.data.target === isolateId))
           .flatMap(e => [e.data.source, e.data.target]))
       : null;
 
+    // Mostrar: hierarquia completa (level 0-4 = até setores) + nós com dados
+    // level 4 = sectors — necessário para conectar indices aos ativos individuais
+    const visIds = new Set(
+      GD.elements.nodes
+        .filter(n => n.data.level <= 4 || n.data.has_data)
+        .map(n => n.data.id)
+    );
+
     const nodes = GD.elements.nodes.filter(n => {
-      if (!n.data.has_data) return false;
-      if (!mstNodeIds.has(n.data.id)) return false;  // remove nós sem conexão MST
+      if (!visIds.has(n.data.id)) return false;
       if (isoNeighbors != null) return isoNeighbors.has(n.data.id);
       return true;
     }).map(n => {
@@ -647,7 +697,22 @@ function currentElements() {
       }
       return { data: d };
     });
-    return [...nodes, ...mst];
+
+    // Arestas de hierarquia entre nós visíveis + MST overlay
+    const hierEdges = GD.elements.edges.filter(e =>
+      e.data.type === 'hierarchy'
+      && visIds.has(e.data.source)
+      && visIds.has(e.data.target)
+    );
+
+    // RRG edges — rotação relativa vs SPX (somente entre nós visíveis)
+    const rrgEdges = GD.elements.edges.filter(e =>
+      e.data.type === 'rrg'
+      && visIds.has(e.data.source)
+      && visIds.has(e.data.target)
+    );
+
+    return [...nodes, ...hierEdges, ...mst, ...rrgEdges];
   }
 
   // ── Drill-down: nó atual + filhos diretos ─────────────────────────────────
@@ -682,6 +747,29 @@ function currentElements() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// HELPERS DE COR — gradiente bolinha
+// ══════════════════════════════════════════════════════════════════════════════
+
+function _hexToRgb(hex) {
+  hex = hex.replace('#','');
+  if (hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  return [parseInt(hex.substr(0,2),16), parseInt(hex.substr(2,2),16), parseInt(hex.substr(4,2),16)];
+}
+function _rgbToHex(r,g,b) {
+  return '#'+[r,g,b].map(v=>Math.min(255,Math.max(0,Math.round(v))).toString(16).padStart(2,'0')).join('');
+}
+function _lighten(hex, pct) {
+  if (!hex || !hex.startsWith('#')) return hex || '#374151';
+  const [r,g,b] = _hexToRgb(hex);
+  return _rgbToHex(r+(255-r)*pct, g+(255-g)*pct, b+(255-b)*pct);
+}
+function _darken(hex, pct) {
+  if (!hex || !hex.startsWith('#')) return hex || '#374151';
+  const [r,g,b] = _hexToRgb(hex);
+  return _rgbToHex(r*(1-pct), g*(1-pct), b*(1-pct));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ESTILOS
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -689,88 +777,127 @@ const STYLE = [
   // ── Base: todos os nós são círculos, tamanho data-driven ──────────────────
   { selector: 'node', style: {
     'shape': 'ellipse',
-    'background-color': 'data(_bg)',
+    // Gradiente radial simulado: top-left claro → bottom-right cor base
+    'background-gradient-direction': 'to-bottom-right',
+    'background-gradient-stop-colors': function(n) {
+      const c = n.data('_bg') || '#374151';
+      return _lighten(c, 0.5) + ' ' + c;
+    },
+    'background-gradient-stop-positions': '0% 85%',
+    // Glow/sombra colorida
+    'shadow-blur': 8,
+    'shadow-color': function(n) { return n.data('_bg') || '#374151'; },
+    'shadow-opacity': 0.55,
+    'shadow-offset-x': 1,
+    'shadow-offset-y': 2,
+    // Borda fina mais clara que a cor
+    'border-width': 2,
+    'border-color': function(n) { return _lighten(n.data('_bg') || '#374151', 0.35); },
+    'border-opacity': 0.9,
+    // Label dentro da bolinha
     'label': 'data(label)',
-    'color': '#f1f5f9',
+    'color': '#ffffff',
     'font-size': 9,
     'font-weight': 'bold',
     'text-valign': 'center',
     'text-halign': 'center',
     'text-wrap': 'wrap',
     'text-max-width': '64px',
-    'text-background-color': '#060a12',
-    'text-background-opacity': 0.78,
-    'text-background-padding': '2px',
-    'border-width': 1.5,
-    'border-color': 'data(border_color)',
+    'text-outline-color': function(n) { return _darken(n.data('_bg') || '#374151', 0.4); },
+    'text-outline-width': 1.5,
+    'text-outline-opacity': 0.85,
     'width': 'data(size)', 'height': 'data(size)',
-    'transition-property': 'background-color, border-color, width, height',
-    'transition-duration': '0.3s',
+    'transition-property': 'background-color, border-color, width, height, shadow-blur',
+    'transition-duration': '0.25s',
   } },
 
-  // ── Nós com dados de mercado (rede base) ───────────────────────────────────
+  // ── Nós com dados de mercado — bolinha maior e mais brilhante ─────────────
   { selector: 'node[?has_data]', style: {
-    'font-size': 10, 'font-weight': 'bold',
-    'border-width': 2,
+    'font-size': 10,
+    'shadow-blur': 14,
+    'shadow-opacity': 0.7,
+    'border-width': 2.5,
     'z-index': 20,
-    'text-background-opacity': 0.88,
   } },
 
-  // ── Hub: borda dourada ────────────────────────────────────────────────────
+  // ── Hub: borda dourada com glow forte ─────────────────────────────────────
   { selector: 'node[?is_hub]', style: {
     'border-color': '#f59e0b',
-    'border-width': 3,
+    'border-width': 3.5,
+    'shadow-color': '#f59e0b',
+    'shadow-blur': 18,
+    'shadow-opacity': 0.8,
   } },
 
-  // ── Contagion: borda laranja/vermelha pulsante para alto contágio ──────────
+  // ── Contagion: borda + glow laranja/vermelho para alto contágio ───────────
   { selector: 'node[?has_data]', style: {
     'border-color': function(n) {
       const c = n.data('contagion');
-      if (c == null) return n.data('border_color') || '#6b7280';
       if (c > 0.5)  return '#ef4444';
       if (c > 0.25) return '#f97316';
-      return n.data('border_color') || '#6b7280';
+      return _lighten(n.data('_bg') || '#374151', 0.35);
     },
     'border-width': function(n) {
       const c = n.data('contagion');
       if (c > 0.5)  return 4;
       if (c > 0.25) return 3;
-      return 2;
+      return 2.5;
     },
   } },
 
-  // ── Level 4 (setores) — círculo, tamanho dinâmico ─────────────────────────
+  // ── Level 0-2 (World, Asset Class, Region) ────────────────────────────────
+  { selector: 'node[level < 3]', style: {
+    'shadow-blur': 20,
+    'shadow-opacity': 0.8,
+    'border-width': 3,
+    'font-size': 10,
+    'z-index': 30,
+  } },
+
+  // ── Level 3 (índices) ─────────────────────────────────────────────────────
+  { selector: 'node[level=3]', style: {
+    'shadow-blur': 12,
+    'shadow-opacity': 0.65,
+    'border-width': 2.5,
+    'font-size': 9,
+    'z-index': 15,
+  } },
+
+  // ── Level 4 (setores) ─────────────────────────────────────────────────────
   { selector: 'node[level=4]', style: {
     'font-size': 8,
-    'text-background-opacity': 0.75,
-    'color': '#ffffff',
+    'shadow-blur': 7,
+    'shadow-opacity': 0.45,
     'border-width': 1.5,
+    'color': '#ffffff',
     'z-index': 5,
   } },
 
-  // ── Level 5 (stocks/assets) ───────────────────────────────────────────────
+  // ── Level 5 sem dados ─────────────────────────────────────────────────────
   { selector: 'node[level=5][!has_data]', style: {
     'font-size': 7,
-    'font-weight': 'normal',
+    'shadow-blur': 4,
+    'shadow-opacity': 0.3,
     'border-width': 1,
-    'text-background-opacity': 0.7,
     'z-index': 3,
   } },
 
   // ── Expandível ────────────────────────────────────────────────────────────
   { selector: 'node[?expandable]', style: { 'cursor': 'pointer' } },
 
-  // ── Raiz da camada atual (clique volta) ───────────────────────────────────
+  // ── Raiz da camada atual ──────────────────────────────────────────────────
   { selector: 'node[?isFocusRoot]', style: {
-    'font-size': 11, 'font-weight': 'bold',
-    'border-color': '#38bdf8', 'border-width': 3,
-    'cursor': 'pointer',
-    'z-index': 30,
+    'font-size': 11,
+    'border-color': '#38bdf8', 'border-width': 4,
+    'shadow-color': '#38bdf8', 'shadow-blur': 20, 'shadow-opacity': 0.9,
+    'cursor': 'pointer', 'z-index': 30,
   } },
 
   // ── Selecionado ───────────────────────────────────────────────────────────
   { selector: 'node:selected', style: {
-    'border-color': '#fbbf24', 'border-width': 3, 'overlay-opacity': 0,
+    'border-color': '#fbbf24', 'border-width': 4,
+    'shadow-color': '#fbbf24', 'shadow-blur': 22, 'shadow-opacity': 0.9,
+    'overlay-opacity': 0,
   } },
 
   // ── MST edges ─────────────────────────────────────────────────────────────
@@ -801,7 +928,67 @@ const STYLE = [
     'z-index': 2,
   } },
 
+  // ── RRG edges — rotação relativa vs benchmark (SPX) ───────────────────────
+  // LEADING (verde) / IMPROVING (lima): ativo → sp500
+  // WEAKENING (laranja) / LAGGING (vermelho): sp500 → ativo
+  { selector: 'edge[type="rrg"]', style: {
+    'line-color': 'data(color)',
+    'width': 'data(width)',
+    'curve-style': 'unbundled-bezier',
+    'control-point-distances': [40],
+    'control-point-weights': [0.5],
+    'opacity': 0.75,
+    'target-arrow-shape': 'triangle',
+    'target-arrow-color': 'data(color)',
+    'arrow-scale': 1.2,
+    'z-index': 20,
+    'label': function(e) {
+      const q = e.data('quadrant') || '';
+      const r = e.data('rs_ratio');
+      if (!q) return '';
+      const icons = {leading:'▲', improving:'↑', weakening:'↓', lagging:'▼'};
+      return (icons[q] || q[0].toUpperCase()) + (r != null ? ' ' + r.toFixed(0) : '');
+    },
+    'font-size': 7,
+    'color': 'data(color)',
+    'text-background-color': '#060a12',
+    'text-background-opacity': 0.8,
+    'text-background-padding': '1px',
+  } },
+  { selector: 'edge[type="rrg"][dashed=true]', style: {
+    'line-style': 'dashed',
+    'line-dash-pattern': [6, 3],
+    'opacity': 0.55,
+  } },
+
   { selector: 'node:active', style: { 'overlay-opacity': 0.07 } },
+
+  // ── Convexity layer — halo colorido por IV rank + fragility ──────────────
+  // Verde = IV barata + oportunidade | Azul = IV barata | Roxo = IV cara | Vermelho = IV cara + frágil
+  { selector: 'node[convexity]', style: {
+    'shadow-color': function(n) {
+      const cv = n.data('convexity');
+      return (cv && cv.halo_color) ? cv.halo_color : (n.data('_bg') || '#374151');
+    },
+    'shadow-blur': function(n) {
+      const cv = n.data('convexity');
+      return (cv && cv.halo_color) ? 22 : 8;
+    },
+    'shadow-opacity': function(n) {
+      const cv = n.data('convexity');
+      return (cv && cv.halo_color) ? 0.70 : 0.55;
+    },
+  } },
+
+  // ── Structure edges — mais finos e discretos ───────────────────────────────
+  { selector: 'edge[layer="structure"]', style: {
+    'opacity': 0.50,
+  } },
+
+  // ── Flow edges — mais brilhantes e espessos ────────────────────────────────
+  { selector: 'edge[layer="flow"]', style: {
+    'opacity': 0.85,
+  } },
 ];
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -836,38 +1023,32 @@ function rebuild() {
         gravity: 1.8, numIter: 400,
         fit: true, padding: 80,
       }
-    : {   // Modo rede: cose built-in (sem CDN, roda offline)
-        name: 'cose',
-        animate: true, animationDuration: 500, randomize: true,
-        nodeRepulsion: 35000,
-        idealEdgeLength: 100,
-        edgeElasticity: 100,
-        nestingFactor: 5,
-        gravity: 60,
-        numIter: 500,
-        initialTemp: 200,
-        coolingFactor: 0.95,
-        minTemp: 1.0,
-        fit: true, padding: 60,
+    : {   // Modo rede: breadthfirst — SPX como âncora gravitacional
+        name: 'breadthfirst',
+        animate: true, animationDuration: 600,
+        directed: true,
+        roots: (() => {
+          // SPX como âncora: "o mercado tem um centro gravitacional"
+          const spx = cy.nodes('#sp500');
+          if (spx.length) return spx;
+          // Fallback: nós raiz da hierarquia (level 0, sem parent)
+          return cy.nodes().filter(n => !n.data('parent_id') && n.data('level') === 0);
+        })(),
+        spacingFactor: 1.6,
+        avoidOverlap: true,
+        fit: true, padding: 50,
       };
 
-  // Fallback para cose se fcose não estiver disponível
+  // Fallback para cose se layout falhar
   function runLayout(opts) {
     try {
       cy.layout(opts).run();
     } catch(e) {
       cy.layout({
-        name: 'cose', animate: true, animationDuration: 600,
-        randomize: true,
-        nodeRepulsion: 45000,
-        idealEdgeLength: 100,
-        edgeElasticity: 100,
-        nestingFactor: 5,
-        gravity: 80,
-        numIter: 1000,
-        initialTemp: 200,
-        coolingFactor: 0.95,
-        minTemp: 1.0,
+        name: 'breadthfirst', animate: true, animationDuration: 600,
+        directed: true,
+        roots: cy.nodes().filter(n => !n.data('parent_id') && n.data('level') === 0),
+        spacingFactor: 1.6, avoidOverlap: true,
         fit: true, padding: 70,
       }).run();
     }
@@ -875,6 +1056,38 @@ function rebuild() {
   runLayout(layoutOpts);
   updateBreadcrumb();
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LAYER TOGGLES — Structure · Flow · Convexity
+// ══════════════════════════════════════════════════════════════════════════════
+
+const layerState = { structure: true, flow: true, convexity: true };
+
+function applyLayerVisibility() {
+  // Structure edges: hierarchy + mst + rmt
+  cy.edges('[layer="structure"]').style('display', layerState.structure ? 'element' : 'none');
+  // Flow edges: rrg + shadow_flow
+  cy.edges('[layer="flow"]').style('display', layerState.flow ? 'element' : 'none');
+  // Convexity: toggle halo on nodes that have convexity data
+  cy.nodes().forEach(function(n) {
+    const cv = n.data('convexity');
+    if (!cv || !cv.halo_color) return;
+    if (layerState.convexity) {
+      n.style({ 'shadow-color': cv.halo_color, 'shadow-blur': 22, 'shadow-opacity': 0.70 });
+    } else {
+      n.style({ 'shadow-color': n.data('_bg') || '#374151', 'shadow-blur': 8, 'shadow-opacity': 0.55 });
+    }
+  });
+}
+
+document.querySelectorAll('.layer-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    const layer = btn.dataset.layer;
+    layerState[layer] = !layerState[layer];
+    btn.classList.toggle('active', layerState[layer]);
+    applyLayerVisibility();
+  });
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // EVENTOS
@@ -893,14 +1106,17 @@ cy.on('tap', 'node', e => {
 
   const kids = CHILDREN[d.id] || [];
   if (kids.length > 0) {
+    // Se contagion ativo: mostra painel de contagio sem fazer drill-down
+    if (contagionEnabled) { showContagionPanel(d.id); return; }
     // ── Entra na próxima camada (drill-down) ──────────────────────────────
     navStack.push({ nodeId: d.id, label: N[d.id] ? (N[d.id].label || d.id) : d.id });
     rebuild();
     return;
   }
 
-  // ── Nó folha → painel de detalhe ─────────────────────────────────────────
+  // ── Nó folha → painel de detalhe + contagion ─────────────────────────────
   showDetail(d);
+  if (contagionEnabled) showContagionPanel(d.id);
 });
 
 cy.on('tap', e => {
@@ -982,10 +1198,123 @@ document.getElementById('btn-fit').addEventListener('click', () =>
   cy.animate({ fit: { padding: 70 }, duration: 300 })
 );
 document.getElementById('btn-relayout').addEventListener('click', () => rebuild());
+document.getElementById('btn-tree-layout').addEventListener('click', () => {
+  // Force-directed alternativo (agrupa por correlação, não por hierarquia)
+  cy.layout({
+    name: 'cose', animate: true, animationDuration: 600,
+    randomize: true,
+    nodeRepulsion: 28000,
+    idealEdgeLength: 80,
+    edgeElasticity: 120,
+    nestingFactor: 1.5,
+    gravity: 50,
+    numIter: 600,
+    initialTemp: 180,
+    coolingFactor: 0.95,
+    minTemp: 1.0,
+    fit: true, padding: 50,
+  }).run();
+});
 document.getElementById('btn-reset').addEventListener('click', () => {
   navStack.length = 0;
   rebuild();
   document.getElementById('node-detail').classList.remove('visible');
+  closeContagionPanel();
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONTAGION PANEL
+// ══════════════════════════════════════════════════════════════════════════════
+
+const CP_PANEL  = document.getElementById('contagion-panel');
+const CP_ASSET  = document.getElementById('cp-asset');
+const CP_BODY   = document.getElementById('cp-body');
+const CP_TOGGLE = document.getElementById('cp-toggle');
+let contagionEnabled = false;
+let lastContagionId  = null;
+
+function closeContagionPanel() {
+  CP_PANEL.classList.remove('open');
+  CP_TOGGLE.classList.remove('active');
+}
+
+function buildContagionRows(peers, label) {
+  if (!peers.length) return '';
+  const maxAbs = Math.max(...peers.map(p => Math.abs(p.rho)), 0.01);
+  let html = `<div class="cp-hop">${label}</div>`;
+  peers.forEach(p => {
+    const pct  = Math.round(Math.abs(p.rho) / maxAbs * 100);
+    const col  = p.rho >= 0 ? '#22c55e' : '#ef4444';
+    const sign = p.rho >= 0 ? '+' : '−';
+    const abs  = Math.abs(p.rho).toFixed(2);
+    html += `
+    <div class="cp-row" title="${p.id}">
+      <span class="cp-row-label">${p.label}</span>
+      <div class="cp-bar-wrap">
+        <div class="cp-bar" style="width:${pct}%;background:${col}"></div>
+      </div>
+      <span class="cp-rho" style="color:${col}">${sign}${abs}</span>
+    </div>`;
+  });
+  return html;
+}
+
+function showContagionPanel(nodeId) {
+  const label = (N[nodeId] && N[nodeId].label) ? N[nodeId].label : nodeId;
+  CP_ASSET.textContent = label;
+  lastContagionId = nodeId;
+
+  // 1st hop: direct MST neighbors
+  const hop1 = [];
+  const hop1Ids = new Set([nodeId]);
+  GD.elements.edges.forEach(e => {
+    if (e.data.type !== 'mst') return;
+    let peer = null, rho = e.data.correlation || 0;
+    if (e.data.source === nodeId) peer = e.data.target;
+    else if (e.data.target === nodeId) peer = e.data.source;
+    if (peer) { hop1.push({ id: peer, label: (N[peer]&&N[peer].label)||peer, rho }); hop1Ids.add(peer); }
+  });
+  hop1.sort((a,b) => Math.abs(b.rho) - Math.abs(a.rho));
+
+  // 2nd hop: neighbors of neighbors (excluding already shown)
+  const hop2 = [];
+  const hop2Ids = new Set();
+  hop1.forEach(h => {
+    GD.elements.edges.forEach(e => {
+      if (e.data.type !== 'mst') return;
+      let peer = null, rho = e.data.correlation || 0;
+      if (e.data.source === h.id) peer = e.data.target;
+      else if (e.data.target === h.id) peer = e.data.source;
+      if (peer && !hop1Ids.has(peer) && !hop2Ids.has(peer)) {
+        hop2Ids.add(peer);
+        // Effective contagion: product of correlations (attenuated)
+        hop2.push({ id: peer, label: (N[peer]&&N[peer].label)||peer, rho: h.rho * rho * 0.7 });
+      }
+    });
+  });
+  hop2.sort((a,b) => Math.abs(b.rho) - Math.abs(a.rho));
+
+  CP_BODY.innerHTML = hop1.length
+    ? buildContagionRows(hop1, '1° grau — direto') +
+      (hop2.length ? buildContagionRows(hop2.slice(0,8), '2° grau — indireto') : '')
+    : '<div style="font-size:12px;color:#64748b;padding:16px 0">Sem conexões MST para este ativo.<br><small>MST requer dados históricos (IBKR ou outra fonte).</small></div>';
+
+  CP_PANEL.classList.add('open');
+}
+
+CP_TOGGLE.addEventListener('click', () => {
+  contagionEnabled = !contagionEnabled;
+  CP_TOGGLE.classList.toggle('active', contagionEnabled);
+  if (!contagionEnabled) {
+    closeContagionPanel();
+  } else if (lastContagionId) {
+    showContagionPanel(lastContagionId);
+  }
+});
+
+document.getElementById('cp-close').addEventListener('click', () => {
+  contagionEnabled = false;
+  closeContagionPanel();
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1168,6 +1497,88 @@ function showDetail(d) {
   }
   document.getElementById('nd-rows-flow').innerHTML = flowRows.join('');
 
+  // ── Tab: Structure (S) ──────────────────────────────────────────────────────
+  const structRows = [];
+  const nd = {};
+  const parentLabel = d.parent_id || null;
+  if (parentLabel) structRows.push(ndRow('Cluster', parentLabel));
+  if (d.level != null) structRows.push(ndRow('Level', d.level));
+  if (d.is_hub) structRows.push(ndRow('Centralidade', '<span style="color:#f59e0b">Hub ★</span>'));
+  if (d.weight != null) structRows.push(ndRow('Peso índice', (d.weight*100).toFixed(2)+'%'));
+  const ab = d.anatomy || {};
+  if (ab.beta != null) structRows.push(ndRow('Beta', ab.beta.toFixed(2)));
+  if (d.contagion != null && d.contagion > 0) {
+    const cc = d.contagion > 0.5 ? '#ef4444' : (d.contagion > 0.25 ? '#f97316' : '#4ade80');
+    structRows.push(ndRow('Contágio recebido', '<span style="color:'+cc+'">'+d.contagion.toFixed(3)+'</span>'));
+  }
+  if (structRows.length === 0) structRows.push('<div class="nd-na">Sem dados estruturais</div>');
+  document.getElementById('nd-rows-struct').innerHTML = structRows.join('');
+
+  // ── Tab: Flow (F) ────────────────────────────────────────────────────────────
+  const nfRows = [];
+  const quad_colors = {leading:'#22c55e', improving:'#60a5fa', weakening:'#f97316', lagging:'#ef4444'};
+  if (d.rrg_quadrant) {
+    const qc = quad_colors[d.rrg_quadrant] || '#94a3b8';
+    const qicons = {leading:'▲', improving:'↑', weakening:'↓', lagging:'▼'};
+    nfRows.push(ndRow('Quadrante', '<span style="color:'+qc+'">'+
+      (qicons[d.rrg_quadrant]||'')+ ' ' + d.rrg_quadrant.charAt(0).toUpperCase()+d.rrg_quadrant.slice(1)+'</span>'));
+  }
+  if (d.rrg_rs_ratio != null) nfRows.push(ndRow('RS-Ratio', d.rrg_rs_ratio.toFixed(2)));
+  if (d.rrg_rs_mom   != null) nfRows.push(ndRow('RS-Mom', d.rrg_rs_mom.toFixed(2)));
+  if (d.rrg_alpha    != null) {
+    const ac = d.rrg_alpha > 0 ? '#4ade80' : (d.rrg_alpha < 0 ? '#f87171' : '#94a3b8');
+    nfRows.push(ndRow('Alpha RS', '<span style="color:'+ac+'">'+(d.rrg_alpha>0?'+':'')+d.rrg_alpha.toFixed(3)+'</span>'));
+  }
+  if (d.momentum != null) nfRows.push(ndRow('Momentum', fScore(d.momentum)));
+  if (d.propagated_shock != null && Math.abs(d.propagated_shock) > 0.0001)
+    nfRows.push(ndRow('Shock prop.', fPct(d.propagated_shock)));
+  const flf = d.flow || {};
+  if (flf.direction) {
+    const dfc = {buy:'#4ade80',sell:'#f87171',flat:'#94a3b8'}[flf.direction] || '#94a3b8';
+    nfRows.push(ndRow('Fluxo mec.', '<span style="color:'+dfc+'">'+flf.direction.toUpperCase()+'</span>'));
+  }
+  if (nfRows.length === 0) nfRows.push('<div class="nd-na">Sem dados de fluxo</div>');
+  document.getElementById('nd-rows-nodeflow').innerHTML = nfRows.join('');
+
+  // ── Tab: Convexity (C) ───────────────────────────────────────────────────────
+  const cvRows = [];
+  const cv = d.convexity || {};
+  if (cv.iv_rank != null) {
+    const ic = cv.iv_rank < 0.35 ? '#4ade80' : (cv.iv_rank > 0.75 ? '#f87171' : '#f59e0b');
+    cvRows.push(ndRow('IV Rank', '<span style="color:'+ic+'">'+(cv.iv_rank*100).toFixed(0)+'%ile</span>'));
+  }
+  if (cv.skew != null) {
+    const sc = cv.skew < -0.02 ? '#4ade80' : (cv.skew > 0.04 ? '#f87171' : '#94a3b8');
+    cvRows.push(ndRow('Skew 5%', '<span style="color:'+sc+'">'+(cv.skew>0?'+':'')+cv.skew.toFixed(4)+'</span>'));
+  }
+  if (cv.hidden_opp != null) {
+    const oc = cv.hidden_opp > 0.20 ? '#4ade80' : (cv.hidden_opp < 0 ? '#f87171' : '#94a3b8');
+    cvRows.push(ndRow('Oportunidade', '<span style="color:'+oc+'">'+(cv.hidden_opp>0?'+':'')+cv.hidden_opp.toFixed(3)+'</span>'));
+  }
+  if (cv.fragility != null) {
+    const fc2 = cv.fragility > 0.5 ? '#ef4444' : (cv.fragility > 0.25 ? '#f97316' : '#4ade80');
+    cvRows.push(ndRow('Fragilidade', '<span style="color:'+fc2+'">'+cv.fragility.toFixed(3)+'</span>'));
+  }
+  if (cv.halo_color) {
+    const halo_labels = {'#22c55e':'IV barata + upside','#38bdf8':'IV barata','#c084fc':'IV cara','#ef4444':'IV cara + frágil','#f97316':'Put skew elevado'};
+    cvRows.push(ndRow('Sinal', '<span style="color:'+cv.halo_color+'">' + (halo_labels[cv.halo_color]||'Sinal ativo') + '</span>'));
+  }
+  const o2 = d.options || {};
+  if (o2.atm_iv) cvRows.push(ndRow('ATM IV', fPct(o2.atm_iv)));
+  if (o2.pcr_oi) cvRows.push(ndRow('Put/Call', o2.pcr_oi.toFixed(2)));
+  if (cvRows.length === 0) cvRows.push('<div class="nd-na">Sem dados de opções / convexidade</div>');
+  document.getElementById('nd-rows-convex').innerHTML = cvRows.join('');
+
+  // ── Summary text (sempre visível no topo) ────────────────────────────────────
+  const summaryEl = document.getElementById('nd-summary');
+  const summaryText = buildNodeSummary(d);
+  if (summaryText) {
+    summaryEl.textContent = summaryText;
+    summaryEl.style.display = 'block';
+  } else {
+    summaryEl.style.display = 'none';
+  }
+
   // Ativa aba Price por padrão ao abrir
   document.querySelectorAll('.nd-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.nd-tab-panel').forEach(p => p.classList.remove('active'));
@@ -1175,6 +1586,28 @@ function showDetail(d) {
   document.getElementById('nd-tab-price').classList.add('active');
 
   document.getElementById('node-detail').classList.add('visible');
+}
+
+function buildNodeSummary(d) {
+  const parts = [];
+  const quad_labels = {leading:'liderança relativa', improving:'fase de recuperação relativa',
+                       weakening:'enfraquecimento relativo', lagging:'atraso relativo'};
+  if (d.rrg_quadrant && quad_labels[d.rrg_quadrant]) {
+    parts.push('Em ' + quad_labels[d.rrg_quadrant] + '.');
+  }
+  const cv = d.convexity || {};
+  if (cv.iv_rank != null && cv.iv_rank < 0.35 && cv.hidden_opp > 0.2) {
+    parts.push('IV barata ('+Math.round(cv.iv_rank*100)+'°ptil) com sinal de oportunidade oculta.');
+  } else if (cv.iv_rank != null && cv.iv_rank > 0.75) {
+    parts.push('Proteção implícita cara — hedge dispendioso.');
+  }
+  if (cv.fragility != null && cv.fragility > 0.5) {
+    parts.push('Estrutura frágil detectada — atenção a reversões.');
+  }
+  const c = d.contagion || 0;
+  if (c > 0.4) parts.push('Recebendo contágio elevado da rede (' + c.toFixed(2) + ').');
+  if (d.is_hub) parts.push('Hub estrutural da rede — alta conectividade.');
+  return parts.join(' ');
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
@@ -1265,6 +1698,10 @@ document.addEventListener('keydown', e => {
       cy.animate({ fit: { padding: 70 }, duration: 300 }); break;
     case 'r': case 'R':
       rebuild(); break;
+    case 'h': case 'H':
+      document.getElementById('btn-tree-layout').click(); break;
+    case 'c': case 'C':
+      CP_TOGGLE.click(); break;
     case 'Escape':
       if (document.getElementById('node-detail').classList.contains('visible')) {
         document.getElementById('node-detail').classList.remove('visible');
@@ -1399,11 +1836,11 @@ def _render_portfolio_tab(portfolio, market_prices: "dict | None", flow_pred) ->
 
 def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
     """
-    Carrega o editorial diário (brief HTML) para embutir na aba Informações de Mercado.
-    Procura o _brief.html mais recente do dia no diretório do bundle.
-    Retorna HTML completo do body do brief, ou string vazia se não encontrado.
+    Carrega o editorial diário para a aba Informações de Mercado.
+    Usa <iframe srcdoc> com o conteúdo completo do _brief.html para preservar
+    CSS e layout integralmente sem problemas de same-origin file://.
+    Retorna uma tag <iframe srcdoc=...>, ou string vazia se não encontrado.
     """
-    import re as _re
     try:
         from app.storage.paths import workspace
         from pathlib import Path as _P
@@ -1416,13 +1853,9 @@ def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
         if not candidates:
             return ""
         raw = candidates[0].read_text(encoding="utf-8")
-        # Extrai apenas o conteúdo entre <body> e </body>
-        m = _re.search(r"<body[^>]*>(.*?)</body>", raw, _re.DOTALL | _re.IGNORECASE)
-        content = m.group(1).strip() if m else raw
-        # Remove scripts de auto-refresh e navegação independente
-        content = _re.sub(r"<script[^>]*>.*?</script>", "", content, flags=_re.DOTALL | _re.IGNORECASE)
-        content = _re.sub(r"<style[^>]*>.*?</style>", "", content, flags=_re.DOTALL | _re.IGNORECASE)
-        return content
+        # srcdoc precisa de & e " escapados
+        srcdoc = raw.replace("&", "&amp;").replace('"', "&quot;")
+        return f'<iframe srcdoc="{srcdoc}" style="width:100%;flex:1;border:none;display:block;background:#06080f;min-height:0"></iframe>'
     except Exception:
         return ""
 
@@ -1494,10 +1927,20 @@ def generate_macro_desk_v2_html(
     portfolio=None,   # PortfolioResult | None
     flow_pred=None,   # FlowPrediction | None
     editorial_html: str | None = None,  # override; None = carrega automaticamente
+    rrg_result=None,  # RRGResult | None
+    desk_intel=None,  # DeskIntelligenceResult | None
+    options_snapshot=None,  # OptionsSnapshot | None — importado via options-import
 ) -> str:
+    # Resolve desk_intel e rrg antecipadamente para passá-los ao build_from_bundle
+    _desk_intel_early = desk_intel or getattr(portfolio, "_desk_intel", None)
+    _rrg_early        = rrg_result  or getattr(portfolio, "_rrg_result", None)
     if graph_data is None:
         from app.desk.graph_engine import build_from_bundle
-        graph_data = build_from_bundle(bundle, curation_result)
+        graph_data = build_from_bundle(
+            bundle, curation_result,
+            rrg_result=_rrg_early,
+            desk_intel=_desk_intel_early,
+        )
     regime   = graph_data.get("regime", {})
     mst_meta = graph_data.get("mst_meta", {})
     rmt_meta = graph_data.get("rmt_meta", {})
@@ -1566,6 +2009,60 @@ def generate_macro_desk_v2_html(
             '</div>'
         )
 
+    # ── Desk Radar tab ────────────────────────────────────────────────────────
+    # Reutiliza os valores já resolvidos no início
+    _desk_intel = _desk_intel_early
+    _rrg_result = _rrg_early
+    try:
+        from app.views.desk_radar import render_desk_radar_tab
+        from app.analysis.alpha_signals import AssetSignal as _AS
+        _signals_for_radar = {}
+        # Tenta extrair signals do portfolio_pipeline (armazenado no objeto ou reconstruído)
+        if hasattr(portfolio, "_signals"):
+            _signals_for_radar = portfolio._signals or {}
+        _network_for_radar = (graph_data or {}).get("_network_result")
+        radar_tab_html = render_desk_radar_tab(
+            result=_desk_intel,
+            signals=_signals_for_radar,
+            rrg_result=_rrg_result,
+            market_prices=mp,
+            network_result=_network_for_radar,
+        )
+    except Exception as _exc:
+        _log.warning("desk_radar_render_failed", error=str(_exc))
+        radar_tab_html = (
+            '<div style="padding:40px;text-align:center;color:#6b7280">'
+            f'Desk Radar indisponível: {str(_exc)[:120]}'
+            '</div>'
+        )
+
+    # ── Options tab ──────────────────────────────────────────────────────────
+    _options_snap = options_snapshot
+    if _options_snap is None:
+        try:
+            from app.providers.options_store import options_store as _os
+            _options_snap = _os.load_latest()
+        except Exception:
+            pass
+
+    try:
+        from app.views.options_desk import render_options_tab
+        _jarvis_html = None
+        if _options_snap is not None:
+            try:
+                from app.providers.options_store import options_store as _os2
+                _jarvis_html = _os2.load_jarvis_html(_options_snap)
+            except Exception:
+                pass
+        options_tab_html = render_options_tab(_options_snap, _jarvis_html)
+    except Exception as _exc:
+        _log.warning("options_tab_render_failed", error=str(_exc))
+        options_tab_html = (
+            '<div style="padding:40px;text-align:center;color:#6b7280">'
+            f'Opções indisponível: {str(_exc)[:120]}'
+            '</div>'
+        )
+
     top_hubs = mst_meta.get("top_hubs") or []
     hubs_str = ", ".join(f"{t}({d})" for t, d in top_hubs[:3]) if top_hubs else "—"
     avg_corr = mst_meta.get("avg_corr")
@@ -1614,12 +2111,18 @@ def generate_macro_desk_v2_html(
   <button class="mode-btn" data-mode="risk">Risk</button>
   <button class="mode-btn" data-mode="regime">Regime</button>
   <div class="sep"></div>
+  <button class="layer-btn active" data-layer="structure" title="Camada estrutural — hierarquia, MST, RMT">Struct</button>
+  <button class="layer-btn active" data-layer="flow" title="Camada de fluxo — rotação RRG">Flow</button>
+  <button class="layer-btn active" data-layer="convexity" title="Camada de convexidade — IV rank, skew, fragility">Convex</button>
+  <div class="sep"></div>
   <span class="spacer"></span>
   <span id="expand-count" style="font-size:10px;color:#64748b"></span>
   <div class="sep"></div>
   <button class="ctrl-btn" id="btn-back" style="display:none;border-color:#38bdf8;color:#38bdf8">&larr; Back</button>
   <button class="ctrl-btn" id="btn-fit">Fit <span style="color:#4a6380">[F]</span></button>
   <button class="ctrl-btn" id="btn-relayout">Layout <span style="color:#4a6380">[R]</span></button>
+  <button class="ctrl-btn" id="btn-tree-layout">Force <span style="color:#4a6380">[H]</span></button>
+  <button id="cp-toggle">Contagion <span style="color:#4a6380">[C]</span></button>
   <button class="ctrl-btn danger" id="btn-reset">Reset</button>
 </div>
 
@@ -1627,6 +2130,8 @@ def generate_macro_desk_v2_html(
   <button class="main-tab active" onclick="switchMainTab('desk',this)">Desk Portfólio</button>
   <button class="main-tab" onclick="switchMainTab('portfolio',this)">Alocação</button>
   <button class="main-tab" onclick="switchMainTab('editorial',this)">Informações de Mercado</button>
+  <button class="main-tab" onclick="switchMainTab('radar',this)" style="color:#818cf8;border-color:#818cf840">Desk Radar ◈</button>
+  <button class="main-tab" onclick="switchMainTab('options',this)" style="color:#00d4e8;border-color:#00d4e840">Opções ◈</button>
 </div>
 
 <div id="desk-view" class="main-view active">
@@ -1691,6 +2196,8 @@ def generate_macro_desk_v2_html(
         <span id="nd-close">&times;</span>
         <div id="nd-label">—</div>
         <div id="nd-sub">—</div>
+        <div id="nd-summary" style="font-size:10px;color:#94a3b8;margin-bottom:7px;line-height:1.4;
+             border-left:2px solid #334155;padding-left:6px;display:none"></div>
         <div class="nd-tabs">
           <button class="nd-tab active" data-tab="price">Price</button>
           <button class="nd-tab" data-tab="valuation">Val.</button>
@@ -1698,6 +2205,9 @@ def generate_macro_desk_v2_html(
           <button class="nd-tab" data-tab="options">Options</button>
           <button class="nd-tab" data-tab="risk">Risk</button>
           <button class="nd-tab" data-tab="flow">Flow</button>
+          <button class="nd-tab" data-tab="struct" style="color:#818cf8">S</button>
+          <button class="nd-tab" data-tab="nodeflow" style="color:#22c55e">F</button>
+          <button class="nd-tab" data-tab="convex" style="color:#f59e0b">C</button>
         </div>
         <div id="nd-tab-price"     class="nd-tab-panel active"><div id="nd-rows"></div></div>
         <div id="nd-tab-valuation" class="nd-tab-panel"><div id="nd-rows-val"></div></div>
@@ -1705,6 +2215,21 @@ def generate_macro_desk_v2_html(
         <div id="nd-tab-options"   class="nd-tab-panel"><div id="nd-rows-opt"></div></div>
         <div id="nd-tab-risk"      class="nd-tab-panel"><div id="nd-rows-risk"></div></div>
         <div id="nd-tab-flow"      class="nd-tab-panel"><div id="nd-rows-flow"></div></div>
+        <div id="nd-tab-struct"    class="nd-tab-panel"><div id="nd-rows-struct"></div></div>
+        <div id="nd-tab-nodeflow"  class="nd-tab-panel"><div id="nd-rows-nodeflow"></div></div>
+        <div id="nd-tab-convex"    class="nd-tab-panel"><div id="nd-rows-convex"></div></div>
+      </div>
+
+      <!-- Contagion side panel -->
+      <div id="contagion-panel">
+        <div id="cp-header">
+          <div>
+            <div id="cp-title">Contagion Map</div>
+            <div id="cp-asset">—</div>
+          </div>
+          <button id="cp-close">&times;</button>
+        </div>
+        <div id="cp-body"></div>
       </div>
 
       <div id="hint-bar">
@@ -1713,11 +2238,11 @@ def generate_macro_desk_v2_html(
         <div class="leg"><div class="leg-dot" style="background:#f59e0b"></div> Hub</div>
         <div class="leg"><div class="leg-dot" style="background:#818cf8"></div> Expan.</div>
         <div id="hint-text">
-          [+] drill &middot; dbl-click zoom &middot; hover=stats &middot; right-click=isolate
+          [+] drill &middot; dbl-click zoom &middot; hover=stats &middot; right-click=isolate &middot; click=contagion
         </div>
       </div>
       <div id="kbd-hints">
-        F fit &nbsp; R layout &nbsp; Esc fechar<br>
+        F fit &nbsp; R layout &nbsp; H hierarquia &nbsp; C contagion &nbsp; Esc fechar<br>
         1–5 tabs &nbsp; ⌘+scroll zoom
       </div>
     </div>
@@ -1728,10 +2253,16 @@ def generate_macro_desk_v2_html(
   {portfolio_tab_html}
 </div>
 
-<div id="editorial-view" class="main-view" style="flex-direction:column;overflow-y:auto;background:#060a12">
-  <div style="max-width:900px;margin:0 auto;padding:24px 32px;width:100%">
-    {editorial_content}
-  </div>
+<div id="editorial-view" class="main-view" style="overflow:hidden;background:#06080f">
+  {editorial_content}
+</div>
+
+<div id="radar-view" class="main-view" style="overflow-y:auto;background:#060a12;padding:0">
+  {radar_tab_html}
+</div>
+
+<div id="options-view" class="main-view" style="overflow-y:auto;background:#020810;padding:0">
+  {options_tab_html}
 </div>
 
 <script>
@@ -1760,9 +2291,21 @@ def save_macro_desk_v2(
     curation_result: "CurationResult | None" = None,
     graph_data: "dict | None" = None,
     live_mode: bool = False,
+    portfolio=None,   # PortfolioResult | None
+    rrg_result=None,  # RRGResult | None
+    desk_intel=None,  # DeskIntelligenceResult | None
+    options_snapshot=None,  # OptionsSnapshot | None
 ) -> Path:
+    # Extrai rrg e desk_intel do portfolio se não foram passados explicitamente
+    _rrg    = rrg_result   or getattr(portfolio, "_rrg_result",  None)
+    _dintel = desk_intel   or getattr(portfolio, "_desk_intel",  None)
     try:
-        html = generate_macro_desk_v2_html(bundle, graph_data, curation_result, live_mode=live_mode)
+        html = generate_macro_desk_v2_html(
+            bundle, graph_data, curation_result,
+            live_mode=live_mode, portfolio=portfolio,
+            rrg_result=_rrg, desk_intel=_dintel,
+            options_snapshot=options_snapshot,
+        )
     except Exception as exc:
         _log.error("macro_desk_v2_failed", error=str(exc), exc_info=True)
         raise

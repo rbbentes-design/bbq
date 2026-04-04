@@ -1,23 +1,18 @@
 """
-Provider: Market Prices — Bloomberg Only
-=========================================
+Provider: Market Prices — Bloomberg primário, fallback em camadas
 
-FONTE ÚNICA E OFICIAL: Banco SQLite macrodesk.db via query_layer.
+Hierarquia de fontes:
+  1. Bloomberg DB  (query_layer — fonte oficial)
+  2. IBKR snapshot (ib_insync)
+  3. Alpha Vantage (ALPHA_VANTAGE_API_KEY)
+  4. Twelve Data   (TWELVE_DATA_API_KEY)
+  5. Finnhub       (FINNHUB_API_KEY)
 
-Regra absoluta do ecossistema MacroDesk:
-  - Apenas dados Bloomberg são usados
-  - Sem Yahoo Finance
-  - Sem Interactive Brokers
-  - Sem fallback externo de nenhum tipo
-  - Se o dado não está no banco, ele não existe
+Se o banco Bloomberg estiver vazio ou desatualizado, as camadas seguintes
+preenchem os tickers em falta. Retorna {} apenas se todas as camadas falharem.
 
-Se o banco estiver vazio ou desatualizado, retorna {} e loga aviso.
-O MacroDesk deve verificar is_data_available() antes de renderizar dados.
-
-Para atualizar o banco, execute o Bloomberg Agent:
+Para atualizar o banco Bloomberg:
     python -m core.bloomberg_main_agent
-    ou
-    launcher/run_bloomberg_agent.bat
 """
 
 from __future__ import annotations
@@ -100,26 +95,31 @@ def collect(
 
         prices = ql.get_latest_prices()
 
-        if not prices:
-            _log.warning(
-                "bloomberg_no_prices",
-                hint="Banco existe mas não tem dados de preço. Verifique o export BQuant.",
-            )
-            return {}
+        if prices:
+            _log.info("market_prices_loaded", tickers=len(prices), source="bloomberg")
+            return prices
 
-        _log.info("market_prices_loaded", tickers=len(prices), source="bloomberg")
-        return prices
+        _log.warning(
+            "bloomberg_no_prices",
+            hint="Banco existe mas não tem dados de preço. Tentando fallback.",
+        )
 
     except FileNotFoundError as exc:
-        _log.warning(
-            "banco_nao_encontrado",
-            error=str(exc),
-            hint="Execute o Bloomberg Agent para criar o banco.",
-        )
-        return {}
+        _log.warning("banco_nao_encontrado", error=str(exc))
     except Exception as exc:
-        _log.error("market_prices_error", error=str(exc))
-        return {}
+        _log.warning("market_prices_bbg_error", error=str(exc))
+
+    # ── Fallback: IBKR → Alpha Vantage → Twelve Data → Finnhub ───────────────
+    try:
+        from app.providers.market_data_chain import collect_prices
+        prices = collect_prices()
+        if prices:
+            _log.info("market_prices_from_chain", tickers=len(prices))
+            return prices
+    except Exception as exc:
+        _log.warning("market_prices_chain_error", error=str(exc))
+
+    return {}
 
 
 def format_summary(prices: dict[str, Any]) -> str:

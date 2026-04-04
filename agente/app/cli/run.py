@@ -101,9 +101,7 @@ def ingest(
         for m in bundle.audit_summary.error_messages:
             console.print(f"  [red][X] {m}[/red]")
 
-    # ── MacroDesk v2 ─────────────────────────────────────────────────────────
-    # Flow Inspector está embutido no MacroDesk — não abre separado
-    desk2_path = None
+    # ── Curation object (compartilhado por brief e MacroDesk) ─────────────────
     curation_obj = None
     curation_path = bundle.artifact_paths.get("curation")
     if curation_path:
@@ -116,6 +114,19 @@ def ingest(
         except Exception:
             pass
 
+    # ── Writer Brief — gerado ANTES do MacroDesk para embutir na aba editorial ──
+    brief_path = None
+    try:
+        from app.views.week_ahead_brief import save_writer_brief
+        with console.status("[cyan]HTML diario (Wiki Recap)...[/cyan]"):
+            brief_path = save_writer_brief(bundle, curation_path)
+        console.print(f"[green]HTML diario:[/green] {brief_path.name}")
+    except Exception as exc:
+        console.print(f"[yellow]HTML diario falhou: {exc}[/yellow]")
+
+    # ── MacroDesk v2 ─────────────────────────────────────────────────────────
+    # Flow Inspector está embutido no MacroDesk — não abre separado
+    desk2_path = None
     try:
         from app.views.macro_desk_v2 import save_macro_desk_v2
         with console.status("[cyan]MacroDesk v2 (grafo interativo)...[/cyan]"):
@@ -132,16 +143,6 @@ def ingest(
 
     # ── Portfolio Allocation (sem abrir Flow Inspector standalone) ────────────
     fi_path, portfolio, signals = _run_portfolio_after_ingest(bundle)
-
-    # ── Writer Brief — HTML principal do dia (padrão Wiki Recap) ─────────────
-    brief_path = None
-    try:
-        from app.views.week_ahead_brief import save_writer_brief
-        with console.status("[cyan]HTML diario (Wiki Recap)...[/cyan]"):
-            brief_path = save_writer_brief(bundle, curation_path)
-        console.print(f"[green]HTML diario:[/green] {brief_path.name}")
-    except Exception as exc:
-        console.print(f"[yellow]HTML diario falhou: {exc}[/yellow]")
 
     # ── Abre UM único HTML — MacroDesk tem prioridade (tem auto-refresh) ────────
     _final_html = desk2_path or brief_path
@@ -508,10 +509,75 @@ def desk(
     focus: str = typer.Option(None, "--focus", "-f", help="Instrução específica do operador"),
     save: bool = typer.Option(False, "--save", "-s", help="Salva diagnóstico em .txt"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
+    no_open: bool = typer.Option(False, "--no-open", help="Não abre HTML no browser."),
 ) -> None:
-    """Macro Desk — diagnóstico macro acionável sobre o bundle do dia."""
+    """Macro Desk — diagnóstico macro acionável + HTML interativo."""
     from app.cli.invest import main as desk_main
     desk_main(date=date, focus=focus, save=save, log_level="DEBUG" if verbose else "WARNING")
+
+    # ── Regenera MacroDesk HTML com os fixes mais recentes ────────────────────
+    try:
+        from datetime import date as _date
+        from app.storage.bundle_store import bundle_store
+        from app.storage.paths import workspace
+        from pathlib import Path as _P
+
+        target = _date.fromisoformat(date) if date else _date.today()
+        bundles = [p for p in bundle_store.list_bundles()
+                   if str(target) in str(p) and "_" not in p.stem]
+        if not bundles:
+            return
+
+        from app.models.daily_ingestion_bundle import DailyIngestionBundle
+        import json as _json
+        bundle = DailyIngestionBundle.model_validate_json(
+            bundles[0].read_text(encoding="utf-8")
+        )
+
+        # Carrega curação se disponível
+        curation_obj = None
+        curation_path = bundle.artifact_paths.get("curation")
+        if curation_path:
+            try:
+                from app.curation.models import CurationResult
+                curation_obj = CurationResult.model_validate(
+                    _json.loads(_P(curation_path).read_text(encoding="utf-8"))
+                )
+            except Exception:
+                pass
+
+        # Gera brief ANTES do MacroDesk para incluir na aba editorial
+        try:
+            from app.views.week_ahead_brief import save_writer_brief
+            with console.status("[cyan]Writer Brief...[/cyan]"):
+                save_writer_brief(bundle, curation_path)
+        except Exception:
+            pass
+
+        # Roda portfolio pipeline para a aba Alocação
+        portfolio = None
+        rrg_result = None
+        try:
+            from app.pipeline.portfolio_pipeline import run_portfolio_pipeline
+            with console.status("[cyan]Portfolio pipeline...[/cyan]"):
+                portfolio, _, _ = run_portfolio_pipeline(bundle)
+            rrg_result = getattr(portfolio, "_rrg_result", None)
+        except Exception as exc:
+            console.print(f"[yellow]Portfolio pipeline falhou: {exc}[/yellow]")
+
+        # Gera MacroDesk HTML completo
+        with console.status("[cyan]Gerando MacroDesk HTML...[/cyan]"):
+            from app.views.macro_desk_v2 import save_macro_desk_v2
+            desk_path = save_macro_desk_v2(bundle, curation_obj, portfolio=portfolio, rrg_result=rrg_result)
+
+        console.print(f"[green]MacroDesk HTML:[/green] {desk_path.name}")
+
+        if not no_open:
+            import webbrowser
+            webbrowser.open(desk_path.as_uri())
+
+    except Exception as exc:
+        console.print(f"[yellow]HTML geração falhou: {exc}[/yellow]")
 
 
 @app.command()
@@ -697,6 +763,78 @@ def positions(
         return
 
     print_open_positions(console)
+
+
+@app.command(name="options-import")
+def options_import(
+    zip_path: str = typer.Argument(..., help="Caminho para o ZIP exportado do Greeks Dashboard."),
+    no_open: bool = typer.Option(False, "--no-open", help="Não regenera o MacroDesk após importar."),
+    date: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD do bundle a regenerar (padrão: hoje)."),
+) -> None:
+    """Importa snapshot do Greeks Dashboard (BQuant ZIP) para o workspace e regenera o MacroDesk."""
+    from app.providers.options_store import options_store
+
+    console.print(Panel.fit(
+        f"[bold cyan]Options Import[/bold cyan]\n[dim]{zip_path}[/dim]",
+        border_style="cyan",
+    ))
+
+    with console.status("[cyan]Importando ZIP...[/cyan]"):
+        try:
+            snap = options_store.import_from_zip(zip_path)
+        except Exception as exc:
+            console.print(f"[red]Erro ao importar ZIP: {exc}[/red]")
+            raise typer.Exit(1)
+
+    console.print(f"[green]✓[/green] Importado: [bold]{snap.ticker}[/bold] spot={snap.spot:,.0f}  ts={snap.ts}")
+    console.print(f"   GEX: {snap.gex_net_bn:+.1f}B  |  IV 30D: {snap.iv_30d*100:.2f}%  |  Squeeze: {snap.squeeze_score:.0f}/100")
+    console.print(f"   Gamma Flip: {snap.gamma_flip:,.0f}  |  Call Wall: {snap.call_wall:,.0f}  |  Put Wall: {snap.put_wall:,.0f}")
+    if snap.has_jarvis_html:
+        console.print("   [dim]jarvis.html incluído[/dim]")
+
+    if no_open:
+        return
+
+    # Regenera MacroDesk com nova aba Opções
+    from datetime import date as _date
+    from pathlib import Path as _P
+    import json as _json
+
+    target = _date.fromisoformat(date) if date else _date.today()
+    try:
+        from app.storage.bundle_store import bundle_store
+        bundles = [p for p in bundle_store.list_bundles()
+                   if str(target) in str(p) and "_" not in p.stem]
+        if not bundles:
+            console.print("[yellow]Sem bundle para a data — MacroDesk não regenerado.[/yellow]")
+            return
+
+        from app.models.daily_ingestion_bundle import DailyIngestionBundle
+        bundle = DailyIngestionBundle.model_validate_json(
+            bundles[0].read_text(encoding="utf-8")
+        )
+
+        curation_obj = None
+        curation_path = bundle.artifact_paths.get("curation")
+        if curation_path:
+            try:
+                from app.curation.models import CurationResult
+                curation_obj = CurationResult.model_validate(
+                    _json.loads(_P(curation_path).read_text(encoding="utf-8"))
+                )
+            except Exception:
+                pass
+
+        with console.status("[cyan]Regenerando MacroDesk...[/cyan]"):
+            from app.views.macro_desk_v2 import save_macro_desk_v2
+            desk_path = save_macro_desk_v2(bundle, curation_obj)
+
+        console.print(f"[green]MacroDesk atualizado:[/green] {desk_path.name}")
+        import webbrowser as _wb
+        _wb.open(desk_path.as_uri())
+
+    except Exception as exc:
+        console.print(f"[yellow]MacroDesk regeneration falhou: {exc}[/yellow]")
 
 
 if __name__ == "__main__":

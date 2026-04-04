@@ -116,16 +116,33 @@ def run_portfolio_pipeline(
             _log.warning("prob_failed", error=str(exc))
             prob_map = {}
 
-    # ── 3b. Vol regime ────────────────────────────────────────────────────────
+    # ── 3b. Load options snapshot (Greeks Dashboard BBQ — mais recente disponível) ──
+    options_snapshot = None
+    try:
+        from app.providers.options_store import options_store as _opt_store
+        options_snapshot = _opt_store.load_latest()
+        if options_snapshot:
+            _log.info("options_snapshot_loaded",
+                      ticker=options_snapshot.ticker,
+                      ts=options_snapshot.ts,
+                      gex=options_snapshot.gex_net_bn,
+                      squeeze=options_snapshot.squeeze_score)
+    except Exception as exc:
+        _log.warning("options_snapshot_failed", error=str(exc))
+
+    # ── 3c. Vol regime (enriquecido com dados BBQ se disponíveis) ─────────────
     vol_regime = None
     try:
         from app.analysis.vol_regime import compute_vol_regime
-        vol_regime = compute_vol_regime(market_prices=market_prices)
+        vol_regime = compute_vol_regime(
+            market_prices=market_prices,
+            options_snapshot=options_snapshot,
+        )
         _log.info("vol_regime", regime=vol_regime.regime, stress=round(vol_regime.stress_score, 3))
     except Exception as exc:
         _log.warning("vol_regime_failed", error=str(exc))
 
-    # ── 3c. CTA positioning ───────────────────────────────────────────────────
+    # ── 3d. CTA positioning ───────────────────────────────────────────────────
     cta_result = None
     try:
         from app.providers.cta_positioning import compute_cta_positioning
@@ -133,7 +150,7 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("cta_positioning_failed", error=str(exc))
 
-    # ── 3d. Relative Strength / RRG ──────────────────────────────────────────
+    # ── 3e. Relative Strength / RRG ──────────────────────────────────────────
     rrg_result = None
     try:
         from app.analysis.relative_strength import compute_relative_strength
@@ -147,7 +164,7 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("rrg_failed", error=str(exc))
 
-    # ── 3e. Shadow Flow / Dark Pool ───────────────────────────────────────────
+    # ── 3f. Shadow Flow / Dark Pool ───────────────────────────────────────────
     shadow_flow_result = None
     try:
         from app.providers.shadow_flow import collect_shadow_flow
@@ -158,7 +175,7 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("shadow_flow_failed", error=str(exc))
 
-    # ── 3f. Narrative alpha (DeepVue themes + X sentiment) ───────────────────
+    # ── 3h. Narrative alpha (DeepVue themes + X sentiment) ───────────────────
     narrative_result = None
     try:
         from app.analysis.narrative_alpha import compute_narrative_alpha
@@ -172,6 +189,38 @@ def run_portfolio_pipeline(
                   deepvue_themes=len(narrative_result.deepvue_themes_parsed))
     except Exception as exc:
         _log.warning("narrative_alpha_failed", error=str(exc))
+
+    # ── 3g. SwaggyStocks — WSB mentions + short squeeze list ─────────────────
+    swaggy_result = None
+    try:
+        from app.providers.swaggy_stocks import collect as swaggy_collect
+        swaggy_result = swaggy_collect(max_wsb=50, max_squeeze=30)
+        _log.info("swaggy_done",
+                  wsb=len(swaggy_result.wsb_mentions),
+                  squeeze=len(swaggy_result.squeeze_candidates),
+                  top=swaggy_result.top_mentions[:5])
+    except Exception as exc:
+        _log.warning("swaggy_failed", error=str(exc))
+
+    # ── 3i. TradingView — Value Area / VWAP / zonas para UNIVERSO COMPLETO ─────
+    # Roda antes do alpha_signals para que o zone_filter ajuste composite + conviction
+    # antes da função objetivo do optimizer.
+    # tv_map_universe = {ticker: snapshot} para todos os ativos no universo
+    tv_map_universe: dict = {}
+    zone_signals: dict = {}
+    try:
+        from app.providers.tradingview import collect_for_positions as tv_collect
+        # Limita a 20 ativos para não ultrapassar ~60s de coleta (2.5s + 1s por ativo)
+        _tv_universe = list(market_prices.keys())[:20]
+        tv_map_universe = tv_collect(
+            _tv_universe,
+            layout="ultimate profile",
+            timeframe="D",
+        )
+        if tv_map_universe:
+            _log.info("tv_universe_collected", tickers=len(tv_map_universe))
+    except Exception as exc:
+        _log.warning("tv_universe_failed", error=str(exc))
 
     # ── 4. Alpha signals ──────────────────────────────────────────────────────
     from app.analysis.alpha_signals import compute_signals
@@ -189,14 +238,46 @@ def run_portfolio_pipeline(
         narrative_result=narrative_result,
     )
 
+    # ── 4b. TV Zone Filter — ajuste fino de composite + conviction ────────────
+    # Aplica position_bias (delta no composite) e atualiza conviction
+    # ANTES do optimizer para que as zonas TV entrem na função objetivo
+    if tv_map_universe:
+        try:
+            from app.analysis.tv_zone_filter import (
+                compute_zone_signals, apply_zone_signals_to_signals,
+            )
+            zone_signals = compute_zone_signals(tv_map_universe, signals)
+            if zone_signals:
+                signals = apply_zone_signals_to_signals(signals, zone_signals)
+                _log.info(
+                    "tv_zone_applied",
+                    tickers=len(zone_signals),
+                    ideal=sum(1 for z in zone_signals.values() if z.entry_quality == "ideal"),
+                    avoid=sum(1 for z in zone_signals.values() if z.entry_quality == "avoid"),
+                )
+        except Exception as exc:
+            _log.warning("tv_zone_filter_failed", error=str(exc))
+
     # ── 5. Portfolio optimization ─────────────────────────────────────────────
     from app.analysis.portfolio_optimizer import optimize_portfolio
+
+    # Computa vol_options_regime antecipadamente (antes do optimizer)
+    # para que GEX + IV ajustem alocações; desk_intel vai reusá-lo depois
+    _vol_options_regime_early = None
+    try:
+        from app.analysis.vol_options_regime import compute_vol_options_regime
+        _vol_options_regime_early = compute_vol_options_regime(options_snapshot, vol_regime)
+    except Exception as exc:
+        _log.warning("vol_options_regime_pre_failed", error=str(exc))
+
     portfolio = optimize_portfolio(
         signals=signals,
         market_prices=market_prices,
         budget=budget,
         regime_override=regime_override,
         vol_regime=vol_regime,
+        vol_options_regime=_vol_options_regime_early,
+        zone_signals=zone_signals or None,
     )
 
     # ── 5a. Earnings filter ───────────────────────────────────────────────────
@@ -234,20 +315,24 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("options_strategy_failed", error=str(exc))
 
-    # ── 5c. TradingView technical enrichment ─────────────────────────────────
-    tv_map: dict = {}
+    # ── 5c. TradingView enrichment — completa para posições não coletadas ──────
+    tv_map: dict = dict(tv_map_universe)   # reutiliza coleta do universo
     try:
         from app.providers.tradingview import collect_for_positions
         position_tickers = [p.ticker for p in portfolio.positions]
-        tv_map = collect_for_positions(
-            position_tickers,
-            layout="ultimate profile",
-            timeframe="D",
-        )
+        missing_tickers = [t for t in position_tickers if t not in tv_map]
+        if missing_tickers:
+            extra = collect_for_positions(
+                missing_tickers,
+                layout="ultimate profile",
+                timeframe="D",
+            )
+            tv_map.update(extra)
+
         if tv_map:
             from app.analysis.technical_tv import enrich_positions_with_tv
             portfolio.positions = enrich_positions_with_tv(portfolio.positions, tv_map)
-            _log.info("tv_enrichment_done", tickers=list(tv_map.keys()))
+            _log.info("tv_enrichment_done", tickers=len(tv_map))
     except Exception as exc:
         _log.warning("tv_enrichment_failed", error=str(exc))
 
@@ -293,9 +378,30 @@ def run_portfolio_pipeline(
         except Exception as exc:
             _log.warning("decision_log_failed", error=str(exc))
 
-    # Armazena rrg_result e pairs_result no portfolio para uso pelo live loop
+    # Armazena resultados no portfolio para uso pelo live loop e Desk Radar
     portfolio._rrg_result   = rrg_result
     portfolio._pairs_result = pairs_result
+    portfolio._signals      = signals   # dict[str, AssetSignal] para desk_radar
+
+    # ── Desk Intelligence — motor de inferência regime-aware ──────────────────
+    portfolio._desk_intel = None
+    try:
+        from app.analysis.desk_intelligence import compute_desk_intelligence
+        portfolio._desk_intel = compute_desk_intelligence(
+            signals=signals,
+            rrg_result=rrg_result,
+            vol_regime=vol_regime,
+            narrative_result=narrative_result,
+            cta_result=cta_result,
+            shadow_flow=shadow_flow_result,
+            options_map=options_map,
+            network_result=network_result,
+            market_prices=market_prices,
+            swaggy_result=swaggy_result,
+            options_snapshot=options_snapshot,
+        )
+    except Exception as exc:
+        _log.warning("desk_intelligence_failed", error=str(exc))
 
     _log.info("portfolio_pipeline_done",
               n_signals=len(signals),

@@ -145,9 +145,9 @@ def collect(
     if result:
         return result
 
-    # 3. Fallback yfinance
-    _log.info("anatomy_yfinance_fallback", tickers=len(equity_tickers))
-    return _collect_yfinance(equity_tickers, price_map)
+    # No data available — return empty
+    _log.warning("anatomy_no_data", tickers=len(equity_tickers))
+    return {}
 
 
 _OPTIONS_FIELDS = {"atm_iv", "skew_5pct", "pcr_oi"}
@@ -156,99 +156,12 @@ _ANATOMY_FIELDS = {"pe", "mktcap_b", "beta", "profit_margin", "debt_equity",
                    "drawdown_52w", "forward_pe", "ps", "pb", "ev_ebitda", "roa"}
 
 
-def _collect_yfinance(
-    tickers: list[str],
-    price_map: dict[str, float],
-) -> dict[str, dict[str, Any]]:
-    """
-    Fallback: coleta fundamentais + IV via yfinance quando BQL não está disponível.
-    Funciona bem para universos pequenos (~30 tickers).
-    """
-    try:
-        import yfinance as yf
-        from datetime import date, timedelta
-    except ImportError:
-        return {}
-
-    results: dict[str, dict[str, Any]] = {}
-    equity_tickers = [t for t in tickers if _is_equity(t)]
-
-    for sym in equity_tickers:
-        try:
-            tk = yf.Ticker(sym)
-            info = tk.info or {}
-
-            price = (
-                price_map.get(sym)
-                or info.get("currentPrice")
-                or info.get("regularMarketPrice")
-            )
-            hi52 = info.get("fiftyTwoWeekHigh")
-            entry: dict[str, Any] = {
-                "pe":             info.get("trailingPE"),
-                "forward_pe":     info.get("forwardPE"),
-                "pb":             info.get("priceToBook"),
-                "beta":           info.get("beta"),
-                "mktcap_b":       round(info.get("marketCap", 0) / 1e9, 2) if info.get("marketCap") else None,
-                "roe":            info.get("returnOnEquity"),
-                "profit_margin":  info.get("profitMargins"),
-                "debt_equity":    info.get("debtToEquity"),
-                "dividend_yield": info.get("dividendYield"),
-                "price":          price,
-                "hi_52w":         hi52,
-                "lo_52w":         info.get("fiftyTwoWeekLow"),
-                "drawdown_52w":   round((float(price) - hi52) / hi52, 4) if price and hi52 and hi52 > 0 else None,
-            }
-            # Remove Nones
-            entry = {k: v for k, v in entry.items() if v is not None}
-
-            # IV via options chain (expiração mais próxima ~30d)
-            try:
-                exps = tk.options
-                if exps:
-                    target = date.today() + timedelta(days=30)
-                    exp = min(exps, key=lambda e: abs((date.fromisoformat(e) - target).days))
-                    chain = tk.option_chain(exp)
-                    calls, puts = chain.calls, chain.puts
-                    if not calls.empty and price:
-                        # ATM call IV
-                        calls = calls.copy()
-                        calls["dist"] = (calls["strike"] - price).abs()
-                        atm_call = calls.nsmallest(1, "dist")
-                        atm_iv = float(atm_call["impliedVolatility"].iloc[0])
-                        entry["atm_iv"] = round(atm_iv, 4)
-
-                    if not puts.empty and not calls.empty and price:
-                        # Skew: OTM put IV − OTM call IV (~5%)
-                        put_strike  = price * 0.95
-                        call_strike = price * 1.05
-                        puts2  = puts.copy();  puts2["dist"]  = (puts2["strike"]  - put_strike).abs()
-                        calls2 = calls.copy(); calls2["dist"] = (calls2["strike"] - call_strike).abs()
-                        otm_put_iv  = float(puts2.nsmallest(1, "dist")["impliedVolatility"].iloc[0])
-                        otm_call_iv = float(calls2.nsmallest(1, "dist")["impliedVolatility"].iloc[0])
-                        entry["skew_5pct"] = round(otm_put_iv - otm_call_iv, 4)
-
-                    if not puts.empty and not calls.empty:
-                        pcr = puts["openInterest"].sum() / max(calls["openInterest"].sum(), 1)
-                        entry["pcr_oi"] = round(float(pcr), 3)
-            except Exception:
-                pass
-
-            if entry:
-                results[sym] = entry
-        except Exception as exc:
-            _log.debug("yfinance_anatomy_error", sym=sym, error=str(exc))
-
-    _log.info("yfinance_anatomy_done", collected=len(results), of=len(equity_tickers))
-    return results
-
-
 def collect_from_registry(
     price_map: dict[str, float] | None = None,
     tickers_filter: list[str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """
-    Coleta fundamentais + options via BQL (primário) ou yfinance (fallback).
+    Coleta fundamentais + options via BQL (primário) ou DB Bloomberg (fallback).
 
     Args:
         price_map:      {ticker: price} para drawdown atualizado

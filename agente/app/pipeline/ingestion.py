@@ -351,7 +351,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
     except Exception as exc:
         _log.warning("global_liquidity_error", error=str(exc))
 
-    # ── Market Prices (yfinance) ───────────────────────────────────────────────
+    # ── Market Prices ─────────────────────────────────────────────────────────
     try:
         from app.providers.market_prices import collect as prices_collect
         market_prices_data = prices_collect()

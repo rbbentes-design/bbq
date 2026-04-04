@@ -73,6 +73,70 @@ def _momentum_score(daily: float | None, weekly: float | None, ytd: float | None
     return round(sum(parts) / len(parts), 3) if parts else 0.0
 
 
+# ── Convexity helpers ─────────────────────────────────────────────────────────
+
+def _convexity_halo_color(
+    iv_pct: float | None,
+    skew: float | None,
+    fragility: float | None,
+    hidden_opp: float | None,
+) -> str | None:
+    """Cor do halo de convexidade para o nó no grafo."""
+    frag = fragility or 0.0
+    opp  = hidden_opp or 0.0
+
+    if iv_pct is not None:
+        # IV data disponível — sinal completo
+        if iv_pct > 0.75 and frag > 0.5:
+            return "#ef4444"   # IV cara + frágil → vermelho
+        if iv_pct > 0.75:
+            return "#c084fc"   # IV cara → roxo
+        if iv_pct < 0.35 and opp > 0.3:
+            return "#22c55e"   # IV barata + oportunidade → verde
+        if iv_pct < 0.35:
+            return "#38bdf8"   # IV barata → azul
+        if skew is not None and skew > 0.04:
+            return "#f97316"   # Put skew elevado → laranja
+        return None
+
+    # Fallback: sem IV — usa apenas fragility/hidden_opp do desk_intel
+    if frag > 0.5:
+        return "#ef4444"   # alta fragilidade → vermelho
+    if frag > 0.25:
+        return "#f97316"   # fragilidade moderada → laranja
+    if opp > 0.3:
+        return "#22c55e"   # alta oportunidade → verde
+    if opp > 0.15:
+        return "#38bdf8"   # oportunidade moderada → azul
+    return None
+
+
+def _convexity_node_attrs(
+    ticker: str | None,
+    options: dict[str, Any] | None,
+    desk_intel: Any | None,
+) -> dict[str, Any] | None:
+    """Monta atributos de convexidade para o nó."""
+    if not ticker:
+        return None
+    o = options or {}
+    iv_pct   = o.get("iv_percentile")
+    skew     = o.get("skew_5pct")
+    frag     = getattr(desk_intel, "fragility_scores",   {}).get(ticker) if desk_intel else None
+    opp      = getattr(desk_intel, "opportunity_scores", {}).get(ticker) if desk_intel else None
+    halo_col = _convexity_halo_color(iv_pct, skew, frag, opp)
+    if iv_pct is None and (frag is None or frag == 0.0) and (opp is None or opp == 0.0):
+        return None
+    return {
+        "iv_rank":    round(iv_pct, 3) if iv_pct is not None else None,
+        "skew":       round(skew, 4)   if skew is not None else None,
+        "fragility":  round(frag, 3)   if frag is not None else None,
+        "hidden_opp": round(opp, 3)    if opp  is not None else None,
+        "halo_color": halo_col,
+        "halo_radius": 20 if halo_col else None,
+    }
+
+
 # ── Node builder ──────────────────────────────────────────────────────────────
 
 def _build_node(
@@ -84,6 +148,8 @@ def _build_node(
     anatomy_map: dict[str, Any] | None = None,
     options_map: dict[str, Any] | None = None,
     prob_map: dict[str, Any] | None = None,
+    desk_intel: Any | None = None,
+    rrg_result: Any | None = None,
 ) -> dict[str, Any]:
     """Constrói um node Cytoscape.js com dados de mercado, anatomy, options e scores."""
 
@@ -114,6 +180,20 @@ def _build_node(
     # Probabilistic: VaR, CVaR, tail score, FFT cycle, regime P(bull)
     prob = (prob_map or {}).get(ticker) if ticker else None
 
+    # Convexity layer attrs (IV rank, skew, fragility, hidden_opp, halo)
+    convexity = _convexity_node_attrs(ticker, options, desk_intel)
+
+    # RRG state (quadrant, rs_ratio, rs_momentum, alpha_score)
+    rrg_quadrant = rrg_alpha = rrg_rs_ratio = rrg_rs_mom = None
+    if rrg_result and ticker:
+        _rrg_sigs = getattr(rrg_result, "signals", {}) or {}
+        _rsig = _rrg_sigs.get(ticker)
+        if _rsig:
+            rrg_quadrant = getattr(_rsig, "quadrant", None)
+            rrg_rs_ratio = getattr(_rsig, "rs_ratio", None)
+            rrg_rs_mom   = getattr(_rsig, "rs_momentum", None)
+            rrg_alpha    = getattr(_rsig, "rs_alpha_score", None)
+
     data: dict[str, Any] = {
         "id":         node_id,
         "label":      node_def.get("label", node_id),
@@ -143,6 +223,13 @@ def _build_node(
         "prob":         prob,
         # Scores (se vierem do investment agent)
         "agent_scores": scores,
+        # Convexity layer (halo, IV rank, skew, fragility, hidden_opp)
+        "convexity":    convexity,
+        # RRG state (flow layer)
+        "rrg_quadrant": rrg_quadrant,
+        "rrg_rs_ratio": round(rrg_rs_ratio, 2) if rrg_rs_ratio is not None else None,
+        "rrg_rs_mom":   round(rrg_rs_mom, 2)   if rrg_rs_mom   is not None else None,
+        "rrg_alpha":    round(rrg_alpha, 3)     if rrg_alpha    is not None else None,
         # Tamanho: contribuição = peso × |retorno|; maior movimento/peso = esfera maior
         "size": _node_size_dynamic(level, is_hub, bool(mp), daily, weight, liquidity_w),
         "weight": weight,
@@ -228,6 +315,7 @@ def _hierarchy_edges(nodes_in_graph: set[str]) -> list[dict[str, Any]]:
                     "source": parent,
                     "target": nid,
                     "type":   "hierarchy",
+                    "layer":  "structure",
                     "weight": 1.0,
                     "color":  "#374151",
                     "width":  1,
@@ -257,6 +345,7 @@ def _mst_edges(mst_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
                 "source":      src_id,
                 "target":      tgt_id,
                 "type":        "mst",
+                "layer":       "structure",
                 "correlation": round(rho, 4),
                 "distance":    e.get("distance", 0.0),
                 "color":       color,
@@ -264,6 +353,168 @@ def _mst_edges(mst_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
                 "weight":      abs(rho),
             }
         })
+    return edges
+
+
+def _synthetic_corr_edges(
+    market_prices: dict[str, Any],
+    nodes_in_graph: set[str],
+    already_covered: set[str],
+) -> list[dict[str, Any]]:
+    """
+    Arestas de correlação sintéticas baseadas em retornos snapshot (daily/weekly/ytd).
+    Usadas quando MST não tem dados suficientes (IBKR offline, etc.).
+
+    Metodologia:
+    - Para cada par de nós com dados, calcula "pseudo-rho" pela concordância
+      de sinal nos 3 horizontes: +1/3 por horizonte em que os retornos têm
+      o mesmo sinal, −1/3 quando diferem.
+    - Retorna apenas as N conexões mais fortes (para não poluir o grafo).
+    """
+    import math
+
+    # Monta vetor de retornos por node_id
+    vectors: dict[str, list[float | None]] = {}
+    for nid, nd in __import__('app.desk.node_registry', fromlist=['NODES']).NODES.items():
+        if nid not in nodes_in_graph:
+            continue
+        ticker = nd.get("ticker") or nid
+        mp = market_prices.get(ticker, {})
+        if not mp or not mp.get("price"):
+            continue
+        d = mp.get("daily_return")
+        w = mp.get("weekly_return")
+        y = mp.get("ytd_return")
+        if d is None and w is None and y is None:
+            continue
+        vectors[nid] = [d, w, y]
+
+    if len(vectors) < 2:
+        return []
+
+    # Pares — calcula pseudo-rho
+    node_ids = list(vectors.keys())
+    scored: list[tuple[float, str, str]] = []
+    for i in range(len(node_ids)):
+        for j in range(i + 1, len(node_ids)):
+            a, b = node_ids[i], node_ids[j]
+            va, vb = vectors[a], vectors[b]
+            score = 0.0
+            count = 0
+            for x, y in zip(va, vb):
+                if x is None or y is None:
+                    continue
+                if x == 0 and y == 0:
+                    continue
+                sign_match = (x * y) > 0
+                score += (1.0 if sign_match else -1.0) / 3.0
+                count += 1
+            if count < 2:
+                continue
+            rho = round(score, 3)
+            # só incluir correlações significativas
+            if abs(rho) >= 0.33:
+                scored.append((abs(rho), a, b, rho))
+
+    # Ordena por |rho| desc, limita a N arestas (para não poluir)
+    MAX_SYNTH = 60
+    scored.sort(key=lambda x: x[0], reverse=True)
+    edges = []
+    covered_nodes: set[str] = set(already_covered)
+    for abs_rho, a, b, rho in scored[:MAX_SYNTH * 2]:
+        # Garante que cada nó sem MST ganhe pelo menos 1 aresta sintética
+        if len(edges) >= MAX_SYNTH and (a in covered_nodes and b in covered_nodes):
+            continue
+        color = "#22c55e" if rho >= 0 else "#ef4444"
+        edges.append({
+            "data": {
+                "id":          f"syn_{a}_{b}",
+                "source":      a,
+                "target":      b,
+                "type":        "mst",   # mesmo tipo para herdar estilo
+                "correlation": rho,
+                "distance":    round(1.0 - abs_rho, 3),
+                "color":       color,
+                "width":       max(1, int(abs_rho * 3)),
+                "weight":      abs_rho,
+                "synthetic":   True,
+            }
+        })
+        covered_nodes.add(a)
+        covered_nodes.add(b)
+
+    _log.info("synthetic_corr_edges", n=len(edges), nodes_covered=len(covered_nodes))
+    return edges
+
+
+def _rrg_edges(rrg_result: Any, nodes_in_graph: set[str]) -> list[dict[str, Any]]:
+    """
+    Arestas direcionadas do RRG (Relative Rotation Graph).
+
+    Cada ativo vs SPY benchmark — quadrante determina direção e cor:
+      LEADING   (#22c55e) : ativo → sp500  (outperforming e acelerando)
+      IMPROVING (#84cc16) : ativo → sp500  (fraco mas recuperando, dashed)
+      WEAKENING (#f97316) : sp500 → ativo  (forte mas desacelerando, dashed)
+      LAGGING   (#ef4444) : sp500 → ativo  (fraco e piorando)
+
+    Espessura proporcional ao |RS-Ratio − 100| (distância do pivot).
+    """
+    if rrg_result is None:
+        return []
+
+    spx_id = "sp500"
+    if spx_id not in nodes_in_graph:
+        return []
+
+    QUADRANT_STYLES: dict[str, dict] = {
+        "leading":   {"color": "#22c55e", "width": 3, "dashed": False,  "to_spx": True},
+        "improving": {"color": "#84cc16", "width": 2, "dashed": True,   "to_spx": True},
+        "weakening": {"color": "#f97316", "width": 2, "dashed": True,   "to_spx": False},
+        "lagging":   {"color": "#ef4444", "width": 3, "dashed": False,  "to_spx": False},
+    }
+
+    edges = []
+    signals = getattr(rrg_result, "signals", {})
+    for ticker, sig in signals.items():
+        node_id = _ticker_to_node(ticker, nodes_in_graph)
+        if not node_id or node_id == spx_id:
+            continue
+
+        quadrant = getattr(sig, "quadrant", "unknown")
+        style = QUADRANT_STYLES.get(quadrant)
+        if not style:
+            continue
+
+        rs_ratio    = getattr(sig, "rs_ratio", 100.0) or 100.0
+        rs_mom      = getattr(sig, "rs_momentum", 100.0) or 100.0
+        alpha_score = getattr(sig, "rs_alpha_score", 0.0) or 0.0
+
+        # Espessura proporcional ao desvio do pivot (100)
+        deviation = abs(rs_ratio - 100.0)
+        width = max(1, min(style["width"], int(style["width"] + deviation / 15.0)))
+
+        src = node_id if style["to_spx"] else spx_id
+        tgt = spx_id  if style["to_spx"] else node_id
+
+        edges.append({
+            "data": {
+                "id":          f"rrg_{node_id}",
+                "source":      src,
+                "target":      tgt,
+                "type":        "rrg",
+                "layer":       "flow",
+                "quadrant":    quadrant,
+                "rs_ratio":    round(rs_ratio, 2),
+                "rs_momentum": round(rs_mom, 2),
+                "alpha_score": round(alpha_score, 3),
+                "color":       style["color"],
+                "width":       width,
+                "dashed":      style["dashed"],
+                "weight":      round(deviation / 20.0, 3),
+            }
+        })
+
+    _log.info("rrg_edges", n=len(edges))
     return edges
 
 
@@ -281,6 +532,7 @@ def _rmt_edges(rmt_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
                 "source": src_id,
                 "target": tgt_id,
                 "type":   "rmt",
+                "layer":  "structure",
                 "weight": round(abs(weight), 4),
                 "color":  "#818cf8",
                 "width":  max(1, int(abs(weight) * 3)),
@@ -291,14 +543,48 @@ def _rmt_edges(rmt_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
 
 # ── Ticker → node_id lookup ───────────────────────────────────────────────────
 
+_TICKER_ALIAS: dict[str, str] = {
+    # ETF proxy → índice canônico (como usado no node_registry)
+    "SPY":  "^GSPC",
+    "VOO":  "^GSPC",
+    "IVV":  "^GSPC",
+    "QQQ":  "^NDX",
+    "TQQQ": "^NDX",
+    "IWM":  "^RUT",
+    "EFA":  "^EAFE",
+    "EEM":  "EEM",
+    "VNQ":  "VNQ",
+    "DIA":  "^DJI",
+    "IEF":  "^TNX",
+    "SHY":  "^IRX",
+    "VIXY": "^VIX",
+    "VXX":  "^VIX",
+    "UUP":  "DXY",
+    "USO":  "CL",
+    "BNO":  "CL",
+    "BOIL": "NG",
+    "IAU":  "GLD",
+    "SLV":  "SI",
+    "PDBC": "PDBC",
+}
+
+
 def _ticker_to_node(ticker: str, nodes_in_graph: set[str]) -> str | None:
-    """Encontra o node_id que corresponde a um ticker."""
+    """Encontra o node_id que corresponde a um ticker.
+
+    Resolve aliases de ETF → índice canônico antes de buscar no registry.
+    """
     # Direto: node_id == ticker
     if ticker in nodes_in_graph:
         return ticker
-    # Busca pelo campo ticker nos NODES
+    # Resolve alias ETF → ticker canônico
+    canonical = _TICKER_ALIAS.get(ticker, ticker)
+    if canonical != ticker and canonical in nodes_in_graph:
+        return canonical
+    # Busca pelo campo ticker nos NODES (suporta ^GSPC, ^NDX, etc.)
     for nid, nd in NODES.items():
-        if nd.get("ticker") == ticker and nid in nodes_in_graph:
+        t = nd.get("ticker")
+        if t and nid in nodes_in_graph and (t == ticker or t == canonical):
             return nid
     return None
 
@@ -314,6 +600,8 @@ def build_graph(
     vix_term: dict[str, Any] | None = None,
     prob_map: dict[str, Any] | None = None,
     flow_map: dict[str, Any] | None = None,
+    rrg_result: Any | None = None,
+    desk_intel: Any | None = None,
     max_level: int = 5,
     include_internal_layers: bool = False,
 ) -> dict[str, Any]:
@@ -357,7 +645,7 @@ def build_graph(
     flow_map = flow_map or {}
     for nid in selected_ids:
         nd = NODES[nid]
-        node = _build_node(nid, nd, market_prices, hub_set, agent_scores, anatomy_map, options_map, prob_map)
+        node = _build_node(nid, nd, market_prices, hub_set, agent_scores, anatomy_map, options_map, prob_map, desk_intel=desk_intel, rrg_result=rrg_result)
         # Injeta fluxo mecânico (GEX + LETF) no nó, se disponível
         ticker = nd.get("ticker", "")
         if ticker and ticker in flow_map:
@@ -417,18 +705,36 @@ def build_graph(
                     })
 
     # MST edges (se disponíveis)
+    mst_node_ids: set[str] = set()
     if mst_data:
-        cyto_edges.extend(_mst_edges(mst_data, selected_ids))
+        mst_edges_list = _mst_edges(mst_data, selected_ids)
+        cyto_edges.extend(mst_edges_list)
+        for e in mst_edges_list:
+            mst_node_ids.add(e["data"]["source"])
+            mst_node_ids.add(e["data"]["target"])
 
     # RMT edges (precision matrix — mais esparso, complementar)
     if rmt_data:
         cyto_edges.extend(_rmt_edges(rmt_data, selected_ids))
+
+    # RRG edges (rotação relativa vs benchmark — direcionado por quadrante)
+    if rrg_result is not None:
+        cyto_edges.extend(_rrg_edges(rrg_result, selected_ids))
+
+    # Arestas sintéticas de correlação — proxy via retornos snapshot
+    # Ativado quando MST cobre menos de 50% dos data nodes (ex: IBKR offline)
+    data_node_ids = {n["data"]["id"] for n in cyto_nodes if n["data"].get("has_data")}
+    if len(mst_node_ids) < len(data_node_ids) * 0.5:
+        cyto_edges.extend(
+            _synthetic_corr_edges(market_prices, selected_ids, mst_node_ids)
+        )
 
     # ── Estatísticas ──────────────────────────────────────────────────────────
     n_with_data = sum(1 for n in cyto_nodes if n["data"].get("has_data"))
     n_edges_h   = sum(1 for e in cyto_edges if e["data"].get("type") == "hierarchy")
     n_edges_mst = sum(1 for e in cyto_edges if e["data"].get("type") == "mst")
     n_edges_rmt = sum(1 for e in cyto_edges if e["data"].get("type") == "rmt")
+    n_edges_rrg = sum(1 for e in cyto_edges if e["data"].get("type") == "rrg")
 
     _log.info("graph_built",
               nodes=len(cyto_nodes),
@@ -436,6 +742,7 @@ def build_graph(
               hierarchy_edges=n_edges_h,
               mst_edges=n_edges_mst,
               rmt_edges=n_edges_rmt,
+              rrg_edges=n_edges_rrg,
               regime=regime_data.get("regime", "unknown"))
 
     return {
@@ -463,6 +770,7 @@ def build_graph(
             "hierarchy_edges": n_edges_h,
             "mst_edges":       n_edges_mst,
             "rmt_edges":       n_edges_rmt,
+            "rrg_edges":       n_edges_rrg,
         },
     }
 
@@ -481,6 +789,8 @@ def build_from_bundle(
     cached_options: "dict | None" = None,
     cached_prob: "dict | None" = None,
     cached_flow: "Any | None" = None,
+    rrg_result: "Any | None" = None,
+    desk_intel: "Any | None" = None,
 ) -> dict[str, Any]:
     """
     Ponto de entrada principal: constrói o grafo a partir do bundle do dia.
@@ -492,7 +802,7 @@ def build_from_bundle(
         skip_anatomy    : pula coleta de fundamentais (para refreshes rápidos)
         skip_options    : pula coleta de opções
         skip_prob       : pula análise probabilística
-        skip_network    : pula análise de rede (MST/RMT — usa yfinance histórico)
+        skip_network    : pula análise de rede (MST/RMT — usa Bloomberg/IBKR histórico)
         cached_network  : resultado de rede pré-computado (evita re-download)
         cached_anatomy  : {ticker: {pe, beta, roe, ...}} pré-coletado via BQL
 
@@ -596,6 +906,8 @@ def build_from_bundle(
         vix_term=vix_term,
         prob_map=prob_map,
         flow_map=flow_map,
+        rrg_result=rrg_result,
+        desk_intel=desk_intel,
         max_level=max_level,
     )
 
