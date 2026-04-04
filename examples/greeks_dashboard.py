@@ -14506,6 +14506,77 @@ def _on_export(_):
 
 export_btn.on_click(_on_export)
 
+# ── ZIP Export ────────────────────────────────────────────────────────────────
+zip_btn = wd.Button(
+    description='📦 Export ZIP',
+    button_style='info',
+    icon='download',
+    layout={'width': '160px'},
+)
+out_zip = wd.Output()
+
+
+def _on_export_zip(_):
+    with out_zip:
+        clear_output(wait=True)
+        if not _snapshot.get('ts'):
+            print("⚠️ Rode a an\xe1lise primeiro.")
+            return
+        try:
+            import io as _io
+            import zipfile as _zf
+            import json as _json
+            import base64 as _b64
+
+            ticker   = _snapshot['ticker']
+            ts_safe  = str(_snapshot['ts']).replace(':', '').replace(' ', '_')
+            zip_name = f"greeks_{ticker.replace(' ', '_')}_{ts_safe}.zip"
+
+            buf = _io.BytesIO()
+            with _zf.ZipFile(buf, 'w', _zf.ZIP_DEFLATED) as zf:
+                # 1. metrics.json
+                payload = {
+                    'ticker':  ticker,
+                    'spot':    _snapshot.get('spot'),
+                    'ts':      _snapshot.get('ts'),
+                    'metrics': _snapshot.get('metrics', {}),
+                }
+                zf.writestr('metrics.json',
+                            _json.dumps(payload, indent=2, default=str))
+
+                # 2. jarvis.html
+                html = _export_dashboard_html()
+                if html:
+                    if isinstance(html, str):
+                        html = html.encode('utf-8')
+                    zf.writestr('jarvis.html', html)
+
+            buf.seek(0)
+            data = buf.read()
+            b64  = _b64.b64encode(data).decode('ascii')
+
+            js = (
+                f"var a=document.createElement('a');"
+                f"a.href='data:application/zip;base64,{b64}';"
+                f"a.download='{zip_name}';"
+                f"document.body.appendChild(a);a.click();"
+                f"document.body.removeChild(a);"
+            )
+            display(HTML(f"<script>{js}</script>"))
+            display(wd.HTML(
+                f"<div class='mm-dash'><div class='mm-card'>"
+                f"<p>✅ ZIP gerado: <b>{zip_name}</b></p>"
+                f"<p><small>metrics.json + jarvis.html &middot; "
+                f"{len(data)/1024:.0f} KB</small></p>"
+                f"</div></div>"
+            ))
+        except Exception as exc:
+            print(f"❌ Erro ao gerar ZIP: {exc}")
+
+
+zip_btn.on_click(_on_export_zip)
+
+
 _ctrl_box_layout = wd.Layout(
     border=f'1px solid {_C["border"]}',
     border_radius='8px',
@@ -14519,7 +14590,7 @@ display(wd.VBox([
     wd.VBox([
         wd.HBox([ticker_w, dte_w]),
         mny_w,
-        wd.HBox([run_btn, spx_pred_w, flow_pred_w, disp_w, cta_weight_w, export_btn]),
+        wd.HBox([run_btn, spx_pred_w, flow_pred_w, disp_w, cta_weight_w, export_btn, zip_btn]),
         wd.HBox([rebal_date_w]),
     ], layout=_ctrl_box_layout),
     wd.HTML(f"<div class='mm-dash'><div class='mm-section-label'>COT Controls</div></div>"),
@@ -14531,5 +14602,6 @@ display(wd.VBox([
     ], layout=_ctrl_box_layout),
     out_cot_reload,
     out_export,
+    out_zip,
     out_main
 ]))
