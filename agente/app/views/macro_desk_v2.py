@@ -2084,7 +2084,16 @@ def generate_macro_desk_v2_html(
                   '<span style="color:#f59e0b" title="Snapshot — não é streaming">&#9679; snapshot</span>'
     refreshed   = bundle.market_prices.get("__refreshed_at__", gen_time) if live_mode else gen_time
 
-    return f"""<!DOCTYPE html>
+    # Escapa chaves literais em blocos HTML que contêm CSS/JS próprio,
+    # para que o f-string gigante não as interprete como placeholders.
+    _radar_placeholder   = "___RADAR_TAB_HTML___"
+    _options_placeholder = "___OPTIONS_TAB_HTML___"
+    _radar_safe   = radar_tab_html
+    _options_safe = options_tab_html
+    radar_tab_html   = _radar_placeholder
+    options_tab_html = _options_placeholder
+
+    html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -2282,6 +2291,12 @@ function switchMainTab(name, btn) {{
 </script>
 </body>
 </html>"""
+
+    # Injeta os blocos com CSS/JS próprio depois de fechar o f-string,
+    # para evitar que chaves literais { } sejam interpretadas como placeholders.
+    html = html.replace(_radar_placeholder,   _radar_safe,   1)
+    html = html.replace(_options_placeholder, _options_safe, 1)
+    return html
 
 
 # ── Save ──────────────────────────────────────────────────────────────────────
