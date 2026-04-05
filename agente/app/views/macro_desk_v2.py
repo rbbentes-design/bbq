@@ -2084,15 +2084,6 @@ def generate_macro_desk_v2_html(
                   '<span style="color:#f59e0b" title="Snapshot — não é streaming">&#9679; snapshot</span>'
     refreshed   = bundle.market_prices.get("__refreshed_at__", gen_time) if live_mode else gen_time
 
-    # Escapa chaves literais em blocos HTML que contêm CSS/JS próprio,
-    # para que o f-string gigante não as interprete como placeholders.
-    _radar_placeholder   = "___RADAR_TAB_HTML___"
-    _options_placeholder = "___OPTIONS_TAB_HTML___"
-    _radar_safe   = radar_tab_html
-    _options_safe = options_tab_html
-    radar_tab_html   = _radar_placeholder
-    options_tab_html = _options_placeholder
-
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -2266,36 +2257,35 @@ def generate_macro_desk_v2_html(
   {editorial_content}
 </div>
 
-<div id="radar-view" class="main-view" style="overflow-y:auto;background:#060a12;padding:0">
-  {radar_tab_html}
-</div>
+"""
 
-<div id="options-view" class="main-view" style="overflow-y:auto;background:#020810;padding:0">
-  {options_tab_html}
-</div>
-
-<script>
-{cytoscape_js}
-</script>
-<script>
-{js_code}
-</script>
-<script>
-function switchMainTab(name, btn) {{
-  document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-  const view = document.getElementById(name + '-view');
-  if (view) view.classList.add('active');
-}}
-</script>
-</body>
-</html>"""
-
-    # Injeta os blocos com CSS/JS próprio depois de fechar o f-string,
-    # para evitar que chaves literais { } sejam interpretadas como placeholders.
-    html = html.replace(_radar_placeholder,   _radar_safe,   1)
-    html = html.replace(_options_placeholder, _options_safe, 1)
+    # Concatena tabs com CSS/JS próprio fora do f-string para evitar
+    # conflito de chaves {} com a sintaxe de f-string.
+    html += (
+        '<div id="radar-view" class="main-view"'
+        ' style="overflow-y:auto;background:#060a12;padding:0">\n'
+        + radar_tab_html
+        + '\n</div>\n\n'
+        '<div id="options-view" class="main-view"'
+        ' style="overflow-y:auto;background:#020810;padding:0">\n'
+        + options_tab_html
+        + '\n</div>\n\n'
+        '<script>\n'
+        + cytoscape_js
+        + '\n</script>\n<script>\n'
+        + js_code
+        + "\n</script>\n"
+        "<script>\n"
+        "function switchMainTab(name, btn) {\n"
+        "  document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));\n"
+        "  document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));\n"
+        "  if (btn) btn.classList.add('active');\n"
+        "  const view = document.getElementById(name + '-view');\n"
+        "  if (view) view.classList.add('active');\n"
+        "}\n"
+        "</script>\n"
+        "</body>\n</html>"
+    )
     return html
 
 
