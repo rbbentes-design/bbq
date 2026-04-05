@@ -198,6 +198,43 @@ def render_options_tab(
 
 # ── Painel 1 — Header strip de métricas ──────────────────────────────────────
 
+def _coleta_badge(snap: "OptionsSnapshot") -> str:
+    """Badge com data/hora da coleta + aviso se dados antigos."""
+    from datetime import datetime, timezone
+    ts_str = snap.ts or ""
+    try:
+        ts_dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M")
+        now = datetime.now()
+        age_h = (now - ts_dt).total_seconds() / 3600
+        if age_h > 36:
+            age_label = f"{age_h/24:.0f}d atrás"
+            color = "#ef4444"
+            bg = "rgba(239,68,68,.12)"
+        elif age_h > 8:
+            age_label = f"{age_h:.0f}h atrás"
+            color = "#f59e0b"
+            bg = "rgba(245,158,11,.12)"
+        else:
+            age_label = f"{age_h:.0f}h atrás"
+            color = "#22c55e"
+            bg = "rgba(34,197,94,.12)"
+        age_html = f" <span style='color:{color};font-size:9px'>({age_label})</span>"
+    except Exception:
+        bg = "rgba(0,212,232,.07)"
+        color = "rgba(0,212,232,.6)"
+        age_html = ""
+
+    return (
+        f"<div style='margin-left:auto;display:flex;flex-direction:column;"
+        f"background:{bg};border:1px solid {color}40;border-radius:6px;"
+        f"padding:6px 12px;align-self:center'>"
+        f"<span style='font-size:9px;letter-spacing:1px;color:{color};text-transform:uppercase'>Coleta</span>"
+        f"<span style='font-size:12px;font-weight:700;color:{color}'>{ts_str}{age_html}</span>"
+        f"<span style='font-size:9px;color:{color}80'>{snap.ticker}</span>"
+        f"</div>"
+    )
+
+
 def _header_strip(snap: "OptionsSnapshot") -> str:
     def badge(label: str, val: str, cls: str = "") -> str:
         return (
@@ -236,7 +273,7 @@ def _header_strip(snap: "OptionsSnapshot") -> str:
         + badge("IV − RV", f"{iv_rv:+.1f}pp", iv_rv_cls)
         + badge("SQUEEZE", f"{sq:.0f}/100", sq_cls)
         + badge("TAIL RISK", f"{tail:.0f}/100", tail_cls)
-        + f"<span class='od-ts'>{snap.ts} · {snap.ticker}</span>"
+        + _coleta_badge(snap)
         + "</div>"
     )
 
