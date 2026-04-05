@@ -523,8 +523,18 @@ def desk(
         from pathlib import Path as _P
 
         target = _date.fromisoformat(date) if date else _date.today()
-        bundles = [p for p in bundle_store.list_bundles()
-                   if str(target) in str(p) and "_" not in p.stem]
+        def _valid_bundle(p):
+            """Apenas arquivos _summary.json ou ULID.json (bundle completo)."""
+            stem = p.stem
+            return stem.endswith("_summary") or (len(stem) == 26 and stem.isalnum())
+        all_bundles = sorted(
+            [p for p in bundle_store.list_bundles() if _valid_bundle(p)],
+            reverse=True,
+        )
+        bundles = [p for p in all_bundles if str(target) in str(p)]
+        # Fallback para bundle mais recente se não há bundle do dia
+        if not bundles:
+            bundles = all_bundles
         if not bundles:
             return
 
