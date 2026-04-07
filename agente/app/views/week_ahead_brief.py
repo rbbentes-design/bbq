@@ -1670,6 +1670,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     {risk_html}
   </div>
 
+  <!-- Gráficos de Mercado -->
+  {charts_html}
+
   <!-- Monte Carlo -->
   {monte_carlo_html}
 
@@ -1761,6 +1764,7 @@ def save_week_ahead_brief(
     polymarket_html = ""
     monte_carlo_html = ""
     risk_html = ""
+    charts_html = ""
 
     # Carrega enrichment artifacts do curation mais recente
     enrichment_data: dict = {}
@@ -1785,6 +1789,8 @@ def save_week_ahead_brief(
 
     if enrichment_data.get("risk"):
         risk_html = _build_risk_html(enrichment_data["risk"])
+
+    charts_html = _build_charts_html(enrichment_ap, mode)
 
     # ── Galeria de imagens ────────────────────────────────────────────────────
     media_gallery_html = _build_media_gallery(bundle, out_dir)
@@ -1864,6 +1870,7 @@ def save_week_ahead_brief(
         polymarket_html=polymarket_html,
         monte_carlo_html=monte_carlo_html,
         risk_html=risk_html,
+        charts_html=charts_html,
         generated_at=datetime.now().strftime("%d/%m/%Y %H:%M"),
         run_id=bundle.run_id[:12],
     )
@@ -2406,6 +2413,7 @@ def save_writer_brief(
 
     # ── Enrichment ────────────────────────────────────────────────────────────
     enrichment_data: dict = {}
+    ap: dict = {}
     if curation_path and Path(curation_path).exists():
         try:
             ap = json.loads(Path(curation_path).read_text(encoding="utf-8")).get("artifact_paths", {})
@@ -2420,6 +2428,7 @@ def save_writer_brief(
     polymarket_html = _build_polymarket_html(bundle.polymarket_markets or [])
     monte_carlo_html = _build_monte_carlo_html(enrichment_data["monte_carlo"]) if enrichment_data.get("monte_carlo") else ""
     risk_html = _build_risk_html(enrichment_data["risk"]) if enrichment_data.get("risk") else ""
+    charts_html = _build_charts_html(ap, mode)
 
     # ── WSB + Squeeze ─────────────────────────────────────────────────────────
     swaggy_html = _build_swaggy_section(swaggy_result)
@@ -2572,6 +2581,9 @@ def save_writer_brief(
 
   <!-- Polymarket + Risk -->
   {poly_risk_html}
+
+  <!-- Gráficos de Mercado -->
+  {charts_html}
 
   <!-- Monte Carlo -->
   {monte_carlo_html}
