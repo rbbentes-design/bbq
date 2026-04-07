@@ -1065,5 +1065,100 @@ def options_import(
         console.print(f"[yellow]MacroDesk regeneration falhou: {exc}[/yellow]")
 
 
+@app.command(name="all")
+def run_all(
+    date: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD (padrão: hoje)"),
+    no_open: bool = typer.Option(False, "--no-open", help="Não abre HTML no browser."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Tudo em um: ingest → portfolio pipeline → writer → MacroDesk HTML."""
+    from datetime import date as _date
+    configure_logging("DEBUG" if verbose else "INFO")
+
+    target_date = _date.fromisoformat(date) if date else _date.today()
+
+    console.print(Panel.fit(
+        f"[bold cyan]Agente All-in-One[/bold cyan] — {target_date} "
+        f"| ingest → pipeline → writer → desk"
+    ))
+
+    # ── 1. Ingest (fontes: X, ZeroHedge, SpotGamma...) ────────────────────────
+    console.print("\n[bold]1/4[/bold] Coletando fontes...")
+    with console.status("[cyan]Ingest...[/cyan]"):
+        bundle = run_ingestion(headless=True)
+    console.print(f"[green]Ingest ok:[/green] {len(bundle.x_items)} X · "
+                  f"{len(bundle.market_ear_blocks)} ZH/ME · "
+                  f"{len(bundle.spotgamma_reports)} SpotGamma")
+
+    # ── 2. Portfolio pipeline (mercado, charts, sinais alpha, desk intel) ──────
+    console.print("\n[bold]2/4[/bold] Portfolio pipeline...")
+    portfolio, signals, html_path = _run_portfolio_after_ingest(bundle)
+
+    # ── 3. Writer (curação LLM + texto + brief HTML) ──────────────────────────
+    console.print("\n[bold]3/4[/bold] Curação + Writer...")
+    curation_path = None
+    try:
+        from app.curation.orchestrator import run_curation
+        from app.utils.timestamps import new_ulid
+        from pathlib import Path as _P
+        from app.storage.paths import workspace
+
+        run_id = new_ulid()
+        with console.status("[cyan]Writer: narrativa + texto...[/cyan]"):
+            curation_result = run_curation(bundle, run_id=run_id, run_date=str(target_date))
+
+        import json as _json
+        curation_path = str(
+            workspace.bundles / str(target_date) / f"{run_id}_curation.json"
+        )
+        _P(curation_path).write_text(
+            curation_result.model_dump_json(indent=2), encoding="utf-8"
+        )
+        console.print(f"[green]Writer ok:[/green] "
+                      f"{len(curation_result.scored_items)} items · "
+                      f"modo={getattr(curation_result, 'written_mode', '?')}")
+    except Exception as exc:
+        console.print(f"[yellow]Writer falhou: {exc}[/yellow]")
+
+    # ── 4. MacroDesk HTML ──────────────────────────────────────────────────────
+    console.print("\n[bold]4/4[/bold] MacroDesk HTML...")
+    desk_path = None
+    try:
+        from app.views.macro_desk_v2 import save_macro_desk_v2
+        from app.providers.options_store import options_store as _opts_s
+        import json as _json2
+        from pathlib import Path as _P2
+
+        curation_obj = None
+        if curation_path and _P2(curation_path).exists():
+            try:
+                from app.curation.models import CurationResult
+                curation_obj = CurationResult.model_validate(
+                    _json2.loads(_P2(curation_path).read_text(encoding="utf-8"))
+                )
+            except Exception:
+                pass
+
+        opts_snap = _opts_s.load_latest()
+        with console.status("[cyan]MacroDesk HTML...[/cyan]"):
+            desk_path = save_macro_desk_v2(
+                bundle, curation_obj,
+                portfolio=portfolio,
+                options_snapshot=opts_snap,
+            )
+        console.print(f"[green]MacroDesk ok:[/green] {desk_path.name}")
+    except Exception as exc:
+        console.print(f"[yellow]MacroDesk falhou: {exc}[/yellow]")
+
+    console.print(Panel.fit(
+        "[bold green]All done![/bold green]",
+        subtitle=str(target_date),
+    ))
+
+    if not no_open and desk_path:
+        import webbrowser as _wb
+        _wb.open(desk_path.as_uri())
+
+
 if __name__ == "__main__":
     app()
