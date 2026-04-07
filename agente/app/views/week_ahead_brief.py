@@ -515,15 +515,26 @@ def _build_charts_html(artifact_paths: dict, mode: str = "week_ahead") -> str:
             continue
         label = _LABELS.get(key, key)
         try:
-            content = p.read_text(encoding="utf-8")
-            # srcdoc precisa de aspas escapadas
-            srcdoc = content.replace("&", "&amp;").replace('"', "&quot;")
+            chart_html = p.read_text(encoding="utf-8")
+            # Extrai apenas o <body> do chart HTML para embutir inline
+            # (evita iframe aninhado que não renderiza dentro de srcdoc)
+            import re as _re
+            body_m = _re.search(r'<body[^>]*>(.*?)</body>', chart_html, _re.DOTALL | _re.IGNORECASE)
+            body_content = body_m.group(1).strip() if body_m else chart_html
+            # Extrai <style> do <head> se existir
+            style_m = _re.search(r'<style[^>]*>(.*?)</style>', chart_html, _re.DOTALL | _re.IGNORECASE)
+            style_tag = f'<style>{style_m.group(1)}</style>' if style_m else ''
+            # Extrai <script> tags do head/body
+            scripts = _re.findall(r'<script[^>]*>.*?</script>', chart_html, _re.DOTALL | _re.IGNORECASE)
+            scripts_html = '\n'.join(scripts)
             frames.append(f"""
             <div class="chart-frame">
               <div class="chart-label">{label}</div>
-              <iframe srcdoc="{srcdoc}" scrolling="no" frameborder="0"
-                      style="width:100%;height:320px;border:none;border-radius:6px;background:#0d1117">
-              </iframe>
+              <div style="width:100%;height:320px;overflow:hidden;border-radius:6px;background:#0d1117;position:relative">
+                {style_tag}
+                {body_content}
+                {scripts_html}
+              </div>
             </div>""")
         except Exception:
             continue

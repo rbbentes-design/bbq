@@ -1054,7 +1054,19 @@ def _find_angle(result: CurationResult, mode: str,
     bundle_ctx = _build_bundle_context(bundle, mode)
     anti_rep = _build_anti_repetition_block(mode)
 
+    # Modos com tema editorial fixo — a narrativa macro detectada é CONTEXTO, não o tema
+    _FIXED_TOPIC_MODES = {
+        "growth":    "Growth Stocks / Tech / Software — use a narrativa macro como pano de fundo, não como tema central.",
+        "flow_show": "Fluxo de mercado — opções, CTAs, dealers, vol — use a narrativa macro como contexto.",
+        "tese":      "Tese de ação ou tema macro específico — use a narrativa macro como contexto.",
+        "week_recap":"Recap da semana — dados macro, fluxo, rotação — use a narrativa macro como contexto.",
+        "tese_livre":"Tema aberto (tech, política, sociedade) — use a narrativa macro como contexto.",
+    }
+    mode_constraint = _FIXED_TOPIC_MODES.get(mode, "")
+
     user_prompt = f"MODO DO DIA: {mode.upper()}\n\n{curation_ctx}"
+    if mode_constraint:
+        user_prompt += f"\n\n⚠️ INSTRUÇÃO EDITORIAL: {mode_constraint}\nNÃO centre o texto na narrativa geopolítica/macro detectada. Essa é apenas o pano de fundo. O tema obrigatório do dia é: {mode.upper()}."
     if anti_rep:
         user_prompt += f"\n\n{anti_rep}"
     if tema_hint:
@@ -1154,19 +1166,36 @@ def _write(angle: dict[str, str], mode: str, result: CurationResult,
     primary = result.narrative.primary_signal
     secondary = result.narrative.secondary_signals
 
+    # Modos com tema editorial fixo — narrativa macro é contexto, não tema central
+    _FIXED_TOPIC_WARNING = {
+        "growth":    "⚠️ MODO GROWTH: O tema central é Growth Stocks / Software / Tech. A narrativa geopolítica é PANO DE FUNDO. Não escreva sobre Iran/Ormuz como tema principal.",
+        "flow_show": "⚠️ MODO FLOW SHOW: O tema central é fluxo de opções, CTAs, dealers, vol. Narrativa macro é contexto.",
+        "tese":      "⚠️ MODO TESE: Desenvolva uma tese de ação ou tema macro específico. Narrativa detectada é contexto.",
+        "week_recap":"⚠️ MODO WEEK RECAP: Recapitule a semana com foco em dados, fluxo e rotação. Narrativa macro é contexto.",
+        "tese_livre":"⚠️ MODO TESE LIVRE: Tema aberto. Narrativa macro é apenas contexto de mercado.",
+    }
+
     # Podcast de sábado: não contaminar com narrativa macro da semana
     if mode == "podcast_sabado":
         context_lines = [f"Data: {result.run_date}"]
     else:
-        context_lines = [
-            f"Data: {result.run_date}",
-            f"Narrativa central: {primary.label}",
-            f"Descrição: {primary.description}",
-        ]
-        if secondary:
-            sec = secondary[0]
-            if sec and sec.label and sec.label.upper() != "NONE":
-                context_lines.append(f"Narrativa secundária: {sec.label} — {sec.description}")
+        context_lines = [f"Data: {result.run_date}"]
+
+        # Para modos com tema fixo, a narrativa detectada é apenas contexto
+        topic_warning = _FIXED_TOPIC_WARNING.get(mode, "")
+        if topic_warning:
+            context_lines.append(topic_warning)
+            context_lines.append(f"Narrativa de mercado detectada (contexto de fundo): {primary.label}")
+            context_lines.append(f"Descrição do contexto: {primary.description}")
+        else:
+            context_lines.extend([
+                f"Narrativa central: {primary.label}",
+                f"Descrição: {primary.description}",
+            ])
+            if secondary:
+                sec = secondary[0]
+                if sec and sec.label and sec.label.upper() != "NONE":
+                    context_lines.append(f"Narrativa secundária: {sec.label} — {sec.description}")
 
         if primary.evidence_quotes:
             context_lines.append("\nEvidências do corpus:")
