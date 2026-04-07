@@ -975,8 +975,10 @@ def _build_market_table(market_prices: dict) -> str:
 
 def _extract_written_sections(curation_path: str | None) -> dict[str, list[dict]]:
     """
-    Extrai seções do .docx com estrutura rica:
-    Retorna dict[seção] → lista de {type: 'heading'|'body'|'callout'|'separator', text: str}
+    Extrai seções do texto escrito.
+    Prefere o raw .txt (com sentinels <<<IMG:path|legenda>>>) se disponível,
+    senão cai no .docx (sem as imagens contextuais).
+    Retorna dict[seção] → lista de {type: 'heading'|'body'|'callout'|'image', text/path/caption: str}
     """
     if not curation_path:
         return {}
@@ -985,7 +987,18 @@ def _extract_written_sections(curation_path: str | None) -> dict[str, list[dict]
         import json as _j
         c = _j.loads(Path(curation_path).read_text(encoding="utf-8"))
         written = c.get("artifact_paths", {}).get("written", "")
-        if not written or not Path(written).exists():
+        if not written:
+            return {}
+        # Procura o raw .txt ao lado do .docx — preserva sentinels de imagem
+        raw_txt = Path(written).with_name(Path(written).stem + "_raw.txt")
+        if not raw_txt.exists():
+            # Também tenta padrão sem o sufixo duplicado
+            alt = Path(written).parent / (Path(written).stem.replace("_written_", "_written_") + "_raw.txt")
+            raw_txt = alt if alt.exists() else raw_txt
+        if raw_txt.exists():
+            return _parse_written_raw_text(raw_txt.read_text(encoding="utf-8"))
+        # Fallback: parseia o .docx (imagens serão mecanicamente intercaladas)
+        if not Path(written).exists():
             return {}
         from docx import Document
         doc = Document(written)
@@ -1008,13 +1021,11 @@ def _extract_written_sections(curation_path: str | None) -> dict[str, list[dict]
         style = p.style.name if p.style else "Normal"
         is_italic = any(run.italic for run in p.runs if run.text.strip())
 
-        # Cada parágrafo pode conter múltiplas linhas (ex: separador + === ... ===)
         for line in raw.split("\n"):
             text = line.strip()
             if not text:
                 continue
 
-            # Marcador de seção
             m = re.match(r"=== (.+?) ===", text)
             if m:
                 if current_key is not None:
@@ -1026,29 +1037,97 @@ def _extract_written_sections(curation_path: str | None) -> dict[str, list[dict]
             if current_key is None:
                 continue
 
-            # Separadores visuais
             if _SEP.match(text):
                 continue
 
-            # Heading
             if "Heading" in style:
                 current_items.append({"type": "heading", "text": text})
                 continue
 
-            # Callout: parágrafo em itálico, ou curto com ":" sem ponto final
             is_short = len(text) < 140
             has_colon = ":" in text[:60]
             if is_italic or (is_short and has_colon and not text.endswith(".")):
                 current_items.append({"type": "callout", "text": text})
                 continue
 
-            # Corpo normal
             current_items.append({"type": "body", "text": text})
 
     if current_key is not None:
         sections[current_key] = current_items
 
     return sections
+
+
+def _parse_written_raw_text(raw: str) -> dict[str, list[dict]]:
+    """
+    Parseia o texto raw do writer, preservando ordem contextual das imagens.
+    Reconhece:
+      === SEÇÃO ===        → marcador de seção
+      <<<IMG:path|legenda>>> → item imagem (na posição exata onde o LLM escolheu)
+      ━━━...                → separador visual (ignorado)
+      linhas normais       → parágrafo body / callout / heading
+    """
+    import re as _re
+    sections: dict[str, list[dict]] = {}
+    current_key: str | None = None
+    current_items: list[dict] = []
+
+    _SEP = _re.compile(r"^[━—\-=]{4,}")
+    _IMG_RE = _re.compile(r"<<<IMG:(.+?)>>>")
+    _SECTION_RE = _re.compile(r"===\s*(.+?)\s*===")
+
+    for line in raw.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+
+        m = _SECTION_RE.match(text)
+        if m:
+            if current_key is not None:
+                sections[current_key] = current_items
+            current_key = m.group(1).strip()
+            current_items = []
+            continue
+
+        if current_key is None:
+            continue
+
+        if _SEP.match(text):
+            continue
+
+        # Linha pode ter texto + imagem (ou só imagem, ou só texto)
+        # Split em pedaços alternando texto / imagem
+        pos = 0
+        for img_m in _IMG_RE.finditer(text):
+            pre = text[pos:img_m.start()].strip()
+            if pre:
+                _append_text_item(current_items, pre)
+            payload = img_m.group(1)
+            if "|" in payload:
+                path, caption = payload.split("|", 1)
+                current_items.append({"type": "image", "path": path.strip(), "caption": caption.strip()})
+            else:
+                current_items.append({"type": "image", "path": payload.strip(), "caption": ""})
+            pos = img_m.end()
+        tail = text[pos:].strip()
+        if tail:
+            _append_text_item(current_items, tail)
+
+    if current_key is not None:
+        sections[current_key] = current_items
+
+    return sections
+
+
+def _append_text_item(items: list[dict], text: str) -> None:
+    """Classifica a linha como heading/callout/body e adiciona à lista."""
+    is_short = len(text) < 140
+    has_colon = ":" in text[:60]
+    # Callout: curto, termina com : ou é pergunta
+    if is_short and has_colon and not text.endswith("."):
+        items.append({"type": "callout", "text": text})
+        return
+    items.append({"type": "body", "text": text})
 
 
 def _extract_written_text(curation_path: str | None) -> dict[str, str]:
@@ -1060,42 +1139,64 @@ def _extract_written_text(curation_path: str | None) -> dict[str, str]:
     return result
 
 
-def _rich_to_html(items: list[dict], inline_images: list[str] | None = None) -> str:
+def _rich_to_html(items: list[dict], inline_images: list[str] | None = None,
+                  out_dir: Path | None = None) -> str:
     """
     Converte lista de itens ricos em HTML formatado.
 
-    inline_images: lista de caminhos/URLs de imagens para intercalar no texto
-    (como no Word — imagem após o 1º, 3º, 5º parágrafo de corpo).
+    Se items contém entradas do tipo 'image' (vindas do raw text com sentinels
+    <<<IMG:path|legenda>>>), renderiza elas em sua posição exata — contexto
+    do LLM é preservado.
+
+    Caso contrário, cai no fallback de intercalar `inline_images` mecanicamente
+    a cada par de parágrafos.
     """
     if not items:
         return ""
+
+    # Detecta se o LLM posicionou imagens contextualmente
+    has_contextual_imgs = any(it.get("type") == "image" for it in items)
+
     parts = []
     img_idx = 0
     body_count = 0
     imgs = inline_images or []
 
     for it in items:
-        t = it["type"]
-        text = it["text"]
+        t = it.get("type", "body")
         if t == "heading":
-            parts.append(f'<h2 class="editorial-title">{text}</h2>')
+            parts.append(f'<h2 class="editorial-title">{it["text"]}</h2>')
         elif t == "callout":
-            parts.append(f'<div class="editorial-callout">{text}</div>')
+            parts.append(f'<div class="editorial-callout">{it["text"]}</div>')
+        elif t == "image":
+            path = it.get("path", "")
+            caption = it.get("caption", "")
+            src = _img_src(path, out_dir) if out_dir else path
+            if src:
+                cap_html = (f'<div class="inline-img-caption">{caption}</div>'
+                            if caption else '')
+                parts.append(
+                    f'<div class="inline-img-wrap">'
+                    f'<img src="{src}" class="inline-img" loading="lazy">'
+                    f'{cap_html}'
+                    f'</div>'
+                )
         else:
-            parts.append(f'<p>{text}</p>')
+            parts.append(f'<p>{it["text"]}</p>')
             body_count += 1
-            # Insere imagem após 1º, 3º, 5º... parágrafo de corpo
-            while img_idx < len(imgs) and not imgs[img_idx]:
-                img_idx += 1  # pula imagens com src vazio
-            if body_count % 2 == 1 and img_idx < len(imgs):
-                img_src = imgs[img_idx]
-                img_idx += 1
-                if img_src:
-                    parts.append(
-                        f'<div class="inline-img-wrap">'
-                        f'<img src="{img_src}" class="inline-img" loading="lazy">'
-                        f'</div>'
-                    )
+            # Fallback: só intercala mecanicamente se o LLM NÃO posicionou imagens
+            if not has_contextual_imgs:
+                while img_idx < len(imgs) and not imgs[img_idx]:
+                    img_idx += 1
+                if body_count % 2 == 1 and img_idx < len(imgs):
+                    img_src = imgs[img_idx]
+                    img_idx += 1
+                    if img_src:
+                        parts.append(
+                            f'<div class="inline-img-wrap">'
+                            f'<img src="{img_src}" class="inline-img" loading="lazy">'
+                            f'</div>'
+                        )
     return "\n".join(parts)
 
 
@@ -1424,6 +1525,15 @@ body {
   overflow: hidden;
   max-width: 820px;
   border: 1px solid var(--border);
+}
+.inline-img-caption {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+  background: rgba(0,0,0,0.15);
+  border-top: 1px solid var(--border);
 }
 .inline-img {
   width: 100%;
@@ -1821,7 +1931,7 @@ def save_week_ahead_brief(
 
     editorial_main_html = ""
     if rich_sections.get("TEXTO PRINCIPAL"):
-        body = _rich_to_html(rich_sections["TEXTO PRINCIPAL"], inline_images=_zh_inline_imgs)
+        body = _rich_to_html(rich_sections["TEXTO PRINCIPAL"], inline_images=_zh_inline_imgs, out_dir=out_dir)
         editorial_main_html = f"""
         <div class="editorial">
           <div class="editorial-header">✍️ Texto Principal — Week Ahead</div>
@@ -2183,6 +2293,7 @@ def _build_editorial_sections_html(
     rich_sections: dict[str, list[dict]],
     mode: str,
     zh_inline_imgs: list[str],
+    out_dir: Path | None = None,
 ) -> str:
     """Renderiza todas as seções editoriais do writer em HTML."""
     parts: list[str] = []
@@ -2200,7 +2311,7 @@ def _build_editorial_sections_html(
     }
     sec = rich_sections.get("TEXTO PRINCIPAL") or rich_sections.get(_MAIN_ALIASES.get(mode, ""))
     if sec:
-        body = _rich_to_html(sec, inline_images=zh_inline_imgs)
+        body = _rich_to_html(sec, inline_images=zh_inline_imgs, out_dir=out_dir)
         emoji, title, _ = _MODE_META.get(mode, ("✍️", mode.title(), ""))
         parts.append(f"""
         <div class="editorial" style="margin-bottom:24px">
@@ -2458,7 +2569,7 @@ def save_writer_brief(
             if src:
                 _zh_inline_imgs.append(src)
 
-    editorial_html = _build_editorial_sections_html(rich_sections, mode, _zh_inline_imgs)
+    editorial_html = _build_editorial_sections_html(rich_sections, mode, _zh_inline_imgs, out_dir=out_dir)
 
     # ── Monta HTML ────────────────────────────────────────────────────────────
     day_suffix = f" · {mode_day}" if mode_day else ""

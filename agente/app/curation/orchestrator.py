@@ -337,6 +337,14 @@ def _save_written(output: object, run_date: str, run_id: str) -> Path:
     base = workspace.bundles / d.isoformat()
     base.mkdir(parents=True, exist_ok=True)
 
+    # Sempre salva o raw text (com sentinels <<<IMG:path>>>) para o brief conseguir
+    # reconstruir a ordem contextual das imagens dentro do texto
+    raw_path = base / f"{run_id}_written_{output.mode}_raw.txt"
+    try:
+        raw_path.write_text(output.text, encoding="utf-8")
+    except Exception as exc:
+        _log.warning("raw_text_save_error", error=str(exc))
+
     # Tenta gerar .docx com imagens
     try:
         docx_bytes = to_docx(output.text, output.mode, run_date)
