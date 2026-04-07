@@ -1213,6 +1213,17 @@ def _write(angle: dict[str, str], mode: str, result: CurationResult,
         f"Ideia de abertura: {angle['hook']}",
         f"\nMODO: {mode.upper()}",
         f"\nInstrução de formato:\n{mode_instruction}",
+        "\n⚠️ ANTI-REDUNDÂNCIA — REGRA ABSOLUTA:",
+        "  - Cada seção é uma entrega DIFERENTE. NUNCA reescreva o TEXTO PRINCIPAL em formato menor.",
+        "  - TEXTO GRATUITO ≠ resumo do TEXTO PRINCIPAL. É um OUTRO ângulo da mesma ideia.",
+        "  - MICRO POSTS = 3-5 ideias INDEPENDENTES, cada uma com seu próprio insight.",
+        "  - VERSÃO WHATSAPP = tom pessoal, conversacional, nada reescrito.",
+        "  - CONSOLIDAÇÃO = bullets estruturados de dados, não narrativa.",
+        "  - Dentro do TEXTO PRINCIPAL: cada parágrafo deve AVANÇAR o argumento.",
+        "    NÃO repita a mesma ideia reformulada. NÃO use a mesma imagem duas vezes.",
+        "    NÃO encerre o texto repetindo o parágrafo de abertura.",
+        "  - NUNCA use frases de impacto repetidas entre textos de dias diferentes.",
+        "    Cada texto precisa de abertura e fechamento ÚNICOS.",
     ])
 
     # Briefing das imagens disponíveis (antes dos dados estruturados)

@@ -844,7 +844,11 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
             continue  # sem gráfico local → sem card
 
         imgs_html = ""
+        _MAX_IMGS_PER_BLOCK = 2  # evita cards gigantes que criam buracos no grid
+        _block_count = 0
         for img_path in local_imgs:
+            if _block_count >= _MAX_IMGS_PER_BLOCK:
+                break
             key = Path(img_path).name if Path(img_path).exists() else img_path
             if key in _gallery_seen:
                 continue
@@ -852,6 +856,7 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
             src = _img_src(img_path, out_dir)
             if src:
                 imgs_html += f'<img src="{src}" class="mg-img" loading="lazy" alt="">'
+                _block_count += 1
 
         if not imgs_html:
             continue
@@ -1540,8 +1545,10 @@ body {
 .mg-zh-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: max-content;
   gap: 16px;
   margin-bottom: 24px;
+  align-items: start;
 }
 .mg-block {
   background: var(--surface);
@@ -1550,6 +1557,11 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  max-height: 480px;
+}
+.mg-block .mg-img {
+  max-height: 280px;
+  object-fit: contain;
 }
 .mg-block-title {
   padding: 10px 14px 8px;
@@ -1670,9 +1682,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     {risk_html}
   </div>
 
-  <!-- Gráficos de Mercado -->
-  {charts_html}
-
   <!-- Monte Carlo -->
   {monte_carlo_html}
 
@@ -1764,7 +1773,6 @@ def save_week_ahead_brief(
     polymarket_html = ""
     monte_carlo_html = ""
     risk_html = ""
-    charts_html = ""
 
     # Carrega enrichment artifacts do curation mais recente
     enrichment_data: dict = {}
@@ -1789,8 +1797,6 @@ def save_week_ahead_brief(
 
     if enrichment_data.get("risk"):
         risk_html = _build_risk_html(enrichment_data["risk"])
-
-    charts_html = _build_charts_html(enrichment_ap, mode)
 
     # ── Galeria de imagens ────────────────────────────────────────────────────
     media_gallery_html = _build_media_gallery(bundle, out_dir)
@@ -1870,7 +1876,6 @@ def save_week_ahead_brief(
         polymarket_html=polymarket_html,
         monte_carlo_html=monte_carlo_html,
         risk_html=risk_html,
-        charts_html=charts_html,
         generated_at=datetime.now().strftime("%d/%m/%Y %H:%M"),
         run_id=bundle.run_id[:12],
     )
@@ -2428,7 +2433,6 @@ def save_writer_brief(
     polymarket_html = _build_polymarket_html(bundle.polymarket_markets or [])
     monte_carlo_html = _build_monte_carlo_html(enrichment_data["monte_carlo"]) if enrichment_data.get("monte_carlo") else ""
     risk_html = _build_risk_html(enrichment_data["risk"]) if enrichment_data.get("risk") else ""
-    charts_html = _build_charts_html(ap, mode)
 
     # ── WSB + Squeeze ─────────────────────────────────────────────────────────
     swaggy_html = _build_swaggy_section(swaggy_result)
@@ -2581,9 +2585,6 @@ def save_writer_brief(
 
   <!-- Polymarket + Risk -->
   {poly_risk_html}
-
-  <!-- Gráficos de Mercado -->
-  {charts_html}
 
   <!-- Monte Carlo -->
   {monte_carlo_html}
