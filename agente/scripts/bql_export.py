@@ -21,7 +21,12 @@ hoje = date.today().isoformat()
 # ── helpers ──────────────────────────────────────────────
 def _bql(univ, items):
     resp = bq.execute(bql.Request(univ, items))
-    df   = pd.concat([r.df()[r.name] for r in resp], axis=1)
+    frames = []
+    for r in resp:
+        s = r.df()[r.name]
+        s = s[~s.index.duplicated(keep='last')]   # remove index duplicado
+        frames.append(s)
+    df = pd.concat(frames, axis=1)
     return df.loc[:, ~df.columns.duplicated()]
 
 def _log(msg): print(f'  {msg}')
