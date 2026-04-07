@@ -48,6 +48,7 @@ FUND_TICKERS = [
 
 # yfinance → Bloomberg
 _YF_TO_BBG = {
+    # ── Mega-caps individuais ────────────────────────────────────────────
     'AAPL':'AAPL US Equity','MSFT':'MSFT US Equity','NVDA':'NVDA US Equity',
     'AMZN':'AMZN US Equity','META':'META US Equity','GOOGL':'GOOGL US Equity',
     'TSLA':'TSLA US Equity','AVGO':'AVGO US Equity','JPM':'JPM US Equity',
@@ -55,9 +56,26 @@ _YF_TO_BBG = {
     'COST':'COST US Equity','V':'V US Equity','MA':'MA US Equity',
     'WMT':'WMT US Equity','NFLX':'NFLX US Equity','JNJ':'JNJ US Equity',
     'PG':'PG US Equity','BRK-B':'BRK/B US Equity',
-    'SPY':'SPY US Equity','QQQ':'QQQ US Equity',
-    'TLT':'TLT US Equity','HYG':'HYG US Equity','GLD':'GLD US Equity',
-    'IWM':'IWM US Equity','EEM':'EEM US Equity','EFA':'EFA US Equity',
+    # ── Broad index ETFs ─────────────────────────────────────────────────
+    'SPY':'SPY US Equity','QQQ':'QQQ US Equity','IWM':'IWM US Equity',
+    'MDY':'MDY US Equity',
+    # ── 11 SPDR Sector ETFs (SPX sectors completos) ──────────────────────
+    'XLK':'XLK US Equity','XLF':'XLF US Equity','XLV':'XLV US Equity',
+    'XLY':'XLY US Equity','XLP':'XLP US Equity','XLE':'XLE US Equity',
+    'XLI':'XLI US Equity','XLB':'XLB US Equity','XLRE':'XLRE US Equity',
+    'XLU':'XLU US Equity','XLC':'XLC US Equity',
+    # ── Nasdaq setoriais ─────────────────────────────────────────────────
+    'QCLN':'QCLN US Equity','SOXX':'SOXX US Equity','IGV':'IGV US Equity',
+    'IBB':'IBB US Equity',
+    # ── Fixed income / credit ────────────────────────────────────────────
+    'TLT':'TLT US Equity','IEF':'IEF US Equity','SHY':'SHY US Equity',
+    'HYG':'HYG US Equity','LQD':'LQD US Equity','EMB':'EMB US Equity',
+    # ── Commodities / FX / Vol ETFs ──────────────────────────────────────
+    'GLD':'GLD US Equity','SLV':'SLV US Equity','USO':'USO US Equity',
+    'DBC':'DBC US Equity','UUP':'UUP US Equity','VIXY':'VIXY US Equity',
+    # ── International equity ─────────────────────────────────────────────
+    'EEM':'EEM US Equity','EFA':'EFA US Equity',
+    # ── Índices / futures / FX / crypto ──────────────────────────────────
     '^GSPC':'SPX Index','^NDX':'NDX Index','^RUT':'RTY Index',
     '^VIX':'VIX Index','CL=F':'CL1 Comdty','GC=F':'GC1 Comdty',
     'DX-Y.NYB':'DXY Curncy','BTC-USD':'XBT Curncy',
