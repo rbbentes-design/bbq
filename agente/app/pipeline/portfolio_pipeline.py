@@ -73,15 +73,87 @@ def run_portfolio_pipeline(
     Returns:
         (PortfolioResult, signals_dict, html_path)
     """
+    _BBG_SUFFIXES = (
+        " US EQUITY", " US Equity", " US equity",
+        " INDEX", " Index", " CURNCY", " Curncy",
+        " COMDTY", " Comdty",
+    )
+    # Bloomberg → yfinance remapping for indices/futures/FX
+    _BBG_YF_MAP: dict[str, str] = {
+        "SPX": "^GSPC", "VIX": "^VIX", "NDX": "^NDX",
+        "RTY": "^RUT",  "DXY": "DX-Y.NYB", "XBT": "BTC-USD",
+        "GC1": "GC=F",  "CL1": "CL=F",
+    }
+
+    def _norm_ticker(t: str) -> str:
+        """Strip Bloomberg suffixes and normalize slash → dash for yfinance/IBKR."""
+        for sfx in _BBG_SUFFIXES:
+            if t.endswith(sfx):
+                t = t[: -len(sfx)].strip()
+                break
+        t = t.replace("/", "-")
+        return _BBG_YF_MAP.get(t, t)
+
     market_prices: dict[str, Any] = {
-        k: v for k, v in (bundle.market_prices or {}).items()
+        _norm_ticker(k): v
+        for k, v in (bundle.market_prices or {}).items()
         if not k.startswith("__") and isinstance(v, dict) and v.get("price")
     }
+
+    # ── Enriquece daily_return via yfinance para tickers sem retorno ──────────
+    try:
+        import yfinance as _yf_enrich
+        _need_enrich = [t for t, d in market_prices.items() if not d.get("daily_return")]
+        if _need_enrich:
+            _yfd = _yf_enrich.download(_need_enrich, period="2d", progress=False, auto_adjust=True)
+            _cl = _yfd["Close"] if "Close" in getattr(_yfd, "columns", []) else _yfd
+            if hasattr(_cl, "columns"):
+                for _t in _need_enrich:
+                    if _t in _cl.columns:
+                        _s = _cl[_t].dropna()
+                        if len(_s) >= 2:
+                            _r = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                            market_prices[_t]["daily_return"] = round(float(_r), 6)
+                            market_prices[_t]["price"] = round(float(_s.iloc[-1]), 4)
+            elif len(_need_enrich) == 1:
+                _s = _cl.dropna()
+                if len(_s) >= 2:
+                    _r = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                    market_prices[_need_enrich[0]]["daily_return"] = round(float(_r), 6)
+                    market_prices[_need_enrich[0]]["price"] = round(float(_s.iloc[-1]), 4)
+        _log.info("market_prices_enriched", n=len(_need_enrich))
+    except Exception as _exc_enrich:
+        _log.debug("market_prices_enrich_failed", error=str(_exc_enrich)[:60])
 
     if not market_prices:
         _log.warning("no_market_prices_for_portfolio")
         from app.analysis.portfolio_optimizer import PortfolioResult
-        return PortfolioResult(budget=budget, regime_mode="neutral"), {}, None
+        portfolio_empty = PortfolioResult(budget=budget, regime_mode="neutral")
+        # Ainda roda CTA/shadow_flow/vol_regime para Options tab funcionar
+        try:
+            from app.providers.cta_positioning import compute_cta_positioning
+            portfolio_empty._cta_result = compute_cta_positioning(tickers_extra=[])
+        except Exception:
+            portfolio_empty._cta_result = None
+        try:
+            from app.providers.shadow_flow import collect_shadow_flow
+            portfolio_empty._shadow_flow = collect_shadow_flow(tickers=[], market_prices={})
+        except Exception:
+            portfolio_empty._shadow_flow = None
+        try:
+            from app.analysis.vol_regime import compute_vol_regime
+            portfolio_empty._vol_regime = compute_vol_regime(market_prices={})
+        except Exception:
+            portfolio_empty._vol_regime = None
+        try:
+            from app.providers.finra_dark_pool import collect as finra_collect
+            portfolio_empty._finra_result = finra_collect([])
+        except Exception:
+            portfolio_empty._finra_result = None
+        portfolio_empty._signals = {}
+        portfolio_empty._rrg_result = None
+        portfolio_empty._desk_intel = None
+        return portfolio_empty, {}, None
 
     # ── 1. Rede: MST + correlações ────────────────────────────────────────────
     if network_result is None:
@@ -164,7 +236,7 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("rrg_failed", error=str(exc))
 
-    # ── 3f. Shadow Flow / Dark Pool ───────────────────────────────────────────
+    # ── 3f. Shadow Flow / Dark Pool (FINRA real + volume ratio fallback) ────────
     shadow_flow_result = None
     try:
         from app.providers.shadow_flow import collect_shadow_flow
@@ -174,6 +246,27 @@ def run_portfolio_pipeline(
         )
     except Exception as exc:
         _log.warning("shadow_flow_failed", error=str(exc))
+
+    # ── 3f2. FINRA ADF/TRF — dark pool % real (T+1, gratuito) ───────────────
+    finra_result = None
+    try:
+        from app.providers.finra_dark_pool import collect as finra_collect
+        finra_tickers = list(market_prices.keys())[:30]
+        finra_result = finra_collect(finra_tickers)
+        _log.info("finra_dark_pool",
+                  n=len(finra_result.signals),
+                  market_dark_pct=round(finra_result.market_dark_pct, 3))
+        # Enriquece shadow_flow com dados FINRA (mais confiáveis)
+        if shadow_flow_result is not None:
+            for tk, fsig in finra_result.signals.items():
+                if fsig.dark_pct > 0 and tk in shadow_flow_result.signals:
+                    sf = shadow_flow_result.signals[tk]
+                    # FINRA data é real — sobrescreve score estimado por volume ratio
+                    sf.dark_pool_score = fsig.dark_pool_score
+                    sf.rationale = fsig.rationale or sf.rationale
+                    sf.source = "finra_trf"
+    except Exception as exc:
+        _log.warning("finra_dark_pool_failed", error=str(exc))
 
     # ── 3h. Narrative alpha (DeepVue themes + X sentiment) ───────────────────
     narrative_result = None
@@ -193,12 +286,21 @@ def run_portfolio_pipeline(
     # ── 3g. SwaggyStocks — WSB mentions + short squeeze list ─────────────────
     swaggy_result = None
     try:
-        from app.providers.swaggy_stocks import collect as swaggy_collect
-        swaggy_result = swaggy_collect(max_wsb=50, max_squeeze=30)
-        _log.info("swaggy_done",
-                  wsb=len(swaggy_result.wsb_mentions),
-                  squeeze=len(swaggy_result.squeeze_candidates),
-                  top=swaggy_result.top_mentions[:5])
+        from app.providers.swaggy_stocks import dict_to_swaggy_result
+        _swaggy_dict = getattr(bundle, "swaggy_data", {}) or {}
+        if _swaggy_dict.get("wsb_mentions"):
+            # Reutiliza dados coletados durante o ingest
+            swaggy_result = dict_to_swaggy_result(_swaggy_dict)
+            _log.info("swaggy_from_bundle",
+                      wsb=len(swaggy_result.wsb_mentions),
+                      top=swaggy_result.top_mentions[:5])
+        else:
+            # Coleta fresh via ApeWisdom (free public API)
+            from app.providers.swaggy_stocks import collect as swaggy_collect
+            swaggy_result = swaggy_collect(max_wsb=50)
+            _log.info("swaggy_apewisdom",
+                      wsb=len(swaggy_result.wsb_mentions),
+                      top=swaggy_result.top_mentions[:5])
     except Exception as exc:
         _log.warning("swaggy_failed", error=str(exc))
 
@@ -379,9 +481,15 @@ def run_portfolio_pipeline(
             _log.warning("decision_log_failed", error=str(exc))
 
     # Armazena resultados no portfolio para uso pelo live loop e Desk Radar
-    portfolio._rrg_result   = rrg_result
-    portfolio._pairs_result = pairs_result
-    portfolio._signals      = signals   # dict[str, AssetSignal] para desk_radar
+    portfolio._rrg_result       = rrg_result
+    portfolio._pairs_result     = pairs_result
+    portfolio._signals          = signals           # dict[str, AssetSignal] para desk_radar
+    portfolio._swaggy_result    = swaggy_result     # SwaggyResult | None para brief
+    portfolio._cta_result       = cta_result        # CTAPositioningResult | None para options tab
+    portfolio._shadow_flow      = shadow_flow_result  # ShadowFlowResult | None para options tab
+    portfolio._vol_regime       = vol_regime        # VolRegimeResult | None para options tab
+    portfolio._finra_result     = finra_result      # FinraDarkPoolResult | None — dark pool real
+    portfolio._options_map      = options_map       # dict[ticker, {...iv_percentile, skew...}] para convexity layer
 
     # ── Desk Intelligence — motor de inferência regime-aware ──────────────────
     portfolio._desk_intel = None

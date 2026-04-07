@@ -35,18 +35,48 @@ from app.audit.logger import get_logger
 _log = get_logger("analysis.network")
 
 
-# ── Universo SPX Core (~50 tickers) ───────────────────────────────────────────
-# Indices, sector ETFs e top stocks por peso no S&P 500.
-# Suficientemente pequeno para MST legível e rápido (IBKR/Bloomberg).
+# ── Universo de ETFs setoriais + macro (~55 tickers) ──────────────────────────
+# Todos têm histórico longo, liquidez alta e yfinance/IBKR sem erros.
+# Cobertura: 11 setores SPX + 3 índices + NDX/RUT setoriais + macro/rates/FX/vol
 SPX_CORE: set[str] = {
-    # Top 20 SPX por peso de mercado (abr/2026)
-    "AAPL", "MSFT", "NVDA", "AMZN", "META",
-    "GOOGL", "TSLA", "BRK-B", "AVGO", "JPM",
-    "LLY", "UNH", "XOM", "COST", "V",
-    "MA", "WMT", "NFLX", "JNJ", "PG",
-    # Referências de índice e macro
-    "^GSPC", "^VIX", "SPY", "QQQ",
-    "GLD", "TLT", "HYG", "CL=F",
+    # ── 11 SPDR Sector ETFs (SPX completo) ───────────────────────────────────
+    "XLK",  # Technology
+    "XLF",  # Financials
+    "XLV",  # Health Care
+    "XLY",  # Consumer Discretionary
+    "XLP",  # Consumer Staples
+    "XLE",  # Energy
+    "XLI",  # Industrials
+    "XLB",  # Materials
+    "XLRE", # Real Estate
+    "XLU",  # Utilities
+    "XLC",  # Communication Services
+    # ── Índice SPX / NDX / RUT (ETF proxy) ───────────────────────────────────
+    "SPY",  # S&P 500
+    "QQQ",  # Nasdaq 100
+    "IWM",  # Russell 2000
+    "MDY",  # S&P MidCap 400
+    # ── Nasdaq setorial (Invesco) ─────────────────────────────────────────────
+    "QCLN", # Clean Energy
+    "SOXX", # Semiconductors
+    "IGV",  # Software
+    "IBB",  # Biotech
+    # ── Macro / Rates / Credit ────────────────────────────────────────────────
+    "TLT",  # Treasuries 20yr
+    "IEF",  # Treasuries 7-10yr
+    "SHY",  # Treasuries 1-3yr
+    "HYG",  # High Yield
+    "LQD",  # IG Corp Bonds
+    "EMB",  # EM Bonds
+    # ── Commodities / FX / Vol ────────────────────────────────────────────────
+    "GLD",  # Gold
+    "SLV",  # Silver
+    "USO",  # Oil
+    "DBC",  # Commodities broad
+    "UUP",  # US Dollar
+    "EEM",  # Emerging Markets Equity
+    "EFA",  # Developed ex-US
+    "VIXY", # VIX Short-Term
 }
 
 

@@ -59,10 +59,13 @@ def _regime_badge(regime_data: dict[str, Any]) -> str:
                "chaotic": "~", "unknown": "?"}
     labels = {"risk_on": "RISK ON", "risk_off": "RISK OFF", "transition": "TRANSITION",
                "chaotic": "CHAOTIC", "unknown": "UNKNOWN"}
+    _meta_parts = [f"conf {conf:.0%}"]
+    if avg_c != 0 or entropy != 0:
+        _meta_parts += [f"&rho;={avg_c:.2f}", f"H={entropy:.2f}"]
     return (f'<div class="regime-badge" style="background:{bg};border-color:{fg}">'
             f'<div class="regime-icon" style="color:{fg}">{icons.get(regime,"?")}</div>'
             f'<div><div class="regime-label" style="color:{fg}">{labels.get(regime,regime.upper())}</div>'
-            f'<div class="regime-meta">conf {conf:.0%} &middot; &rho;={avg_c:.2f} &middot; H={entropy:.2f}</div>'
+            f'<div class="regime-meta">{" &middot; ".join(_meta_parts)}</div>'
             f'</div></div>')
 
 
@@ -88,9 +91,13 @@ def _flow_panel_html(flow_pred: dict[str, Any]) -> str:
     dir_arrow = {"buy": "&#9650; BUY", "sell": "&#9660; SELL", "flat": "&#9670; FLAT"}.get(direction, "&#9670;")
     conv_color = {"high": "#fbbf24", "medium": "#60a5fa", "low": "#475569"}.get(conviction, "#475569")
 
-    # GEX
+    # GEX — suporta dois formatos: {gex: {gex_bn, gamma_regime}} e {gex: {spx: {gex_bn, ...}}}
     gex = flow_pred.get("gex", {})
-    gex_spx = gex.get("spx", {})
+    # Formato novo: GEXData serializado diretamente
+    if "gex_bn" in gex:
+        gex_spx = gex
+    else:
+        gex_spx = gex.get("spx", {})
     gex_bn    = gex_spx.get("gex_bn", 0.0) or 0.0
     gamma_reg = gex_spx.get("gamma_regime", "flat")
     flip_lvl  = gex_spx.get("flip_level")
@@ -98,11 +105,15 @@ def _flow_panel_html(flow_pred: dict[str, Any]) -> str:
     gex_label = {"long": "LONG γ — amortece", "short": "SHORT γ — amplifica", "flat": "NEUTRO"}.get(gamma_reg, gamma_reg)
     flip_str  = f" flip@{flip_lvl:,.0f}" if flip_lvl else ""
 
-    # LETF flows
-    letf = flow_pred.get("letf", {})
-    spx_flow = (letf.get("spx", {}) or {}).get("flow_usd", 0.0) or 0.0
-    ndx_flow = (letf.get("ndx", {}) or {}).get("flow_usd", 0.0) or 0.0
-    spx_r    = letf.get("spx_r")
+    # LETF flows — suporta formato FlowPrediction.asdict() (spx/ndx/sox como dicts diretos)
+    # e formato legado {letf: {spx: {flow_usd: ...}}}
+    letf_raw = flow_pred.get("letf", {})
+    # Formato novo: spx/ndx/sox como attrs de FlowPrediction (não aninhados em "letf")
+    spx_flow_obj = flow_pred.get("spx", letf_raw.get("spx", {})) or {}
+    ndx_flow_obj = flow_pred.get("ndx", letf_raw.get("ndx", {})) or {}
+    spx_flow = (spx_flow_obj.get("flow_usd") or 0.0)
+    ndx_flow = (ndx_flow_obj.get("flow_usd") or 0.0)
+    spx_r    = spx_flow_obj.get("ret") or letf_raw.get("spx_r")
     spx_r_str = f"{spx_r:+.2%}" if spx_r is not None else "—"
 
     def _flow_row(label: str, usd: float) -> str:
@@ -378,32 +389,47 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060a12;
 #cy { width: 100%; height: 100%; }
 
 /* Node detail panel */
-#node-detail { position: absolute; top: 10px; right: 10px; width: 224px;
-               background: #0a0f1a; border: 1px solid #1a2535;
-               border-radius: 7px; padding: 10px 10px 8px; display: none; z-index: 200; }
+#node-detail { position: absolute; top: 10px; right: 10px; width: 280px;
+               background: #070d18; border: 1px solid #1e3148;
+               border-radius: 8px; padding: 12px 12px 10px; display: none; z-index: 200;
+               box-shadow: 0 4px 24px rgba(0,0,0,0.7); }
 #node-detail.visible { display: block; }
-#nd-close { position: absolute; top: 6px; right: 8px; cursor: pointer;
-            color: #64748b; font-size: 15px; line-height: 1; }
+#nd-close { position: absolute; top: 7px; right: 10px; cursor: pointer;
+            color: #475569; font-size: 16px; line-height: 1; transition: color 0.15s; }
 #nd-close:hover { color: #94a3b8; }
-#nd-label { font-size: 13px; font-weight: 700; margin-bottom: 2px; padding-right: 16px; }
-#nd-sub { font-size: 11px; color: #64748b; margin-bottom: 7px; }
+#nd-header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 9px; }
+#nd-ticker-badge { font-size: 13px; font-weight: 800; background: #0f1f38;
+                   border: 1px solid #1e3a5f; border-radius: 5px;
+                   padding: 3px 8px; color: #38bdf8; white-space: nowrap; }
+#nd-header-right { flex: 1; min-width: 0; }
+#nd-label { font-size: 12px; font-weight: 700; color: #e2e8f0; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; padding-right: 18px; }
+#nd-sub { font-size: 10px; color: #4b6278; margin-top: 1px; }
+#nd-quadrant-badge { display: inline-block; font-size: 9px; font-weight: 700;
+                     padding: 1px 6px; border-radius: 3px; margin-top: 3px;
+                     text-transform: uppercase; letter-spacing: 0.4px; }
 
 /* Anatomy tabs */
-.nd-tabs { display: flex; gap: 3px; margin-bottom: 9px; }
-.nd-tab { font-size: 10px; font-weight: 700; padding: 3px 9px;
-          border-radius: 3px; border: 1px solid #1e293b;
-          background: transparent; color: #64748b; cursor: pointer;
-          letter-spacing: 0.5px; }
-.nd-tab.active { background: #0f172a; border-color: #38bdf8; color: #38bdf8; }
+.nd-tabs { display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid #1a2d42; padding-bottom: 6px; }
+.nd-tab { font-size: 9px; font-weight: 800; padding: 4px 8px;
+          border-radius: 4px; border: none;
+          background: transparent; color: #4b6278; cursor: pointer;
+          letter-spacing: 0.6px; text-transform: uppercase; transition: all 0.15s; flex: 1; text-align: center; }
+.nd-tab:hover { color: #94a3b8; background: #0d1a2a; }
+.nd-tab.active { background: #0f2235; border-bottom: 2px solid #38bdf8;
+                 color: #38bdf8; border-radius: 4px 4px 0 0; }
 .nd-tab-panel { display: none; }
 .nd-tab-panel.active { display: block; }
 
-#nd-rows .nd-row, .nd-tab-panel .nd-row {
-  display: flex; justify-content: space-between;
-  border-bottom: 1px solid #0d1520; padding: 4px 0; font-size: 12px; }
-#nd-rows .nd-key, .nd-tab-panel .nd-key { color: #64748b; }
-#nd-rows .nd-val, .nd-tab-panel .nd-val { font-weight: 700; color: #e2e8f0; }
-.nd-na { color: #64748b; font-size: 11px; }
+.nd-row { display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid #0d1825; padding: 5px 0; font-size: 11.5px; gap: 6px; }
+.nd-key { color: #4b6278; flex: 1; }
+.nd-val { font-weight: 700; color: #cbd5e1; text-align: right; }
+.nd-na { color: #334155; font-size: 11px; }
+.nd-section { font-size: 9px; font-weight: 800; color: #1e3a5f; text-transform: uppercase;
+              letter-spacing: 0.8px; padding: 8px 0 3px; }
+.nd-mini-bar { height: 4px; background: #0d1825; border-radius: 2px; overflow: hidden; margin: 2px 0; }
+.nd-mini-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
 
 /* Contagion panel */
 #contagion-panel {
@@ -535,10 +561,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060a12;
   pointer-events: none; display: none; z-index: 100; white-space: nowrap;
 }
 
-/* Keyboard hint */
-#kbd-hints { position: absolute; bottom: 10px; right: 10px;
-             font-size: 10px; color: #4a6380; pointer-events: none;
-             line-height: 1.7; text-align: right; }
 
 /* ── Top-level main tabs ─────────────────────────────────────────────────── */
 #main-tabs-bar { display: flex; gap: 2px; align-items: center;
@@ -1351,263 +1373,281 @@ function ndRow(k, v) {
   return '<div class="nd-row"><span class="nd-key">' + k + '</span><span class="nd-val">' + v + '</span></div>';
 }
 
+function ndSection(label) {
+  return '<div class="nd-section">' + label + '</div>';
+}
+function ndBar(v, color) {
+  // v in [0,1], renders a mini bar
+  const w = Math.min(100, Math.max(0, v * 100)).toFixed(0);
+  return '<div class="nd-mini-bar"><div class="nd-mini-fill" style="width:'+w+'%;background:'+color+'"></div></div>';
+}
+
 function showDetail(d) {
-  document.getElementById('nd-label').textContent = d.label || d.id;
+  const ticker = d.ticker || d.id || '—';
+  const label  = d.label || d.id || '—';
+
+  // ── Header ──────────────────────────────────────────────────────────────────
+  document.getElementById('nd-ticker-badge').textContent = ticker;
+  document.getElementById('nd-label').textContent = label !== ticker ? label : '';
   document.getElementById('nd-label').style.color = d.color || '#e2e8f0';
   document.getElementById('nd-sub').textContent =
-    (d.ticker ? '[' + d.ticker + ']  ' : '') + 'Level ' + (d.level != null ? d.level : '?');
+    (d.level != null ? 'Level ' + d.level : '') + (d.is_hub ? '  ★ Hub' : '');
 
-  // ── Tab: Price ──────────────────────────────────────────────────────────────
-  const priceRows = [];
-  if (d.price   != null) priceRows.push(ndRow('Price',    fNum(d.price)));
-  if (d.daily   != null) priceRows.push(ndRow('1D',       fPct(d.daily)));
-  if (d.weekly  != null) priceRows.push(ndRow('1W',       fPct(d.weekly)));
-  if (d.ytd     != null) priceRows.push(ndRow('YTD',      fPct(d.ytd)));
-  if (d.momentum != null) priceRows.push(ndRow('Momentum', fScore(d.momentum)));
-  if (d.contagion != null && d.contagion > 0) {
-    const cc = d.contagion > 0.5 ? '#ef4444' : (d.contagion > 0.25 ? '#f97316' : '#4ade80');
-    priceRows.push(ndRow('Contagion',
-      '<span style="color:' + cc + '">' + d.contagion.toFixed(3) + '</span>'));
-  }
-  if (d.propagated_shock != null && Math.abs(d.propagated_shock) > 0.0001) {
-    priceRows.push(ndRow('Prop. Shock', fPct(d.propagated_shock)));
-  }
-  if (d.is_hub) priceRows.push(ndRow('Role', '<span style="color:#f59e0b">Hub \u2605</span>'));
-  document.getElementById('nd-rows').innerHTML = priceRows.join('');
-
-  // ── Tab: Valuation ─────────────────────────────────────────────────────────
-  const a = d.anatomy || {};
-  const valRows = [];
-  valRows.push(ndRow('P/E',          fMult(a.pe)));
-  valRows.push(ndRow('Fwd P/E',      fMult(a.forward_pe)));
-  valRows.push(ndRow('P/S',          fMult(a.ps)));
-  valRows.push(ndRow('P/B',          fMult(a.pb)));
-  valRows.push(ndRow('EV/EBITDA',    fMult(a.ev_ebitda)));
-  valRows.push(ndRow('Beta',         a.beta != null ? a.beta.toFixed(2) : '<span class="nd-na">\u2014</span>'));
-  valRows.push(ndRow('Mkt Cap',      fB(a.mktcap_b)));
-  if (a.hi_52w != null) valRows.push(ndRow('52W High',   fNum(a.hi_52w)));
-  if (a.lo_52w != null) valRows.push(ndRow('52W Low',    fNum(a.lo_52w)));
-  if (a.drawdown_52w != null) valRows.push(ndRow('DD 52W',    fPct(a.drawdown_52w)));
-  document.getElementById('nd-rows-val').innerHTML = valRows.join('');
-
-  // ── Tab: Quality ───────────────────────────────────────────────────────────
-  const qualRows = [];
-  qualRows.push(ndRow('ROE',          a.roe  != null ? fPct(a.roe)  : '<span class="nd-na">\u2014</span>'));
-  qualRows.push(ndRow('ROA',          a.roa  != null ? fPct(a.roa)  : '<span class="nd-na">\u2014</span>'));
-  qualRows.push(ndRow('Net Margin',   a.profit_margin != null ? fPct(a.profit_margin) : '<span class="nd-na">\u2014</span>'));
-  qualRows.push(ndRow('Debt/Equity',  a.debt_equity != null ? a.debt_equity.toFixed(2) : '<span class="nd-na">\u2014</span>'));
-  qualRows.push(ndRow('Div. Yield',   a.dividend_yield != null ? fPct(a.dividend_yield) : '<span class="nd-na">\u2014</span>'));
-  document.getElementById('nd-rows-qual').innerHTML = qualRows.join('');
-
-  // ── Tab: Options ────────────────────────────────────────────────────────────
-  const o = d.options || {};
-  const optRows = [];
-  if (o.atm_iv    != null) optRows.push(ndRow('ATM IV',     fPct(o.atm_iv)));
-  if (o.skew_5pct != null) optRows.push(ndRow('Skew 5%',   fPct(o.skew_5pct)));
-  if (o.pcr_oi    != null) optRows.push(ndRow('Put/Call',  o.pcr_oi.toFixed(2)));
-  if (o.gex_b     != null) {
-    const gc = o.gex_b >= 0 ? '#4ade80' : '#f87171';
-    optRows.push(ndRow('GEX', '<span style="color:' + gc + '">' + (o.gex_b >= 0 ? '+' : '') + o.gex_b.toFixed(2) + 'B</span>'));
-  }
-  if (o.next_expiry) optRows.push(ndRow('Next Exp.', o.next_expiry));
-  // Term structure
-  const ts = o.term_structure || {};
-  const tsKeys = Object.keys(ts).sort((a,b) => parseInt(a) - parseInt(b));
-  tsKeys.forEach(k => {
-    if (ts[k] != null) optRows.push(ndRow(k.replace('iv_','') + ' IV', fPct(ts[k])));
-  });
-  if (optRows.length === 0) {
-    optRows.push('<div style="font-size:11px;color:#475569;padding:4px 0">Sem dados de opções</div>');
-  }
-  document.getElementById('nd-rows-opt').innerHTML = optRows.join('');
-
-  // ── Tab: Risk (Probabilistic) ───────────────────────────────────────────────
-  const p = d.prob || {};
-  const riskRows = [];
-
-  // VaR / CVaR
-  if (p.var_95  != null) riskRows.push(ndRow('VaR 95%',  fPct(p.var_95)));
-  if (p.cvar_95 != null) riskRows.push(ndRow('CVaR 95%', fPct(p.cvar_95)));
-  if (p.var_99  != null) riskRows.push(ndRow('VaR 99%',  fPct(p.var_99)));
-  if (p.cvar_99 != null) riskRows.push(ndRow('CVaR 99%', fPct(p.cvar_99)));
-  if (p.ann_vol != null) riskRows.push(ndRow('Vol ann.',  fPct(p.ann_vol)));
-
-  // Distribuição
-  if (p.skewness        != null) riskRows.push(ndRow('Skewness', p.skewness.toFixed(3)));
-  if (p.excess_kurtosis != null) riskRows.push(ndRow('Ex. Kurt.',  p.excess_kurtosis.toFixed(2)));
-  if (p.tail_score      != null) {
-    const tc = p.tail_score > 0.6 ? '#f87171' : (p.tail_score > 0.3 ? '#f59e0b' : '#4ade80');
-    riskRows.push(ndRow('Tail Score',
-      '<div style="display:flex;align-items:center;gap:4px">'
-      + '<div style="flex:1;height:4px;background:#1a2535;border-radius:2px">'
-      + '<div style="width:' + (p.tail_score * 100).toFixed(0) + '%;height:100%;background:' + tc + ';border-radius:2px"></div>'
-      + '</div><span style="color:' + tc + '">' + p.tail_score.toFixed(2) + '</span></div>'
-    ));
-  }
-  if (p.dist && p.dist.df != null) riskRows.push(ndRow('t-dist df', p.dist.df.toFixed(1)));
-
-  // FFT ciclo dominante
-  if (p.dominant_cycle != null) {
-    riskRows.push(ndRow('Dom. Cycle', p.dominant_cycle + 'd'));
+  // Quadrant badge
+  const qBadge = document.getElementById('nd-quadrant-badge');
+  const quad_colors = {leading:'#22c55e', improving:'#3b82f6', weakening:'#f97316', lagging:'#ef4444'};
+  const quad_bg     = {leading:'#052e16', improving:'#1e3a5f', weakening:'#431407', lagging:'#450a0a'};
+  const quad_icons  = {leading:'&#9650;', improving:'&#8593;', weakening:'&#8595;', lagging:'&#9660;'};
+  const quad_labels = {leading:'LEADING', improving:'IMPROVING', weakening:'WEAKENING', lagging:'LAGGING'};
+  if (d.rrg_quadrant && quad_colors[d.rrg_quadrant]) {
+    const qc = quad_colors[d.rrg_quadrant];
+    const qb = quad_bg[d.rrg_quadrant];
+    qBadge.innerHTML = (quad_icons[d.rrg_quadrant]||'') + ' ' + (quad_labels[d.rrg_quadrant]||d.rrg_quadrant.toUpperCase());
+    qBadge.style.cssText = 'display:inline-block;color:'+qc+';background:'+qb+';border:1px solid '+qc+
+      ';font-size:9px;font-weight:800;padding:1px 6px;border-radius:3px;margin-top:3px;letter-spacing:0.4px;text-transform:uppercase';
+  } else {
+    qBadge.style.display = 'none';
   }
 
-  // Regime HMM
+  const a  = d.anatomy   || {};
+  const o  = d.options   || {};
+  const p  = d.prob      || {};
+  const fl = d.flow      || {};
+  const cv = d.convexity || {};
+
+  // ── PAINEL — preço, retornos, valuation, qualidade ─────────────────────────
+  const painelRows = [];
+  // Preço
+  if (d.price  != null) painelRows.push(ndRow('Preço', fNum(d.price)));
+  if (d.daily  != null) painelRows.push(ndRow('1D',    fPct(d.daily)));
+  if (d.weekly != null) painelRows.push(ndRow('1W',    fPct(d.weekly)));
+  if (d.ytd    != null) painelRows.push(ndRow('YTD',   fPct(d.ytd)));
+  if (d.momentum != null) painelRows.push(ndRow('Momentum', fScore(d.momentum)));
+  // Valuation
+  painelRows.push(ndSection('Valuation'));
+  if (a.pe       != null) painelRows.push(ndRow('P/E',       fMult(a.pe)));
+  if (a.forward_pe != null) painelRows.push(ndRow('Fwd P/E', fMult(a.forward_pe)));
+  if (a.ev_ebitda != null) painelRows.push(ndRow('EV/EBITDA',fMult(a.ev_ebitda)));
+  if (a.mktcap_b != null) painelRows.push(ndRow('Mkt Cap',   fB(a.mktcap_b)));
+  if (a.drawdown_52w != null) painelRows.push(ndRow('DD 52W', fPct(a.drawdown_52w)));
+  // Quality
+  painelRows.push(ndSection('Qualidade'));
+  if (a.roe  != null) painelRows.push(ndRow('ROE',        fPct(a.roe)));
+  if (a.roa  != null) painelRows.push(ndRow('ROA',        fPct(a.roa)));
+  if (a.profit_margin != null) painelRows.push(ndRow('Margem', fPct(a.profit_margin)));
+  if (a.debt_equity != null) painelRows.push(ndRow('D/E', a.debt_equity.toFixed(2)));
+  if (a.dividend_yield != null) painelRows.push(ndRow('Div Yield', fPct(a.dividend_yield)));
+  document.getElementById('nd-rows-painel').innerHTML = painelRows.join('');
+
+  // ── RISCO — probabilístico + volatilidade + tail ────────────────────────────
+  const riscoRows = [];
+  if (p.ann_vol  != null) riscoRows.push(ndRow('Vol Anual',  fPct(p.ann_vol)));
+  if (p.var_95   != null) riscoRows.push(ndRow('VaR 95%',   fPct(p.var_95)));
+  if (p.cvar_95  != null) riscoRows.push(ndRow('CVaR 95%',  fPct(p.cvar_95)));
+  if (p.var_99   != null) riscoRows.push(ndRow('VaR 99%',   fPct(p.var_99)));
+  if (p.tail_score != null) {
+    const tc = p.tail_score > 0.6 ? '#ef4444' : (p.tail_score > 0.3 ? '#f59e0b' : '#4ade80');
+    riscoRows.push(ndRow('Tail Score',
+      '<div style="display:flex;align-items:center;gap:5px;min-width:90px">'
+      + ndBar(p.tail_score, tc)
+      + '<span style="color:'+tc+';font-size:11px">'+p.tail_score.toFixed(2)+'</span></div>'));
+  }
+  riscoRows.push(ndSection('Distribuição'));
+  if (p.skewness        != null) riscoRows.push(ndRow('Skewness',  p.skewness.toFixed(3)));
+  if (p.excess_kurtosis != null) riscoRows.push(ndRow('Ex. Kurt.', p.excess_kurtosis.toFixed(2)));
+  if (p.dist && p.dist.df != null) riscoRows.push(ndRow('t-dist df', p.dist.df.toFixed(1)));
+  if (p.dominant_cycle  != null) riscoRows.push(ndRow('Ciclo dom.', p.dominant_cycle + 'd'));
+  riscoRows.push(ndSection('Regime HMM'));
   if (p.regime_prob_bull != null) {
     const bull = p.regime_prob_bull;
-    const bc   = bull > 0.6 ? '#4ade80' : (bull < 0.4 ? '#f87171' : '#f59e0b');
+    const bc   = bull > 0.6 ? '#4ade80' : (bull < 0.4 ? '#ef4444' : '#f59e0b');
     const bl   = bull > 0.6 ? 'Bull' : (bull < 0.4 ? 'Bear' : 'Mixed');
-    riskRows.push(ndRow('Regime',
-      '<div style="display:flex;align-items:center;gap:4px">'
-      + '<div style="flex:1;height:4px;background:#1a2535;border-radius:2px">'
-      + '<div style="width:' + (bull * 100).toFixed(0) + '%;height:100%;background:' + bc + ';border-radius:2px"></div>'
-      + '</div><span style="color:' + bc + '">' + bl + ' ' + (bull * 100).toFixed(0) + '%</span></div>'
-    ));
+    riscoRows.push(ndRow('Regime',
+      '<div style="display:flex;align-items:center;gap:5px;min-width:100px">'
+      + ndBar(bull, bc)
+      + '<span style="color:'+bc+';font-size:11px">'+bl+' '+(bull*100).toFixed(0)+'%</span></div>'));
   }
-
-  if (riskRows.length === 0) {
-    riskRows.push('<div style="font-size:11px;color:#475569;padding:4px 0">Sem dados probabilísticos</div>');
-  }
-  document.getElementById('nd-rows-risk').innerHTML = riskRows.join('');
-
-  // ── Tab: Flow (GEX + LETF) ───────────────────────────────────────────────────
-  const fl = d.flow || {};
-  const flowRows = [];
-  if (fl.total_usd != null) {
-    const mn = fl.total_usd / 1e6;
-    const fc = mn > 0 ? '#4ade80' : (mn < 0 ? '#f87171' : '#94a3b8');
-    const fa = mn > 0 ? '▲' : (mn < 0 ? '▼' : '◆');
-    flowRows.push(ndRow('EOD Flow Total', '<span style="color:'+fc+'">'+fa+' $'+mn.toFixed(1)+'M</span>'));
-  }
-  if (fl.letf_flow_usd != null && fl.letf_flow_usd !== 0) {
-    const lm = fl.letf_flow_usd / 1e6;
-    const lc = lm > 0 ? '#4ade80' : '#f87171';
-    flowRows.push(ndRow('LETF Rebal', '<span style="color:'+lc+'">$'+lm.toFixed(1)+'M</span>'));
-  }
-  if (fl.gex_flow_usd != null && fl.gex_flow_usd !== 0) {
-    const gm = fl.gex_flow_usd / 1e6;
-    const gc2 = gm > 0 ? '#4ade80' : '#f87171';
-    flowRows.push(ndRow('GEX Hedge', '<span style="color:'+gc2+'">$'+gm.toFixed(1)+'M</span>'));
-  }
-  if (fl.direction) {
-    const dc = {buy:'#4ade80',sell:'#f87171',flat:'#94a3b8'}[fl.direction] || '#94a3b8';
-    flowRows.push(ndRow('Direção', '<span style="color:'+dc+'">'+fl.direction.toUpperCase()+'</span>'));
-  }
-  if (flowRows.length === 0) {
-    flowRows.push('<div style="font-size:11px;color:#475569;padding:4px 0">Sem dados de fluxo mecânico</div>');
-  }
-  document.getElementById('nd-rows-flow').innerHTML = flowRows.join('');
-
-  // ── Tab: Structure (S) ──────────────────────────────────────────────────────
-  const structRows = [];
-  const nd = {};
-  const parentLabel = d.parent_id || null;
-  if (parentLabel) structRows.push(ndRow('Cluster', parentLabel));
-  if (d.level != null) structRows.push(ndRow('Level', d.level));
-  if (d.is_hub) structRows.push(ndRow('Centralidade', '<span style="color:#f59e0b">Hub ★</span>'));
-  if (d.weight != null) structRows.push(ndRow('Peso índice', (d.weight*100).toFixed(2)+'%'));
-  const ab = d.anatomy || {};
-  if (ab.beta != null) structRows.push(ndRow('Beta', ab.beta.toFixed(2)));
   if (d.contagion != null && d.contagion > 0) {
     const cc = d.contagion > 0.5 ? '#ef4444' : (d.contagion > 0.25 ? '#f97316' : '#4ade80');
-    structRows.push(ndRow('Contágio recebido', '<span style="color:'+cc+'">'+d.contagion.toFixed(3)+'</span>'));
+    riscoRows.push(ndRow('Contágio', '<span style="color:'+cc+'">'+d.contagion.toFixed(3)+'</span>'));
   }
-  if (structRows.length === 0) structRows.push('<div class="nd-na">Sem dados estruturais</div>');
-  document.getElementById('nd-rows-struct').innerHTML = structRows.join('');
-
-  // ── Tab: Flow (F) ────────────────────────────────────────────────────────────
-  const nfRows = [];
-  const quad_colors = {leading:'#22c55e', improving:'#60a5fa', weakening:'#f97316', lagging:'#ef4444'};
-  if (d.rrg_quadrant) {
-    const qc = quad_colors[d.rrg_quadrant] || '#94a3b8';
-    const qicons = {leading:'▲', improving:'↑', weakening:'↓', lagging:'▼'};
-    nfRows.push(ndRow('Quadrante', '<span style="color:'+qc+'">'+
-      (qicons[d.rrg_quadrant]||'')+ ' ' + d.rrg_quadrant.charAt(0).toUpperCase()+d.rrg_quadrant.slice(1)+'</span>'));
-  }
-  if (d.rrg_rs_ratio != null) nfRows.push(ndRow('RS-Ratio', d.rrg_rs_ratio.toFixed(2)));
-  if (d.rrg_rs_mom   != null) nfRows.push(ndRow('RS-Mom', d.rrg_rs_mom.toFixed(2)));
-  if (d.rrg_alpha    != null) {
-    const ac = d.rrg_alpha > 0 ? '#4ade80' : (d.rrg_alpha < 0 ? '#f87171' : '#94a3b8');
-    nfRows.push(ndRow('Alpha RS', '<span style="color:'+ac+'">'+(d.rrg_alpha>0?'+':'')+d.rrg_alpha.toFixed(3)+'</span>'));
-  }
-  if (d.momentum != null) nfRows.push(ndRow('Momentum', fScore(d.momentum)));
   if (d.propagated_shock != null && Math.abs(d.propagated_shock) > 0.0001)
-    nfRows.push(ndRow('Shock prop.', fPct(d.propagated_shock)));
-  const flf = d.flow || {};
-  if (flf.direction) {
-    const dfc = {buy:'#4ade80',sell:'#f87171',flat:'#94a3b8'}[flf.direction] || '#94a3b8';
-    nfRows.push(ndRow('Fluxo mec.', '<span style="color:'+dfc+'">'+flf.direction.toUpperCase()+'</span>'));
-  }
-  if (nfRows.length === 0) nfRows.push('<div class="nd-na">Sem dados de fluxo</div>');
-  document.getElementById('nd-rows-nodeflow').innerHTML = nfRows.join('');
+    riscoRows.push(ndRow('Shock prop.', fPct(d.propagated_shock)));
+  if (riscoRows.filter(r => !r.includes('nd-section')).length === 0)
+    riscoRows.push('<div class="nd-na">Sem dados probabilísticos</div>');
+  document.getElementById('nd-rows-risco').innerHTML = riscoRows.join('');
 
-  // ── Tab: Convexity (C) ───────────────────────────────────────────────────────
-  const cvRows = [];
-  const cv = d.convexity || {};
-  if (cv.iv_rank != null) {
-    const ic = cv.iv_rank < 0.35 ? '#4ade80' : (cv.iv_rank > 0.75 ? '#f87171' : '#f59e0b');
-    cvRows.push(ndRow('IV Rank', '<span style="color:'+ic+'">'+(cv.iv_rank*100).toFixed(0)+'%ile</span>'));
+  // ── GREGAS — opções, IV, skew, term structure, oportunidade ─────────────────
+  const gregasRows = [];
+  const ivRank = cv.iv_rank;
+  if (ivRank != null) {
+    const ic = ivRank < 0.35 ? '#4ade80' : (ivRank > 0.75 ? '#ef4444' : '#f59e0b');
+    gregasRows.push(ndRow('IV Rank',
+      '<div style="display:flex;align-items:center;gap:5px;min-width:100px">'
+      + ndBar(ivRank, ic)
+      + '<span style="color:'+ic+';font-size:11px">'+(ivRank*100).toFixed(0)+'%ile</span></div>'));
   }
-  if (cv.skew != null) {
-    const sc = cv.skew < -0.02 ? '#4ade80' : (cv.skew > 0.04 ? '#f87171' : '#94a3b8');
-    cvRows.push(ndRow('Skew 5%', '<span style="color:'+sc+'">'+(cv.skew>0?'+':'')+cv.skew.toFixed(4)+'</span>'));
+  if (o.atm_iv    != null) gregasRows.push(ndRow('ATM IV',    fPct(o.atm_iv)));
+  if (o.skew_5pct != null || cv.skew != null) {
+    const sv = o.skew_5pct ?? cv.skew;
+    const sc = sv < -0.02 ? '#4ade80' : (sv > 0.04 ? '#ef4444' : '#94a3b8');
+    gregasRows.push(ndRow('Skew 5%', '<span style="color:'+sc+'">'+(sv>0?'+':'')+sv.toFixed(4)+'</span>'));
   }
+  if (o.pcr_oi    != null) gregasRows.push(ndRow('Put/Call OI', o.pcr_oi.toFixed(2)));
+  if (o.gex_b     != null) {
+    const gc = o.gex_b >= 0 ? '#4ade80' : '#ef4444';
+    gregasRows.push(ndRow('GEX', '<span style="color:'+gc+'">'+(o.gex_b>=0?'+':'')+o.gex_b.toFixed(2)+'B</span>'));
+  }
+  if (o.next_expiry) gregasRows.push(ndRow('Próx. Exp.', o.next_expiry));
+  // Term structure
+  const ts = o.term_structure || {};
+  const tsKeys = Object.keys(ts).sort((a2,b2) => parseInt(a2) - parseInt(b2));
+  if (tsKeys.length > 0) {
+    gregasRows.push(ndSection('Term Structure'));
+    tsKeys.forEach(k => {
+      if (ts[k] != null) gregasRows.push(ndRow(k.replace('iv_','').replace('d',' dias'), fPct(ts[k])));
+    });
+  }
+  // Convexity signals
+  gregasRows.push(ndSection('Convexidade'));
   if (cv.hidden_opp != null) {
-    const oc = cv.hidden_opp > 0.20 ? '#4ade80' : (cv.hidden_opp < 0 ? '#f87171' : '#94a3b8');
-    cvRows.push(ndRow('Oportunidade', '<span style="color:'+oc+'">'+(cv.hidden_opp>0?'+':'')+cv.hidden_opp.toFixed(3)+'</span>'));
+    const oc = cv.hidden_opp > 0.20 ? '#4ade80' : (cv.hidden_opp < -0.1 ? '#ef4444' : '#94a3b8');
+    gregasRows.push(ndRow('Oportunidade', '<span style="color:'+oc+'">'+(cv.hidden_opp>0?'+':'')+cv.hidden_opp.toFixed(3)+'</span>'));
   }
   if (cv.fragility != null) {
     const fc2 = cv.fragility > 0.5 ? '#ef4444' : (cv.fragility > 0.25 ? '#f97316' : '#4ade80');
-    cvRows.push(ndRow('Fragilidade', '<span style="color:'+fc2+'">'+cv.fragility.toFixed(3)+'</span>'));
+    gregasRows.push(ndRow('Fragilidade', '<span style="color:'+fc2+'">'+cv.fragility.toFixed(3)+'</span>'));
   }
   if (cv.halo_color) {
-    const halo_labels = {'#22c55e':'IV barata + upside','#38bdf8':'IV barata','#c084fc':'IV cara','#ef4444':'IV cara + frágil','#f97316':'Put skew elevado'};
-    cvRows.push(ndRow('Sinal', '<span style="color:'+cv.halo_color+'">' + (halo_labels[cv.halo_color]||'Sinal ativo') + '</span>'));
+    const halo_labels = {'#22c55e':'IV barata + upside','#38bdf8':'IV barata',
+                         '#c084fc':'IV cara','#ef4444':'IV cara + frágil','#f97316':'Put skew elevado'};
+    gregasRows.push(ndRow('Sinal', '<span style="color:'+cv.halo_color+'">'+(halo_labels[cv.halo_color]||'Sinal ativo')+'</span>'));
   }
-  const o2 = d.options || {};
-  if (o2.atm_iv) cvRows.push(ndRow('ATM IV', fPct(o2.atm_iv)));
-  if (o2.pcr_oi) cvRows.push(ndRow('Put/Call', o2.pcr_oi.toFixed(2)));
-  if (cvRows.length === 0) cvRows.push('<div class="nd-na">Sem dados de opções / convexidade</div>');
-  document.getElementById('nd-rows-convex').innerHTML = cvRows.join('');
+  if (gregasRows.filter(r => !r.includes('nd-section')).length === 0)
+    gregasRows.push('<div class="nd-na">Sem dados de opções</div>');
+  document.getElementById('nd-rows-gregas').innerHTML = gregasRows.join('');
 
-  // ── Summary text (sempre visível no topo) ────────────────────────────────────
+  // ── ESTRUTURA — rede, RRG, MST, cluster ─────────────────────────────────────
+  const estrutRows = [];
+  // RRG
+  estrutRows.push(ndSection('RRG — Força Relativa'));
+  if (d.rrg_quadrant) {
+    const qc2 = quad_colors[d.rrg_quadrant] || '#94a3b8';
+    estrutRows.push(ndRow('Quadrante', '<span style="color:'+qc2+'">'+(quad_icons[d.rrg_quadrant]||'')+' '+
+      (quad_labels[d.rrg_quadrant]||d.rrg_quadrant)+'</span>'));
+  }
+  if (d.rrg_rs_ratio != null) estrutRows.push(ndRow('RS-Ratio',   d.rrg_rs_ratio.toFixed(2)));
+  if (d.rrg_rs_mom   != null) estrutRows.push(ndRow('RS-Mom',     d.rrg_rs_mom.toFixed(2)));
+  if (d.rrg_alpha    != null) {
+    const ac = d.rrg_alpha > 0 ? '#4ade80' : (d.rrg_alpha < 0 ? '#ef4444' : '#94a3b8');
+    estrutRows.push(ndRow('Alpha RS', '<span style="color:'+ac+'">'+(d.rrg_alpha>0?'+':'')+d.rrg_alpha.toFixed(3)+'</span>'));
+  }
+  // Rede
+  estrutRows.push(ndSection('Rede MST'));
+  if (d.parent_id) estrutRows.push(ndRow('Cluster', d.parent_id));
+  if (d.level != null) estrutRows.push(ndRow('Level', d.level));
+  if (d.is_hub) estrutRows.push(ndRow('Centralidade', '<span style="color:#f59e0b">Hub &#9733;</span>'));
+  if (d.weight != null) estrutRows.push(ndRow('Peso índice', (d.weight*100).toFixed(2)+'%'));
+  if (a.beta != null) estrutRows.push(ndRow('Beta', a.beta.toFixed(2)));
+  if (d.contagion != null && d.contagion > 0) {
+    const cc = d.contagion > 0.5 ? '#ef4444' : (d.contagion > 0.25 ? '#f97316' : '#4ade80');
+    estrutRows.push(ndRow('Contágio', '<span style="color:'+cc+'">'+d.contagion.toFixed(3)+'</span>'));
+  }
+  document.getElementById('nd-rows-estrutura').innerHTML = estrutRows.join('');
+
+  // ── CTA — posicionamento + fluxo mecânico EOD ────────────────────────────────
+  const ctaRows = [];
+  // RRG momentum para contexto
+  if (d.momentum != null) ctaRows.push(ndRow('Momentum Score', fScore(d.momentum)));
+  // GEX + LETF flow
+  ctaRows.push(ndSection('Fluxo Mecânico EOD'));
+  if (fl.total_usd != null) {
+    const mn = fl.total_usd / 1e6;
+    const fc2 = mn > 0 ? '#4ade80' : (mn < 0 ? '#ef4444' : '#94a3b8');
+    const fa  = mn > 0 ? '&#9650;' : (mn < 0 ? '&#9660;' : '&#9670;');
+    ctaRows.push(ndRow('Fluxo Total EOD',
+      '<span style="color:'+fc2+'">'+fa+' $'+Math.abs(mn).toFixed(1)+'M</span>'));
+  }
+  if (fl.letf_flow_usd != null && fl.letf_flow_usd !== 0) {
+    const lm = fl.letf_flow_usd / 1e6;
+    const lc = lm > 0 ? '#4ade80' : '#ef4444';
+    ctaRows.push(ndRow('LETF Rebal.', '<span style="color:'+lc+'">'+(lm>0?'+':'')+lm.toFixed(1)+'M</span>'));
+  }
+  if (fl.gex_flow_usd != null && fl.gex_flow_usd !== 0) {
+    const gm = fl.gex_flow_usd / 1e6;
+    const gc3 = gm > 0 ? '#4ade80' : '#ef4444';
+    ctaRows.push(ndRow('GEX Hedge', '<span style="color:'+gc3+'">'+(gm>0?'+':'')+gm.toFixed(1)+'M</span>'));
+  }
+  if (fl.direction) {
+    const dc = {buy:'#4ade80', sell:'#ef4444', flat:'#94a3b8'}[fl.direction] || '#94a3b8';
+    ctaRows.push(ndRow('Direção EOD', '<span style="color:'+dc+'">'+fl.direction.toUpperCase()+'</span>'));
+  }
+  // Dark pool / shadow flow
+  if (d.dark_pool_score != null) {
+    ctaRows.push(ndSection('Dark Pool'));
+    const dpc = d.dark_pool_score > 0.2 ? '#4ade80' : (d.dark_pool_score < -0.2 ? '#ef4444' : '#94a3b8');
+    ctaRows.push(ndRow('Dark Pool Score',
+      '<div style="display:flex;align-items:center;gap:5px;min-width:100px">'
+      + ndBar((d.dark_pool_score + 1) / 2, dpc)
+      + '<span style="color:'+dpc+';font-size:11px">'+(d.dark_pool_score>0?'+':'')+d.dark_pool_score.toFixed(2)+'</span></div>'));
+    if (d.dark_pct != null) ctaRows.push(ndRow('Dark Pool %', (d.dark_pct*100).toFixed(1)+'%'));
+    if (d.dark_pct_delta != null && Math.abs(d.dark_pct_delta) > 0.01) {
+      const dd = d.dark_pct_delta;
+      const dc2 = dd > 0 ? '#4ade80' : '#ef4444';
+      ctaRows.push(ndRow('Dark &Delta; 1W', '<span style="color:'+dc2+'">'+(dd>0?'+':''+(dd*100).toFixed(1))+'%</span>'));
+    }
+  }
+  // CTA score
+  if (d.cta_score != null) {
+    ctaRows.push(ndSection('CTA Positioning'));
+    const ctac = d.cta_score > 0.3 ? '#4ade80' : (d.cta_score < -0.3 ? '#ef4444' : '#94a3b8');
+    const crowding_label = d.cta_crowding || '';
+    ctaRows.push(ndRow('CTA Score',
+      '<div style="display:flex;align-items:center;gap:5px;min-width:100px">'
+      + ndBar((d.cta_score + 1) / 2, ctac)
+      + '<span style="color:'+ctac+';font-size:11px">'+(d.cta_score>0?'+':'')+d.cta_score.toFixed(2)+'</span></div>'));
+    if (crowding_label) {
+      const cwc = {'extreme_long':'#ef4444','long':'#f97316','neutral':'#94a3b8','short':'#60a5fa','extreme_short':'#818cf8'}[crowding_label] || '#94a3b8';
+      ctaRows.push(ndRow('Crowding', '<span style="color:'+cwc+'">'+crowding_label.replace('_',' ').toUpperCase()+'</span>'));
+    }
+  }
+  if (ctaRows.filter(r => !r.includes('nd-section')).length === 0)
+    ctaRows.push('<div class="nd-na">Sem dados de fluxo/posicionamento</div>');
+  document.getElementById('nd-rows-cta').innerHTML = ctaRows.join('');
+
+  // ── Summary text ─────────────────────────────────────────────────────────────
   const summaryEl = document.getElementById('nd-summary');
   const summaryText = buildNodeSummary(d);
   if (summaryText) {
-    summaryEl.textContent = summaryText;
+    summaryEl.innerHTML = summaryText;
     summaryEl.style.display = 'block';
   } else {
     summaryEl.style.display = 'none';
   }
 
-  // Ativa aba Price por padrão ao abrir
+  // Ativa aba PAINEL por padrão
   document.querySelectorAll('.nd-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.nd-tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelector('.nd-tab[data-tab="price"]').classList.add('active');
-  document.getElementById('nd-tab-price').classList.add('active');
+  document.querySelector('.nd-tab[data-tab="painel"]').classList.add('active');
+  document.getElementById('nd-tab-painel').classList.add('active');
 
   document.getElementById('node-detail').classList.add('visible');
 }
 
 function buildNodeSummary(d) {
   const parts = [];
-  const quad_labels = {leading:'liderança relativa', improving:'fase de recuperação relativa',
-                       weakening:'enfraquecimento relativo', lagging:'atraso relativo'};
-  if (d.rrg_quadrant && quad_labels[d.rrg_quadrant]) {
-    parts.push('Em ' + quad_labels[d.rrg_quadrant] + '.');
-  }
   const cv = d.convexity || {};
   if (cv.iv_rank != null && cv.iv_rank < 0.35 && cv.hidden_opp > 0.2) {
-    parts.push('IV barata ('+Math.round(cv.iv_rank*100)+'°ptil) com sinal de oportunidade oculta.');
-  } else if (cv.iv_rank != null && cv.iv_rank > 0.75) {
-    parts.push('Proteção implícita cara — hedge dispendioso.');
+    parts.push('&#128994; IV barata (' + Math.round(cv.iv_rank*100) + '%ile) &mdash; convexidade atrativa.');
   }
   if (cv.fragility != null && cv.fragility > 0.5) {
-    parts.push('Estrutura frágil detectada — atenção a reversões.');
+    parts.push('&#128308; Estrutura frágil &mdash; risco de reversão.');
   }
-  const c = d.contagion || 0;
-  if (c > 0.4) parts.push('Recebendo contágio elevado da rede (' + c.toFixed(2) + ').');
-  if (d.is_hub) parts.push('Hub estrutural da rede — alta conectividade.');
-  return parts.join(' ');
+  if ((d.contagion || 0) > 0.4) {
+    parts.push('&#9889; Contágio elevado da rede (' + d.contagion.toFixed(2) + ').');
+  }
+  if (d.is_hub) parts.push('&#11088; Hub MST &mdash; alta conectividade sistêmica.');
+  return parts.join('  ');
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
@@ -1713,17 +1753,338 @@ document.addEventListener('keydown', e => {
         navStack.pop(); rebuild();
       }
       break;
-    case '1': activateTab('price');     break;
-    case '2': activateTab('valuation'); break;
-    case '3': activateTab('quality');   break;
-    case '4': activateTab('options');   break;
-    case '5': activateTab('risk');      break;
+    case '1': activateTab('painel');    break;
+    case '2': activateTab('risco');     break;
+    case '3': activateTab('gregas');    break;
+    case '4': activateTab('estrutura'); break;
+    case '5': activateTab('cta');       break;
   }
 });
 """
 
 
 # ── Portfolio tab renderer ────────────────────────────────────────────────────
+
+_INITIAL_CAPITAL = 100_000.0   # capital inicial configurável
+
+
+def _render_pnl_section(market_prices: "dict | None") -> str:
+    """P&L tracker: capital strip + equity curve + trade history."""
+    import json as _json
+    from pathlib import Path as _P
+
+    trade_log_path = _P.home() / "agente-workspace" / "portfolio" / "trade_log.json"
+    if not trade_log_path.exists():
+        return (
+            '<div class="pt-section" style="color:#475569;font-size:11px;padding:18px">'
+            'Nenhum trade registrado ainda — rode o pipeline para abrir posições.'
+            '</div>'
+        )
+    try:
+        trades: list = _json.loads(trade_log_path.read_text(encoding="utf-8"))
+    except Exception:
+        return '<div class="pt-section" style="color:#ef4444;font-size:11px">Erro ao ler trade_log.json</div>'
+
+    mp = market_prices or {}
+
+    # Normaliza ticker: remove sufixos Bloomberg ("AAPL US Equity" → "AAPL")
+    def _norm_ticker(tk: str) -> str:
+        for sfx in (" US Equity", " US EQUITY", " Equity", " Index", " Comdty", " Curncy"):
+            if tk.endswith(sfx):
+                return tk[: -len(sfx)].strip()
+        return tk.strip()
+
+    def _get_price(ticker: str) -> float:
+        p = (mp.get(ticker) or mp.get(_norm_ticker(ticker)) or {}).get("price") or 0
+        return float(p)
+
+    # ── Computa equity curve ────────────────────────────────────────────────
+    closed = [t for t in trades if t.get("status") == "closed" and t.get("exit_date")]
+    # Deduplica abertos: mantém apenas o trade mais recente por ticker
+    _seen: dict[str, dict] = {}
+    for t in sorted(trades, key=lambda x: (x.get("entry_date",""), x.get("entry_time",""))):
+        if t.get("status") == "open":
+            _seen[_norm_ticker(t.get("ticker",""))] = t
+    opened = list(_seen.values())
+
+    closed_sorted = sorted(closed, key=lambda t: (t.get("exit_date") or "", t.get("exit_time") or ""))
+
+    # P&L acumulado por data
+    equity_by_date: dict[str, float] = {}
+    running = _INITIAL_CAPITAL
+    for t in closed_sorted:
+        pnl = float(t.get("pnl_realized") or 0)
+        running += pnl
+        dt = t["exit_date"]
+        equity_by_date[dt] = running
+
+    # Calcula P&L não realizado das posições abertas
+    pnl_unreal = 0.0
+    for t in opened:
+        entry  = float(t.get("entry_price") or 0)
+        shares = float(t.get("shares") or 0)
+        ticker = t.get("ticker", "")
+        cur    = _get_price(ticker)
+        if cur > 0 and entry > 0 and shares > 0:
+            if t.get("direction") == "long":
+                pnl_unreal += (cur - entry) * shares
+            else:
+                pnl_unreal += (entry - cur) * shares
+
+    pnl_real_total = running - _INITIAL_CAPITAL
+    equity_now     = running + pnl_unreal
+    total_pnl      = equity_now - _INITIAL_CAPITAL
+
+    # Métricas de performance
+    n_closed  = len(closed)
+    n_wins    = sum(1 for t in closed if float(t.get("pnl_realized") or 0) > 0)
+    win_rate  = n_wins / n_closed if n_closed > 0 else 0
+    avg_win   = sum(float(t.get("pnl_realized") or 0) for t in closed if float(t.get("pnl_realized") or 0) > 0) / max(n_wins, 1)
+    avg_loss  = sum(float(t.get("pnl_realized") or 0) for t in closed if float(t.get("pnl_realized") or 0) <= 0) / max(n_closed - n_wins, 1)
+
+    # ── Capital strip ───────────────────────────────────────────────────────
+    def cap_card(label: str, val: str, color: str = "#94a3b8") -> str:
+        return (
+            f"<div style='flex:1;min-width:110px;background:#0a0f1a;border:1px solid #1a2535;"
+            f"border-radius:7px;padding:10px 14px'>"
+            f"<div style='font-size:9px;color:#475569;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px'>{label}</div>"
+            f"<div style='font-size:20px;font-weight:900;font-family:monospace;color:{color}'>{val}</div>"
+            f"</div>"
+        )
+
+    pnl_color  = "#10b981" if total_pnl >= 0 else "#ef4444"
+    real_color = "#10b981" if pnl_real_total >= 0 else "#ef4444"
+    ur_color   = "#10b981" if pnl_unreal >= 0 else "#ef4444"
+
+    capital_strip = (
+        "<div style='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px'>"
+        + cap_card("Capital Inicial", f"${_INITIAL_CAPITAL:,.0f}", "#64748b")
+        + cap_card("Equity Atual", f"${equity_now:,.0f}", pnl_color)
+        + cap_card("P&amp;L Total", f"{'+' if total_pnl>=0 else ''}{total_pnl/1000:.1f}k ({total_pnl/_INITIAL_CAPITAL:+.1%})", pnl_color)
+        + cap_card("Realizado", f"{'+' if pnl_real_total>=0 else ''}{pnl_real_total/1000:.1f}k", real_color)
+        + cap_card("Não Realizado", f"{'+' if pnl_unreal>=0 else ''}{pnl_unreal/1000:.1f}k", ur_color)
+        + cap_card("Win Rate", f"{win_rate:.0%} ({n_wins}/{n_closed})", "#f59e0b")
+        + "</div>"
+    )
+
+    # ── Equity curve (Canvas JS) ────────────────────────────────────────────
+    # Ponto inicial + um ponto por date com fechamento + ponto atual (com unrealized)
+    from datetime import date as _date
+    curve_dates = ["Start"] + list(equity_by_date.keys())
+    curve_vals  = [_INITIAL_CAPITAL] + list(equity_by_date.values())
+    # Adiciona hoje com unrealized
+    today_str = str(_date.today())
+    if today_str not in equity_by_date:
+        curve_dates.append(today_str + "*")
+        curve_vals.append(equity_now)
+
+    curve_json  = _json.dumps(curve_vals)
+    labels_json = _json.dumps(curve_dates)
+
+    equity_chart = f"""
+<div class="pt-section" style="margin-bottom:16px">
+  <div class="pt-title">Equity Curve — P&amp;L Acumulado</div>
+  <canvas id="equityCanvas" style="width:100%;height:220px;display:block;background:#0a0f1a;border-radius:4px"></canvas>
+  <div style="font-size:9px;color:#334155;margin-top:4px">* inclui P&amp;L não realizado</div>
+</div>
+<script>
+window._drawEquityCurve = function() {{
+  const canvas = document.getElementById('equityCanvas');
+  if (!canvas) return;
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  if (W < 10 || H < 10) return;  // aba ainda oculta — tentar novamente depois
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const pad = {{l:60, r:20, t:16, b:36}};
+  const data = {curve_json};
+  const labels = {labels_json};
+  const N = data.length;
+  if (N < 2) {{ ctx.fillStyle='#0a0f1a'; ctx.fillRect(0,0,W,H); return; }}
+  const minV = Math.min(...data) * 0.999;
+  const maxV = Math.max(...data) * 1.001;
+  const rng  = maxV - minV || 1;
+
+  function xOf(i) {{ return pad.l + i / Math.max(N-1,1) * (W - pad.l - pad.r); }}
+  function yOf(v) {{ return pad.t + (1 - (v - minV) / rng) * (H - pad.t - pad.b); }}
+
+  // Background
+  ctx.fillStyle = '#0a0f1a'; ctx.fillRect(0,0,W,H);
+
+  // Zero line ($100k)
+  const y0 = yOf({_INITIAL_CAPITAL});
+  ctx.setLineDash([4,4]);
+  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, y0); ctx.lineTo(W-pad.r, y0); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Gradient fill
+  const lastAbove = data[N-1] >= {_INITIAL_CAPITAL};
+  const grad = ctx.createLinearGradient(0, pad.t, 0, H-pad.b);
+  grad.addColorStop(0, lastAbove ? 'rgba(16,185,129,.30)' : 'rgba(239,68,68,.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(data[0]));
+  for (let i=1; i<N; i++) ctx.lineTo(xOf(i), yOf(data[i]));
+  ctx.lineTo(xOf(N-1), H-pad.b);
+  ctx.lineTo(xOf(0), H-pad.b);
+  ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(data[0]));
+  for (let i=1; i<N; i++) {{
+    const isUnreal = labels[i].endsWith('*');
+    ctx.setLineDash(isUnreal ? [5,4] : []);
+    ctx.strokeStyle = data[i] >= {_INITIAL_CAPITAL} ? '#10b981' : '#ef4444';
+    ctx.lineWidth = 2;
+    ctx.lineTo(xOf(i), yOf(data[i]));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(xOf(i), yOf(data[i]));
+  }}
+  ctx.setLineDash([]);
+
+  // Dots
+  for (let i=0; i<N; i++) {{
+    ctx.beginPath();
+    ctx.arc(xOf(i), yOf(data[i]), i===N-1?4:2.5, 0, 2*Math.PI);
+    ctx.fillStyle = data[i] >= {_INITIAL_CAPITAL} ? '#10b981' : '#ef4444';
+    ctx.fill();
+  }}
+
+  // Y axis labels
+  ctx.fillStyle = '#475569'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+  for (let s=0; s<=5; s++) {{
+    const v = minV + (maxV-minV)*s/5;
+    ctx.fillText('$' + (v/1000).toFixed(1) + 'k', pad.l-4, yOf(v)+3);
+  }}
+
+  // X axis labels
+  ctx.textAlign = 'center'; ctx.fillStyle = '#334155';
+  const step = Math.ceil(N / Math.min(N, 8));
+  for (let i=0; i<N; i+=step) {{
+    const lbl = labels[i].replace('Start','Início').replace('*','');
+    ctx.fillText(lbl.length > 10 ? lbl.slice(5) : lbl, xOf(i), H-pad.b+14);
+  }}
+  canvas._drawn = true;
+}};
+// Tenta desenhar agora; se a aba estiver oculta (offsetWidth=0), usa ResizeObserver
+(function() {{
+  function tryDraw() {{
+    const c = document.getElementById('equityCanvas');
+    if (c && c.offsetWidth > 10) {{ window._drawEquityCurve(); return; }}
+    // Aba oculta — observa quando ficar visível
+    if (typeof ResizeObserver !== 'undefined' && c && !c._equityObs) {{
+      c._equityObs = new ResizeObserver(function(entries) {{
+        if (entries[0].contentRect.width > 10) {{
+          window._drawEquityCurve();
+          c._equityObs.disconnect();
+        }}
+      }});
+      c._equityObs.observe(c);
+    }}
+  }}
+  if (document.readyState === 'loading') {{
+    document.addEventListener('DOMContentLoaded', tryDraw);
+  }} else {{
+    requestAnimationFrame(tryDraw);
+  }}
+}})();
+</script>
+"""
+
+    # ── Trade history table ─────────────────────────────────────────────────
+    all_trades = sorted(trades, key=lambda t: (t.get("exit_date") or t.get("entry_date",""), t.get("exit_time") or t.get("entry_time","")), reverse=True)
+
+    def trade_row(t: dict) -> str:
+        status  = t.get("status","open")
+        ticker  = t.get("ticker","?")
+        direc   = t.get("direction","—")
+        e_date  = t.get("entry_date","—")
+        x_date  = t.get("exit_date") or "aberto"
+        e_price = t.get("entry_price")
+        x_price = t.get("exit_price")
+        pnl_r   = t.get("pnl_realized")
+        pnl_pct = t.get("pnl_pct")
+        target  = t.get("target_usd") or 0
+        conv    = t.get("conviction","—")
+
+        # P&L não realizado para abertas
+        if status == "open":
+            cur = _get_price(ticker)
+            shares = float(t.get("shares") or 0)
+            ep = float(e_price or 0)
+            if cur > 0 and ep > 0 and shares > 0:
+                unreal = (cur - ep) * shares if direc == "long" else (ep - cur) * shares
+                pnl_r  = unreal
+                pnl_pct = unreal / abs(target) if target else 0
+
+        pnl_color = "#10b981" if (pnl_r or 0) >= 0 else "#ef4444"
+        dir_color = "#10b981" if direc == "long" else "#ef4444"
+        status_badge = (
+            '<span style="background:#10b98122;color:#10b981;border-radius:3px;padding:1px 6px;font-size:9px">ABERTO</span>'
+            if status == "open" else
+            '<span style="background:#33415522;color:#64748b;border-radius:3px;padding:1px 6px;font-size:9px">FECHADO</span>'
+        )
+        pnl_str = f"${pnl_r:+,.0f} ({pnl_pct:+.1%})" if pnl_r is not None else "—"
+
+        return (
+            f"<tr>"
+            f"<td style='font-weight:800;color:#f1f5f9;font-size:13px'>{ticker}</td>"
+            f"<td style='color:{dir_color};font-weight:700;font-size:12px'>{direc.upper()}</td>"
+            f"<td>{status_badge}</td>"
+            f"<td style='color:#64748b;font-size:11px;font-family:monospace'>{e_date}</td>"
+            f"<td style='color:#64748b;font-size:11px;font-family:monospace'>{x_date}</td>"
+            f"<td style='font-family:monospace;font-size:12px'>${float(e_price or 0):,.2f}</td>"
+            f"<td style='font-family:monospace;font-size:12px'>{f'${float(x_price):,.2f}' if x_price else '—'}</td>"
+            f"<td style='font-size:12px;font-weight:700;color:{pnl_color};font-family:monospace'>{pnl_str}</td>"
+            f"<td style='color:#475569;font-size:11px'>{f'${abs(target):,.0f}'}</td>"
+            f"<td style='color:#94a3b8;font-size:10px'>{conv}</td>"
+            f"</tr>"
+        )
+
+    history_rows = "".join(trade_row(t) for t in all_trades[:50])
+    history_html = (
+        "<div class='pt-section' style='margin-bottom:16px'>"
+        "<div class='pt-title'>Histórico de Trades</div>"
+        "<div style='overflow-x:auto'>"
+        "<table class='pt-table' style='font-size:12px'>"
+        "<thead><tr>"
+        "<th>Ticker</th><th>Dir</th><th>Status</th>"
+        "<th>Entrada</th><th>Saída</th>"
+        "<th>Px Entrada</th><th>Px Saída</th>"
+        "<th>P&amp;L</th><th>Capital</th><th>Conv</th>"
+        "</tr></thead>"
+        f"<tbody>{history_rows}</tbody>"
+        "</table></div></div>"
+    ) if all_trades else ""
+
+    # ── Performance stats ───────────────────────────────────────────────────
+    stats_html = (
+        f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px'>"
+        + "".join(
+            f"<div style='background:#0a0f1a;border:1px solid #1a2535;border-radius:6px;padding:8px 14px;text-align:center'>"
+            f"<div style='font-size:9px;color:#475569;letter-spacing:1px;margin-bottom:3px'>{l}</div>"
+            f"<div style='font-size:15px;font-weight:700;font-family:monospace;color:{c}'>{v}</div>"
+            f"</div>"
+            for l, v, c in [
+                ("Trades Fechados",  str(n_closed), "#94a3b8"),
+                ("Vencedores",       str(n_wins), "#10b981"),
+                ("Win Rate",         f"{win_rate:.0%}", "#f59e0b"),
+                ("Avg Win",          f"${avg_win:+,.0f}" if n_wins else "—", "#10b981"),
+                ("Avg Loss",         f"${avg_loss:+,.0f}" if n_closed-n_wins else "—", "#ef4444"),
+                ("Posições Abertas", str(len(opened)), "#38bdf8"),
+            ]
+        )
+        + "</div>"
+    )
+
+    return capital_strip + stats_html + equity_chart + history_html
+
 
 def _render_portfolio_tab(portfolio, market_prices: "dict | None", flow_pred) -> str:
     """Render the Portfolio top-level tab HTML (inner content only)."""
@@ -1820,7 +2181,10 @@ def _render_portfolio_tab(portfolio, market_prices: "dict | None", flow_pred) ->
             '</table></div>'
         )
 
+    pnl_section = _render_pnl_section(market_prices)
+
     return f"""
+{pnl_section}
 <div class="pt-section">
   <div class="pt-title">GEX + LETF Mechanical Flow</div>
   {gex_html if gex_html else '<div style="color:#64748b;font-size:11px">Sem dados de fluxo disponíveis</div>'}
@@ -1936,10 +2300,12 @@ def generate_macro_desk_v2_html(
     _rrg_early        = rrg_result  or getattr(portfolio, "_rrg_result", None)
     if graph_data is None:
         from app.desk.graph_engine import build_from_bundle
+        _cached_opts = getattr(portfolio, "_options_map", None) if portfolio else None
         graph_data = build_from_bundle(
             bundle, curation_result,
             rrg_result=_rrg_early,
             desk_intel=_desk_intel_early,
+            cached_options=_cached_opts,
         )
     regime   = graph_data.get("regime", {})
     mst_meta = graph_data.get("mst_meta", {})
@@ -1958,6 +2324,51 @@ def generate_macro_desk_v2_html(
                     mp.update(_db_prices)
         except Exception:
             pass
+    # ── Normaliza tickers Bloomberg → yfinance/IBKR ──────────────────────────
+    _BBG_SUFFIXES_MP = (" US EQUITY", " US Equity", " US equity", " INDEX", " Index",
+                        " COMDTY", " Comdty", " CURNCY", " Curncy", " EQUITY", " Equity")
+    _BBG_YF_MAP_MP = {
+        "SPX": "^GSPC", "VIX": "^VIX", "NDX": "^NDX", "RTY": "^RUT",
+        "DXY": "DX-Y.NYB", "XBT": "BTC-USD", "GC1": "GC=F", "CL1": "CL=F",
+    }
+    _mp_norm: dict = {}
+    for _k, _v in mp.items():
+        if _k.startswith("__"):
+            _mp_norm[_k] = _v
+            continue
+        _t = _k
+        for _sfx in _BBG_SUFFIXES_MP:
+            if _t.endswith(_sfx):
+                _t = _t[: -len(_sfx)].strip()
+                break
+        _t = _t.replace("/", "-")
+        _t = _BBG_YF_MAP_MP.get(_t, _t)
+        _mp_norm[_t] = _v
+    mp = _mp_norm
+    # ── Enriquece daily_return via yfinance para tickers sem retorno ──────────
+    try:
+        import yfinance as _yf_mp
+        _need_ret_mp = [t for t, d in mp.items()
+                        if not t.startswith("__") and isinstance(d, dict) and not d.get("daily_return")]
+        if _need_ret_mp:
+            _yfd = _yf_mp.download(_need_ret_mp, period="2d", progress=False, auto_adjust=True)
+            _cl = _yfd["Close"] if "Close" in getattr(_yfd, "columns", []) else _yfd
+            if hasattr(_cl, "columns"):
+                for _t in _need_ret_mp:
+                    if _t in _cl.columns:
+                        _s = _cl[_t].dropna()
+                        if len(_s) >= 2:
+                            _r = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                            mp[_t]["daily_return"] = round(float(_r), 6)
+                            mp[_t]["price"] = round(float(_s.iloc[-1]), 4)
+            elif len(_need_ret_mp) == 1:
+                _s = _cl.dropna()
+                if len(_s) >= 2:
+                    _r = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                    mp[_need_ret_mp[0]]["daily_return"] = round(float(_r), 6)
+                    mp[_need_ret_mp[0]]["price"] = round(float(_s.iloc[-1]), 4)
+    except Exception:
+        pass
     _bbg_status_html = _banco_bloomberg_status_html()
     vix_term       = graph_data.get("vix_term") or {}
     live_network   = graph_data.get("live_network") or {}
@@ -1982,18 +2393,44 @@ def generate_macro_desk_v2_html(
     except Exception:
         pass
 
-    regime_html  = _regime_badge(regime)
+    # ── Regime badge: usa desk_intel como fallback se network retornou unknown ──
+    _regime_for_badge = regime
+    if (not regime or regime.get("regime", "unknown") == "unknown") and _desk_intel_early:
+        _di = _desk_intel_early
+        _mr = getattr(_di, "market_regime", None) or ""
+        # Mapeia market_regime do desk_intel → risk_on / risk_off / transition
+        _regime_map = {
+            "risk_on_momentum":   "risk_on",
+            "risk_off_defensive": "risk_off",
+            "vol_squeeze":        "transition",
+            "narrative_driven":   "transition",
+            "mechanical_passive": "transition",
+            "dispersed_rotation": "transition",
+            "stress":             "risk_off",
+        }
+        _mapped = _regime_map.get(_mr, "unknown")
+        _conf   = getattr(_di, "regime_confidence", 0) or 0
+        _regime_for_badge = {"regime": _mapped, "confidence": _conf, "avg_correlation": 0, "corr_entropy": 0}
+    regime_html  = _regime_badge(_regime_for_badge)
+
     score_labels = {"rational":"Rational","behavioral":"Behavioral",
                     "entropy":"Entropy","arbitration":"Arbitration","allocation":"Allocation"}
-    scores_html  = "".join(_score_bar_html(lbl, scores.get(k)) for k, lbl in score_labels.items()) \
-        if scores else '<div style="font-size:11px;color:#64748b">Scores indisponiveis</div>'
+    if scores:
+        scores_html = "".join(_score_bar_html(lbl, scores.get(k)) for k, lbl in score_labels.items())
+    elif _desk_intel_early and getattr(_desk_intel_early, "regime_adj_scores", None):
+        # Fallback: mostra top scores ajustados do desk_intel
+        _adj = _desk_intel_early.regime_adj_scores
+        _top5 = sorted(_adj.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+        scores_html = "".join(_score_bar_html(t, v) for t, v in _top5)
+    else:
+        scores_html = '<div style="font-size:11px;color:#475569;padding:6px 0">Aguardando análise</div>'
     market_rows  = _market_table_rows(mp)
     vix_term_html     = _vix_term_html(vix_term)
     risk_heatmap_html = _risk_heatmap_html(graph_data)
     live_network_html = _live_network_html(live_network)
     flow_panel_html   = _flow_panel_html(flow_pred_panel)
 
-    portfolio_tab_html = _render_portfolio_tab(portfolio, bundle.market_prices if bundle else None, _pt_flow_pred)
+    portfolio_tab_html = _render_portfolio_tab(portfolio, mp or (bundle.market_prices if bundle else None), _pt_flow_pred)
 
     # ── Editorial diário — aba Informações de Mercado ─────────────────────────
     if editorial_html is None:
@@ -2036,6 +2473,18 @@ def generate_macro_desk_v2_html(
             '</div>'
         )
 
+    # ── TradingView tab ──────────────────────────────────────────────────────
+    try:
+        from app.views.tradingview_tab import render_tradingview_tab
+        tradingview_tab_html = render_tradingview_tab(market_prices=mp)
+    except Exception as _exc:
+        _log.warning("tradingview_tab_render_failed", error=str(_exc))
+        tradingview_tab_html = (
+            '<div style="padding:40px;text-align:center;color:#6b7280">'
+            f'TradingView indisponível: {str(_exc)[:120]}'
+            '</div>'
+        )
+
     # ── Options tab ──────────────────────────────────────────────────────────
     _options_snap = options_snapshot
     if _options_snap is None:
@@ -2054,7 +2503,17 @@ def generate_macro_desk_v2_html(
                 _jarvis_html = _os2.load_jarvis_html(_options_snap)
             except Exception:
                 pass
-        options_tab_html = render_options_tab(_options_snap, _jarvis_html)
+        _cta_result   = getattr(portfolio, "_cta_result",   None) if portfolio else None
+        _shadow_flow  = getattr(portfolio, "_shadow_flow",   None) if portfolio else None
+        _vol_regime_o = getattr(portfolio, "_vol_regime",    None) if portfolio else None
+        _signals_o    = getattr(portfolio, "_signals",       {})   if portfolio else {}
+        options_tab_html = render_options_tab(
+            _options_snap, _jarvis_html,
+            cta_result=_cta_result,
+            shadow_flow=_shadow_flow,
+            vol_regime=_vol_regime_o,
+            signals=_signals_o,
+        )
     except Exception as _exc:
         _log.warning("options_tab_render_failed", error=str(_exc))
         options_tab_html = (
@@ -2082,7 +2541,7 @@ def generate_macro_desk_v2_html(
     live_badge  = ('<span style="color:#22c55e;animation:contagion-pulse 2s infinite" '
                    'title="Auto-refresh a cada 90s">&#9679; LIVE</span>') if live_mode else \
                   '<span style="color:#f59e0b" title="Snapshot — não é streaming">&#9679; snapshot</span>'
-    refreshed   = bundle.market_prices.get("__refreshed_at__", gen_time) if live_mode else gen_time
+    refreshed   = mp.get("__refreshed_at__", gen_time) if live_mode else gen_time
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -2132,6 +2591,7 @@ def generate_macro_desk_v2_html(
   <button class="main-tab" onclick="switchMainTab('editorial',this)">Informações de Mercado</button>
   <button class="main-tab" onclick="switchMainTab('radar',this)" style="color:#818cf8;border-color:#818cf840">Desk Radar ◈</button>
   <button class="main-tab" onclick="switchMainTab('options',this)" style="color:#00d4e8;border-color:#00d4e840">Opções ◈</button>
+  <button class="main-tab" onclick="switchMainTab('tradingview',this)" style="color:#2962ff;border-color:#2962ff40">TradingView ◈</button>
 </div>
 
 <div id="desk-view" class="main-view active">
@@ -2194,30 +2654,40 @@ def generate_macro_desk_v2_html(
 
       <div id="node-detail">
         <span id="nd-close">&times;</span>
-        <div id="nd-label">—</div>
-        <div id="nd-sub">—</div>
-        <div id="nd-summary" style="font-size:10px;color:#94a3b8;margin-bottom:7px;line-height:1.4;
-             border-left:2px solid #334155;padding-left:6px;display:none"></div>
-        <div class="nd-tabs">
-          <button class="nd-tab active" data-tab="price">Price</button>
-          <button class="nd-tab" data-tab="valuation">Val.</button>
-          <button class="nd-tab" data-tab="quality">Quality</button>
-          <button class="nd-tab" data-tab="options">Options</button>
-          <button class="nd-tab" data-tab="risk">Risk</button>
-          <button class="nd-tab" data-tab="flow">Flow</button>
-          <button class="nd-tab" data-tab="struct" style="color:#818cf8">S</button>
-          <button class="nd-tab" data-tab="nodeflow" style="color:#22c55e">F</button>
-          <button class="nd-tab" data-tab="convex" style="color:#f59e0b">C</button>
+        <div id="nd-header">
+          <div id="nd-ticker-badge">—</div>
+          <div id="nd-header-right">
+            <div id="nd-label">—</div>
+            <div id="nd-sub">—</div>
+            <div id="nd-quadrant-badge" style="display:none"></div>
+          </div>
         </div>
-        <div id="nd-tab-price"     class="nd-tab-panel active"><div id="nd-rows"></div></div>
-        <div id="nd-tab-valuation" class="nd-tab-panel"><div id="nd-rows-val"></div></div>
-        <div id="nd-tab-quality"   class="nd-tab-panel"><div id="nd-rows-qual"></div></div>
-        <div id="nd-tab-options"   class="nd-tab-panel"><div id="nd-rows-opt"></div></div>
-        <div id="nd-tab-risk"      class="nd-tab-panel"><div id="nd-rows-risk"></div></div>
-        <div id="nd-tab-flow"      class="nd-tab-panel"><div id="nd-rows-flow"></div></div>
-        <div id="nd-tab-struct"    class="nd-tab-panel"><div id="nd-rows-struct"></div></div>
-        <div id="nd-tab-nodeflow"  class="nd-tab-panel"><div id="nd-rows-nodeflow"></div></div>
-        <div id="nd-tab-convex"    class="nd-tab-panel"><div id="nd-rows-convex"></div></div>
+        <div id="nd-summary" style="font-size:10px;color:#7dd3fc;margin-bottom:8px;line-height:1.45;
+             background:#071525;border-left:2px solid #1e4a7a;border-radius:0 4px 4px 0;
+             padding:5px 7px;display:none"></div>
+        <div class="nd-tabs">
+          <button class="nd-tab active" data-tab="painel">PAINEL</button>
+          <button class="nd-tab" data-tab="risco">RISCO</button>
+          <button class="nd-tab" data-tab="gregas">GREGAS</button>
+          <button class="nd-tab" data-tab="estrutura">ESTRU.</button>
+          <button class="nd-tab" data-tab="cta">CTA</button>
+        </div>
+        <div id="nd-tab-painel"    class="nd-tab-panel active"><div id="nd-rows-painel"></div></div>
+        <div id="nd-tab-risco"     class="nd-tab-panel"><div id="nd-rows-risco"></div></div>
+        <div id="nd-tab-gregas"    class="nd-tab-panel"><div id="nd-rows-gregas"></div></div>
+        <div id="nd-tab-estrutura" class="nd-tab-panel"><div id="nd-rows-estrutura"></div></div>
+        <div id="nd-tab-cta"       class="nd-tab-panel"><div id="nd-rows-cta"></div></div>
+
+        <!-- Keep legacy IDs for backward compat with JS that may reference them -->
+        <div id="nd-rows" style="display:none"></div>
+        <div id="nd-rows-val" style="display:none"></div>
+        <div id="nd-rows-qual" style="display:none"></div>
+        <div id="nd-rows-opt" style="display:none"></div>
+        <div id="nd-rows-risk" style="display:none"></div>
+        <div id="nd-rows-flow" style="display:none"></div>
+        <div id="nd-rows-struct" style="display:none"></div>
+        <div id="nd-rows-nodeflow" style="display:none"></div>
+        <div id="nd-rows-convex" style="display:none"></div>
       </div>
 
       <!-- Contagion side panel -->
@@ -2238,12 +2708,8 @@ def generate_macro_desk_v2_html(
         <div class="leg"><div class="leg-dot" style="background:#f59e0b"></div> Hub</div>
         <div class="leg"><div class="leg-dot" style="background:#818cf8"></div> Expan.</div>
         <div id="hint-text">
-          [+] drill &middot; dbl-click zoom &middot; hover=stats &middot; right-click=isolate &middot; click=contagion
+          [+] drill &middot; dbl-click zoom &middot; hover=stats &middot; right-click=isolate &middot; F fit &middot; R layout &middot; H hier. &middot; C contágio &middot; 1-5 tabs
         </div>
-      </div>
-      <div id="kbd-hints">
-        F fit &nbsp; R layout &nbsp; H hierarquia &nbsp; C contagion &nbsp; Esc fechar<br>
-        1–5 tabs &nbsp; ⌘+scroll zoom
       </div>
     </div>
   </div>
@@ -2261,31 +2727,48 @@ def generate_macro_desk_v2_html(
 
     # Concatena tabs com CSS/JS próprio fora do f-string para evitar
     # conflito de chaves {} com a sintaxe de f-string.
-    html += (
-        '<div id="radar-view" class="main-view"'
-        ' style="overflow-y:auto;background:#060a12;padding:0">\n'
-        + radar_tab_html
-        + '\n</div>\n\n'
-        '<div id="options-view" class="main-view"'
-        ' style="overflow-y:auto;background:#020810;padding:0">\n'
-        + options_tab_html
-        + '\n</div>\n\n'
+    # IMPORTANTE: usar + explícito em cada linha para evitar implicit string concat.
+    _radar_open   = '<div id="radar-view" class="main-view" style="flex-direction:column;overflow-y:auto;background:#060a12;padding:0;width:100%;align-items:stretch">\n'
+    _radar_close  = '\n</div>\n\n'
+    _opts_open    = '<div id="options-view" class="main-view" style="flex-direction:column;overflow-y:auto;background:#020810;padding:0;width:100%;align-items:stretch">\n'
+    _opts_close   = '\n</div>\n\n'
+    _tv_open      = '<div id="tradingview-view" class="main-view" style="overflow-y:auto;background:#060a12;padding:0">\n'
+    _tv_close     = '\n</div>\n\n'
+    _switch_js    = (
         '<script>\n'
-        + cytoscape_js
-        + '\n</script>\n<script>\n'
-        + js_code
-        + "\n</script>\n"
-        "<script>\n"
-        "function switchMainTab(name, btn) {\n"
-        "  document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));\n"
-        "  document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));\n"
-        "  if (btn) btn.classList.add('active');\n"
-        "  const view = document.getElementById(name + '-view');\n"
-        "  if (view) view.classList.add('active');\n"
-        "}\n"
-        "</script>\n"
-        "</body>\n</html>"
+        'function switchMainTab(name, btn) {\n'
+        '  document.querySelectorAll(\'.main-tab\').forEach(t => t.classList.remove(\'active\'));\n'
+        '  document.querySelectorAll(\'.main-view\').forEach(v => v.classList.remove(\'active\'));\n'
+        '  if (btn) btn.classList.add(\'active\');\n'
+        '  const view = document.getElementById(name + \'-view\');\n'
+        '  if (view) view.classList.add(\'active\');\n'
+        '  // Renderiza equity curve ao abrir aba Alocação\n'
+        '  if (name === \'portfolio\') {\n'
+        '    requestAnimationFrame(function() {\n'
+        '      if (typeof window._drawEquityCurve === \'function\') window._drawEquityCurve();\n'
+        '    });\n'
+        '  }\n'
+        '}\n'
+        '</script>\n'
+        '</body>\n</html>'
     )
+    html = (html
+            + _radar_open
+            + radar_tab_html
+            + _radar_close
+            + _opts_open
+            + options_tab_html
+            + _opts_close
+            + _tv_open
+            + tradingview_tab_html
+            + _tv_close
+            + '<script>\n'
+            + cytoscape_js
+            + '\n</script>\n'
+            + '<script>\n'
+            + js_code
+            + '\n</script>\n'
+            + _switch_js)
     return html
 
 

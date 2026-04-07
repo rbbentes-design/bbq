@@ -92,6 +92,21 @@ def _save_active(state: dict) -> None:
 
 # ── Open positions ─────────────────────────────────────────────────────────────
 
+_BBG_SUFFIXES = (
+    " US Equity", " US EQUITY", " Equity", " EQUITY",
+    " Index", " INDEX", " Comdty", " COMDTY", " Curncy", " CURNCY",
+)
+
+def _norm(ticker: str) -> str:
+    """Remove sufixos Bloomberg: 'AAPL US EQUITY' → 'AAPL'."""
+    t = ticker.strip()
+    for sfx in _BBG_SUFFIXES:
+        if t.endswith(sfx):
+            t = t[:-len(sfx)].strip()
+            break
+    return t.replace("/", "-")
+
+
 def _fetch_live_price(ticker: str, market_prices: dict) -> float:
     """
     Busca o preço live do ticker no momento exato da abertura da posição.
@@ -99,12 +114,14 @@ def _fetch_live_price(ticker: str, market_prices: dict) -> float:
     2. yfinance fast_info (15min delay — fallback)
     3. market_prices do bundle (último recurso)
     """
+    yf_ticker = _norm(ticker)
+
     # 1. IBKR
     try:
         from app.providers import ibkr
         if ibkr.is_available():
-            raw = ibkr.snapshot([ticker])
-            d = raw.get(ticker, {})
+            raw = ibkr.snapshot([yf_ticker])
+            d = raw.get(yf_ticker, {})
             price = float(d.get("last") or d.get("ask") or d.get("bid") or 0.0)
             if price > 0:
                 _log.info("entry_price_live", ticker=ticker, price=price, source="ibkr")
@@ -112,10 +129,10 @@ def _fetch_live_price(ticker: str, market_prices: dict) -> float:
     except Exception:
         pass
 
-    # 2. yfinance
+    # 2. yfinance (normalizado)
     try:
         import yfinance as yf
-        fi = yf.Ticker(ticker).fast_info
+        fi = yf.Ticker(yf_ticker).fast_info
         price = float(getattr(fi, "last_price", None) or getattr(fi, "previous_close", None) or 0.0)
         if price > 0:
             _log.info("entry_price_live", ticker=ticker, price=price, source="yfinance")
@@ -123,8 +140,10 @@ def _fetch_live_price(ticker: str, market_prices: dict) -> float:
     except Exception:
         pass
 
-    # 3. bundle
-    price = float((market_prices.get(ticker) or {}).get("price") or 0.0)
+    # 3. bundle — tenta tanto com sufixo quanto sem
+    price = float(
+        (market_prices.get(ticker) or market_prices.get(yf_ticker) or {}).get("price") or 0.0
+    )
     _log.info("entry_price_bundle", ticker=ticker, price=price, source="bundle")
     return price
 

@@ -30,7 +30,9 @@ from app.audit.logger import get_logger
 _log = get_logger("providers.swaggy_stocks")
 
 _BASE_URL = "https://swaggystocks.com"
-_WSB_API  = "https://swaggystocks.com/api/wsb/tickers"   # JSON endpoint (public)
+_WSB_API  = "https://swaggystocks.com/api/wsb/tickers"   # JSON endpoint (gated)
+_APEWISDOM_WSB_URL = "https://apewisdom.io/api/v1.0/filter/wallstreetbets"
+_APEWISDOM_ALL_URL = "https://apewisdom.io/api/v1.0/filter/all-stocks"
 _HEADERS  = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json, text/html",
@@ -71,15 +73,154 @@ class SwaggyResult:
     squeeze_map: dict[str, SqueezeCanditate] = field(default_factory=dict)
     top_mentions: list[str] = field(default_factory=list)   # top 20 tickers por menções
     top_squeeze: list[str] = field(default_factory=list)    # top 10 por squeeze score
+    market_bull_pct: float | None = None                    # sentimento geral do mercado [0,1]
+
+
+_MARKET_SENTIMENT_URL = f"{_BASE_URL}/dashboard/stocks/market-sentiment"
+
+
+def collect_with_page(page, max_results: int = 30) -> SwaggyResult:
+    """
+    Coleta sentimento de mercado via Playwright (página renderizada client-side).
+    URL: https://swaggystocks.com/dashboard/stocks/market-sentiment
+
+    Extrai:
+      - Top stocks por sentimento (ticker, bull%, mentions)
+      - Sentimento geral do mercado (bull_pct agregado)
+    """
+    import json as _json
+
+    result = SwaggyResult()
+
+    try:
+        page.goto(_MARKET_SENTIMENT_URL, timeout=30_000, wait_until="domcontentloaded")
+        # Aguarda conteúdo dinâmico carregar
+        page.wait_for_timeout(4000)
+
+        # Tenta capturar via __NEXT_DATA__ (Next.js SSR/ISR)
+        next_data = page.evaluate("""
+            () => {
+                const el = document.getElementById('__NEXT_DATA__');
+                return el ? el.textContent : null;
+            }
+        """)
+
+        rows = []
+        bull_pct_global = None
+
+        if next_data:
+            try:
+                data = _json.loads(next_data)
+                # Navega pela estrutura do Next.js para encontrar os dados
+                props = data.get("props", {}).get("pageProps", {})
+                # Tenta diferentes chaves possíveis
+                for key in ("stocks", "tickers", "data", "sentiment", "stockSentiment"):
+                    if key in props:
+                        candidate = props[key]
+                        if isinstance(candidate, list) and candidate:
+                            rows = candidate
+                            break
+                        elif isinstance(candidate, dict):
+                            for sub in ("stocks", "tickers", "data", "items"):
+                                if isinstance(candidate.get(sub), list):
+                                    rows = candidate[sub]
+                                    break
+                # Sentimento geral
+                for key in ("marketSentiment", "overall", "bullPct", "bullish_pct"):
+                    val = props.get(key)
+                    if isinstance(val, (int, float)):
+                        bull_pct_global = float(val)
+                        break
+            except Exception as exc:
+                _log.warning("swaggy_next_data_parse", error=str(exc))
+
+        # Fallback: extrai dados via DOM (tabela ou cards)
+        if not rows:
+            rows_raw = page.evaluate("""
+                () => {
+                    // Tenta extrair de qualquer tabela com dados de ticker
+                    const results = [];
+                    const rows = document.querySelectorAll('table tbody tr');
+                    for (const row of rows) {
+                        const cells = Array.from(row.querySelectorAll('td'));
+                        if (cells.length >= 2) {
+                            results.push(cells.map(c => c.innerText.trim()));
+                        }
+                    }
+                    return results;
+                }
+            """)
+            # Heurística: primeira coluna = ticker, segunda+ = valores
+            for i, cells in enumerate(rows_raw[:max_results]):
+                if not cells:
+                    continue
+                ticker = cells[0].upper().strip()
+                if not ticker or len(ticker) > 6 or not ticker.isalpha():
+                    continue
+                # Tenta extrair bull% de alguma célula com %
+                bull = 0.5
+                for cell in cells[1:]:
+                    if "%" in cell:
+                        try:
+                            bull = float(cell.replace("%", "").strip()) / 100
+                            break
+                        except ValueError:
+                            pass
+                rows.append({"ticker": ticker, "bullish": bull, "rank": i + 1})
+
+        # Processa rows → WSBMention
+        mentions = []
+        max_count = 1
+        for row in rows[:max_results]:
+            ticker = str(row.get("ticker", row.get("symbol", row.get("stock", "")))).upper().strip()
+            if not ticker or len(ticker) > 6:
+                continue
+            bull = float(row.get("bullish", row.get("bull", row.get("bullPct", row.get("bull_pct", 0.5)))) or 0.5)
+            if bull > 1:
+                bull = bull / 100
+            count = int(row.get("mentions", row.get("count", row.get("totalMentions", 0))) or 0)
+            max_count = max(max_count, count)
+            label = "bullish" if bull > 0.55 else ("bearish" if bull < 0.45 else "neutral")
+            mentions.append(WSBMention(
+                ticker=ticker,
+                mentions=count,
+                rank=len(mentions) + 1,
+                sentiment=bull,
+                sentiment_label=label,
+                attention_score=min(count / max_count, 1.0) if max_count > 0 else 0.0,
+            ))
+
+        # Normaliza attention scores
+        if mentions and max_count > 1:
+            for m in mentions:
+                m.attention_score = m.mentions / max_count
+
+        result.wsb_mentions = mentions
+        result.mention_map  = {m.ticker: m for m in mentions}
+        result.top_mentions = [m.ticker for m in mentions[:20]]
+        result.market_bull_pct = bull_pct_global  # pode ser None
+
+        _log.info("swaggy_playwright_ok",
+                  tickers=len(mentions),
+                  bull_pct_global=bull_pct_global,
+                  top=result.top_mentions[:5])
+
+    except Exception as exc:
+        _log.warning("swaggy_playwright_failed", error=str(exc))
+
+    return result
 
 
 # ── Coleta principal ───────────────────────────────────────────────────────────
 
 def collect(max_wsb: int = 50, max_squeeze: int = 30) -> SwaggyResult:
-    """Coleta WSB mentions e short squeeze list do SwaggyStocks."""
+    """
+    Coleta WSB mentions via ApeWisdom (free API) + short squeeze via yfinance fallback.
+    ApeWisdom agrega menções de r/wallstreetbets + outros subs de Reddit.
+    """
     result = SwaggyResult()
 
-    wsb = _collect_wsb_mentions(max_wsb)
+    wsb = _collect_wsb_apewisdom(max_wsb)
     result.wsb_mentions = wsb
     result.mention_map  = {m.ticker: m for m in wsb}
     result.top_mentions = [m.ticker for m in wsb[:20]]
@@ -96,7 +237,67 @@ def collect(max_wsb: int = 50, max_squeeze: int = 30) -> SwaggyResult:
     return result
 
 
-# ── WSB Mentions ───────────────────────────────────────────────────────────────
+# ── WSB Mentions via ApeWisdom ────────────────────────────────────────────────
+
+def _collect_wsb_apewisdom(max_results: int) -> list[WSBMention]:
+    """
+    Coleta ticker mentions de r/wallstreetbets via ApeWisdom (gratuito, sem auth).
+    Endpoint: https://apewisdom.io/api/v1.0/filter/wallstreetbets
+    Campos: rank, ticker, name, mentions, upvotes, rank_24h_ago, mentions_24h_ago
+    """
+    try:
+        resp = requests.get(
+            _APEWISDOM_WSB_URL,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data.get("results", [])
+        if not rows:
+            raise ValueError("ApeWisdom returned empty results")
+
+        max_mentions = max(int(r.get("mentions", 1) or 1) for r in rows[:1]) or 1
+        mentions = []
+        for row in rows[:max_results]:
+            ticker = str(row.get("ticker", "")).upper().strip()
+            if not ticker or len(ticker) > 6:
+                continue
+            # Strip .X suffix (crypto tickers)
+            if ticker.endswith(".X"):
+                continue
+            count = int(row.get("mentions", 0) or 0)
+            upvotes = int(row.get("upvotes", 0) or 0)
+            count_24h = int(row.get("mentions_24h_ago", 0) or 0)
+            rank = int(row.get("rank", len(mentions) + 1))
+            # ApeWisdom doesn't provide bull/bear — estimate from upvotes ratio
+            # Use rank momentum as proxy: improving rank → bullish signal
+            rank_prev = int(row.get("rank_24h_ago", rank) or rank)
+            rank_delta = rank_prev - rank  # positive = moved up (more bullish attention)
+            # Sentiment: no direct bull/bear, use 0.5 + momentum adjustment
+            sentiment = min(max(0.5 + rank_delta * 0.02, 0.0), 1.0)
+            label = "bullish" if sentiment > 0.55 else ("bearish" if sentiment < 0.45 else "neutral")
+            attention = min(count / max_mentions, 1.0) if max_mentions > 0 else 0.0
+            mentions.append(WSBMention(
+                ticker=ticker,
+                mentions=count,
+                rank=rank,
+                sentiment=sentiment,
+                sentiment_label=label,
+                attention_score=attention,
+                momentum_score=float(rank_delta) / 10,
+            ))
+
+        _log.info("apewisdom_wsb_ok", tickers=len(mentions), top=mentions[0].ticker if mentions else None)
+        return mentions
+
+    except Exception as exc:
+        _log.warning("apewisdom_wsb_failed", error=str(exc))
+        # Fallback to old scraping approach
+        return _collect_wsb_mentions(max_results)
+
+
+# ── WSB Mentions (legacy fallback) ────────────────────────────────────────────
 
 def _collect_wsb_mentions(max_results: int) -> list[WSBMention]:
     """Tenta API JSON; fallback para scraping HTML da página."""
@@ -275,6 +476,81 @@ def _compute_squeeze_score(si_pct: float, dtc: float, borrow_rate: float) -> flo
     # Borrow rate: 0-100%+ mapeado para 0-0.20
     s += min(borrow_rate / 100, 1.0) * 0.20
     return round(min(s, 1.0), 3)
+
+
+# ── Serialização para bundle ──────────────────────────────────────────────────
+
+def swaggy_result_to_dict(result: SwaggyResult) -> dict:
+    """Serializa SwaggyResult para dict JSON-safe (para bundle)."""
+    return {
+        "wsb_mentions": [
+            {
+                "ticker": m.ticker, "mentions": m.mentions, "rank": m.rank,
+                "sentiment": m.sentiment, "sentiment_label": m.sentiment_label,
+                "attention_score": m.attention_score,
+            }
+            for m in result.wsb_mentions
+        ],
+        "squeeze_candidates": [
+            {
+                "ticker": s.ticker, "short_interest_pct": s.short_interest_pct,
+                "days_to_cover": s.days_to_cover, "borrow_rate_pct": s.borrow_rate_pct,
+                "squeeze_score": s.squeeze_score,
+            }
+            for s in result.squeeze_candidates
+        ],
+        "top_mentions": result.top_mentions,
+        "top_squeeze": result.top_squeeze,
+        "market_bull_pct": result.market_bull_pct,
+    }
+
+
+def dict_to_swaggy_result(data: dict) -> SwaggyResult:
+    """Reconstrói SwaggyResult a partir de dict serializado."""
+    if not data:
+        return SwaggyResult()
+    mentions = [
+        WSBMention(
+            ticker=m["ticker"], mentions=m.get("mentions", 0), rank=m.get("rank", i + 1),
+            sentiment=m.get("sentiment", 0.5), sentiment_label=m.get("sentiment_label", "neutral"),
+            attention_score=m.get("attention_score", 0.0),
+        )
+        for i, m in enumerate(data.get("wsb_mentions", []))
+    ]
+    squeeze = [
+        SqueezeCanditate(
+            ticker=s["ticker"], short_interest_pct=s.get("short_interest_pct", 0),
+            days_to_cover=s.get("days_to_cover", 0), borrow_rate_pct=s.get("borrow_rate_pct", 0),
+            squeeze_score=s.get("squeeze_score", 0),
+        )
+        for s in data.get("squeeze_candidates", [])
+    ]
+    result = SwaggyResult(
+        wsb_mentions=mentions,
+        squeeze_candidates=squeeze,
+        mention_map={m.ticker: m for m in mentions},
+        squeeze_map={s.ticker: s for s in squeeze},
+        top_mentions=data.get("top_mentions", [m.ticker for m in mentions[:20]]),
+        top_squeeze=data.get("top_squeeze", [s.ticker for s in squeeze[:10]]),
+        market_bull_pct=data.get("market_bull_pct"),
+    )
+    return result
+
+
+def collect_playwright(max_wsb: int = 50) -> SwaggyResult:
+    """Abre uma sessão Playwright standalone e coleta SwaggyStocks."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from app.auth.browser_profile import open_context
+        with sync_playwright() as pw:
+            ctx = open_context(pw, headless=True)
+            page = ctx.new_page()
+            result = collect_with_page(page, max_results=max_wsb)
+            ctx.close()
+        return result
+    except Exception as exc:
+        _log.warning("swaggy_playwright_standalone_failed", error=str(exc))
+        return SwaggyResult()
 
 
 # ── Helpers para integração com desk_intelligence ──────────────────────────────

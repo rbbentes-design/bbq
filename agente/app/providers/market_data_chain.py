@@ -35,6 +35,24 @@ from app.audit.logger import get_logger
 
 _log = get_logger("providers.market_data_chain")
 
+# ── Normalização de ticker Bloomberg → Yahoo Finance ─────────────────────────
+_BBG_SUFFIXES = (
+    " US Equity", " US EQUITY", " Equity", " EQUITY",
+    " Index", " INDEX", " Comdty", " COMDTY", " Curncy", " CURNCY",
+)
+
+def _strip_bbg(ticker: str) -> str:
+    """Remove sufixos Bloomberg para usar em APIs externas (yfinance, AV, etc.)."""
+    t = ticker.strip()
+    for sfx in _BBG_SUFFIXES:
+        if t.endswith(sfx):
+            t = t[:-len(sfx)].strip()
+            break
+    # BRK/B US EQUITY → BRK-B (Yahoo format)
+    t = t.replace("/", "-")
+    return t
+
+
 # ── Normalização de ticker para cada API ──────────────────────────────────────
 # Algumas APIs não aceitam sufixos como =X, =F, ^, -USD
 
@@ -288,7 +306,10 @@ def collect_prices(
     """
     from app.config.settings import settings
 
-    remaining = list(tickers) if tickers else []
+    # Normaliza sufixos Bloomberg antes de tentar fontes externas
+    _raw_tickers = list(tickers) if tickers else []
+    _norm_map = {t: _strip_bbg(t) for t in _raw_tickers}  # raw → norm
+    remaining = list(dict.fromkeys(_norm_map.values()))     # deduplica
     combined: dict[str, dict] = {}
 
     # ── Camada 1: Bloomberg DB ────────────────────────────────────────────────
@@ -297,6 +318,7 @@ def collect_prices(
         bbg = bbg_collect()
         for t, d in bbg.items():
             combined[t] = d
+            combined[_strip_bbg(t)] = d  # aceita ambas as formas
         remaining = [t for t in remaining if t not in combined]
         if bbg:
             _log.info("chain_bbg_prices", got=len(bbg))
@@ -320,6 +342,36 @@ def collect_prices(
             _log.info("chain_ibkr_prices", got=len(snap))
     except Exception as exc:
         _log.debug("chain_ibkr_failed", error=str(exc))
+
+    if not remaining:
+        return combined
+
+    # ── Camada 2b: yfinance (gratuito, sem API key) ───────────────────────────
+    try:
+        import yfinance as yf
+        yf_data = yf.download(remaining, period="2d", progress=False, auto_adjust=True)
+        close_col = yf_data["Close"] if "Close" in yf_data.columns else yf_data
+        if hasattr(close_col, "columns"):
+            for t in remaining:
+                if t in close_col.columns:
+                    prices = close_col[t].dropna()
+                    if len(prices) >= 1:
+                        price = float(prices.iloc[-1])
+                        prev  = float(prices.iloc[-2]) if len(prices) >= 2 else price
+                        daily_ret = (price - prev) / prev if prev else None
+                        combined[t] = {"price": price, "daily_return": daily_ret, "source": "yfinance"}
+        else:
+            if len(remaining) == 1:
+                prices = close_col.dropna()
+                if len(prices) >= 1:
+                    price = float(prices.iloc[-1])
+                    prev  = float(prices.iloc[-2]) if len(prices) >= 2 else price
+                    daily_ret = (price - prev) / prev if prev else None
+                    combined[remaining[0]] = {"price": price, "daily_return": daily_ret, "source": "yfinance"}
+        remaining = [t for t in remaining if t not in combined]
+        _log.info("chain_yfinance_prices", got=len(combined), remaining=len(remaining))
+    except Exception as exc:
+        _log.debug("chain_yfinance_prices_failed", error=str(exc))
 
     if not remaining:
         return combined
@@ -392,8 +444,16 @@ def collect_historical(
     """
     from app.config.settings import settings
 
+    # Normaliza sufixos Bloomberg → Yahoo (ex: "AAPL US EQUITY" → "AAPL")
+    # Mantém mapeamento reverso para preservar as chaves originais no resultado
+    raw_to_norm: dict[str, str] = {t: _strip_bbg(t) for t in tickers}
+    norm_to_raw: dict[str, str] = {}
+    for raw, norm in raw_to_norm.items():
+        if norm not in norm_to_raw:
+            norm_to_raw[norm] = raw
+
     closes: dict[str, list[float]] = {}
-    remaining = list(tickers)
+    remaining_norm = list(dict.fromkeys(raw_to_norm.values()))  # deduplica
 
     # ── Camada 1: Bloomberg CSV (BQuant export) ───────────────────────────────
     try:
@@ -402,13 +462,20 @@ def collect_historical(
         if bbg_hist:
             MIN_OBS = max(20, lookback_days // 4)
             for t, series in bbg_hist.items():
-                if t in remaining and len(series) >= MIN_OBS:
-                    closes[t] = series[-lookback_days:]
-            remaining = [t for t in remaining if t not in closes]
+                norm_t = _strip_bbg(t)
+                if norm_t in remaining_norm and len(series) >= MIN_OBS:
+                    raw_key = norm_to_raw.get(norm_t, norm_t)
+                    closes[raw_key] = series[-lookback_days:]
+                    # também salva pela chave normalizada para match
+                    closes[norm_t] = series[-lookback_days:]
+            remaining_norm = [t for t in remaining_norm if norm_to_raw.get(t, t) not in closes and t not in closes]
             if closes:
                 _log.info("chain_bbg_hist", got=len(closes))
     except Exception as exc:
         _log.debug("chain_bbg_hist_failed", error=str(exc))
+
+    # Helper: usa tickers normalizados para camadas externas, mapeia de volta
+    remaining = remaining_norm
 
     if not remaining:
         return closes
@@ -425,6 +492,42 @@ def collect_historical(
             _log.info("chain_ibkr_hist", got=len(ibkr_hist))
     except Exception as exc:
         _log.debug("chain_ibkr_hist_failed", error=str(exc))
+
+    if not remaining:
+        return closes
+
+    # ── Camada 2b: yfinance (gratuito, sem API key) ───────────────────────────
+    try:
+        import yfinance as yf
+        import datetime as _dt
+        _start = (_dt.date.today() - _dt.timedelta(days=lookback_days + 10)).strftime("%Y-%m-%d")
+        # Filtra tickers incompatíveis com yfinance (futuros sem sufixo =F, etc.)
+        yf_tickers = [t for t in remaining if not (len(t) <= 3 and t.isupper()
+                      and t not in ("SPY", "QQQ", "IWM", "GLD", "TLT", "HYG",
+                                    "EEM", "EFA", "XOM", "JNJ", "JPM", "WMT",
+                                    "COST", "AMZN", "AAPL", "MSFT", "GOOGL",
+                                    "META", "NVDA", "TSLA", "AVGO", "V", "MA",
+                                    "PG", "UNH", "LLY", "NFLX", "BRK-B"))]
+        yf_tickers = remaining  # use all — yfinance handles unknowns gracefully
+        data = yf.download(yf_tickers, start=_start, progress=False, auto_adjust=True)
+        close_col = data["Close"] if "Close" in data.columns else data
+        if hasattr(close_col, "columns"):
+            for t in yf_tickers:
+                if t in close_col.columns:
+                    series = close_col[t].dropna().tolist()
+                    if len(series) >= 10 and t not in closes:
+                        closes[t] = series[-lookback_days:]
+        else:
+            # single ticker
+            if len(yf_tickers) == 1:
+                series = close_col.dropna().tolist()
+                if len(series) >= 10 and yf_tickers[0] not in closes:
+                    closes[yf_tickers[0]] = series[-lookback_days:]
+        remaining = [t for t in remaining if t not in closes]
+        if yf_tickers:
+            _log.info("chain_yfinance_hist", got=len(closes), remaining=len(remaining))
+    except Exception as exc:
+        _log.debug("chain_yfinance_hist_failed", error=str(exc))
 
     if not remaining:
         return closes

@@ -97,6 +97,30 @@ def collect(
 
         if prices:
             _log.info("market_prices_loaded", tickers=len(prices), source="bloomberg")
+            # ── Enriquece daily_return via yfinance quando Bloomberg retorna 0 ──
+            try:
+                import yfinance as yf
+                _need_ret = [t for t, d in prices.items() if not d.get("daily_return")]
+                if _need_ret:
+                    _yf_data = yf.download(_need_ret, period="2d", progress=False, auto_adjust=True)
+                    _close = _yf_data["Close"] if "Close" in _yf_data.columns else _yf_data
+                    if hasattr(_close, "columns"):
+                        for t in _need_ret:
+                            if t in _close.columns:
+                                _s = _close[t].dropna()
+                                if len(_s) >= 2:
+                                    _ret = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                                    prices[t]["daily_return"] = round(float(_ret), 6)
+                                    prices[t]["price"] = round(float(_s.iloc[-1]), 4)
+                    elif len(_need_ret) == 1:
+                        _s = _close.dropna()
+                        if len(_s) >= 2:
+                            _ret = (_s.iloc[-1] - _s.iloc[-2]) / _s.iloc[-2]
+                            prices[_need_ret[0]]["daily_return"] = round(float(_ret), 6)
+                            prices[_need_ret[0]]["price"] = round(float(_s.iloc[-1]), 4)
+                _log.info("market_prices_enriched_yf", enriched=len(_need_ret))
+            except Exception as _exc_yf:
+                _log.debug("market_prices_yf_enrich_failed", error=str(_exc_yf))
             return prices
 
         _log.warning(

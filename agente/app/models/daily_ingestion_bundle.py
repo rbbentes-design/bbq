@@ -62,6 +62,10 @@ class DailyIngestionBundle(BaseModel):
         default_factory=dict,
         description="Preços e retornos de ativos-chave via yfinance",
     )
+    swaggy_data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="SwaggyStocks: WSB mentions + squeeze candidates (serializado como dict)",
+    )
     audit_summary: AuditSummary = Field(default_factory=AuditSummary)
     artifact_paths: dict[str, str] = Field(
         default_factory=dict,

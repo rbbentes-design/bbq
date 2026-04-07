@@ -114,6 +114,7 @@ def _build_and_save(
     prob_map: "dict | None" = None,
     flow_pred=None,
     portfolio=None,
+    options_snapshot=None,
 ) -> int:
     """Rebuilda grafo e salva HTML. Retorna tamanho em KB."""
     from app.desk.graph_engine import build_from_bundle
@@ -134,6 +135,7 @@ def _build_and_save(
     html = generate_macro_desk_v2_html(
         bundle, graph, live_mode=live_mode,
         portfolio=portfolio, flow_pred=flow_pred,
+        options_snapshot=options_snapshot,
     )
     out_path.write_text(html, encoding="utf-8")
     return len(html) // 1024
@@ -247,7 +249,15 @@ def run(
     except Exception as exc:
         console.print(f"[yellow]Portfolio load falhou: {exc}[/yellow]")
 
-    kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio)
+    # Carrega options snapshot uma vez (para aba Opções)
+    _cached_options_snap = None
+    try:
+        from app.providers.options_store import options_store as _opts_live
+        _cached_options_snap = _opts_live.load_latest()
+    except Exception:
+        pass
+
+    kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio, options_snapshot=_cached_options_snap)
     console.print(f"[green]HTML gerado: {out_path.name} ({kb}KB)[/green]")
 
     console.print(f"[bold green]Desk v2:[/bold green] {out_path}")
@@ -341,6 +351,7 @@ def run(
                     live_mode=True,
                     portfolio=_cached_portfolio,
                     flow_pred=_cached_flow,
+                    options_snapshot=_cached_options_snap,
                 )
                 out_path.write_text(html, encoding="utf-8")
 
@@ -371,7 +382,7 @@ def run(
                         cached_prob=_prob_map or None,
                     ) or {}
                     if _last_bbg_mtime > 0:
-                        kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio)
+                        kb = _build_and_save(bundle, out_path, live_mode=True, cached_network=_init_network, anatomy_map=_anatomy_map, options_map=_options_map, prob_map=_prob_map, flow_pred=_cached_flow, portfolio=_cached_portfolio, options_snapshot=_cached_options_snap)
                         console.print(f"[green]Rebuild: {kb}KB[/green]")
                     else:
                         console.print("[dim]Rebuild graph ok — HTML aguarda dados BBG[/dim]")

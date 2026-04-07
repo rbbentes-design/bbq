@@ -74,6 +74,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
     damodaran_data: dict = {}
     global_liquidity_data: dict = {}
     market_prices_data: dict = {}
+    swaggy_data: dict = {}
     artifact_paths: dict[str, str] = {}
     errors: list[str] = []
     _x_source_doc = None  # usado para coleta semanal de perfis
@@ -277,6 +278,23 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                     errors.append(msg)
                     _log.warning("weekly_profiles_error", error=str(exc))
 
+            # ── SwaggyStocks — WSB mentions via ApeWisdom + squeeze ──────────────
+            try:
+                from app.providers.swaggy_stocks import collect as swaggy_collect, swaggy_result_to_dict
+                sw_result = swaggy_collect(max_wsb=50, max_squeeze=30)
+                swaggy_data = swaggy_result_to_dict(sw_result)
+                _log.info("swaggy_ingest_done",
+                          wsb=len(sw_result.wsb_mentions),
+                          squeeze=len(sw_result.squeeze_candidates),
+                          top=sw_result.top_mentions[:5])
+                audit.write(rec.ok(run_id, "collect", "swaggy_done",
+                                   wsb=len(sw_result.wsb_mentions),
+                                   squeeze=len(sw_result.squeeze_candidates)))
+            except Exception as exc:
+                msg = f"SwaggyStocks collect failed: {exc}"
+                errors.append(msg)
+                _log.warning("swaggy_ingest_error", error=str(exc))
+
         finally:
             ctx.close()
 
@@ -413,6 +431,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
         damodaran_data=damodaran_data,
         global_liquidity=global_liquidity_data,
         market_prices=market_prices_data,
+        swaggy_data=swaggy_data,
         audit_summary=audit_summary,
         artifact_paths=artifact_paths,
     )

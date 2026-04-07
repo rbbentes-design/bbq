@@ -26,9 +26,15 @@ class BundleStore:
         )
 
     def list_bundles(self) -> list[Path]:
-        """Lista todos os bundles salvos, ordenados do mais recente ao mais antigo."""
+        """Lista bundles principais (ULID.json), ordenados do mais recente ao mais antigo."""
         return sorted(
-            workspace.bundles.rglob("*.json"),
+            [
+                p for p in workspace.bundles.rglob("*.json")
+                # Apenas ULID.json (26 chars alphanum direto na pasta de data)
+                if len(p.stem) == 26 and p.stem.isalnum()
+                and p.parent.name != "enrichment"
+                and "_" not in p.stem
+            ],
             reverse=True,
         )
 

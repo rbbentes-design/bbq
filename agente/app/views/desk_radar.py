@@ -90,11 +90,12 @@ def _panel_regime(result: "DeskIntelligenceResult") -> str:
     bg, fg = _REGIME_BG.get(result.market_regime, ("#1f2937", "#9ca3af"))
 
     badge = (
-        f'<div style="display:flex;align-items:center;gap:16px;background:{bg};'
-        f'border:1px solid {fg}40;border-radius:10px;padding:14px 20px">'
-        f'<div style="font-size:22px;font-weight:900;color:{fg};letter-spacing:-0.5px">'
+        f'<div style="display:flex;align-items:center;gap:20px;background:{bg};'
+        f'border:1px solid {fg}40;border-radius:12px;padding:18px 24px">'
+        f'<div style="font-size:28px;font-weight:900;color:{fg};letter-spacing:-0.5px">'
         f'{_h(regime_label)}</div>'
-        f'<div style="font-size:12px;color:{conf_color};font-weight:700">'
+        f'<div style="font-size:14px;color:{conf_color};font-weight:700;background:{conf_color}22;'
+        f'padding:4px 12px;border-radius:20px;border:1px solid {conf_color}44">'
         f'Conf. {conf_pct}</div></div>'
     )
 
@@ -202,14 +203,42 @@ def _panel_narrative(
         )
 
     clusters_html = (
-        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">'
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:8px">'
         f'{cluster_cards}</div>'
     ) if cluster_cards else ""
+
+    # Quando não tem clusters — mostrar leaders/laggards dos RRG signals
+    extra_html = ""
+    if not cluster_cards and rrg_sigs:
+        leading  = [t for t, s in rrg_sigs.items() if getattr(s, "quadrant", "") == "leading"][:8]
+        improving = [t for t, s in rrg_sigs.items() if getattr(s, "quadrant", "") == "improving"][:8]
+        weakening = [t for t, s in rrg_sigs.items() if getattr(s, "quadrant", "") == "weakening"][:6]
+        lagging  = [t for t, s in rrg_sigs.items() if getattr(s, "quadrant", "") == "lagging"][:6]
+
+        def _chip_row(tickers, color):
+            return "".join(
+                f'<span style="background:{color}18;color:{color};border:1px solid {color}35;'
+                f'padding:3px 8px;border-radius:8px;font-size:11px;font-weight:600">{_h(t)}</span>'
+                for t in tickers
+            )
+
+        rows = []
+        if leading:
+            rows.append(f'<div style="margin-bottom:10px"><div style="font-size:10px;color:#22c55e;font-weight:700;margin-bottom:5px">▲ LEADING</div><div style="display:flex;flex-wrap:wrap;gap:4px">{_chip_row(leading,"#22c55e")}</div></div>')
+        if improving:
+            rows.append(f'<div style="margin-bottom:10px"><div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:5px">↑ IMPROVING</div><div style="display:flex;flex-wrap:wrap;gap:4px">{_chip_row(improving,"#3b82f6")}</div></div>')
+        if weakening:
+            rows.append(f'<div style="margin-bottom:10px"><div style="font-size:10px;color:#f97316;font-weight:700;margin-bottom:5px">↓ WEAKENING</div><div style="display:flex;flex-wrap:wrap;gap:4px">{_chip_row(weakening,"#f97316")}</div></div>')
+        if lagging:
+            rows.append(f'<div style="margin-bottom:6px"><div style="font-size:10px;color:#ef4444;font-weight:700;margin-bottom:5px">▼ LAGGING</div><div style="display:flex;flex-wrap:wrap;gap:4px">{_chip_row(lagging,"#ef4444")}</div></div>')
+
+        if rows:
+            extra_html = f'<div style="margin-top:12px">{"".join(rows)}</div>'
 
     return (
         f'<div class="dr-panel">'
         f'<div class="dr-panel-title">Narrativa &amp; Clusters</div>'
-        f'{dom_html}{clusters_html}'
+        f'{dom_html}{clusters_html}{extra_html}'
         f'</div>'
     )
 
@@ -529,8 +558,8 @@ if (btnReset) {{ btnReset.addEventListener('click', function() {{
         f'<button id="dr-rrg-reset" style="font-size:10px;padding:2px 8px;border:1px solid #334155;'
         f'background:transparent;color:#64748b;border-radius:4px;cursor:pointer">⊙ Reset</button>'
         f'</div>'
-        f'<canvas id="dr-rrg-canvas" width="760" height="460" '
-        f'style="width:100%;max-width:760px;height:460px;background:#060a12;border-radius:8px;'
+        f'<canvas id="dr-rrg-canvas" width="1100" height="580" '
+        f'style="width:100%;height:auto;min-height:520px;background:#060a12;border-radius:8px;'
         f'border:1px solid #1e293b;display:block;cursor:crosshair"></canvas>'
         f'{legend}'
         f'</div>'
@@ -592,14 +621,13 @@ def _panel_contagion(
 
         bar_pct = score * 100
         rows += (
-            f'<div style="border-bottom:1px solid #1e293b;padding:8px 0">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
-            f'<span style="font-size:12px;font-weight:700;color:#e5e7eb">{_h(ticker)}</span>'
-            f'<div style="display:flex;align-items:center;gap:8px">'
-            f'<div style="width:80px;height:5px;background:#1e293b;border-radius:2px">'
-            f'<div style="width:{bar_pct:.1f}%;height:100%;background:{col};border-radius:2px"></div></div>'
-            f'<span style="font-size:10px;color:{col}">{score:.2f}</span>'
-            f'</div></div>'
+            f'<div style="border-bottom:1px solid #1e293b;padding:10px 0">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+            f'<span style="font-size:13px;font-weight:700;color:#e5e7eb">{_h(ticker)}</span>'
+            f'<span style="font-size:11px;color:{col};font-weight:700">{score:.2f}</span>'
+            f'</div>'
+            f'<div style="width:100%;height:6px;background:#1e293b;border-radius:3px;margin-bottom:6px">'
+            f'<div style="width:{bar_pct:.1f}%;height:100%;background:{col};border-radius:3px"></div></div>'
             f'<div style="display:flex;flex-wrap:wrap;gap:4px">{nb_html}</div>'
             f'</div>'
         )
@@ -984,10 +1012,13 @@ _RADAR_CSS = """
 .dr-wrap {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 18px 24px;
+  gap: 20px;
+  padding: 20px 28px;
   background: #060a12;
   min-height: 100%;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   color: #e5e7eb;
   font-family: 'Inter', 'Segoe UI', sans-serif;
@@ -995,16 +1026,16 @@ _RADAR_CSS = """
 .dr-panel {
   background: #0a1628;
   border: 1px solid #1e293b;
-  border-radius: 10px;
-  padding: 16px 18px;
+  border-radius: 12px;
+  padding: 18px 20px;
 }
 .dr-panel-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: #94a3b8;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 #dr-rrg-tooltip {
   position: fixed;
@@ -1223,25 +1254,35 @@ def render_desk_radar_tab(
         f'</div>'
     )
 
-    panels = [
-        _panel_regime(result),
-        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
-        f'{_panel_narrative(result, rrg_result)}'
-        f'{_panel_contagion(result, signals, network_result)}'
-        f'</div>',
-        _panel_rrg_turbinado(result, rrg_result),
-        _panel_tv_zones(signals, result),
-        _panel_narrative_engine(result),
-        _panel_opportunities_fragility(result, signals, rrg_result),
-        _panel_ranking(result, signals, rrg_result),
-        _panel_explanations(result, signals, rrg_result),
-    ]
+    narrative_panel   = _panel_narrative(result, rrg_result)
+    contagion_panel   = _panel_contagion(result, signals, network_result)
+    opp_frag_panel    = _panel_opportunities_fragility(result, signals, rrg_result)
+    narr_engine_panel = _panel_narrative_engine(result)
+    ranking_panel     = _panel_ranking(result, signals, rrg_result)
+    rrg_panel         = _panel_rrg_turbinado(result, rrg_result)
+    tv_zones_panel    = _panel_tv_zones(signals, result)
+    explanations_panel = _panel_explanations(result, signals, rrg_result)
+
+    # Layout: regime (full) → 2-col sidebar → RRG (full) → rest
+    sidebar_row = (
+        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">'
+        f'{narrative_panel}'
+        f'{contagion_panel}'
+        f'</div>'
+    )
 
     return (
         f'{_RADAR_CSS}'
         f'{tooltip_div}'
         f'<div class="dr-wrap">'
         f'{stats_html}'
-        f'{"".join(panels)}'
+        f'{_panel_regime(result)}'
+        f'{sidebar_row}'
+        f'{rrg_panel}'
+        f'{tv_zones_panel}'
+        f'{narr_engine_panel}'
+        f'{opp_frag_panel}'
+        f'{ranking_panel}'
+        f'{explanations_panel}'
         f'</div>'
     )

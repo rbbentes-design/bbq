@@ -310,8 +310,36 @@ def _collect_ticker_ibkr(
         if not result.get("atm_iv") and not term_ivs:
             return None
 
+        # ── IV Percentile via IBKR historical implied vol (252d) ─────────────
+        # reqHistoricalData com barType="OPTION_IMPLIED_VOLATILITY" retorna
+        # série histórica de IV implícita do underlying — sem precisar de yfinance
+        cur_iv = result.get("atm_iv")
+        if cur_iv and cur_iv > 0:
+            try:
+                from ib_insync import util as _util
+                _hist_bars = ib.reqHistoricalData(
+                    contract,
+                    endDateTime="",
+                    durationStr="1 Y",
+                    barSizeSetting="1 day",
+                    whatToShow="OPTION_IMPLIED_VOLATILITY",
+                    useRTH=True,
+                    formatDate=1,
+                    keepUpToDate=False,
+                )
+                if _hist_bars and len(_hist_bars) >= 20:
+                    _iv_series = [b.close for b in _hist_bars if b.close and b.close > 0]
+                    if _iv_series:
+                        _iv_pct = sum(1 for v in _iv_series if v <= cur_iv) / len(_iv_series)
+                        result["iv_percentile"] = round(_iv_pct, 3)
+                        result["iv_52w_low"]    = round(min(_iv_series), 4)
+                        result["iv_52w_high"]   = round(max(_iv_series), 4)
+            except Exception as _exc_hist:
+                _log.debug("ibkr_iv_hist_failed", sym=sym, error=str(_exc_hist)[:60])
+
         _log.debug("ibkr_options_ok", sym=sym, atm_iv=result.get("atm_iv"),
-                   skew=result.get("skew_5pct"), pcr=result.get("pcr_oi"))
+                   skew=result.get("skew_5pct"), pcr=result.get("pcr_oi"),
+                   iv_pct=result.get("iv_percentile"))
         return result
 
     except Exception as exc:
@@ -337,6 +365,29 @@ def collect(
 
     results: dict[str, dict[str, Any]] = {}
 
+    # ── Tier 0: Bloomberg CSV (BQL export — atm_iv, skew_25d, pcr_oi) ─────────
+    # Mais preciso que IBKR snapshot — Bloomberg tem IV implícita delta-neutral
+    try:
+        from app.providers.bql_csv import load_options_iv
+        bbg_iv = load_options_iv()
+        if bbg_iv:
+            for sym in universe:
+                # Tenta ticker normalizado e variações
+                for key in [sym, sym.replace("^", ""), f"{sym} US Equity"]:
+                    entry = bbg_iv.get(key)
+                    if entry and entry.get("atm_iv"):
+                        results[sym] = {
+                            "label":     OPTIONS_UNIVERSE.get(sym, sym),
+                            "atm_iv":    entry.get("atm_iv"),
+                            "skew_5pct": entry.get("skew_25d"),   # delta-25 skew proxy
+                            "pcr_oi":    entry.get("pcr_oi"),
+                            "source":    "bloomberg",
+                        }
+                        break
+            _log.info("options_bloomberg_loaded", loaded=len([s for s in universe if s in results]))
+    except Exception as exc:
+        _log.debug("options_bloomberg_failed", error=str(exc)[:80])
+
     # ── Tenta IBKR primeiro ────────────────────────────────────────────────────
     try:
         from app.providers.ibkr import is_available, _connect_ib, _ensure_event_loop
@@ -346,16 +397,41 @@ def collect(
             ib = _connect_ib()
             if ib is not None:
                 _log.info("options_ibkr_session", tickers=len(universe))
-                # Precisa de preços spot — usa Bloomberg DB ou IBKR collect
+                # Precisa de preços spot — IBKR live primeiro, yfinance como fallback
                 spot_map: dict[str, float] = {}
                 try:
-                    from app.providers.market_prices import collect as _prices
-                    raw_prices = _prices()
+                    # 1. IBKR snapshot direto (evita Bloomberg stale)
+                    from app.providers.ibkr import snapshot as ibkr_snapshot
+                    ibkr_spots = ibkr_snapshot(list({INDEX_TO_ETF.get(s, s) for s in universe}))
                     for sym in universe:
                         etf = INDEX_TO_ETF.get(sym, sym)
-                        p = (raw_prices.get(sym) or raw_prices.get(etf) or {}).get("price")
+                        d = ibkr_spots.get(etf) or ibkr_spots.get(sym) or {}
+                        p = d.get("last") or d.get("price")
                         if p and float(p) > 0:
                             spot_map[sym] = float(p)
+                except Exception:
+                    pass
+                try:
+                    # 2. yfinance para os que faltaram (gratuito, sem Bloomberg stale)
+                    import yfinance as yf
+                    missing_syms = [INDEX_TO_ETF.get(s, s) for s in universe if s not in spot_map]
+                    if missing_syms:
+                        tdata = yf.download(missing_syms, period="2d", progress=False, auto_adjust=True)
+                        close_col = tdata["Close"] if "Close" in tdata.columns else tdata
+                        if hasattr(close_col, "columns"):
+                            for sym in universe:
+                                if sym in spot_map:
+                                    continue
+                                etf = INDEX_TO_ETF.get(sym, sym)
+                                if etf in close_col.columns:
+                                    prices = close_col[etf].dropna()
+                                    if len(prices) >= 1:
+                                        spot_map[sym] = float(prices.iloc[-1])
+                        elif len(missing_syms) == 1:
+                            prices = close_col.dropna()
+                            if len(prices) >= 1:
+                                sym = next(s for s in universe if INDEX_TO_ETF.get(s, s) == missing_syms[0])
+                                spot_map[sym] = float(prices.iloc[-1])
                 except Exception:
                     pass
 
@@ -376,9 +452,10 @@ def collect(
                         pass
 
                 _log.info("options_ibkr_collected", collected=len(results))
-                if results:
+                # Retorna só se IBKR entregou iv_percentile — senão cai para tier 4 yfinance
+                if results and any(d.get("iv_percentile") for d in results.values()):
                     return results
-                # IBKR conectou mas sem dados (sem subscrição) — cai para OCC/Cboe
+                # IBKR conectou mas sem Greeks (sem subscrição de dados) — cai para OCC/Cboe
 
     except Exception as exc:
         _log.warning("ibkr_options_failed", error=str(exc))
@@ -413,6 +490,68 @@ def collect(
                     _log.info("options_cboe_collected", collected=len(cboe_data))
             except Exception as exc:
                 _log.warning("cboe_options_failed", error=str(exc))
+
+    # ── Fallback tier 4: yfinance vol histórica como proxy de IV ─────────────
+    # Para tickers sem dados de opções, usa vol realizada 30d como proxy de atm_iv
+    # e computa iv_percentile relativo ao histórico de 252 dias.
+    missing_yf = [s for s in universe if s not in results or not results[s].get("iv_percentile")]
+    if missing_yf:
+        try:
+            import yfinance as yf
+            import numpy as np
+            # Resolve ETF proxies para download
+            yf_tickers = list({INDEX_TO_ETF.get(s, s) for s in missing_yf})
+            hist = yf.download(yf_tickers, period="1y", progress=False, auto_adjust=True)
+            close_col = hist["Close"] if "Close" in getattr(hist, "columns", []) else hist
+            for sym in missing_yf:
+                etf = INDEX_TO_ETF.get(sym, sym)
+                try:
+                    if hasattr(close_col, "columns"):
+                        if etf not in close_col.columns:
+                            continue
+                        prices = close_col[etf].dropna()
+                    else:
+                        prices = close_col.dropna()
+                    if len(prices) < 30:
+                        continue
+                    rets = prices.pct_change().dropna()
+                    # Vol realizada em janelas de 21 dias (proxy de IV 30d)
+                    roll_vol = rets.rolling(21).std() * (252 ** 0.5)
+                    roll_vol = roll_vol.dropna()
+                    if len(roll_vol) < 20:
+                        continue
+                    cur_vol = float(roll_vol.iloc[-1])
+                    # IV percentile: posição da vol atual no histórico de 252d
+                    iv_pct = float((roll_vol <= cur_vol).mean())
+                    # Skew proxy: -1 * (skewness of returns over 63d)
+                    if len(rets) >= 63:
+                        import math
+                        r63 = rets.iloc[-63:]
+                        mean_r = float(r63.mean())
+                        std_r  = float(r63.std())
+                        if std_r > 0:
+                            skew_proxy = float(((r63 - mean_r) ** 3).mean() / (std_r ** 3))
+                        else:
+                            skew_proxy = 0.0
+                        # Normaliza skew para escala de skew_5pct (~0.02 a 0.08)
+                        skew_5pct = -skew_proxy * 0.01  # negativo: put skew positivo
+                    else:
+                        skew_5pct = None
+                    entry = results.get(sym, {})
+                    entry.update({
+                        "label":        OPTIONS_UNIVERSE.get(sym, sym),
+                        "atm_iv":       round(cur_vol, 4),
+                        "iv_percentile": round(iv_pct, 3),
+                        "skew_5pct":    round(skew_5pct, 4) if skew_5pct is not None else None,
+                        "source":       "yfinance_rv_proxy",
+                    })
+                    results[sym] = entry
+                except Exception:
+                    continue
+            enriched_yf = sum(1 for s in missing_yf if results.get(s, {}).get("iv_percentile"))
+            _log.info("options_yf_rv_fallback", enriched=enriched_yf)
+        except Exception as exc:
+            _log.debug("options_yf_rv_failed", error=str(exc)[:80])
 
     _log.info("options_done", collected=len(results))
     return results

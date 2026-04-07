@@ -229,6 +229,183 @@ _CAT_ICONS = {
 }
 
 
+def _build_swaggy_section(swaggy_result) -> str:
+    """Renderiza WSB Top Mentions + Squeeze Candidates + Sentiment Gauge."""
+    if swaggy_result is None:
+        return ""
+    wsb = getattr(swaggy_result, "wsb_mentions", [])
+    squeeze = getattr(swaggy_result, "squeeze_candidates", [])
+    market_bull_pct = getattr(swaggy_result, "market_bull_pct", None)
+    if not wsb and not squeeze and market_bull_pct is None:
+        return ""
+
+    # Gauge de sentimento geral
+    gauge_html = ""
+    if market_bull_pct is not None:
+        pct = market_bull_pct if market_bull_pct <= 1 else market_bull_pct / 100
+        pct_display = f"{pct*100:.0f}%"
+        bar_color = "#22c55e" if pct > 0.55 else ("#ef4444" if pct < 0.45 else "#f59e0b")
+        label = "Bullish" if pct > 0.55 else ("Bearish" if pct < 0.45 else "Neutral")
+        gauge_html = f"""
+        <div style="margin-bottom:16px;padding:12px 16px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.08)">
+          <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Sentimento Geral do Mercado</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="font-size:24px;font-weight:700;color:{bar_color}">{pct_display}</div>
+            <div style="flex:1">
+              <div style="height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:{pct*100:.0f}%;background:{bar_color};border-radius:4px;transition:width .3s"></div>
+              </div>
+              <div style="font-size:11px;color:{bar_color};margin-top:4px;font-weight:600">{label}</div>
+            </div>
+          </div>
+        </div>"""
+
+    wsb_rows = ""
+    for m in wsb[:15]:
+        sent_color = "#22c55e" if m.sentiment > 0.55 else "#ef4444" if m.sentiment < 0.45 else "#f59e0b"
+        sent_label = getattr(m, "sentiment_label", "neutral")
+        wsb_rows += (
+            f"<tr><td>#{m.rank}</td><td><b>{m.ticker}</b></td>"
+            f"<td>{m.mentions:,}</td>"
+            f"<td style='color:{sent_color}'>{sent_label}</td>"
+            f"<td>{m.attention_score:.2f}</td></tr>"
+        )
+
+    squeeze_rows = ""
+    for s in squeeze[:10]:
+        score_color = "#ef4444" if s.squeeze_score > 0.6 else "#f59e0b" if s.squeeze_score > 0.3 else "#6b7280"
+        squeeze_rows += (
+            f"<tr><td><b>{s.ticker}</b></td>"
+            f"<td>{s.short_interest_pct:.1f}%</td>"
+            f"<td>{s.days_to_cover:.1f}d</td>"
+            f"<td>{s.borrow_rate_pct:.1f}%</td>"
+            f"<td style='color:{score_color}'>{s.squeeze_score:.2f}</td></tr>"
+        )
+
+    wsb_table = ""
+    if wsb_rows:
+        wsb_table = f"""
+        <div style="flex:1;min-width:280px">
+          <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🧵 WSB Top Mentions</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="color:#6b7280;border-bottom:1px solid rgba(255,255,255,0.08)">
+              <th style="text-align:left;padding:3px 6px">#</th>
+              <th style="text-align:left;padding:3px 6px">Ticker</th>
+              <th style="text-align:right;padding:3px 6px">Mentions</th>
+              <th style="text-align:left;padding:3px 6px">Sentiment</th>
+              <th style="text-align:right;padding:3px 6px">Score</th>
+            </tr></thead>
+            <tbody>{wsb_rows}</tbody>
+          </table>
+        </div>"""
+
+    squeeze_table = ""
+    if squeeze_rows:
+        squeeze_table = f"""
+        <div style="flex:1;min-width:280px">
+          <div style="font-size:11px;font-weight:700;color:#c084fc;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🔥 Squeeze Candidates</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="color:#6b7280;border-bottom:1px solid rgba(255,255,255,0.08)">
+              <th style="text-align:left;padding:3px 6px">Ticker</th>
+              <th style="text-align:right;padding:3px 6px">SI%</th>
+              <th style="text-align:right;padding:3px 6px">DTC</th>
+              <th style="text-align:right;padding:3px 6px">Borrow</th>
+              <th style="text-align:right;padding:3px 6px">Score</th>
+            </tr></thead>
+            <tbody>{squeeze_rows}</tbody>
+          </table>
+        </div>"""
+
+    if not wsb_table and not squeeze_table:
+        return ""
+
+    return f"""
+<div class="card" style="margin-bottom:20px">
+  <div class="card-header">📱 WSB &amp; Squeeze Monitor</div>
+  <div class="card-body">
+    {gauge_html}
+    <div style="display:flex;gap:24px;flex-wrap:wrap">
+      {wsb_table}
+      {squeeze_table}
+    </div>
+  </div>
+</div>"""
+
+
+def _build_tv_zones_section(signals: dict) -> str:
+    """Renderiza TradingView Zone Signals para os ativos com setup ideal/acceptable."""
+    if not signals:
+        return ""
+
+    rows_ideal = []
+    rows_accept = []
+    rows_avoid = []
+
+    for ticker, sig in signals.items():
+        zs = getattr(sig, "_zone_signal", None)
+        if zs is None:
+            continue
+        q = zs.entry_quality
+        price_str = f"${zs.price:,.2f}" if zs.price else "—"
+        vwap_str  = f"${zs.vwap:,.2f}" if zs.vwap else "—"
+        vah_str   = f"${zs.vah:,.2f}" if zs.vah else "—"
+        val_str   = f"${zs.val:,.2f}" if zs.val else "—"
+        rsi_str   = f"{zs.rsi:.0f}" if zs.rsi else "—"
+        regime_color = "#22c55e" if zs.tv_regime == "bullish" else "#ef4444" if zs.tv_regime == "bearish" else "#6b7280"
+        row = (
+            f"<tr><td><b>{ticker}</b></td>"
+            f"<td>{price_str}</td>"
+            f"<td>{vwap_str}</td>"
+            f"<td>{vah_str}</td>"
+            f"<td>{val_str}</td>"
+            f"<td>{rsi_str}</td>"
+            f"<td style='color:{regime_color}'>{zs.tv_regime}</td>"
+            f"<td style='font-size:11px;color:#9ca3af'>{zs.rationale[:60]}</td></tr>"
+        )
+        if q == "ideal":
+            rows_ideal.append(row)
+        elif q in ("acceptable",):
+            rows_accept.append(row)
+        elif q == "avoid":
+            rows_avoid.append(row)
+
+    if not rows_ideal and not rows_accept and not rows_avoid:
+        return ""
+
+    def _table(rows: list[str], label: str, color: str) -> str:
+        if not rows:
+            return ""
+        return f"""
+        <div style="margin-bottom:16px">
+          <div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">{label} ({len(rows)})</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="color:#6b7280;border-bottom:1px solid rgba(255,255,255,0.08)">
+              <th style="text-align:left;padding:3px 6px">Ticker</th>
+              <th style="text-align:right;padding:3px 6px">Preço</th>
+              <th style="text-align:right;padding:3px 6px">VWAP</th>
+              <th style="text-align:right;padding:3px 6px">VAH</th>
+              <th style="text-align:right;padding:3px 6px">VAL</th>
+              <th style="text-align:right;padding:3px 6px">RSI</th>
+              <th style="text-align:left;padding:3px 6px">Regime</th>
+              <th style="text-align:left;padding:3px 6px">Rationale</th>
+            </tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>"""
+
+    body = (
+        _table(rows_ideal,  "✅ Ideal Entry",      "#22c55e")
+        + _table(rows_accept, "🟡 Acceptable",       "#f59e0b")
+        + _table(rows_avoid,  "🚫 Avoid",            "#ef4444")
+    )
+
+    return f"""
+<div class="card" style="margin-bottom:20px">
+  <div class="card-header">📊 TradingView — Value Area · VWAP · Setup Quality</div>
+  <div class="card-body">{body}</div>
+</div>"""
+
+
 def _build_fred_section(series_data: dict) -> str:
     """Constrói o dashboard FRED com cards por categoria."""
     blocks = []
@@ -1369,8 +1546,6 @@ body {
 }
 .mg-img {
   width: 100%;
-  max-height: 260px;
-  object-fit: cover;
   display: block;
   background: #111;
 }
@@ -2142,6 +2317,8 @@ def _build_editorial_sections_html(
 def save_writer_brief(
     bundle: "DailyIngestionBundle",
     curation_path: str | None = None,
+    swaggy_result=None,   # SwaggyResult | None
+    signals: dict | None = None,  # dict[str, AssetSignal] com _zone_signal
 ) -> Path:
     """
     Gera o Writer Brief HTML para QUALQUER modo editorial.
@@ -2205,10 +2382,10 @@ def save_writer_brief(
     heatmap_html = _build_market_heatmap(market_prices)
     market_html = _build_market_table(market_prices)
 
-    # ── Calendário + FRED (só week_ahead / week_recap) ────────────────────────
-    show_macro = mode in ("week_ahead", "week_recap")
-    calendar_html = _build_calendar_html(fred_data.get("calendar", [])) if show_macro else ""
-    fred_html = _build_fred_section(fred_data.get("series", {})) if show_macro else ""
+    # ── Calendário + FRED — sempre visível ───────────────────────────────────
+    show_macro = True
+    calendar_html = _build_calendar_html(fred_data.get("calendar", []))
+    fred_html = _build_fred_section(fred_data.get("series", {}))
 
     # ── Enrichment ────────────────────────────────────────────────────────────
     enrichment_data: dict = {}
@@ -2226,6 +2403,12 @@ def save_writer_brief(
     polymarket_html = _build_polymarket_html(bundle.polymarket_markets or [])
     monte_carlo_html = _build_monte_carlo_html(enrichment_data["monte_carlo"]) if enrichment_data.get("monte_carlo") else ""
     risk_html = _build_risk_html(enrichment_data["risk"]) if enrichment_data.get("risk") else ""
+
+    # ── WSB + Squeeze ─────────────────────────────────────────────────────────
+    swaggy_html = _build_swaggy_section(swaggy_result)
+
+    # ── TradingView — Value Area zones ───────────────────────────────────────
+    tv_zones_html = _build_tv_zones_section(signals or {})
 
     # ── Galeria de imagens ────────────────────────────────────────────────────
     media_gallery_html = _build_media_gallery(bundle, out_dir)
@@ -2322,8 +2505,8 @@ def save_writer_brief(
   line-height: 1.6;
 }}
 .editorial-body .inline-img-wrap {{ margin: 1.2rem 0; text-align: center; }}
-.editorial-body .inline-img {{ max-width: 100%; max-height: 380px; border-radius: 8px;
-                               border: 1px solid var(--border); object-fit: cover; }}
+.editorial-body .inline-img {{ max-width: 100%; border-radius: 8px;
+                               border: 1px solid var(--border); }}
 .section-title {{
   font-size: 11px;
   font-weight: 700;
@@ -2373,6 +2556,12 @@ def save_writer_brief(
 
   <!-- Monte Carlo -->
   {monte_carlo_html}
+
+  <!-- WSB & Squeeze -->
+  {swaggy_html}
+
+  <!-- TradingView — Value Area Zones -->
+  {tv_zones_html}
 
   <!-- Galeria de imagens -->
   {media_gallery_html}

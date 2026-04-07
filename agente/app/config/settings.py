@@ -64,6 +64,24 @@ class Settings(BaseSettings):
     x_state_path: Path | None = None
     x_profile_dir: Path | None = None
 
+    # ── IBKR / ibeam ─────────────────────────────────────────────────────────
+    ibkr_host:      str = Field(default="127.0.0.1", description="IB Gateway host")
+    ibkr_port:      int = Field(default=4001,        description="4001=ibeam/Gateway, 7497=TWS paper")
+    ibkr_client_id: int = Field(default=20,          description="Client ID (evita conflito com TWS)")
+
+    # ── Discord ───────────────────────────────────────────────────────────────
+    discord_webhook_url: str = Field(default="", description="Webhook URL para alertas do bot")
+
+    # ── Supabase ──────────────────────────────────────────────────────────────
+    supabase_url: str = Field(default="", description="URL do projeto Supabase")
+    supabase_key: str = Field(default="", description="anon/service_role key Supabase")
+
+    # ── SqueezeMetrics ────────────────────────────────────────────────────────
+    squeezemetrics_profile_dir: Path | None = None
+
+    # ── CheddarFlow ───────────────────────────────────────────────────────────
+    cheddarflow_profile_dir: Path | None = None
+
     # ── ElevenLabs TTS ────────────────────────────────────────────────────────
     elevenlabs_api_key: str = Field(default="", description="ElevenLabs API key")
     elevenlabs_voice_id: str = Field(default="XrMNSxvVxLkUlaSeEuLM", description="ElevenLabs voice ID")
@@ -154,6 +172,12 @@ class Settings(BaseSettings):
 
     def resolved_x_profile_dir(self) -> Path:
         return self.x_profile_dir or self.resolved_state_dir() / "x" / "profile"
+
+    def resolved_squeezemetrics_profile_dir(self) -> Path:
+        return self.squeezemetrics_profile_dir or self.resolved_state_dir() / "squeezemetrics" / "profile"
+
+    def resolved_cheddarflow_profile_dir(self) -> Path:
+        return self.cheddarflow_profile_dir or self.resolved_state_dir() / "cheddarflow" / "profile"
 
     def resolved_sqlite_path(self) -> Path:
         return self.sqlite_path or self.workspace_dir / "agente.db"

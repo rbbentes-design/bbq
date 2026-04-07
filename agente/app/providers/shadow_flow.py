@@ -119,7 +119,16 @@ def _compute_volume_signal(ticker: str, market_prices: dict) -> DarkPoolSignal:
     try:
         import yfinance as yf
 
-        tk = yf.Ticker(ticker)
+        # Normaliza sufixos Bloomberg antes de chamar yfinance
+        _yf_ticker = ticker
+        for _sfx in (" US Equity", " US EQUITY", " Equity", " EQUITY",
+                     " Index", " INDEX", " Comdty", " COMDTY", " Curncy", " CURNCY"):
+            if _yf_ticker.endswith(_sfx):
+                _yf_ticker = _yf_ticker[:-len(_sfx)].strip()
+                break
+        _yf_ticker = _yf_ticker.replace("/", "-")
+
+        tk = yf.Ticker(_yf_ticker)
         hist = tk.history(period="25d", auto_adjust=True)
 
         if hist.empty or len(hist) < 5:
@@ -156,17 +165,25 @@ def _compute_volume_signal(ticker: str, market_prices: dict) -> DarkPoolSignal:
         score = 0.0
         reasons = []
 
-        # Volume unusual
-        if sig.unusual_volume_ratio > 3.0:
+        # Volume unusual — thresholds calibrados para mercado normal
+        if sig.unusual_volume_ratio > 2.0:
             if daily_ret > 0:
                 score += 0.30
                 reasons.append(f"Volume {sig.unusual_volume_ratio:.1f}x acima da media com preco em alta — acumulacao institucional")
             else:
                 score -= 0.30
                 reasons.append(f"Volume {sig.unusual_volume_ratio:.1f}x acima da media com preco em queda — distribuicao institucional")
-        elif sig.unusual_volume_ratio > 1.8:
-            score += 0.10 * (1 if daily_ret > 0 else -1)
+        elif sig.unusual_volume_ratio > 1.3:
+            score += 0.15 * (1 if daily_ret > 0 else -1)
             reasons.append(f"Volume {sig.unusual_volume_ratio:.1f}x acima da media")
+        elif sig.unusual_volume_ratio < 0.5 and cur_vol > 0:
+            # Volume muito baixo = mercado fechado ou sem liquidez — score neutro mas registra
+            reasons.append(f"Volume muito baixo ({sig.unusual_volume_ratio:.2f}x avg) — possivel mercado fechado")
+
+        # Momentum diário reforça o sinal
+        if abs(daily_ret) > 0.015:  # movimento > 1.5%
+            score += 0.20 * (1 if daily_ret > 0 else -1)
+            reasons.append(f"Retorno diário {daily_ret:+.1%}")
 
         # Options ratio (calls vs puts)
         if call_ratio > 2.0 and call_ratio > put_ratio * 1.5:
