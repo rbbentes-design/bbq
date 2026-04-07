@@ -144,6 +144,18 @@ def ingest(
     # ── Portfolio Allocation (sem abrir Flow Inspector standalone) ────────────
     fi_path, portfolio, signals = _run_portfolio_after_ingest(bundle)
 
+    # ── Regenera MacroDesk com portfolio + options (versão completa) ──────────
+    if portfolio is not None:
+        try:
+            from app.providers.options_store import options_store as _opts_s
+            _opts_snap = _opts_s.load_latest()
+            from app.views.macro_desk_v2 import save_macro_desk_v2 as _smv2
+            with console.status("[cyan]MacroDesk v2 (completo com portfolio)...[/cyan]"):
+                desk2_path = _smv2(bundle, curation_obj, portfolio=portfolio, options_snapshot=_opts_snap)
+            console.print(f"[green]MacroDesk v2 (completo):[/green] {desk2_path.name}")
+        except Exception as exc:
+            console.print(f"[yellow]MacroDesk v2 (full) falhou: {exc}[/yellow]")
+
     # ── Abre UM único HTML — MacroDesk tem prioridade (tem auto-refresh) ────────
     _final_html = desk2_path or brief_path
     # Fallback: se nenhum HTML foi gerado hoje, abre o mais recente do workspace
@@ -260,6 +272,14 @@ def _run_live_loop(
         except Exception as exc:
             console.print(f"[yellow]Graph cache falhou: {exc}[/yellow]")
 
+    # Carrega options snapshot uma vez (para incluir na aba Opções do live)
+    _cached_options_snap = None
+    try:
+        from app.providers.options_store import options_store as _opts_live
+        _cached_options_snap = _opts_live.load_latest()
+    except Exception:
+        pass
+
     # Computa options uma vez (já temos os preços)
     _cached_options = None
     if _cached_portfolio and _cached_portfolio.positions:
@@ -325,6 +345,7 @@ def _run_live_loop(
                         graph_data=_cached_graph_data,
                         live_mode=True,
                         portfolio=_cached_portfolio,
+                        options_snapshot=_cached_options_snap,
                     )
                     desk2_path.write_text(_d2_html, encoding="utf-8")
                 except Exception:
@@ -527,8 +548,14 @@ def desk(
             """Apenas arquivos _summary.json ou ULID.json (bundle completo)."""
             stem = p.stem
             return stem.endswith("_summary") or (len(stem) == 26 and stem.isalnum())
+        def _bundle_sort_key(p):
+            # Prioriza ULID puro (tem market_prices) sobre _summary (sem preços)
+            stem = p.stem
+            is_full = len(stem) == 26 and stem.isalnum()
+            return (str(p.parent), is_full, stem)
         all_bundles = sorted(
             [p for p in bundle_store.list_bundles() if _valid_bundle(p)],
+            key=_bundle_sort_key,
             reverse=True,
         )
         bundles = [p for p in all_bundles if str(target) in str(p)]
@@ -556,31 +583,130 @@ def desk(
             except Exception:
                 pass
 
-        # Gera brief ANTES do MacroDesk para incluir na aba editorial
+        # ── Auto-import greeks ZIP de ~/Downloads se mais recente que último snapshot ──
         try:
-            from app.views.week_ahead_brief import save_writer_brief
-            with console.status("[cyan]Writer Brief...[/cyan]"):
-                save_writer_brief(bundle, curation_path)
-        except Exception:
-            pass
+            import glob as _glob
+            from pathlib import Path as _P2
+            from app.providers.options_store import options_store as _opts_auto
+            _downloads = _P2.home() / "Downloads"
+            _zips = sorted(_glob.glob(str(_downloads / "greeks_*.zip")),
+                           key=lambda p: _P2(p).stat().st_mtime, reverse=True)
+            if _zips:
+                _latest_zip = _P2(_zips[0])
+                _latest_snap = _opts_auto.load_latest()
+                _snap_ts = _latest_snap.imported_at if _latest_snap else None
+                _zip_mtime = _latest_zip.stat().st_mtime
+                import datetime as _dt
+                _snap_epoch = _dt.datetime.fromisoformat(_snap_ts).timestamp() if _snap_ts else 0
+                if _zip_mtime > _snap_epoch:
+                    with console.status(f"[cyan]Auto-import {_latest_zip.name}...[/cyan]"):
+                        _opts_auto.import_from_zip(_latest_zip)
+                    console.print(f"[green]Options auto-imported:[/green] {_latest_zip.name}")
+        except Exception as _exc_ai:
+            _log.debug("options_auto_import_skipped", error=str(_exc_ai))
 
-        # Roda portfolio pipeline para a aba Alocação
+        # ── Auto-extract bql_data ZIP de ~/Downloads se mais recente que CSVs locais ──
+        _bql_extracted = False
+        try:
+            import glob as _glob2, zipfile as _zf, datetime as _dt2
+            from pathlib import Path as _P3
+            _bql_dir  = _P3(r"C:\Users\rafael bentes\bbg\agente\bql_data")
+            _bql_dir.mkdir(parents=True, exist_ok=True)
+            _dl2      = _P3.home() / "Downloads"
+            _bql_zips = sorted(_glob2.glob(str(_dl2 / "bql_data_*.zip")),
+                                key=lambda p: _P3(p).stat().st_mtime, reverse=True)
+            if _bql_zips:
+                _bql_zip = _P3(_bql_zips[0])
+                _zip_mt  = _bql_zip.stat().st_mtime
+                # Compara com o CSV mais recente na pasta bql_data
+                _existing = list(_bql_dir.glob("*.csv"))
+                _csv_mt   = max((f.stat().st_mtime for f in _existing), default=0)
+                if _zip_mt > _csv_mt:
+                    with console.status(f"[cyan]BQL data: extraindo {_bql_zip.name}...[/cyan]"):
+                        with _zf.ZipFile(_bql_zip, "r") as _z:
+                            _z.extractall(_bql_dir)
+                    console.print(f"[green]BQL data extraído:[/green] {_bql_zip.name} → bql_data/")
+                    _bql_extracted = True
+        except Exception as _exc_bql:
+            _log.debug("bql_data_auto_extract_skipped", error=str(_exc_bql))
+
+        # ── Auto-ingest: roda bloomberg_main_agent se CSV foi extraído ou banco desatualizado ──
+        try:
+            import sys as _sys
+            from pathlib import Path as _P4
+            _bbg_root = _P4(r"C:\Users\rafael bentes\bbg\agente")
+            if str(_bbg_root) not in _sys.path:
+                _sys.path.insert(0, str(_bbg_root))
+            from app.query_layer import BloombergQueryLayer as _BQL
+            _ql = _BQL()
+            _status = _ql.get_last_ingestion_status()
+            _age = _status.get("age_minutes") if _status else None
+            _needs_ingest = _bql_extracted or _age is None or _age > 60
+            if _needs_ingest:
+                with console.status("[cyan]Bloomberg DB: ingerindo dados...[/cyan]"):
+                    from core.bloomberg_main_agent import BloombergMainAgent
+                    _agent = BloombergMainAgent()
+                    _result = _agent.run()
+                console.print(
+                    f"[green]Bloomberg DB:[/green] {_result.rows_ingested} linhas "
+                    f"({'OK' if _result.status == 'ok' else _result.status})"
+                )
+        except Exception as _exc_ing:
+            _log.debug("bql_auto_ingest_skipped", error=str(_exc_ing))
+
+        # Roda portfolio pipeline para a aba Alocação (antes do brief — passa swaggy + zones)
         portfolio = None
         rrg_result = None
+        _pipeline_signals = {}
+        _swaggy_result = None
         try:
             from app.pipeline.portfolio_pipeline import run_portfolio_pipeline
             with console.status("[cyan]Portfolio pipeline...[/cyan]"):
-                portfolio, _, _ = run_portfolio_pipeline(bundle)
+                portfolio, _pipeline_signals, _ = run_portfolio_pipeline(bundle)
             rrg_result = getattr(portfolio, "_rrg_result", None)
+            _swaggy_result = getattr(portfolio, "_swaggy_result", None)
         except Exception as exc:
             console.print(f"[yellow]Portfolio pipeline falhou: {exc}[/yellow]")
+
+        # Gera brief DEPOIS do pipeline para incluir swaggy + TradingView zones
+        try:
+            from app.views.week_ahead_brief import save_writer_brief
+            with console.status("[cyan]Writer Brief...[/cyan]"):
+                save_writer_brief(bundle, curation_path,
+                                  swaggy_result=_swaggy_result,
+                                  signals=_pipeline_signals or {})
+        except Exception:
+            pass
 
         # Gera MacroDesk HTML completo
         with console.status("[cyan]Gerando MacroDesk HTML...[/cyan]"):
             from app.views.macro_desk_v2 import save_macro_desk_v2
-            desk_path = save_macro_desk_v2(bundle, curation_obj, portfolio=portfolio, rrg_result=rrg_result)
+            from app.providers.options_store import options_store as _opts_s
+            _opts_snap = _opts_s.load_latest()
+            desk_path = save_macro_desk_v2(bundle, curation_obj, portfolio=portfolio, rrg_result=rrg_result, options_snapshot=_opts_snap)
 
         console.print(f"[green]MacroDesk HTML:[/green] {desk_path.name}")
+
+        # ── Netlify deploy automático ──────────────────────────────────────────
+        try:
+            import shutil as _shutil
+            import subprocess as _subp
+            _deploy_dir = Path.home() / "netlify_deploy"
+            _deploy_dir.mkdir(exist_ok=True)
+            _shutil.copy(desk_path, _deploy_dir / "index.html")
+            with console.status("[cyan]Netlify deploy...[/cyan]"):
+                _nl = _subp.run(
+                    f'netlify deploy --dir "{_deploy_dir}" --prod',
+                    capture_output=True, timeout=90, shell=True,
+                )
+            _out = (_nl.stdout or b"").decode("utf-8", errors="replace")
+            _url = next(
+                (l.split("Production URL:")[-1].strip().strip("<>") for l in _out.splitlines() if "Production URL:" in l),
+                "https://papaya-kringle-4a3378.netlify.app",
+            )
+            console.print(f"[cyan]Netlify:[/cyan] {_url}")
+        except Exception as _ne:
+            console.print(f"[dim]Netlify deploy skipped: {_ne}[/dim]")
 
         if not no_open:
             import webbrowser
@@ -588,6 +714,39 @@ def desk(
 
     except Exception as exc:
         console.print(f"[yellow]HTML geração falhou: {exc}[/yellow]")
+
+    # ── Bloomberg ZIP Watcher — roda enquanto a janela estiver aberta ─────────
+    # Detecta novos bql_data_*.zip em ~/Downloads e ingere automaticamente.
+    # O terminal fica ativo como daemon de dados Bloomberg.
+    _watch_dl   = Path.home() / "Downloads"
+    _watch_seen = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
+    console.print()
+    console.print("[bold cyan]Bloomberg Watcher ativo[/bold cyan] — aguardando ZIPs em Downloads...")
+    console.print("[dim]Feche esta janela para parar.[/dim]")
+    import time as _time
+    while True:
+        _time.sleep(20)
+        try:
+            _current = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
+            _novos   = _current - _watch_seen
+            if _novos:
+                for _zp in sorted(_novos):
+                    console.print(f"[green]Novo ZIP:[/green] {Path(_zp).name} — ingerindo...")
+                    try:
+                        from core.bloomberg_main_agent import BloombergMainAgent as _BBA
+                        _r = _BBA().run()
+                        console.print(
+                            f"[green]Bloomberg DB:[/green] {_r.rows_ingested} linhas "
+                            f"({'OK' if _r.status == 'ok' else _r.status})"
+                        )
+                    except Exception as _e:
+                        console.print(f"[yellow]Bloomberg ingest erro: {_e}[/yellow]")
+                _watch_seen = _current
+        except KeyboardInterrupt:
+            console.print("[dim]Watcher encerrado.[/dim]")
+            break
+        except Exception:
+            pass
 
 
 @app.command()
@@ -612,11 +771,15 @@ def writer(
 
     # ── Carrega bundle mais recente do dia ─────────────────────────────────────
     from app.storage.bundle_store import bundle_store
-    # Bundles reais: ULID.json sem underscore no stem (ex: 01KMZ5D....json)
-    bundles = [
-        p for p in bundle_store.list_bundles()
-        if str(target_date) in str(p) and "_" not in p.stem
-    ]
+
+    def _valid_bundle_stem(stem: str) -> bool:
+        return stem.endswith("_summary") or (len(stem) == 26 and stem.replace("_", "").isalnum())
+
+    bundles = sorted(
+        [p for p in bundle_store.list_bundles()
+         if str(target_date) in str(p) and _valid_bundle_stem(p.stem)],
+        reverse=True,
+    )
     if not bundles:
         console.print(f"[red]Nenhum bundle encontrado para {target_date}. Rode 'agente run ingest' primeiro.[/red]")
         raise typer.Exit(1)
@@ -834,10 +997,26 @@ def options_import(
     target = _date.fromisoformat(date) if date else _date.today()
     try:
         from app.storage.bundle_store import bundle_store
-        bundles = [p for p in bundle_store.list_bundles()
-                   if str(target) in str(p) and "_" not in p.stem]
+
+        def _valid_bundle(p):
+            stem = p.stem
+            return stem.endswith("_summary") or (len(stem) == 26 and stem.isalnum())
+
+        def _bundle_sort_key_oi(p):
+            stem = p.stem
+            is_full = len(stem) == 26 and stem.isalnum()
+            return (str(p.parent), is_full, stem)
+
+        all_bundles = sorted(
+            [p for p in bundle_store.list_bundles() if _valid_bundle(p)],
+            key=_bundle_sort_key_oi,
+            reverse=True,
+        )
+        bundles = [p for p in all_bundles if str(target) in str(p)]
         if not bundles:
-            console.print("[yellow]Sem bundle para a data — MacroDesk não regenerado.[/yellow]")
+            bundles = all_bundles  # fallback ao mais recente disponível
+        if not bundles:
+            console.print("[yellow]Sem bundle disponivel — MacroDesk não regenerado.[/yellow]")
             return
 
         from app.models.daily_ingestion_bundle import DailyIngestionBundle
@@ -856,9 +1035,26 @@ def options_import(
             except Exception:
                 pass
 
+        # Roda portfolio pipeline para incluir abas Alocação + Desk Radar
+        portfolio = None
+        rrg_result = None
+        try:
+            from app.pipeline.portfolio_pipeline import run_portfolio_pipeline
+            with console.status("[cyan]Portfolio pipeline...[/cyan]"):
+                portfolio, _, _ = run_portfolio_pipeline(bundle)
+            rrg_result = getattr(portfolio, "_rrg_result", None)
+        except Exception as exc2:
+            console.print(f"[yellow]Portfolio pipeline pulado: {exc2}[/yellow]")
+
         with console.status("[cyan]Regenerando MacroDesk...[/cyan]"):
             from app.views.macro_desk_v2 import save_macro_desk_v2
-            desk_path = save_macro_desk_v2(bundle, curation_obj)
+            from app.providers.options_store import options_store as _opts_s
+            _opts_snap = _opts_s.load_latest()
+            desk_path = save_macro_desk_v2(
+                bundle, curation_obj,
+                portfolio=portfolio, rrg_result=rrg_result,
+                options_snapshot=_opts_snap,
+            )
 
         console.print(f"[green]MacroDesk atualizado:[/green] {desk_path.name}")
         import webbrowser as _wb
