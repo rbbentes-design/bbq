@@ -123,7 +123,19 @@ def _parse_themes(page: Page) -> dict[str, str]:
 def _format_summary(period_data: dict[str, dict[str, str]]) -> str:
     """
     Formata resumo multi-período ordenado do maior para o menor retorno.
+
+    IMPORTANTE: "Today" na DeepVue é ambíguo — se a coleta rodar pre-market,
+    os dados de "Today" são na verdade da última sessão fechada (ontem).
+    Relabelamos para "Última sessão" para evitar que o LLM confunda timing.
     """
+    # Map labels para clareza temporal
+    _LABEL_MAP = {
+        "Today": "Última sessão",
+        "1W":    "1W",
+        "1M":    "1M",
+        "3M":    "3M",
+        "YTD":   "YTD",
+    }
     sections: list[str] = []
 
     for period in _PERIODS:
@@ -139,6 +151,7 @@ def _format_summary(period_data: dict[str, dict[str, str]]) -> str:
 
         sorted_themes = sorted(themes.items(), key=_sort_key, reverse=True)
         lines = [f"  {name}: {pct}" for name, pct in sorted_themes]
-        sections.append(f"[{period}]\n" + "\n".join(lines))
+        label = _LABEL_MAP.get(period, period)
+        sections.append(f"[{label}]\n" + "\n".join(lines))
 
     return "\n\n".join(sections)
