@@ -27,7 +27,6 @@ from app.models.daily_ingestion_bundle import AuditSummary, DailyIngestionBundle
 from app.models.market_ear_block import MarketEarBlock
 from app.models.x_timeline_item import XTimelineItem
 from app.providers import deepvue as deepvue_prov
-from app.providers import spectra as spectra_prov
 from app.providers import spotgamma as sg_prov
 from app.providers import x_timeline as x_prov
 from app.providers import zerohedge as zh_prov
@@ -172,19 +171,6 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                 audit.write(rec.error(run_id, "collect", "spotgamma_flowpatrol_failed",
                                       msg=msg, source=sg_prov.SOURCE_NAME))
 
-            # ── Spectra Markets am/FX ──────────────────────────────────────────
-            try:
-                spectra_page = ctx.new_page()
-                spectra_items = spectra_prov.collect(spectra_page, max_articles=3)
-                spectra_page.close()
-                rss_items.extend(spectra_items)
-                audit.write(rec.ok(run_id, "collect", "spectra_done",
-                                   source=spectra_prov.SOURCE_NAME,
-                                   items=len(spectra_items)))
-            except Exception as exc:
-                msg = f"Spectra collect failed: {exc}"
-                errors.append(msg)
-                _log.warning("spectra_collect_error", error=str(exc))
 
             # ── DeepVue ───────────────────────────────────────────────────────────
             try:
