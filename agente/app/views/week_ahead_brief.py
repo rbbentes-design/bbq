@@ -789,7 +789,7 @@ def _img_src(img_path: str, out_dir: Path) -> str:
             return f"data:{mime};base64,{b64}"
         except Exception:
             pass
-    return img_path  # fallback: URL direta
+    return ""  # arquivo não encontrado — retorna vazio para não gerar buraco no HTML
 
 
 def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
@@ -850,7 +850,8 @@ def _build_media_gallery(bundle: DailyIngestionBundle, out_dir: Path) -> str:
                 continue
             _gallery_seen.add(key)
             src = _img_src(img_path, out_dir)
-            imgs_html += f'<img src="{src}" class="mg-img" loading="lazy" alt="">'
+            if src:
+                imgs_html += f'<img src="{src}" class="mg-img" loading="lazy" alt="">'
 
         if not imgs_html:
             continue
@@ -1079,14 +1080,17 @@ def _rich_to_html(items: list[dict], inline_images: list[str] | None = None) -> 
             parts.append(f'<p>{text}</p>')
             body_count += 1
             # Insere imagem após 1º, 3º, 5º... parágrafo de corpo
+            while img_idx < len(imgs) and not imgs[img_idx]:
+                img_idx += 1  # pula imagens com src vazio
             if body_count % 2 == 1 and img_idx < len(imgs):
                 img_src = imgs[img_idx]
                 img_idx += 1
-                parts.append(
-                    f'<div class="inline-img-wrap">'
-                    f'<img src="{img_src}" class="inline-img" loading="lazy">'
-                    f'</div>'
-                )
+                if img_src:
+                    parts.append(
+                        f'<div class="inline-img-wrap">'
+                        f'<img src="{img_src}" class="inline-img" loading="lazy">'
+                        f'</div>'
+                    )
     return "\n".join(parts)
 
 
@@ -1799,7 +1803,9 @@ def save_week_ahead_brief(
             if key in _seen_imgs:
                 continue
             _seen_imgs.add(key)
-            _zh_inline_imgs.append(_img_src(ref, out_dir))
+            src = _img_src(ref, out_dir)
+            if src:
+                _zh_inline_imgs.append(src)
 
     editorial_main_html = ""
     if rich_sections.get("TEXTO PRINCIPAL"):
@@ -2435,7 +2441,9 @@ def save_writer_brief(
             if key in _seen_imgs:
                 continue
             _seen_imgs.add(key)
-            _zh_inline_imgs.append(_img_src(ref, out_dir))
+            src = _img_src(ref, out_dir)
+            if src:
+                _zh_inline_imgs.append(src)
 
     editorial_html = _build_editorial_sections_html(rich_sections, mode, _zh_inline_imgs)
 

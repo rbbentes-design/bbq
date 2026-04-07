@@ -119,6 +119,21 @@ Não use expressões como: "vale ressaltar", "em suma", "diante desse cenário",
 "investidores monitoram". Não use negrito em textos corridos, salvo se solicitado. \
 Evite excesso de dois pontos em português.
 
+FRASES BANIDAS — NUNCA USE (nem variações próximas): \
+"Isso não é ruído. É um diagnóstico.", \
+"Isso não é ruído, é um diagnóstico", \
+"não é ruído", \
+"é um diagnóstico", \
+"o mercado está falando", \
+"o mercado está gritando", \
+"isso não é acidente", \
+"isso não é coincidência", \
+"leia as entrelinhas", \
+"quem tem olhos para ver", \
+"o sinal está claro". \
+Essas construções viram cacoetes. Cada texto deve ter abertura e fechamento ÚNICOS. \
+NUNCA repita uma frase de impacto usada em textos anteriores.
+
 NUNCA use travessão (—) em substituição à vírgula ou para separar ideias. Use sempre \
 vírgula. O travessão é sinal de mau hábito neste estilo. Prefira: "X, que implica Y" \
 em vez de "X — que implica Y".
