@@ -2212,7 +2212,7 @@ def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
         # Prefere _brief.html mais recente, depois qualquer _week_ahead_brief.html
         candidates = sorted(
             list(bundle_dir.glob("*_brief.html")) + list(bundle_dir.glob("*_week_ahead_brief.html")),
-            key=lambda p: p.stat().st_mtime, reverse=True,
+            key=lambda p: p.stat().st_size, reverse=True,  # maior brief = mais conteúdo
         )
         if not candidates:
             return ""

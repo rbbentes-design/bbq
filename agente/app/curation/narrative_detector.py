@@ -10,7 +10,7 @@ from app.utils.timestamps import new_ulid
 
 _log = get_logger("curation.narrative_detector")
 
-_MODEL = "claude-sonnet-4-6"
+_MODEL = "claude-haiku-4-5-20251001"  # corpus grande (195k tokens) → Haiku evita rate limit
 
 _SYSTEM = """\
 You are a financial narrative analyst. Read the full day's market content \

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from app.audit.logger import get_logger
 from app.curation.corpus import build_item_index, item_to_snippet
@@ -10,7 +11,8 @@ from app.curation.models import Narrative, ScoredItem
 from app.models.daily_ingestion_bundle import DailyIngestionBundle
 
 _log = get_logger("curation.scorer")
-_MODEL = "claude-sonnet-4-6"
+_MODEL = "claude-haiku-4-5-20251001"   # Haiku: menor custo de tokens, menos pressão no rate limit
+_BATCH_SIZE = 40                        # máx itens por chamada (~12k tokens por batch)
 
 _SYSTEM = """\
 You are a financial relevance scorer. Given a detected narrative and a list of corpus items, \
@@ -49,28 +51,33 @@ def score_items(
         if s is not None
     )
 
-    items_block = "\n\n".join(
-        f"{sid}:\n{item_to_snippet(item_index[sid])}"
-        for sid in short_ids
-    )
-
-    user_prompt = (
-        f"DETECTED NARRATIVE(S):\n{signal_block}\n\n"
-        f"ITEMS TO SCORE:\n{items_block}"
-    )
-
     _log.info("scoring_items", n_items=len(short_ids), narrative=signal.label[:40])
 
-    try:
-        raw = call_claude(_SYSTEM, user_prompt, model=_MODEL, max_tokens=8192)
-    except Exception as exc:
-        _log.warning("scorer_error", error=str(exc))
-        return []
+    # Processa em batches para evitar rate limit (30k tokens/min no Sonnet)
+    all_results: list[ScoredItem] = []
+    for i in range(0, len(short_ids), _BATCH_SIZE):
+        batch = short_ids[i:i + _BATCH_SIZE]
+        items_block = "\n\n".join(
+            f"{sid}:\n{item_to_snippet(item_index[sid])}"
+            for sid in batch
+        )
+        user_prompt = (
+            f"DETECTED NARRATIVE(S):\n{signal_block}\n\n"
+            f"ITEMS TO SCORE:\n{items_block}"
+        )
+        try:
+            raw = call_claude(_SYSTEM, user_prompt, model=_MODEL, max_tokens=4096)
+            parsed = _parse_scores(raw, all_signals)
+            all_results.extend(parsed)
+            _log.info("scoring_batch_done", batch=i // _BATCH_SIZE + 1, scored=len(parsed))
+        except Exception as exc:
+            _log.warning("scorer_batch_error", batch=i // _BATCH_SIZE + 1, error=str(exc))
+        if i + _BATCH_SIZE < len(short_ids):
+            time.sleep(3)  # pequeno delay entre batches
 
-    parsed = _parse_scores(raw, all_signals)
-    if not parsed:
-        _log.warning("scorer_parse_zero", raw_sample=repr(raw[:300]))
-    return parsed
+    if not all_results:
+        _log.warning("scorer_parse_zero")
+    return all_results
 
 
 def _parse_scores(raw: str, signals: list) -> list[ScoredItem]:

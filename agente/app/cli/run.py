@@ -778,13 +778,14 @@ def writer(
     bundles = sorted(
         [p for p in bundle_store.list_bundles()
          if str(target_date) in str(p) and _valid_bundle_stem(p.stem)],
+        key=lambda p: p.stat().st_size,  # maior bundle = mais conteúdo (X items, ZeroHedge, etc.)
         reverse=True,
     )
     if not bundles:
         console.print(f"[red]Nenhum bundle encontrado para {target_date}. Rode 'agente run ingest' primeiro.[/red]")
         raise typer.Exit(1)
 
-    bundle_path = bundles[0]  # mais recente
+    bundle_path = bundles[0]  # maior = mais conteúdo
     console.print(f"[dim]Bundle: {bundle_path.name}[/dim]")
 
     from app.models.daily_ingestion_bundle import DailyIngestionBundle
