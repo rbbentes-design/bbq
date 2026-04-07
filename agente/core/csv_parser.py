@@ -50,24 +50,27 @@ except ImportError:
 # ── Mapeamento de prefixo → tipo de dataset ───────────────────────────────────
 # Ordem importa: prefixos mais específicos primeiro (price_history antes de prices)
 _PREFIX_TO_TYPE: list[tuple[str, str]] = [
-    ("price_history_",  "price_history"),
-    ("prices_",         "prices"),
-    ("fundamentals_",   "fundamentals"),
-    ("options_iv_",     "options_iv"),
-    ("gex_summary_",    "gex_summary"),
-    ("gex_spx_",        "gex_spx"),
-    ("letf_flows_",     "letf_flows"),
-    ("macro_history_",  "macro_history"),
-    ("macro_series_",   "macro_series"),
-    ("meta_",           "meta"),
+    ("price_history_bulk_", "price_history"),  # bulk export (252d) — mesmo formato que daily
+    ("price_history_",      "price_history"),
+    ("prices_",             "prices"),
+    ("fundamentals_",       "fundamentals"),
+    ("options_iv_",         "options_iv"),
+    ("iv_history_",         "iv_history"),     # histórico de IV para calcular iv_percentile
+    ("gex_summary_",        "gex_summary"),
+    ("gex_spx_",            "gex_spx"),
+    ("letf_flows_",         "letf_flows"),
+    ("macro_history_",      "macro_history"),
+    ("macro_series_",       "macro_series"),
+    ("meta_",               "meta"),
 ]
 
 # Colunas obrigatórias por tipo de dataset — usadas para validação
 _REQUIRED_COLS: dict[str, list[str]] = {
-    "prices":        ["bbg_ticker", "price"],
-    "price_history": ["date", "yf_ticker", "price"],
+    "prices":        ["price"],
+    "price_history": ["date", "price"],
     "fundamentals":  ["ticker", "pe"],
     "options_iv":    ["ticker", "atm_iv"],
+    "iv_history":    ["date", "yf_ticker", "iv"],
     "gex_summary":   ["gex_total_bn"],
     "gex_spx":       ["strike", "gex_bn"],
     "letf_flows":    ["ticker", "nav"],

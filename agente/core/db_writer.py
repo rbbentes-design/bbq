@@ -77,21 +77,47 @@ class DbWriter:
         stats = WriteStats()
 
         with sqlite3.connect(self._db_path) as conn:
-            # Grava timeseries
-            _log.info("writing_timeseries", source_file=source_file, records=len(ts_records))
-            for rec in ts_records:
+            # Separa registros iv_history (tabela dedicada) dos demais (bql_timeseries)
+            iv_records = [r for r in ts_records if r.get("field") == "iv_history"]
+            std_records = [r for r in ts_records if r.get("field") != "iv_history"]
+
+            # Grava timeseries padrão
+            _log.info("writing_timeseries", source_file=source_file, records=len(std_records))
+            for rec in std_records:
                 try:
                     self._write_timeseries_record(conn, rec, stats)
                 except Exception as exc:
                     stats.errors += 1
                     _log.error("timeseries_write_error", rec=rec, error=str(exc))
 
+            # Grava iv_history na tabela dedicada
+            if iv_records:
+                for rec in iv_records:
+                    try:
+                        cur = conn.execute(
+                            """
+                            INSERT OR IGNORE INTO iv_history
+                                (ticker, date, iv, source_file, ingestion_timestamp)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (rec["ticker"], rec["date"], rec.get("value"),
+                             rec["source_file"], rec["ingestion_timestamp"]),
+                        )
+                        if cur.rowcount == 1:
+                            stats.rows_inserted += 1
+                        else:
+                            stats.rows_skipped += 1
+                    except Exception as exc:
+                        stats.errors += 1
+                        _log.error("iv_history_write_error", rec=rec, error=str(exc))
+
             # Atualiza bql_latest para cada registro inserido com sucesso
-            try:
-                self._refresh_latest_from_timeseries(conn, source_file, stats)
-            except Exception as exc:
-                stats.errors += 1
-                _log.error("latest_refresh_error", error=str(exc))
+            if std_records:
+                try:
+                    self._refresh_latest_from_timeseries(conn, source_file, stats)
+                except Exception as exc:
+                    stats.errors += 1
+                    _log.error("latest_refresh_error", error=str(exc))
 
             # Grava missing_data_log
             if missing_records:

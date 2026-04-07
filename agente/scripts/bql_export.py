@@ -178,8 +178,12 @@ LETFS = ['UPRO US Equity','SPXU US Equity','TQQQ US Equity',
          'SQQQ US Equity','TNA US Equity','TZA US Equity']
 
 def export_letf():
-    items = {'nav': bq.data.px_last(), 'aum_b': bq.data.fund_total_assets()}
-    df = _bql(bq.univ.list(LETFS), items)
+    items = {
+        'nav':      bq.data.px_last(),
+        'nav_prev': bq.data.px_last(dates=bq.func.range('-5D','-1D'), fill='PREV'),  # fechamento anterior real
+        'aum_b':    bq.data.fund_total_assets(),
+    }
+    df: pd.DataFrame = _bql(bq.univ.list(LETFS), items)
     df['aum_b'] = pd.to_numeric(df['aum_b'], errors='coerce') / 1e9
     df.index.name = 'ticker'
     df.index = df.index.str.replace(' US Equity','', regex=False)
@@ -190,29 +194,63 @@ def export_letf():
 
 # ── prices (snapshot atual de todos os tickers) ───────────
 def export_prices():
-    rows = []
-    for yf_tk, bbg_tk in _YF_TO_BBG.items():
-        try:
-            r    = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {'p': bq.data.px_last()}))[0].df()
-            prev = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'p0': bq.data.px_last(dates=bq.func.range('-2D','-1D'), fill='PREV')
-            }))[0].df()
-            ytd  = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'y0': bq.data.px_last(dates=bq.func.range(f'{date.today().year}-01-01','0D'), fill='PREV')
-            }))[0].df()
-            p   = float(r.select_dtypes('number').iloc[-1, 0])
-            p0  = float(prev.select_dtypes('number').iloc[-1, 0]) if not prev.empty else None
-            y0  = float(ytd.select_dtypes('number').iloc[0, 0])  if not ytd.empty  else None
+    """
+    Exporta preços + retornos para todos os tickers.
+    Usa CHG_PCT_1D (Bloomberg nativo) para daily_return — evita problema de 0%
+    quando o export roda em fim de semana ou fora do horário de mercado.
+    Faz uma única chamada BQL batched para todos os tickers (mais rápido e confiável).
+    """
+    bbg_tickers = list(_YF_TO_BBG.values())
+    yf_by_bbg   = {v: k for k, v in _YF_TO_BBG.items()}
+    try:
+        univ  = bq.univ.list(bbg_tickers)
+        items = {
+            'price':        bq.data.px_last(),
+            'chg_1d':       bq.data.chg_pct_1d(),       # retorno vs fechamento anterior
+            'chg_ytd':      bq.data.chg_pct_ytd(),      # retorno YTD
+            'chg_5d':       bq.data.chg_pct_5d(),       # retorno semanal
+        }
+        df: pd.DataFrame = _bql(univ, items)
+        df['chg_1d']  = pd.to_numeric(df['chg_1d'],  errors='coerce') / 100
+        df['chg_ytd'] = pd.to_numeric(df['chg_ytd'], errors='coerce') / 100
+        df['chg_5d']  = pd.to_numeric(df['chg_5d'],  errors='coerce') / 100
+        rows = []
+        for bbg_tk, row in df.iterrows():
+            yf_tk = yf_by_bbg.get(bbg_tk, bbg_tk.split()[0])
+            p = pd.to_numeric(row.get('price'), errors='coerce')
+            if pd.isna(p):
+                continue
+            dr  = row.get('chg_1d')
+            ydr = row.get('chg_ytd')
+            wr  = row.get('chg_5d')
             rows.append({
-                'yf_ticker':    yf_tk,
-                'bbg_ticker':   bbg_tk,
-                'name':         bbg_tk.split()[0],
-                'price':        round(p, 4),
-                'daily_return': round((p-p0)/p0, 6) if p0 else '',
-                'ytd_return':   round((p-y0)/y0, 6) if y0  else '',
+                'yf_ticker':     yf_tk,
+                'bbg_ticker':    bbg_tk,
+                'name':          bbg_tk.split()[0],
+                'price':         round(float(p), 4),
+                'daily_return':  round(float(dr),  6) if not pd.isna(dr)  else '',
+                'ytd_return':    round(float(ydr), 6) if not pd.isna(ydr) else '',
+                'weekly_return': round(float(wr),  6) if not pd.isna(wr)  else '',
             })
-        except Exception as e:
-            _log(f'prices warn {yf_tk}: {e}')
+    except Exception as e:
+        _log(f'prices batch warn: {e}')
+        # Fallback: coleta individual (compatibilidade)
+        rows = []
+        for yf_tk, bbg_tk in _YF_TO_BBG.items():
+            try:
+                r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
+                    'p':   bq.data.px_last(),
+                    'dr':  bq.data.chg_pct_1d(),
+                    'ydr': bq.data.chg_pct_ytd(),
+                }))[0].df()
+                p   = float(r.select_dtypes('number')['p'].iloc[-1])
+                dr  = float(r.select_dtypes('number')['dr'].iloc[-1])  / 100
+                ydr = float(r.select_dtypes('number')['ydr'].iloc[-1]) / 100
+                rows.append({'yf_ticker': yf_tk, 'bbg_ticker': bbg_tk,
+                             'name': bbg_tk.split()[0], 'price': round(p, 4),
+                             'daily_return': round(dr, 6), 'ytd_return': round(ydr, 6)})
+            except Exception as e2:
+                _log(f'prices warn {yf_tk}: {e2}')
     pd.DataFrame(rows).to_csv(OUT / f'prices_{hoje}.csv', index=False)
     _log(f'prices — {len(rows)} tickers')
 
@@ -228,6 +266,62 @@ def export_price_history():
             _log(f'hist warn {yf_tk}: {e}')
     pd.DataFrame(rows).to_csv(OUT / f'price_history_{hoje}.csv', index=False)
     _log(f'price_history — {len(rows)} tickers')
+
+# ── price history bulk — 252 dias de uma vez (para rede/correlações) ────────
+def export_price_history_bulk():
+    """Exporta 252 dias de histórico de preços para todos os tickers de uma vez.
+    Deve ser rodado periodicamente (semanal) para popular o banco.
+    """
+    rows = []
+    for yf_tk, bbg_tk in _YF_TO_BBG.items():
+        try:
+            resp = bq.execute(
+                f'get(PX_LAST(dates=range(-252D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
+            )
+            df2 = resp[0].df()
+            df2.columns = ['price']
+            df2 = df2.dropna()
+            df2.index = pd.to_datetime(df2.index)
+            for dt, row in df2.iterrows():
+                px = float(row['price'])
+                if px > 0:
+                    rows.append({'date': dt.date().isoformat(), 'yf_ticker': yf_tk, 'price': round(px, 4)})
+        except Exception as e:
+            _log(f'hist_bulk warn {yf_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'price_history_bulk_{hoje}.csv', index=False)
+        _log(f'price_history_bulk — {len(rows)} linhas ({len(_YF_TO_BBG)} tickers x ~252d)')
+
+# ── iv history — histórico de IV implícita para percentile ranking ──────────
+def export_iv_history():
+    """Exporta 252 dias de IV implícita ATM para calcular iv_percentile.
+    Bloomberg: IVOL_MID_ATM (IV ATM delta-neutral 30d).
+    """
+    rows = []
+    for yf_tk in ['AAPL','MSFT','NVDA','TSLA','META','GOOGL','AMZN','AVGO',
+                  'JPM','GS','BAC','XLF','XLE','XOM','CVX','GLD','TLT','IEF',
+                  'HYG','EEM','VIXY','SPY','QQQ','IWM']:
+        bbg_tk = _YF_TO_BBG.get(yf_tk)
+        if not bbg_tk:
+            continue
+        try:
+            resp = bq.execute(
+                f'get(IVOL_MID_ATM(expiry="30D", dates=range(-252D,0D), frq=D)) for(["{bbg_tk}"])'
+            )
+            df2 = resp[0].df()
+            df2.columns = ['iv']
+            df2 = df2.dropna()
+            df2['iv'] = pd.to_numeric(df2['iv'], errors='coerce') / 100  # % → decimal
+            df2.index = pd.to_datetime(df2.index)
+            for dt, row in df2.iterrows():
+                iv = float(row['iv'])
+                if iv > 0:
+                    rows.append({'date': dt.date().isoformat(), 'yf_ticker': yf_tk, 'iv': round(iv, 4)})
+        except Exception as e:
+            _log(f'iv_hist warn {yf_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'iv_history_{hoje}.csv', index=False)
+        _log(f'iv_history — {len(rows)} linhas')
 
 # ── macro series (curva de juros, VIX, spreads, FX) ──────
 # Mesmo padrão de export_prices: uma chamada BQL por ticker, try/except por ticker
@@ -331,6 +425,15 @@ def export_all():
     auto_download()
     print('Pronto.')
 
+def export_all_bulk():
+    """Exporta tudo + histórico completo (252d de preços e IV). Mais lento (~5 min)."""
+    print(f'\n=== BULK [{time.strftime("%H:%M:%S")}] ===')
+    export_all()
+    print('Price history bulk (252d)...');  export_price_history_bulk()
+    print('IV history (252d)...');          export_iv_history()
+    auto_download()
+    print('Bulk pronto.')
+
 # ── UI ───────────────────────────────────────────────────
 _running = False
 
@@ -341,12 +444,18 @@ def _loop():
 
 btn_run  = widgets.Button(description='⬇ Exportar agora', button_style='success',
                            layout=widgets.Layout(width='160px'))
+btn_bulk = widgets.Button(description='⬇ Bulk 252d', button_style='warning',
+                           layout=widgets.Layout(width='130px'),
+                           tooltip='Exporta histórico completo (preços 252d + IV history). ~5 min.')
 btn_loop = widgets.ToggleButton(description='▶ Loop 3min', button_style='info',
                                  layout=widgets.Layout(width='120px'))
 out_w    = widgets.Output()
 
 def on_run(_):
     with out_w: export_all()
+
+def on_bulk(_):
+    with out_w: export_all_bulk()
 
 def on_loop(change):
     global _running
@@ -356,5 +465,6 @@ def on_loop(change):
         threading.Thread(target=_loop, daemon=True).start()
 
 btn_run.on_click(on_run)
+btn_bulk.on_click(on_bulk)
 btn_loop.observe(on_loop, names='value')
-display(widgets.HBox([btn_run, btn_loop]), out_w)
+display(widgets.HBox([btn_run, btn_bulk, btn_loop]), out_w)

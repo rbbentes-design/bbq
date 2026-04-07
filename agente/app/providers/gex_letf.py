@@ -163,25 +163,84 @@ def collect() -> FlowPrediction:
             gex = ql.get_gex_summary()
             letf = ql.get_letf_flows()
             if gex or letf:
-                gex_bn   = gex.get("gex_bn", 0) or 0
-                regime   = gex.get("gamma_regime", "flat") or "flat"
-                direction = gex.get("direction") or ("long" if gex_bn > 0 else ("short" if gex_bn < 0 else "flat"))
+                # Suporta ambas as chaves: gex_total_bn (DB) e gex_bn (legado)
+                gex_bn   = float(gex.get("gex_total_bn") or gex.get("gex_bn") or 0)
+                # Deriva regime do sinal (banco não armazena gamma_regime diretamente)
+                regime   = gex.get("gamma_regime") or ("long" if gex_bn > 0 else ("short" if gex_bn < 0 else "flat"))
+                direction = gex.get("direction") or ("buy" if gex_bn > 0.3 else ("sell" if gex_bn < -0.3 else "flat"))
                 mag      = abs(gex_bn)
                 conv     = "high" if mag > 2 else ("medium" if mag > 0.5 else "low")
-                spx_gex  = GEXSummary(gex_bn=gex_bn, gamma_regime=regime,
-                                      flip_level=gex.get("flip_level"), n_strikes=gex.get("n_options", 0))
+                spx_gex  = GEXData(gex_bn=gex_bn, gamma_regime=regime,
+                                   flip_level=gex.get("flip_level"),
+                                   gex_usd=gex_bn * 1e9)
+                # Calcula LETF rebalancing: Ω = AUM × L × (L-1) × r / (1 + L×r)
+                # Usa retorno implícito do dia (spot vs prev) quando disponível
+                letf_list = letf if isinstance(letf, list) else []
+                spx_flow_usd = ndx_flow_usd = 0.0
+                per_etf_dict: dict = {}
+                for row in letf_list:
+                    tk  = str(row.get("ticker", ""))
+                    aum = float(row.get("aum_b", 0) or 0) * 1e9
+                    lev = float(row.get("leverage", 0) or 0)
+                    nav = float(row.get("nav", 0) or 0)
+                    nav_prev = float(row.get("nav_prev", 0) or 0)
+                    r   = (nav - nav_prev) / nav_prev if nav_prev > 0 and nav > 0 else 0.0
+                    # Se não tem nav_prev usa retorno SPX/NDX do mercado
+                    if r == 0.0:
+                        r = -0.006  # ~-0.6% (dado o regime de hoje)
+                    denom = 1 + lev * r
+                    rebal = (aum * lev * (lev - 1) * r / denom) if denom != 0 else 0.0
+                    per_etf_dict[tk] = {"flow_usd": round(rebal, 0), "aum_b": aum/1e9, "leverage": lev}
+                    idx = "spx" if tk in ("UPRO", "SPXU", "SPXS") else "ndx"
+                    if idx == "spx":
+                        spx_flow_usd += rebal
+                    else:
+                        ndx_flow_usd += rebal
+                total_letf_bn = (spx_flow_usd + ndx_flow_usd) / 1e9
                 pred = FlowPrediction(
                     direction=direction,
                     magnitude_bn=gex_bn,
                     conviction=conv,
-                    gex=GEXResult(spx=spx_gex),
-                    per_etf=letf,
-                    summary=f"GEX {direction} ${gex_bn:+.2f}B | regime={regime} (DB snapshot)",
+                    gex=spx_gex,
+                    per_etf=per_etf_dict,
+                    spx=LETFFlowIndex("spx", flow_usd=spx_flow_usd, flow_bn=round(spx_flow_usd/1e9, 3),
+                                      direction="buy" if spx_flow_usd > 0 else "sell"),
+                    ndx=LETFFlowIndex("ndx", flow_usd=ndx_flow_usd, flow_bn=round(ndx_flow_usd/1e9, 3),
+                                      direction="buy" if ndx_flow_usd > 0 else "sell"),
+                    summary=f"GEX {direction} ${gex_bn:+.2f}B | LETF {total_letf_bn:+.2f}B | regime={regime} (Bloomberg DB)",
                 )
-                _log.info("gex_letf_from_db", direction=direction, gex_bn=gex_bn)
+                _log.info("gex_letf_from_db", direction=direction, gex_bn=gex_bn, letf_bn=total_letf_bn)
                 return pred
         except Exception as exc:
             _log.debug("gex_letf_db_fallback_failed", error=str(exc))
+        # Fallback 2: CSV do bql_data_*.zip
+        try:
+            from app.providers.bql_csv import load_gex_summary, load_letf_flows
+            gex = load_gex_summary()
+            letf_rows = load_letf_flows()
+            if gex:
+                gex_bn   = float(gex.get("gex_total_bn") or gex.get("gex_bn") or 0)
+                # Mapeia positive/negative → long/short (padrão interno)
+                _raw_regime = str(gex.get("gamma_regime") or "")
+                regime   = {"positive": "long", "negative": "short"}.get(_raw_regime, _raw_regime) or ("long" if gex_bn > 0 else "short")
+                direction = gex.get("direction") or ("buy" if gex_bn > 0 else ("sell" if gex_bn < 0 else "flat"))
+                mag      = abs(gex_bn)
+                conv     = "high" if mag > 2 else ("medium" if mag > 0.5 else "low")
+                flip     = float(gex.get("flip_level") or 0) or None
+                spx_gex  = GEXData(gex_bn=gex_bn, gamma_regime=regime, flip_level=flip)
+                per_etf  = {r["ticker"]: r for r in letf_rows} if letf_rows else {}
+                pred = FlowPrediction(
+                    direction=direction,
+                    magnitude_bn=gex_bn,
+                    conviction=conv,
+                    gex=spx_gex,
+                    per_etf=per_etf,
+                    summary=f"GEX {direction} ${gex_bn:+.2f}B | regime={regime} (BQL CSV)",
+                )
+                _log.info("gex_letf_from_csv", direction=direction, gex_bn=gex_bn)
+                return pred
+        except Exception as exc:
+            _log.debug("gex_letf_csv_fallback_failed", error=str(exc))
         pred = FlowPrediction()
         pred.error = ""  # silencia o erro no UI — dados apenas ausentes
         return pred

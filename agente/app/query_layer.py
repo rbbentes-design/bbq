@@ -230,7 +230,48 @@ class BloombergQueryLayer:
             ticker, fld, val = row["ticker"], row["field"], row["latest_value"]
             raw.setdefault(ticker, {})[fld] = val
 
-        # Monta resultado final
+        # ── Normaliza ticker Bloomberg → yfinance ─────────────────────────────
+        _BBG_SUFFIXES = (
+            " US Equity", " US EQUITY", " Equity", " EQUITY",
+            " Index", " INDEX", " Comdty", " COMDTY", " Curncy", " CURNCY",
+        )
+        _BBG_YF_MAP = {
+            "SPX": "^GSPC", "VIX": "^VIX", "NDX": "^NDX", "RTY": "^RUT",
+            "DXY": "DX-Y.NYB", "XBT": "BTC-USD", "GC1": "GC=F", "CL1": "CL=F",
+        }
+
+        def _norm(t: str) -> str:
+            for sfx in _BBG_SUFFIXES:
+                if t.endswith(sfx):
+                    t = t[:-len(sfx)].strip()
+                    break
+            t = t.replace("/", "-")
+            return _BBG_YF_MAP.get(t, t)
+
+        # ── Carrega histórico para calcular daily_return quando BQL retorna 0 ──
+        # Pega as últimas 2 datas do histórico de preços para cada ticker
+        hist_prev: dict[str, float] = {}
+        try:
+            with self._connect() as conn:
+                hist_rows = conn.execute(
+                    """
+                    SELECT ticker, date, value FROM bql_timeseries
+                    WHERE field = 'price'
+                    ORDER BY ticker, date DESC
+                    """
+                ).fetchall()
+            # Para cada ticker, pega o penúltimo valor (yesterday's close)
+            seen: dict[str, int] = {}
+            for r in hist_rows:
+                t = r["ticker"]
+                seen[t] = seen.get(t, 0) + 1
+                if seen[t] == 2:  # segundo registro = dia anterior
+                    hist_prev[t] = float(r["value"])
+        except Exception:
+            pass
+
+        # Monta resultado final — deduplicando por ticker normalizado
+        # Quando BBG e YF format existem para o mesmo ativo, prioriza o que tem daily_return não-zero
         result: dict[str, dict[str, Any]] = {}
         for ticker, vals in raw.items():
             price = vals.get("price")
@@ -238,19 +279,26 @@ class BloombergQueryLayer:
                 continue
 
             price = float(price)
+            norm_ticker = _norm(ticker)
             entry: dict[str, Any] = {
-                "name":   ticker,
+                "name":   norm_ticker,
                 "price":  round(price, 4),
                 "source": "bloomberg",
             }
 
-            # Retorno diário: usa campo direto (bql_export.py) ou calcula de prev_price
+            # Retorno diário: usa campo direto ou calcula de prev_price ou histórico
+            # hist_prev pode ter tanto o ticker raw quanto o normalizado (yf format vs bbg format)
             dr = vals.get("daily_return")
             prev_price = vals.get("prev_price")
-            if dr is not None:
+            if dr is not None and float(dr) != 0.0:
                 entry["daily_return"] = round(float(dr), 6)
             elif prev_price and float(prev_price) != 0:
                 entry["daily_return"] = round((price - float(prev_price)) / float(prev_price), 6)
+            else:
+                # Tenta histórico: primeiro ticker raw, depois normalizado (resolve duplicação BBG/YF)
+                prev = hist_prev.get(ticker) or hist_prev.get(norm_ticker)
+                if prev and prev != 0:
+                    entry["daily_return"] = round((price - prev) / prev, 6)
 
             # Retorno YTD: usa campo direto (bql_export.py) ou calcula de price_ytd
             ytdr = vals.get("ytd_return")
@@ -260,12 +308,20 @@ class BloombergQueryLayer:
             elif price_ytd and float(price_ytd) != 0:
                 entry["ytd_return"] = round((price - float(price_ytd)) / float(price_ytd), 6)
 
-            # Retorno semanal: só no formato legado
+            # Retorno semanal
             price_w = vals.get("price_w")
-            if price_w and float(price_w) != 0:
+            weekly_r = vals.get("weekly_return")
+            if weekly_r is not None and float(weekly_r) != 0.0:
+                entry["weekly_return"] = round(float(weekly_r), 6)
+            elif price_w and float(price_w) != 0:
                 entry["weekly_return"] = round((price - float(price_w)) / float(price_w), 6)
 
-            result[ticker] = entry
+            # Deduplicação: se já existe entrada para este ticker normalizado,
+            # mantém a com mais campos preenchidos (prioriza a que tem daily_return)
+            existing = result.get(norm_ticker)
+            if existing and existing.get("daily_return") and not entry.get("daily_return"):
+                continue  # mantém a existente que tem retorno
+            result[norm_ticker] = entry
 
         # Tenta enriquecer com nomes amigáveis via node_registry
         try:
@@ -349,6 +405,9 @@ class BloombergQueryLayer:
               "gex_put_bn": -3.5,
               "n_options": 45000,
               "date": "2026-04-03",
+              "gamma_regime": "short",   # derivado do sinal de gex_total_bn
+              "direction": "sell",       # derivado do sinal de gex_total_bn
+              "flip_level": None,
             }
         """
         gex_fields = ["spot", "gex_total_bn", "gex_call_bn", "gex_put_bn", "n_options"]
@@ -366,6 +425,12 @@ class BloombergQueryLayer:
                     raw["date"] = row[0]
         except Exception:
             pass
+        # Deriva direction e gamma_regime do sinal numérico de gex_total_bn
+        # (campos string não são armazenados no bql_latest)
+        gex_bn = float(raw.get("gex_total_bn") or 0)
+        raw["gamma_regime"] = "long" if gex_bn > 0 else ("short" if gex_bn < 0 else "flat")
+        raw["direction"]    = "buy"  if gex_bn > 0.5 else ("sell" if gex_bn < -0.5 else "flat")
+        raw["flip_level"]   = None
         return raw
 
     def get_gex_by_strike(self) -> list[dict[str, Any]]:
@@ -415,15 +480,18 @@ class BloombergQueryLayer:
 
         Returns:
             [
-              {"ticker": "TQQQ", "leverage": 3, "nav": 52.3, "aum_b": 18.5},
+              {"ticker": "TQQQ", "leverage": 3, "nav": 52.3, "nav_prev": 54.1, "aum_b": 18.5},
               ...
             ]
         """
-        letf_fields = ["leverage", "nav", "aum_b"]
+        _LETF_TICKERS = {"UPRO", "SPXU", "SPXS", "TQQQ", "SQQQ", "TNA", "TZA", "SOXL", "SOXS"}
+        letf_fields = ["leverage", "nav", "nav_prev", "aum_b"]
         data = self._get_latest_by_fields(letf_fields)
-        # Filtra tickers que têm pelo menos nav ou aum_b
+        # Filtra tickers LETF conhecidos (evita capturar outros tickers com campos similares)
         result = []
         for ticker, vals in data.items():
+            if ticker not in _LETF_TICKERS:
+                continue
             if vals.get("nav") is not None or vals.get("aum_b") is not None:
                 entry = {"ticker": ticker}
                 entry.update(vals)
@@ -489,6 +557,50 @@ class BloombergQueryLayer:
         return result
 
     # ── Macro Series ──────────────────────────────────────────────────────────
+
+    def get_iv_history(
+        self,
+        ticker: str | None = None,
+        days: int = 252,
+    ) -> dict[str, list[float]]:
+        """
+        Retorna histórico de IV ATM 30d para calcular iv_percentile.
+
+        Returns:
+            {
+              "AAPL": [0.22, 0.24, 0.28, ...],   # valores em decimal, ordenados por data asc
+              ...
+            }
+        """
+        try:
+            with self._connect() as conn:
+                if ticker:
+                    rows = conn.execute(
+                        """
+                        SELECT ticker, date, iv FROM iv_history
+                        WHERE ticker = ? AND date >= date('now', ? || ' days')
+                        ORDER BY ticker, date
+                        """,
+                        (ticker, f"-{days}"),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT ticker, date, iv FROM iv_history
+                        WHERE date >= date('now', ? || ' days')
+                        ORDER BY ticker, date
+                        """,
+                        (f"-{days}",),
+                    ).fetchall()
+        except Exception:
+            return {}
+
+        result: dict[str, list[float]] = {}
+        for row in rows:
+            t, _d, iv = row["ticker"], row["date"], row["iv"]
+            if iv is not None:
+                result.setdefault(t, []).append(float(iv))
+        return result
 
     def get_macro_series(self, category: str | None = None) -> dict[str, dict[str, Any]]:
         """

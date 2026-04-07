@@ -135,6 +135,7 @@ class DataNormalizer:
             "price_history": self._normalize_price_history,
             "fundamentals":  self._normalize_fundamentals,
             "options_iv":    self._normalize_options_iv,
+            "iv_history":    self._normalize_iv_history,
             "gex_summary":   self._normalize_gex_summary,
             "gex_spx":       self._normalize_gex_spx,
             "letf_flows":    self._normalize_letf_flows,
@@ -167,19 +168,21 @@ class DataNormalizer:
         prices_*.csv
         Aceita tanto o formato do bql_export.py (daily_return, ytd_return já calculados)
         quanto o formato legado (prev_price, price_w, price_ytd como preços brutos).
+        Usa yf_ticker como chave primária quando disponível — evita duplicação BBG/YF no banco.
         Só grava campos que existem no CSV — campos ausentes são silenciados.
         """
         ts, missing = [], []
         # Campos numéricos aceitos — só os que existirem no CSV serão gravados
         all_price_fields = [
             "price", "prev_price", "price_w", "price_ytd",
-            "daily_return", "ytd_return",
+            "daily_return", "ytd_return", "weekly_return",
         ]
 
         cols = {c.lower(): c for c in df.columns}
 
-        # Detecta coluna de ticker (bbg_ticker preferido, fallback yf_ticker)
-        ticker_col = cols.get("bbg_ticker") or cols.get("yf_ticker") or cols.get("ticker")
+        # Usa yf_ticker como ticker primário (evita duplicação com bbg_ticker no banco)
+        # Fallback para bbg_ticker (normalizado) se yf_ticker não estiver presente
+        ticker_col = cols.get("yf_ticker") or cols.get("bbg_ticker") or cols.get("ticker")
 
         # Determina quais campos realmente existem neste CSV
         present_fields = [f for f in all_price_fields if f in cols]
@@ -271,6 +274,43 @@ class DataNormalizer:
                                     ticker_col_candidates=["ticker", "bbg_ticker"],
                                     fields=["atm_iv", "skew_25d", "pcr_oi"])
 
+    def _normalize_iv_history(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        iv_history_*.csv
+        Colunas: date, yf_ticker, iv  (IV ATM 30d em decimal, ex: 0.28 = 28%)
+        Armazena série histórica de IV para calcular iv_percentile downstream.
+        """
+        ts, missing = [], []
+        cols = {c.lower(): c for c in df.columns}
+
+        date_col   = cols.get("date")
+        ticker_col = cols.get("yf_ticker") or cols.get("ticker")
+        iv_col     = cols.get("iv") or cols.get("atm_iv") or cols.get("ivol_mid_atm")
+
+        for idx, row in df.iterrows():
+            row_num = int(idx) + 2
+            ticker  = _to_str(row.get(ticker_col)) if ticker_col else None
+            date    = _to_str(row.get(date_col))   if date_col   else default_date
+            iv      = _to_float(row.get(iv_col))   if iv_col     else None
+
+            if not ticker:
+                missing.append(self._missing(source_file, row_num, None, "iv", date,
+                                             "missing_ticker", f"Linha {row_num} sem ticker"))
+                continue
+            if not date:
+                missing.append(self._missing(source_file, row_num, ticker, "iv", None,
+                                             "missing_date", f"Linha {row_num} sem data"))
+                continue
+
+            ts.append(self._record(ticker, "iv_history", date, iv, source_file, ingest_ts))
+            if iv is None:
+                missing.append(self._missing(source_file, row_num, ticker, "iv", date,
+                                             "missing_value", f"Linha {row_num} IV ausente"))
+
+        return ts, missing
+
     def _normalize_gex_summary(
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
     ) -> tuple[list[dict], list[dict]]:
@@ -361,7 +401,7 @@ class DataNormalizer:
         ts, missing = [], []
         cols = {c.lower(): c for c in df.columns}
         ticker_col = cols.get("ticker")
-        numeric_fields = ["leverage", "nav", "aum_b"]
+        numeric_fields = ["leverage", "nav", "nav_prev", "aum_b"]
 
         for idx, row in df.iterrows():
             row_num = int(idx) + 2

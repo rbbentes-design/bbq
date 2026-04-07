@@ -141,6 +141,20 @@ CREATE INDEX IF NOT EXISTS idx_macro_history_ticker ON macro_series_history (bbg
 CREATE INDEX IF NOT EXISTS idx_macro_history_date   ON macro_series_history (date);
 """
 
+_CREATE_IV_HISTORY = """
+CREATE TABLE IF NOT EXISTS iv_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker              TEXT    NOT NULL,
+    date                TEXT    NOT NULL,       -- YYYY-MM-DD
+    iv                  REAL,                  -- IV ATM 30d em decimal (0.28 = 28%)
+    source_file         TEXT,
+    ingestion_timestamp TEXT,
+    UNIQUE (ticker, date)                      -- um valor por (ticker, data)
+);
+CREATE INDEX IF NOT EXISTS idx_iv_hist_ticker ON iv_history (ticker);
+CREATE INDEX IF NOT EXISTS idx_iv_hist_date   ON iv_history (date);
+"""
+
 _CREATE_MISSING_DATA_LOG = """
 CREATE TABLE IF NOT EXISTS missing_data_log (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +235,7 @@ def create_schema(db_path: Path) -> None:
             _CREATE_MISSING_DATA_LOG,
             _CREATE_MACRO_SERIES_LATEST,
             _CREATE_MACRO_SERIES_HISTORY,
+            _CREATE_IV_HISTORY,
         ]:
             # Cada DDL pode ter múltiplos statements separados por ;
             for stmt in ddl.strip().split(";"):

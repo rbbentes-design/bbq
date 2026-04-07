@@ -155,14 +155,17 @@ def load_fundamentals() -> dict[str, dict[str, Any]]:
 
 def load_options_iv() -> dict[str, dict[str, Any]]:
     """
-    Retorna {ticker: {atm_iv, skew_25d, pcr_oi}}.
+    Retorna {ticker: {atm_iv, skew_25d, pcr_oi, iv_percentile}}.
     Fonte: SQLite → CSV fallback.
+    Enriquece com iv_percentile via iv_history CSV se disponível.
     """
     ql = _try_load_from_db()
     if ql:
         data = ql.get_options_iv()
         if data:
             _log.info("options_iv_from_db", tickers=len(data))
+            # Enriquece com iv_percentile do histórico
+            _enrich_iv_percentile(data)
             return data
 
     rows = _read_csv("options_iv")
@@ -182,8 +185,60 @@ def load_options_iv() -> dict[str, dict[str, Any]]:
         if entry:
             result[ticker] = entry
 
+    _enrich_iv_percentile(result)
     _log.info("options_iv_from_csv", tickers=len(result))
     return result
+
+
+def _enrich_iv_percentile(options_iv: dict[str, dict[str, Any]]) -> None:
+    """
+    Enriquece options_iv com iv_percentile calculado via histórico de IV Bloomberg.
+    Modifica options_iv in-place.
+    Fonte primária: tabela iv_history no SQLite (via query_layer).
+    Fonte secundária: iv_history_*.csv (fallback legado).
+    """
+    # Fonte primária: SQLite via query_layer
+    iv_by_ticker: dict[str, list[float]] = {}
+    ql = _try_load_from_db()
+    if ql:
+        try:
+            iv_by_ticker = ql.get_iv_history()
+        except AttributeError:
+            pass  # versão antiga sem get_iv_history
+
+    # Fallback: CSV direto
+    if not iv_by_ticker:
+        iv_hist_rows = _read_csv("iv_history")
+        if iv_hist_rows:
+            from collections import defaultdict
+            _iv_map: dict[str, list[float]] = defaultdict(list)
+            for r in iv_hist_rows:
+                tk = (r.get("yf_ticker") or r.get("ticker") or "").strip()
+                iv = _float(r.get("iv"))
+                if tk and iv is not None and iv > 0:
+                    _iv_map[tk].append(iv)
+            iv_by_ticker = dict(_iv_map)
+
+    if not iv_by_ticker:
+        return
+
+    enriched = 0
+    for ticker, entry in options_iv.items():
+        cur_iv = entry.get("atm_iv")
+        if not cur_iv or cur_iv <= 0:
+            continue
+        # Normaliza ticker para lookup (BBG suffix strip)
+        tk_norm = ticker.replace(" US Equity", "").strip()
+        hist = iv_by_ticker.get(ticker) or iv_by_ticker.get(tk_norm)
+        if hist and len(hist) >= 20:
+            iv_pct = sum(1 for v in hist if v <= cur_iv) / len(hist)
+            entry["iv_percentile"] = round(iv_pct, 3)
+            entry["iv_52w_low"]    = round(min(hist), 4)
+            entry["iv_52w_high"]   = round(max(hist), 4)
+            enriched += 1
+
+    if enriched:
+        _log.info("iv_percentile_enriched_bloomberg", tickers=enriched)
 
 
 def load_gex_summary() -> dict[str, Any]:
