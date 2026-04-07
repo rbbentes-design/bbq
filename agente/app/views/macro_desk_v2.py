@@ -565,12 +565,13 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060a12;
 /* ── Top-level main tabs ─────────────────────────────────────────────────── */
 #main-tabs-bar { display: flex; gap: 2px; align-items: center;
                  padding: 0 14px; background: #070c17;
-                 border-bottom: 1px solid #2d3f55; flex-shrink: 0; height: 36px; }
-.main-tab { padding: 5px 20px; border-radius: 4px 4px 0 0;
+                 border-bottom: 1px solid #2d3f55; flex-shrink: 0; height: 36px;
+                 overflow-x: auto; overflow-y: visible; }
+.main-tab { padding: 5px 14px; border-radius: 4px 4px 0 0;
             border: 1px solid transparent; border-bottom: none;
             background: transparent; color: #64748b; cursor: pointer;
-            font-size: 13px; font-weight: 700; letter-spacing: 0.8px;
-            text-transform: uppercase; transition: all 0.15s; }
+            font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+            text-transform: uppercase; transition: all 0.15s; white-space: nowrap; }
 .main-tab:hover { color: #cbd5e1; border-color: #64748b; }
 .main-tab.active { background: #060a12; border-color: #2d4a6f;
                    color: #38bdf8; }
