@@ -488,14 +488,22 @@ def analyze(
         _log.error("network_import_error", error=str(e))
         return {}
 
-    tickers = list(market_prices_raw.keys())
-    if not tickers:
+    mp_tickers = list(market_prices_raw.keys())
+    if not mp_tickers:
         return {}
 
-    # ── Filtra universo ────────────────────────────────────────────────────────
+    # ── Universo ───────────────────────────────────────────────────────────────
+    # "spx" = SPX_CORE + tickers do market_prices (portfólio + contexto macro)
+    # "all" = apenas os tickers do market_prices
     if universe == "spx":
-        tickers = sorted(SPX_CORE)
-        _log.info("network_universe_spx", tickers=len(tickers))
+        tickers = sorted(set(mp_tickers) | SPX_CORE)
+        _log.info("network_universe_union",
+                  mp_tickers=len(mp_tickers),
+                  spx_core=len(SPX_CORE),
+                  total=len(tickers))
+    else:
+        tickers = sorted(set(mp_tickers))
+        _log.info("network_universe_all", tickers=len(tickers))
 
     # ── Coleta histórico via chain de fallbacks ───────────────────────────────
     # Bloomberg CSV → IBKR → Alpha Vantage → Twelve Data → Finnhub
