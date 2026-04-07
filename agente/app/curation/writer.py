@@ -1276,12 +1276,28 @@ def _build_image_catalog(bundle: DailyIngestionBundle) -> list[dict]:
         catalog.append({"path": str(p), "context": context, "source": source})
 
     for block in bundle.market_ear_blocks:
-        ctx = (block.title or block.subtitle or block.body_text or "")[:150]
+        # Contexto rico: título + subtítulo + primeiros ~350 chars do body
+        _title = (block.title or "").strip()
+        _sub = (block.subtitle or "").strip()
+        _body = (block.body_text or "").strip()
+        parts = []
+        if _title:
+            parts.append(_title)
+        if _sub and _sub != _title:
+            parts.append(_sub)
+        if _body:
+            parts.append(_body[:350])
+        ctx = " — ".join(parts)
         for img_path in (block.image_refs or []):
-            _add(img_path, ctx, "ZeroHedge")
+            # Adiciona filename como hint adicional (às vezes descritivo)
+            fname = Path(img_path).stem
+            ctx_full = f"{ctx} [file:{fname}]" if fname else ctx
+            _add(img_path, ctx_full, "ZeroHedge")
 
     for item in bundle.x_items:
-        ctx = (item.text or "")[:150]
+        _author = (item.author or "").strip()
+        _text = (item.text or "").strip()
+        ctx = f"@{_author}: {_text[:350]}" if _author else _text[:350]
         for img_path in (item.media_refs or []):
             _add(img_path, ctx, f"@{item.author}")
 
@@ -1298,24 +1314,31 @@ def _image_briefing(catalog: list[dict]) -> str:
     subset = catalog[:30]  # máximo 30 para não explodir o contexto
     lines = [
         "\n--- IMAGENS DISPONÍVEIS ---",
-        "Você tem as seguintes imagens reais disponíveis para intercalar no texto.",
-        "Use o ID exato nas marcações [IMAGEM: IMG-N]. Escolha a mais relevante para cada ponto.",
-        "Use entre 4 e 6 imagens. NUNCA invente um ID que não esteja nesta lista.",
+        "Lista de imagens reais que você pode inserir no texto. Cada uma tem um contexto",
+        "(o bloco/post de onde veio), que descreve aproximadamente o que a imagem mostra.",
+        "",
+        "⚠️ REGRA ABSOLUTA DE COERÊNCIA:",
+        "  - SÓ use uma imagem se o contexto dela bater DIRETAMENTE com o parágrafo onde ela aparece.",
+        "  - É MUITO MELHOR escrever o texto sem imagem do que forçar uma imagem genérica.",
+        "  - Se nenhuma imagem da lista bater com o argumento do parágrafo, NÃO use imagem ali.",
+        "  - A legenda precisa explicar O QUE a imagem mostra E por que está ali naquele ponto.",
+        "",
+        "Use entre 2 e 5 imagens no texto total (pode ser menos se nenhuma bater).",
+        "NUNCA invente um ID. NUNCA repita uma mesma imagem.",
         "",
     ]
     for img in subset:
         lines.append(f"  {img['id']} [{img['source']}]: {img['context']}")
     lines.append(
-        "\nFORMATO OBRIGATÓRIO — alterne texto e imagem ao longo de todo o texto:\n"
-        "  Parágrafo(s) de texto\n"
-        "  [IMAGEM: IMG-N | legenda curta explicando o que a imagem mostra e por que é relevante aqui]\n"
-        "  Parágrafo(s) de texto\n"
-        "  [IMAGEM: IMG-N | legenda]\n"
+        "\nFORMATO — insira a marcação DENTRO do texto onde a imagem faz sentido:\n"
+        "  Parágrafo argumentando X.\n"
+        "  [IMAGEM: IMG-N | legenda que conecta a imagem ao argumento X]\n"
+        "  Parágrafo que continua o raciocínio a partir do que a imagem mostra.\n"
         "  ...\n"
         "Regras:\n"
-        "  - Nunca dois blocos de texto sem imagem entre eles; nunca duas imagens seguidas\n"
-        "  - Use apenas IDs exatos da lista acima; cada ID pode ser usado NO MÁXIMO UMA VEZ\n"
-        "  - A legenda deve contextualizar a imagem dentro do argumento do texto (1-2 linhas)"
+        "  - Use apenas IDs exatos da lista; cada ID NO MÁXIMO UMA VEZ\n"
+        "  - Se você tem dúvida se uma imagem encaixa, NÃO use\n"
+        "  - Nunca coloque imagem no início ou fim absoluto do texto — sempre entre parágrafos"
     )
     return "\n".join(lines)
 
