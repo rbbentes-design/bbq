@@ -1204,14 +1204,22 @@ def export_prices():
             resp = bq.execute(
                 f'get(PX_LAST(dates=range(-260D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
             )
-            df_h = resp[0].df()
-            df_h.columns = ['price']
-            df_h = df_h.dropna()
-            if df_h.empty:
+            r = resp[0]
+            df_h = r.df()
+            # df pode vir com colunas (DATE, PX_LAST, CURRENCY) e ticker no index
+            if 'DATE' in df_h.columns:
+                dates_idx = pd.to_datetime(df_h['DATE'])
+                vals      = pd.to_numeric(df_h[r.name], errors='coerce')
+                prices    = pd.Series(vals.values, index=dates_idx).dropna().sort_index()
+            else:
+                s = r.df()[r.name]
+                prices = pd.Series(
+                    pd.to_numeric(s.values, errors='coerce'),
+                    index=pd.to_datetime(s.index),
+                ).dropna().sort_index()
+            if prices.empty:
                 continue
-            df_h.index = pd.to_datetime(df_h.index)
-            df_h = df_h.sort_index()
-            prices = df_h['price'].astype(float)
+            prices = prices.astype(float)
 
             p_now = float(prices.iloc[-1])
 
