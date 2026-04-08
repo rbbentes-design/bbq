@@ -131,17 +131,22 @@ class DataNormalizer:
         default_date = _extract_date_from_filename(source_file) or ingest_ts[:10]
 
         dispatch = {
-            "prices":        self._normalize_prices,
-            "price_history": self._normalize_price_history,
-            "fundamentals":  self._normalize_fundamentals,
-            "options_iv":    self._normalize_options_iv,
-            "iv_history":    self._normalize_iv_history,
-            "gex_summary":   self._normalize_gex_summary,
-            "gex_spx":       self._normalize_gex_spx,
-            "letf_flows":    self._normalize_letf_flows,
-            "macro_series":  self._normalize_macro_series,
-            "macro_history": self._normalize_macro_history,
-            "meta":          self._normalize_meta,
+            "prices":                     self._normalize_prices,
+            "price_history":              self._normalize_price_history,
+            "fundamentals":               self._normalize_fundamentals,
+            "fundamentals_history":       self._normalize_fundamentals_history,
+            "bond_etf_fundamentals":      self._normalize_bond_etf_fundamentals,
+            "bond_etf_history":           self._normalize_bond_etf_history,
+            "fx_etf_fundamentals":        self._normalize_fx_etf_fundamentals,
+            "commodity_etf_fundamentals": self._normalize_commodity_etf_fundamentals,
+            "options_iv":                 self._normalize_options_iv,
+            "iv_history":                 self._normalize_iv_history,
+            "gex_summary":                self._normalize_gex_summary,
+            "gex_spx":                    self._normalize_gex_spx,
+            "letf_flows":                 self._normalize_letf_flows,
+            "macro_series":               self._normalize_macro_series,
+            "macro_history":              self._normalize_macro_history,
+            "meta":                       self._normalize_meta,
         }
 
         handler = dispatch.get(dataset_type)
@@ -251,17 +256,119 @@ class DataNormalizer:
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
     ) -> tuple[list[dict], list[dict]]:
         """
-        fundamentals_*.csv
-        Colunas: ticker, pe, mktcap_b, beta, profit_margin, debt_equity, roe,
-                 dividend_yield, price, hi_52w, lo_52w, drawdown_52w
+        fundamentals_*.csv (sector ETFs + mega-caps individuais)
+        Colunas: ticker, pe, pb, ps, mktcap_b, beta, profit_margin, roe,
+                 dividend_yield, debt_equity, expense_ratio, aum_b, price,
+                 hi_52w, lo_52w, drawdown_52w, sector
         """
         fundamental_fields = [
-            "pe", "mktcap_b", "beta", "profit_margin", "debt_equity",
-            "roe", "dividend_yield", "price", "hi_52w", "lo_52w", "drawdown_52w",
+            "pe", "pb", "ps", "mktcap_b", "beta", "profit_margin", "roe",
+            "dividend_yield", "debt_equity", "expense_ratio", "aum_b",
+            "price", "hi_52w", "lo_52w", "drawdown_52w",
         ]
         return self._normalize_wide(df, source_file, default_date, ingest_ts,
                                     ticker_col_candidates=["ticker", "bbg_ticker"],
                                     fields=fundamental_fields)
+
+    def _normalize_fundamentals_history(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        fundamentals_history_*.csv (252d de pe/pb/ps/dy/beta por ticker)
+        Colunas: date, ticker, sector, pe, pb, ps, dividend_yield, beta
+        Cada linha vira uma entrada timeseries por field.
+        """
+        ts, missing = [], []
+        cols = {c.lower(): c for c in df.columns}
+        date_col   = cols.get("date")
+        ticker_col = cols.get("ticker") or cols.get("yf_ticker")
+        fields = ["pe", "pb", "ps", "dividend_yield", "beta"]
+
+        for idx, row in df.iterrows():
+            row_num = int(idx) + 2
+            ticker  = _to_str(row.get(ticker_col)) if ticker_col else None
+            date    = _to_str(row.get(date_col))   if date_col   else default_date
+            if not ticker or not date:
+                missing.append(self._missing(source_file, row_num, ticker, "fund_hist", date,
+                                             "missing_key", "Linha sem ticker/date"))
+                continue
+            for f in fields:
+                col = cols.get(f)
+                if not col:
+                    continue
+                val = _to_float(row.get(col))
+                ts.append(self._record(ticker, f"fund_hist_{f}", date, val, source_file, ingest_ts))
+                if val is None:
+                    missing.append(self._missing(source_file, row_num, ticker, f, date,
+                                                 "missing_value", f"{f} ausente"))
+        return ts, missing
+
+    def _normalize_bond_etf_fundamentals(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        bond_etf_fundamentals_*.csv
+        Colunas: ticker, price, expense_ratio, aum_b, yield, duration, avg_maturity, oas, label, category
+        """
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker", "bbg_ticker"],
+            fields=["price", "expense_ratio", "aum_b", "yield", "duration", "avg_maturity", "oas"],
+        )
+
+    def _normalize_bond_etf_history(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        bond_etf_history_*.csv (252d)
+        Colunas: date, ticker, label, category, yield, duration, oas
+        """
+        ts, missing = [], []
+        cols = {c.lower(): c for c in df.columns}
+        date_col   = cols.get("date")
+        ticker_col = cols.get("ticker")
+        for idx, row in df.iterrows():
+            row_num = int(idx) + 2
+            ticker  = _to_str(row.get(ticker_col)) if ticker_col else None
+            date    = _to_str(row.get(date_col))   if date_col   else default_date
+            if not ticker or not date:
+                continue
+            for f in ("yield", "duration", "oas"):
+                col = cols.get(f)
+                if not col:
+                    continue
+                val = _to_float(row.get(col))
+                ts.append(self._record(ticker, f"bond_{f}", date, val, source_file, ingest_ts))
+                if val is None:
+                    missing.append(self._missing(source_file, row_num, ticker, f, date,
+                                                 "missing_value", f"{f} ausente"))
+        return ts, missing
+
+    def _normalize_fx_etf_fundamentals(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        fx_etf_fundamentals_*.csv
+        Colunas: ticker, price, expense_ratio, aum_b, ytd_return, label, category
+        """
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker", "bbg_ticker"],
+            fields=["price", "expense_ratio", "aum_b", "ytd_return"],
+        )
+
+    def _normalize_commodity_etf_fundamentals(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        commodity_etf_fundamentals_*.csv
+        Colunas: ticker, price, expense_ratio, aum_b, ytd_return, daily_return, label, category
+        """
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker", "bbg_ticker"],
+            fields=["price", "expense_ratio", "aum_b", "ytd_return", "daily_return"],
+        )
 
     def _normalize_options_iv(
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str

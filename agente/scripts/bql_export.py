@@ -52,47 +52,303 @@ def calc_gamma(S, K, vol, T):
 
 
 # ── Universos ─────────────────────────────────────────────────────────────
-FUND_TICKERS = [
-    'AAPL US Equity', 'AMZN US Equity', 'MSFT US Equity', 'TSLA US Equity',
-    'META US Equity', 'NVDA US Equity', 'GOOGL US Equity', 'AVGO US Equity',
-    'JPM US Equity',  'LLY US Equity',  'UNH US Equity',   'XOM US Equity',
-    'COST US Equity', 'V US Equity',    'MA US Equity',    'WMT US Equity',
-    'NFLX US Equity', 'JNJ US Equity',  'PG US Equity',
+# Tudo é ETF agora — cada vértice da rede neural é um ETF que representa
+# o setor / duration / moeda / commodity inteiro. Nada de mega-caps individuais.
+#
+# SECTOR_ETFS = ETFs de equity (P/E, P/B, dividend yield fazem sentido)
+# RATES_ETFS  = renda fixa (yield, duration, OAS — sem P/E)
+# FX_ETFS     = moedas (yield, NAV)
+# COMMODITY_ETFS = commodities (NAV, expense ratio)
+SECTOR_ETFS = [
+    # ── 11 SPDR Sector ETFs (cobre o SPX inteiro) ────────────────────────
+    ('XLK',  'Technology'),
+    ('XLF',  'Financials'),
+    ('XLV',  'Health Care'),
+    ('XLY',  'Consumer Discretionary'),
+    ('XLP',  'Consumer Staples'),
+    ('XLE',  'Energy'),
+    ('XLI',  'Industrials'),
+    ('XLB',  'Materials'),
+    ('XLRE', 'Real Estate'),
+    ('XLU',  'Utilities'),
+    ('XLC',  'Communication Services'),
+    # ── Nasdaq setoriais (sub-temas) ──────────────────────────────────────
+    ('SOXX', 'Semiconductors'),
+    ('IGV',  'Software'),
+    ('IBB',  'Biotech'),
+    ('QCLN', 'Clean Energy'),
+    # ── Broad index ETFs ─────────────────────────────────────────────────
+    ('SPY',  'S&P 500'),
+    ('QQQ',  'Nasdaq 100'),
+    ('IWM',  'Russell 2000'),
+    ('MDY',  'S&P MidCap 400'),
+    # ── International equity ─────────────────────────────────────────────
+    ('EEM',  'EM Equity'),
+    ('EFA',  'Developed ex-US'),
+    ('VWO',  'EM Vanguard'),
+    ('FXI',  'China'),
+    ('EWJ',  'Japan'),
+    ('EWZ',  'Brazil'),
+    ('INDA', 'India'),
+    # ── Miners (commodity equity) ─────────────────────────────────────────
+    ('GDX',  'Gold Miners'),
+    ('GDXJ', 'Gold Junior Miners'),
+    ('SIL',  'Silver Miners'),
+    ('XME',  'Metals & Mining'),
 ]
 
-# yfinance ↔ Bloomberg — universo completo (~59 tickers)
+# ── Mega-caps individuais — cada uma é 1 nó único na rede ────────────────
+# (sem duplicação: ticker aparece UMA vez só, mesmo que pertença a múltiplos
+#  setores como XLK e SOXX no caso de NVDA)
+MEGA_CAPS = [
+    # Tech / AI
+    ('AAPL',  'Apple'),
+    ('MSFT',  'Microsoft'),
+    ('NVDA',  'NVIDIA'),
+    ('GOOGL', 'Alphabet'),
+    ('META',  'Meta Platforms'),
+    ('AMZN',  'Amazon'),
+    ('AVGO',  'Broadcom'),
+    ('TSLA',  'Tesla'),
+    ('NFLX',  'Netflix'),
+    # Financials
+    ('JPM',   'JPMorgan'),
+    ('BRK-B', 'Berkshire Hathaway'),
+    ('V',     'Visa'),
+    ('MA',    'Mastercard'),
+    # Health / Pharma
+    ('LLY',   'Eli Lilly'),
+    ('UNH',   'UnitedHealth'),
+    ('JNJ',   'Johnson & Johnson'),
+    # Consumer / Energy / Staples
+    ('XOM',   'Exxon Mobil'),
+    ('COST',  'Costco'),
+    ('WMT',   'Walmart'),
+    ('PG',    'Procter & Gamble'),
+]
+MEGA_CAP_TICKERS = [f'{tk} US Equity' for tk, _ in MEGA_CAPS]
+# BRK-B no Bloomberg é BRK/B
+MEGA_CAP_TICKERS = [t.replace('BRK-B US Equity', 'BRK/B US Equity') for t in MEGA_CAP_TICKERS]
+MEGA_CAP_LABELS  = {}
+for tk, label in MEGA_CAPS:
+    bbg = 'BRK/B US Equity' if tk == 'BRK-B' else f'{tk} US Equity'
+    MEGA_CAP_LABELS[bbg] = label
+
+RATES_ETFS = [
+    # Treasuries duration ladder
+    ('BIL',  'T-bills 1-3M',     'rates'),
+    ('SHV',  'Treasury 0-1Y',    'rates'),
+    ('SHY',  'Treasury 1-3Y',    'rates'),
+    ('IEI',  'Treasury 3-7Y',    'rates'),
+    ('IEF',  'Treasury 7-10Y',   'rates'),
+    ('TLH',  'Treasury 10-20Y',  'rates'),
+    ('TLT',  'Treasury 20Y+',    'rates'),
+    ('EDV',  'Treasury 25Y+',    'rates'),
+    ('GOVT', 'Treasuries broad', 'rates'),
+    # Credit
+    ('LQD',  'IG Corporate',     'credit'),
+    ('HYG',  'HY Corporate',     'credit'),
+    ('JNK',  'HY Corporate alt', 'credit'),
+    ('EMB',  'EM USD bonds',     'credit'),
+    ('BNDX', 'International bonds','credit'),
+    # Inflação / TIPS
+    ('TIP',  'TIPS broad',       'tips'),
+    ('STIP', 'TIPS short',       'tips'),
+    ('LTPZ', 'TIPS long',        'tips'),
+    # Floating rate / convertibles / preferred
+    ('BKLN', 'Senior loans',     'credit'),
+    ('CWB',  'Convertibles',     'hybrid'),
+    ('PFF',  'Preferred stock',  'hybrid'),
+]
+
+FX_ETFS = [
+    ('UUP', 'USD Long'),
+    ('UDN', 'USD Short'),
+    ('FXE', 'EUR'),
+    ('FXB', 'GBP'),
+    ('FXY', 'JPY'),
+    ('FXC', 'CAD'),
+    ('FXA', 'AUD'),
+    ('FXF', 'CHF'),
+    ('CYB', 'CNY'),
+    ('CEW', 'EM Currencies'),
+]
+
+COMMODITY_ETFS = [
+    # Broad
+    ('DBC',  'Broad commodities', 'broad'),
+    ('GSG',  'GSCI broad',        'broad'),
+    ('PDBC', 'Broad no K-1',      'broad'),
+    # Precious metals
+    ('GLD',  'Gold',              'precious'),
+    ('SLV',  'Silver',            'precious'),
+    ('PPLT', 'Platinum',          'precious'),
+    ('PALL', 'Palladium',         'precious'),
+    # Energy
+    ('USO',  'WTI Oil',           'energy'),
+    ('BNO',  'Brent Oil',         'energy'),
+    ('UNG',  'Natural Gas',       'energy'),
+    ('UGA',  'Gasoline',          'energy'),
+    # Industrial / agro
+    ('CPER', 'Copper',            'industrial'),
+    ('DBA',  'Agriculture broad', 'agro'),
+    ('CORN', 'Corn',              'agro'),
+    ('WEAT', 'Wheat',             'agro'),
+    ('SOYB', 'Soybeans',          'agro'),
+]
+
+VOL_ETFS = [
+    ('VIXY', 'VIX short-term'),
+    ('UVXY', 'VIX 1.5x'),
+    ('SVXY', 'Short VIX'),
+]
+
+# Equity-style fundamentals (P/E faz sentido aqui)
+# Inclui SECTOR_ETFS + 6 mega-caps individuais — cada uma é 1 nó único.
+FUND_TICKERS = [f'{tk} US Equity' for tk, _ in SECTOR_ETFS] + MEGA_CAP_TICKERS
+SECTOR_LABELS = {f'{tk} US Equity': label for tk, label in SECTOR_ETFS}
+SECTOR_LABELS.update(MEGA_CAP_LABELS)
+
+# Bond/FX/Commodity ETFs — fundamentals reduzidos (sem P/E)
+RATES_FUND_TICKERS     = [f'{tk} US Equity' for tk, _, _ in RATES_ETFS]
+FX_FUND_TICKERS        = [f'{tk} US Equity' for tk, _    in FX_ETFS]
+COMMODITY_FUND_TICKERS = [f'{tk} US Equity' for tk, _, _ in COMMODITY_ETFS]
+VOL_FUND_TICKERS       = [f'{tk} US Equity' for tk, _    in VOL_ETFS]
+
+NON_EQUITY_FUND_TICKERS = (
+    RATES_FUND_TICKERS + FX_FUND_TICKERS + COMMODITY_FUND_TICKERS + VOL_FUND_TICKERS
+)
+NON_EQUITY_LABELS = {}
+NON_EQUITY_CATEGORY = {}
+for tk, label, cat in RATES_ETFS:
+    NON_EQUITY_LABELS[f'{tk} US Equity']   = label
+    NON_EQUITY_CATEGORY[f'{tk} US Equity'] = cat
+for tk, label in FX_ETFS:
+    NON_EQUITY_LABELS[f'{tk} US Equity']   = label
+    NON_EQUITY_CATEGORY[f'{tk} US Equity'] = 'fx'
+for tk, label, cat in COMMODITY_ETFS:
+    NON_EQUITY_LABELS[f'{tk} US Equity']   = label
+    NON_EQUITY_CATEGORY[f'{tk} US Equity'] = cat
+for tk, label in VOL_ETFS:
+    NON_EQUITY_LABELS[f'{tk} US Equity']   = label
+    NON_EQUITY_CATEGORY[f'{tk} US Equity'] = 'vol'
+
+
+# ── Universo completo da rede neural ─────────────────────────────────────
+# Cobre todos os vértices: setores SPX, mega-caps individuais (1 nó cada),
+# fixed income por duration, FX por moeda, commodities por tipo, vol,
+# internacional.
+# REGRA: cada ticker aparece UMA VEZ só (sem duplicação).
 _YF_TO_BBG = {
-    # ── Mega-caps individuais ────────────────────────────────────────────
-    'AAPL': 'AAPL US Equity', 'MSFT': 'MSFT US Equity', 'NVDA': 'NVDA US Equity',
-    'AMZN': 'AMZN US Equity', 'META': 'META US Equity', 'GOOGL': 'GOOGL US Equity',
-    'TSLA': 'TSLA US Equity', 'AVGO': 'AVGO US Equity', 'JPM': 'JPM US Equity',
-    'LLY': 'LLY US Equity',   'UNH': 'UNH US Equity',   'XOM': 'XOM US Equity',
-    'COST': 'COST US Equity', 'V': 'V US Equity',       'MA': 'MA US Equity',
-    'WMT': 'WMT US Equity',   'NFLX': 'NFLX US Equity', 'JNJ': 'JNJ US Equity',
-    'PG': 'PG US Equity',     'BRK-B': 'BRK/B US Equity',
+    # ══════ MEGA-CAPS INDIVIDUAIS (1 nó cada, sem duplicar) ══════
+    'AAPL':  'AAPL US Equity',  'MSFT':  'MSFT US Equity',
+    'NVDA':  'NVDA US Equity',  'GOOGL': 'GOOGL US Equity',
+    'META':  'META US Equity',  'AMZN':  'AMZN US Equity',
+    'AVGO':  'AVGO US Equity',  'TSLA':  'TSLA US Equity',
+    'NFLX':  'NFLX US Equity',  'JPM':   'JPM US Equity',
+    'BRK-B': 'BRK/B US Equity', 'V':     'V US Equity',
+    'MA':    'MA US Equity',    'LLY':   'LLY US Equity',
+    'UNH':   'UNH US Equity',   'JNJ':   'JNJ US Equity',
+    'XOM':   'XOM US Equity',   'COST':  'COST US Equity',
+    'WMT':   'WMT US Equity',   'PG':    'PG US Equity',
+
+    # ══════ EQUITY ETFs ══════
     # ── Broad index ETFs ─────────────────────────────────────────────────
-    'SPY': 'SPY US Equity', 'QQQ': 'QQQ US Equity', 'IWM': 'IWM US Equity',
-    'MDY': 'MDY US Equity',
-    # ── 11 SPDR Sector ETFs ──────────────────────────────────────────────
-    'XLK': 'XLK US Equity', 'XLF': 'XLF US Equity', 'XLV': 'XLV US Equity',
-    'XLY': 'XLY US Equity', 'XLP': 'XLP US Equity', 'XLE': 'XLE US Equity',
-    'XLI': 'XLI US Equity', 'XLB': 'XLB US Equity', 'XLRE': 'XLRE US Equity',
-    'XLU': 'XLU US Equity', 'XLC': 'XLC US Equity',
-    # ── Nasdaq setoriais ─────────────────────────────────────────────────
-    'QCLN': 'QCLN US Equity', 'SOXX': 'SOXX US Equity',
-    'IGV': 'IGV US Equity',   'IBB': 'IBB US Equity',
-    # ── Fixed income / credit ────────────────────────────────────────────
-    'TLT': 'TLT US Equity', 'IEF': 'IEF US Equity', 'SHY': 'SHY US Equity',
-    'HYG': 'HYG US Equity', 'LQD': 'LQD US Equity', 'EMB': 'EMB US Equity',
-    # ── Commodities / FX / Vol ETFs ──────────────────────────────────────
-    'GLD': 'GLD US Equity', 'SLV': 'SLV US Equity', 'USO': 'USO US Equity',
-    'DBC': 'DBC US Equity', 'UUP': 'UUP US Equity', 'VIXY': 'VIXY US Equity',
+    'SPY': 'SPY US Equity',  'QQQ': 'QQQ US Equity',
+    'IWM': 'IWM US Equity',  'MDY': 'MDY US Equity',
+    # ── 11 SPDR Sector ETFs (SPX completo) ────────────────────────────────
+    'XLK':  'XLK US Equity',  'XLF':  'XLF US Equity',  'XLV':  'XLV US Equity',
+    'XLY':  'XLY US Equity',  'XLP':  'XLP US Equity',  'XLE':  'XLE US Equity',
+    'XLI':  'XLI US Equity',  'XLB':  'XLB US Equity',  'XLRE': 'XLRE US Equity',
+    'XLU':  'XLU US Equity',  'XLC':  'XLC US Equity',
+    # ── Nasdaq setoriais (sub-temas) ──────────────────────────────────────
+    'SOXX': 'SOXX US Equity', 'IGV':  'IGV US Equity',
+    'IBB':  'IBB US Equity',  'QCLN': 'QCLN US Equity',
     # ── International equity ─────────────────────────────────────────────
-    'EEM': 'EEM US Equity', 'EFA': 'EFA US Equity',
-    # ── Índices / futures / FX / crypto ──────────────────────────────────
-    '^GSPC': 'SPX Index', '^NDX': 'NDX Index', '^RUT': 'RTY Index',
-    '^VIX': 'VIX Index', 'CL=F': 'CL1 Comdty', 'GC=F': 'GC1 Comdty',
-    'DX-Y.NYB': 'DXY Curncy', 'BTC-USD': 'XBT Curncy',
+    'EEM':  'EEM US Equity',  'EFA':  'EFA US Equity',
+    'VWO':  'VWO US Equity',  'FXI':  'FXI US Equity',  # EM broad / China
+    'EWJ':  'EWJ US Equity',  'EWZ':  'EWZ US Equity',  # Japão / Brasil
+    'INDA': 'INDA US Equity',                            # India
+
+    # ══════ FIXED INCOME — por vértice de duração ══════
+    # Treasuries duration ladder
+    'BIL':  'BIL US Equity',   # 1-3M T-bills
+    'SHV':  'SHV US Equity',   # 0-1Y
+    'SHY':  'SHY US Equity',   # 1-3Y
+    'IEI':  'IEI US Equity',   # 3-7Y
+    'IEF':  'IEF US Equity',   # 7-10Y
+    'TLH':  'TLH US Equity',   # 10-20Y
+    'TLT':  'TLT US Equity',   # 20Y+
+    'EDV':  'EDV US Equity',   # 25Y+ extended duration
+    'GOVT': 'GOVT US Equity',  # broad treasuries
+    # Credit
+    'LQD':  'LQD US Equity',   # IG corporate
+    'HYG':  'HYG US Equity',   # HY corporate
+    'JNK':  'JNK US Equity',   # HY corporate (alternative)
+    'EMB':  'EMB US Equity',   # EM USD bonds
+    'BNDX': 'BNDX US Equity',  # international bonds
+    # Inflação / TIPS
+    'TIP':  'TIP US Equity',   # TIPS broad
+    'STIP': 'STIP US Equity',  # short TIPS
+    'LTPZ': 'LTPZ US Equity',  # long TIPS
+    # Bank loans / convertibles / preferred
+    'BKLN': 'BKLN US Equity',  # senior loans (floating rate)
+    'CWB':  'CWB US Equity',   # convertibles
+    'PFF':  'PFF US Equity',   # preferred stock
+
+    # ══════ FX — por moeda ══════
+    'UUP':  'UUP US Equity',   # USD long
+    'UDN':  'UDN US Equity',   # USD short
+    'FXE':  'FXE US Equity',   # EUR
+    'FXB':  'FXB US Equity',   # GBP
+    'FXY':  'FXY US Equity',   # JPY
+    'FXC':  'FXC US Equity',   # CAD
+    'FXA':  'FXA US Equity',   # AUD
+    'FXF':  'FXF US Equity',   # CHF
+    'CYB':  'CYB US Equity',   # CNY
+    'CEW':  'CEW US Equity',   # EM currencies basket
+
+    # ══════ COMMODITIES — por tipo ══════
+    # Broad
+    'DBC':  'DBC US Equity',   # broad commodities
+    'GSG':  'GSG US Equity',   # GSCI commodities
+    'PDBC': 'PDBC US Equity',  # broad (no K-1)
+    # Precious metals
+    'GLD':  'GLD US Equity',   # Gold
+    'SLV':  'SLV US Equity',   # Silver
+    'PPLT': 'PPLT US Equity',  # Platinum
+    'PALL': 'PALL US Equity',  # Palladium
+    # Energy
+    'USO':  'USO US Equity',   # WTI Oil
+    'BNO':  'BNO US Equity',   # Brent Oil
+    'UNG':  'UNG US Equity',   # Natural Gas
+    'UGA':  'UGA US Equity',   # Gasoline
+    # Industrial / agro
+    'CPER': 'CPER US Equity',  # Copper
+    'DBA':  'DBA US Equity',   # Agriculture broad
+    'CORN': 'CORN US Equity',  # Corn
+    'WEAT': 'WEAT US Equity',  # Wheat
+    'SOYB': 'SOYB US Equity',  # Soybeans
+    # Miners (proxy de commodity exposure alavancado)
+    'GDX':  'GDX US Equity',   # Gold miners
+    'GDXJ': 'GDXJ US Equity',  # Gold junior miners
+    'SIL':  'SIL US Equity',   # Silver miners
+    'XME':  'XME US Equity',   # Metals & mining
+
+    # ══════ VOL & TAIL ══════
+    'VIXY': 'VIXY US Equity',  # VIX short-term
+    'UVXY': 'UVXY US Equity',  # VIX 1.5x
+    'SVXY': 'SVXY US Equity',  # short VIX
+
+    # ══════ ÍNDICES / FUTURES / FX / CRYPTO (não-ETF) ══════
+    '^GSPC':    'SPX Index',
+    '^NDX':     'NDX Index',
+    '^RUT':     'RTY Index',
+    '^VIX':     'VIX Index',
+    'CL=F':     'CL1 Comdty',
+    'GC=F':     'GC1 Comdty',
+    'DX-Y.NYB': 'DXY Curncy',
+    'BTC-USD':  'XBT Curncy',
 }
 
 LETFS = [
@@ -129,28 +385,50 @@ MACRO_TICKERS = [
 # ── Funções de export ─────────────────────────────────────────────────────
 
 def export_fundamentals():
+    """
+    Snapshot de fundamentals dos ETFs setoriais.
+    Cada ETF reflete a média ponderada das holdings — pe_ratio, dividend_yield,
+    beta etc. já são "do setor inteiro".
+    """
     univ  = bq.univ.list(FUND_TICKERS)
     t_str = ', '.join(f'"{t}"' for t in FUND_TICKERS)
     items = {
         'PE_RATIO':            bq.data.pe_ratio(),
-        'CUR_MKT_CAP':         bq.data.cur_mkt_cap(),
+        'PX_TO_BOOK':          bq.data.px_to_book_ratio(),
+        'PX_TO_SALES':         bq.data.px_to_sales_ratio(),
+        'CUR_MKT_CAP':         bq.data.cur_mkt_cap(),       # AUM efetivo do ETF
         'BETA':                bq.data.beta(),
         'PROF_MARGIN':         bq.data.prof_margin(),
-        'TOT_DEBT_TO_TOT_EQY': bq.data.tot_debt_to_tot_eqy(),
         'RETURN_COM_EQY':      bq.data.return_com_eqy(),
         'EQY_DVD_YLD_IND':     bq.data.eqy_dvd_yld_ind(),
+        'TOT_DEBT_TO_TOT_EQY': bq.data.tot_debt_to_tot_eqy(),
+        'EXPENSE_RATIO':       bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS':   bq.data.fund_total_assets(),
         'PX_LAST':             bq.data.px_last(),
     }
     df = _bql(univ, items)
     df.rename(columns={
-        'PE_RATIO': 'pe', 'CUR_MKT_CAP': 'mktcap_b', 'BETA': 'beta',
-        'PROF_MARGIN': 'profit_margin', 'TOT_DEBT_TO_TOT_EQY': 'debt_equity',
-        'RETURN_COM_EQY': 'roe', 'EQY_DVD_YLD_IND': 'dividend_yield', 'PX_LAST': 'price'
+        'PE_RATIO':          'pe',
+        'PX_TO_BOOK':        'pb',
+        'PX_TO_SALES':       'ps',
+        'CUR_MKT_CAP':       'mktcap_b',
+        'BETA':              'beta',
+        'PROF_MARGIN':       'profit_margin',
+        'RETURN_COM_EQY':    'roe',
+        'EQY_DVD_YLD_IND':   'dividend_yield',
+        'TOT_DEBT_TO_TOT_EQY':'debt_equity',
+        'EXPENSE_RATIO':     'expense_ratio',
+        'FUND_TOTAL_ASSETS': 'aum_b',
+        'PX_LAST':           'price',
     }, inplace=True)
     df['mktcap_b']       = pd.to_numeric(df['mktcap_b'],       errors='coerce') / 1e9
+    df['aum_b']          = pd.to_numeric(df['aum_b'],          errors='coerce') / 1e9
     df['profit_margin']  = pd.to_numeric(df['profit_margin'],  errors='coerce') / 100
     df['roe']            = pd.to_numeric(df['roe'],            errors='coerce') / 100
     df['dividend_yield'] = pd.to_numeric(df['dividend_yield'], errors='coerce') / 100
+    df['expense_ratio']  = pd.to_numeric(df['expense_ratio'],  errors='coerce') / 100
+
+    # 52w high/low
     try:
         resp2 = bq.execute(
             f'get(PX_HIGH(dates=range(-365D,0D),frq=Y),'
@@ -165,10 +443,209 @@ def export_fundamentals():
         if hi: df['drawdown_52w'] = (df['price'] - df['hi_52w']) / df['hi_52w']
     except Exception as e:
         _log(f'52w warn: {e}')
+
+    # Sector label (humano)
+    df['sector'] = df.index.map(SECTOR_LABELS)
+
     df.index.name = 'ticker'
     df.index = df.index.str.replace(' US Equity', '', regex=False)
     df.to_csv(OUT / f'fundamentals_{hoje}.csv')
-    _log(f'fundamentals — {len(df)} linhas')
+    _log(f'fundamentals — {len(df)} ETFs setoriais')
+
+
+def export_fundamentals_history():
+    """
+    Histórico de 252 dias dos fundamentals que mudam ao longo do tempo:
+    pe_ratio, dividend_yield, px_to_book, px_to_sales, beta.
+    Cobre: SECTOR_ETFS + MEGA_CAPS individuais.
+    Permite computar pe_percentile, pe_zscore, valuation expansion/compression.
+    """
+    rows = []
+    for bbg_tk in FUND_TICKERS:
+        sector = SECTOR_LABELS.get(bbg_tk, '')
+        try:
+            resp = bq.execute(
+                f'get('
+                f'PE_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'PX_TO_BOOK_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'PX_TO_SALES_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'EQY_DVD_YLD_IND(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'BETA(dates=range(-252D,0D),frq=D,fill=PREV)'
+                f') for(["{bbg_tk}"])'
+            )
+            frames = []
+            for r in resp:
+                s = r.df()[r.name]
+                s = s[~s.index.duplicated(keep='last')]
+                frames.append(s.rename(r.name))
+            df_h = pd.concat(frames, axis=1)
+            df_h.index = pd.to_datetime(df_h.index)
+            ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
+            for dt, row in df_h.iterrows():
+                pe   = pd.to_numeric(row.get('PE_RATIO'),         errors='coerce')
+                pb   = pd.to_numeric(row.get('PX_TO_BOOK_RATIO'), errors='coerce')
+                ps   = pd.to_numeric(row.get('PX_TO_SALES_RATIO'),errors='coerce')
+                dy   = pd.to_numeric(row.get('EQY_DVD_YLD_IND'),  errors='coerce')
+                beta = pd.to_numeric(row.get('BETA'),             errors='coerce')
+                if pd.isna(pe) and pd.isna(pb) and pd.isna(ps):
+                    continue
+                rows.append({
+                    'date':           dt.date().isoformat(),
+                    'ticker':         ticker_short,
+                    'sector':         sector,
+                    'pe':             round(float(pe),   4) if not pd.isna(pe)   else '',
+                    'pb':             round(float(pb),   4) if not pd.isna(pb)   else '',
+                    'ps':             round(float(ps),   4) if not pd.isna(ps)   else '',
+                    'dividend_yield': round(float(dy)/100,6) if not pd.isna(dy)  else '',
+                    'beta':           round(float(beta), 4) if not pd.isna(beta) else '',
+                })
+        except Exception as e:
+            _log(f'fund_hist warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'fundamentals_history_{hoje}.csv', index=False)
+        _log(f'fundamentals_history — {len(rows)} linhas ({len(FUND_TICKERS)} tickers × 252d)')
+
+
+def export_bond_etf_fundamentals():
+    """
+    Snapshot de bond ETFs: yield, effective duration, expense ratio, AUM, NAV.
+    Cobre toda a duration ladder (BIL→TLT→EDV) + credit + TIPS.
+    """
+    univ  = bq.univ.list(RATES_FUND_TICKERS)
+    items = {
+        'PX_LAST':              bq.data.px_last(),
+        'EXPENSE_RATIO':        bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS':    bq.data.fund_total_assets(),
+        # Bond-specific
+        'YIELD':                bq.data.yield_to_maturity(),  # YTM agregado da carteira
+        'EFFECTIVE_DURATION':   bq.data.fund_effective_duration(),
+        'AVG_MATURITY':         bq.data.fund_avg_maturity(),
+        'OAS_SPREAD':           bq.data.oas_spread_to_govt(),
+    }
+    df = _bql(univ, items)
+    df.rename(columns={
+        'PX_LAST':            'price',
+        'EXPENSE_RATIO':      'expense_ratio',
+        'FUND_TOTAL_ASSETS':  'aum_b',
+        'YIELD':              'yield',
+        'EFFECTIVE_DURATION': 'duration',
+        'AVG_MATURITY':       'avg_maturity',
+        'OAS_SPREAD':         'oas',
+    }, inplace=True)
+    df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
+    df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
+    df['yield']         = pd.to_numeric(df['yield'],         errors='coerce') / 100
+    df['oas']           = pd.to_numeric(df['oas'],           errors='coerce')
+    df['label']    = df.index.map(NON_EQUITY_LABELS)
+    df['category'] = df.index.map(NON_EQUITY_CATEGORY)
+    df.index.name = 'ticker'
+    df.index = df.index.str.replace(' US Equity', '', regex=False)
+    df.to_csv(OUT / f'bond_etf_fundamentals_{hoje}.csv')
+    _log(f'bond_etf_fundamentals — {len(df)} linhas')
+
+
+def export_fx_etf_fundamentals():
+    """Snapshot de FX ETFs: NAV, expense ratio, AUM."""
+    univ  = bq.univ.list(FX_FUND_TICKERS)
+    items = {
+        'PX_LAST':             bq.data.px_last(),
+        'EXPENSE_RATIO':       bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS':   bq.data.fund_total_assets(),
+        'CHG_PCT_YTD':         bq.data.chg_pct_ytd(),
+    }
+    df = _bql(univ, items)
+    df.rename(columns={
+        'PX_LAST':           'price',
+        'EXPENSE_RATIO':     'expense_ratio',
+        'FUND_TOTAL_ASSETS': 'aum_b',
+        'CHG_PCT_YTD':       'ytd_return',
+    }, inplace=True)
+    df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
+    df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
+    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
+    df['label']    = df.index.map(NON_EQUITY_LABELS)
+    df['category'] = df.index.map(NON_EQUITY_CATEGORY)
+    df.index.name = 'ticker'
+    df.index = df.index.str.replace(' US Equity', '', regex=False)
+    df.to_csv(OUT / f'fx_etf_fundamentals_{hoje}.csv')
+    _log(f'fx_etf_fundamentals — {len(df)} linhas')
+
+
+def export_commodity_etf_fundamentals():
+    """Snapshot de commodity ETFs: NAV, expense ratio, AUM, retorno YTD."""
+    univ  = bq.univ.list(COMMODITY_FUND_TICKERS + VOL_FUND_TICKERS)
+    items = {
+        'PX_LAST':             bq.data.px_last(),
+        'EXPENSE_RATIO':       bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS':   bq.data.fund_total_assets(),
+        'CHG_PCT_YTD':         bq.data.chg_pct_ytd(),
+        'CHG_PCT_1D':          bq.data.chg_pct_1d(),
+    }
+    df = _bql(univ, items)
+    df.rename(columns={
+        'PX_LAST':           'price',
+        'EXPENSE_RATIO':     'expense_ratio',
+        'FUND_TOTAL_ASSETS': 'aum_b',
+        'CHG_PCT_YTD':       'ytd_return',
+        'CHG_PCT_1D':        'daily_return',
+    }, inplace=True)
+    df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
+    df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
+    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
+    df['daily_return']  = pd.to_numeric(df['daily_return'],  errors='coerce') / 100
+    df['label']    = df.index.map(NON_EQUITY_LABELS)
+    df['category'] = df.index.map(NON_EQUITY_CATEGORY)
+    df.index.name = 'ticker'
+    df.index = df.index.str.replace(' US Equity', '', regex=False)
+    df.to_csv(OUT / f'commodity_etf_fundamentals_{hoje}.csv')
+    _log(f'commodity_etf_fundamentals — {len(df)} linhas')
+
+
+def export_bond_etf_history():
+    """
+    Histórico de 252 dias de yield + duration dos bond ETFs.
+    Permite computar yield curve over time, duration drift, OAS percentile.
+    """
+    rows = []
+    for bbg_tk in RATES_FUND_TICKERS:
+        label = NON_EQUITY_LABELS.get(bbg_tk, '')
+        cat   = NON_EQUITY_CATEGORY.get(bbg_tk, '')
+        try:
+            resp = bq.execute(
+                f'get('
+                f'YIELD_TO_MATURITY(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'FUND_EFFECTIVE_DURATION(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'OAS_SPREAD_TO_GOVT(dates=range(-252D,0D),frq=D,fill=PREV)'
+                f') for(["{bbg_tk}"])'
+            )
+            frames = []
+            for r in resp:
+                s = r.df()[r.name]
+                s = s[~s.index.duplicated(keep='last')]
+                frames.append(s.rename(r.name))
+            df_h = pd.concat(frames, axis=1)
+            df_h.index = pd.to_datetime(df_h.index)
+            ticker_short = bbg_tk.replace(' US Equity', '')
+            for dt, row in df_h.iterrows():
+                yld = pd.to_numeric(row.get('YIELD_TO_MATURITY'),         errors='coerce')
+                dur = pd.to_numeric(row.get('FUND_EFFECTIVE_DURATION'),   errors='coerce')
+                oas = pd.to_numeric(row.get('OAS_SPREAD_TO_GOVT'),        errors='coerce')
+                if pd.isna(yld) and pd.isna(dur):
+                    continue
+                rows.append({
+                    'date':     dt.date().isoformat(),
+                    'ticker':   ticker_short,
+                    'label':    label,
+                    'category': cat,
+                    'yield':    round(float(yld)/100, 6) if not pd.isna(yld) else '',
+                    'duration': round(float(dur),     4) if not pd.isna(dur) else '',
+                    'oas':      round(float(oas),     4) if not pd.isna(oas) else '',
+                })
+        except Exception as e:
+            _log(f'bond_hist warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'bond_etf_history_{hoje}.csv', index=False)
+        _log(f'bond_etf_history — {len(rows)} linhas ({len(RATES_FUND_TICKERS)} ETFs × 252d)')
 
 
 def export_options_iv():
@@ -460,40 +937,48 @@ def auto_download():
 # ── Ciclos completos ──────────────────────────────────────────────────────
 
 def export_all():
-    """Snapshot do dia: fundamentais, IV, GEX, LETF, prices, history, macro."""
+    """Snapshot do dia: fundamentais (equity + bond/fx/commodity), IV, GEX, LETF, prices, macro."""
     print(f'\n=== [{time.strftime("%H:%M:%S")}] Export ===')
-    print('Fundamentais...');  export_fundamentals()
-    print('Options IV...');    export_options_iv()
+    print('Fundamentais (equity)...');     export_fundamentals()
+    print('Bond ETFs...');                 export_bond_etf_fundamentals()
+    print('FX ETFs...');                   export_fx_etf_fundamentals()
+    print('Commodity / Vol ETFs...');      export_commodity_etf_fundamentals()
+    print('Options IV...');                export_options_iv()
     print('GEX SPX...')
     try:
         export_gex_spx()
     except Exception as e:
         _log(f'GEX warn: {e}')
-    print('LETF...');          export_letf()
-    print('Prices...');        export_prices()
-    print('Price history...'); export_price_history()
-    print('Macro series...');  export_macro()
+    print('LETF...');                      export_letf()
+    print('Prices...');                    export_prices()
+    print('Price history...');             export_price_history()
+    print('Macro series...');              export_macro()
     export_meta()
     auto_download()
     print('Pronto.')
 
 
 def export_all_bulk():
-    """Tudo + 252 dias de histórico (preços + IV). ~5 min."""
+    """Tudo + 252 dias de histórico (preços + IV + fundamentals + bonds). ~7 min."""
     print(f'\n=== BULK [{time.strftime("%H:%M:%S")}] ===')
-    print('Fundamentais...');  export_fundamentals()
-    print('Options IV...');    export_options_iv()
+    print('Fundamentais (equity)...');     export_fundamentals()
+    print('Bond ETFs...');                 export_bond_etf_fundamentals()
+    print('FX ETFs...');                   export_fx_etf_fundamentals()
+    print('Commodity / Vol ETFs...');      export_commodity_etf_fundamentals()
+    print('Options IV...');                export_options_iv()
     print('GEX SPX...')
     try:
         export_gex_spx()
     except Exception as e:
         _log(f'GEX warn: {e}')
-    print('LETF...');                       export_letf()
-    print('Prices...');                     export_prices()
-    print('Price history...');              export_price_history()
-    print('Macro series...');               export_macro()
-    print('Price history bulk (252d)...');  export_price_history_bulk()
-    print('IV history (252d)...');          export_iv_history()
+    print('LETF...');                          export_letf()
+    print('Prices...');                        export_prices()
+    print('Price history...');                 export_price_history()
+    print('Macro series...');                  export_macro()
+    print('Fundamentals history (252d)...');   export_fundamentals_history()
+    print('Bond ETF history (252d)...');       export_bond_etf_history()
+    print('Price history bulk (252d)...');     export_price_history_bulk()
+    print('IV history (252d)...');             export_iv_history()
     export_meta()
     auto_download()
     print('Bulk pronto.')
