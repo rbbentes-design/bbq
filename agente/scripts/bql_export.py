@@ -20,8 +20,8 @@ from IPython.display import display, HTML
 import ipywidgets as widgets
 
 # ── Config ────────────────────────────────────────────────────────────────
-_PROJECT_OUT = Path(r"C:\Users\rafael bentes\bbg\agente\bql_data")
-OUT          = _PROJECT_OUT if _PROJECT_OUT.parent.exists() else (Path.home() / "bql_data")
+# Sempre o mesmo lugar — não muda entre BQuant / local / qualquer ambiente.
+OUT = Path.home() / "bql_data"
 INTERVAL     = 180          # segundos entre execuções no modo loop
 TRADING_DAYS = 252
 
