@@ -122,6 +122,21 @@ class OptionsSnapshot:
         return float(self.metrics.get("fragility") or 0)
 
     @property
+    def daily_move(self) -> float:
+        """Movimento diário implícito esperado (vol pts ou %)."""
+        return float(self.metrics.get("daily_move") or 0)
+
+    @property
+    def squeeze_components(self) -> dict[str, dict]:
+        """
+        Decomposição do squeeze_score em sub-componentes.
+        Cada componente tem: label, value (str), score (float), max (float), desc.
+        Componentes típicos: gex, pc_ratio, flip_proximity, vol_premium.
+        """
+        c = self.metrics.get("squeeze_components") or {}
+        return c if isinstance(c, dict) else {}
+
+    @property
     def z_scores(self) -> dict[str, float]:
         keys = ["z_cta", "z_dealer", "z_volctrl", "z_rp", "z_leveraged", "z_passive_etf", "z_buyback", "z_cot"]
         return {k.replace("z_", ""): float(self.metrics.get(k) or 0) for k in keys}

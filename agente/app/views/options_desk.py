@@ -225,12 +225,6 @@ _OD_CSS = """
   color: rgba(0,212,232,.25); font-size: 13px; letter-spacing: 1px;
 }
 .od-empty b { display: block; font-size: 20px; margin-bottom: 8px; }
-/* ── JARVIS embed ── */
-.od-jarvis-wrap {
-  width: 100%; border-radius: 6px; overflow: hidden;
-  border: 1px solid rgba(0,212,232,.15); margin-top: 12px;
-}
-.od-jarvis-wrap iframe { width: 100%; height: 900px; border: none; display: block; }
 </style>
 """
 
@@ -268,7 +262,7 @@ def render_options_tab(
         "</div>"
     )
 
-    panel_options  = _build_options_panel(snapshot, jarvis_html)
+    panel_options  = _build_options_panel(snapshot)
     panel_cta      = _build_cta_panel(cta_result, sigs)
     panel_darkpool = _build_darkpool_panel(shadow_flow, sigs)
     panel_vol      = _build_vol_panel(vol_regime, sigs, snapshot)
@@ -290,7 +284,7 @@ def render_options_tab(
 # ABA 1 — OPÇÕES (conteúdo original)
 # ═══════════════════════════════════════════════════════
 
-def _build_options_panel(snapshot: "OptionsSnapshot | None", jarvis_html: str | None) -> str:
+def _build_options_panel(snapshot: "OptionsSnapshot | None") -> str:
     if snapshot is None:
         return (
             "<div class='od-empty'>"
@@ -302,10 +296,10 @@ def _build_options_panel(snapshot: "OptionsSnapshot | None", jarvis_html: str | 
     panels = [
         _header_strip(snapshot),
         f"<div class='od-grid-3'>{_panel_levels(snapshot)}{_panel_greeks(snapshot)}{_panel_skew(snapshot)}</div>",
+        _panel_squeeze_breakdown(snapshot),
         _panel_flow_score(snapshot),
+        _panel_metrics_table(snapshot),
     ]
-    if jarvis_html:
-        panels.append(_panel_jarvis(jarvis_html))
     return "".join(panels)
 
 
@@ -856,18 +850,151 @@ def _panel_flow_score(snap: "OptionsSnapshot") -> str:
     )
 
 
-def _panel_jarvis(html: str) -> str:
-    import re as _re
-    # Remove audio / speech synthesis from the Bloomberg export
-    html = _re.sub(r"<audio[^>]*>.*?</audio>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
-    html = _re.sub(r"speechSynthesis\s*\.\s*speak\s*\([^)]*\)\s*;?", "", html)
-    html = _re.sub(r"window\.speechSynthesis[^;]*;?", "", html)
-    html = _re.sub(r"new\s+SpeechSynthesisUtterance[^;]*;?", "", html)
-    safe = html.replace("&", "&amp;").replace('"', "&quot;")
+def _panel_squeeze_breakdown(snap: "OptionsSnapshot") -> str:
+    """
+    Decomposição do Squeeze Score nos 4 sub-componentes.
+    Cada componente vem do metrics.json com label/value/score/max/desc.
+    """
+    comps = snap.squeeze_components
+    if not comps:
+        return ""
+
+    rows = []
+    for key, c in comps.items():
+        if not isinstance(c, dict):
+            continue
+        label = c.get("label", key)
+        value = c.get("value", "—")
+        score = float(c.get("score") or 0)
+        maxv  = float(c.get("max") or 1)
+        desc  = c.get("desc", "")
+        pct   = (score / maxv * 100) if maxv > 0 else 0
+        bar_color = "#22c55e" if pct < 30 else ("#f59e0b" if pct < 70 else "#ef4444")
+        rows.append(
+            f"<tr>"
+            f"<td style='padding:8px 12px;border-bottom:1px solid rgba(0,212,232,.06)'>"
+            f"<div style='font-size:11px;font-weight:700;color:#e2e8f0'>{label}</div>"
+            f"<div style='font-size:10px;color:rgba(0,212,232,.45);margin-top:2px'>{desc}</div>"
+            f"</td>"
+            f"<td style='padding:8px 12px;border-bottom:1px solid rgba(0,212,232,.06);"
+            f"font-family:monospace;font-size:12px;color:#00d4e8;text-align:right'>{value}</td>"
+            f"<td style='padding:8px 12px;border-bottom:1px solid rgba(0,212,232,.06);"
+            f"font-family:monospace;font-size:11px;color:{bar_color};text-align:right'>"
+            f"{score:.1f}<span style='opacity:.4'>/{maxv:.0f}</span></td>"
+            f"<td style='padding:8px 12px;border-bottom:1px solid rgba(0,212,232,.06);width:120px'>"
+            f"<div style='background:rgba(0,212,232,.08);height:6px;border-radius:3px;overflow:hidden'>"
+            f"<div style='background:{bar_color};height:100%;width:{pct:.0f}%'></div>"
+            f"</div></td>"
+            f"</tr>"
+        )
+
+    total_score = snap.squeeze_score
+    total_cls = "od-up" if total_score < 30 else ("od-warn" if total_score < 70 else "od-dn")
     return (
         f"<div class='od-panel'>"
-        f"<div class='od-panel-title'>Greeks Dashboard (Bloomberg)</div>"
-        f"<div class='od-jarvis-wrap'>"
-        f'<iframe srcdoc="{safe}" sandbox="allow-scripts allow-same-origin"></iframe>'
-        f"</div></div>"
+        f"<div class='od-panel-title'>Squeeze Decomposição "
+        f"<span class='{total_cls}' style='font-family:monospace;font-size:14px;float:right'>"
+        f"Total: {total_score:.1f}/100</span></div>"
+        f"<table style='width:100%;border-collapse:collapse'>{''.join(rows)}</table>"
+        f"</div>"
+    )
+
+
+def _panel_metrics_table(snap: "OptionsSnapshot") -> str:
+    """
+    Tabela densa com TODOS os campos numéricos do Greeks Dashboard que não estão
+    em outros painéis. Sem decoração — só dado tabelado.
+    """
+    def row(label: str, value: str, color: str = "#e2e8f0") -> str:
+        return (
+            f"<tr>"
+            f"<td style='padding:5px 12px;font-size:10px;color:rgba(0,212,232,.5);"
+            f"letter-spacing:.8px;text-transform:uppercase'>{label}</td>"
+            f"<td style='padding:5px 12px;font-size:12px;font-family:monospace;"
+            f"color:{color};text-align:right'>{value}</td>"
+            f"</tr>"
+        )
+
+    rows: list[str] = []
+
+    # Movimento implícito
+    if snap.daily_move:
+        rows.append(row("Daily Move (implied)", f"{snap.daily_move:.2f}%", "#00d4e8"))
+
+    # Tail risk
+    tail = snap.tail_score
+    if tail:
+        tc = "#22c55e" if tail < 30 else ("#f59e0b" if tail < 60 else "#ef4444")
+        rows.append(row("Tail Risk", f"{tail:.1f}/100", tc))
+
+    # Fragility
+    frag = snap.fragility
+    if frag:
+        fp = frag * 100 if frag <= 1 else frag
+        fc = "#22c55e" if fp < 30 else ("#f59e0b" if fp < 60 else "#ef4444")
+        rows.append(row("Fragility", f"{fp:.1f}/100", fc))
+
+    # P/C ratio
+    if snap.pc_ratio:
+        pc = snap.pc_ratio
+        pc_c = "#22c55e" if pc < 0.7 else ("#e2e8f0" if pc < 1.0 else "#ef4444")
+        rows.append(row("Put/Call Ratio", f"{pc:.2f}×", pc_c))
+
+    # VIX
+    if snap.vix:
+        vx = snap.vix
+        vc = "#22c55e" if vx < 15 else ("#e2e8f0" if vx < 25 else "#ef4444")
+        rows.append(row("VIX", f"{vx:.2f}", vc))
+
+    # Flow score total
+    if snap.flow_score_total:
+        ft = snap.flow_score_total
+        fc2 = "#22c55e" if ft > 60 else ("#f59e0b" if ft > 40 else "#ef4444")
+        rows.append(row("Flow Score Total", f"{ft:.1f}/100", fc2))
+
+    # Greeks (já tem painel mas tabelado aqui também — referência rápida)
+    if snap.delta_bn:
+        rows.append(row("Delta (B$)", f"{snap.delta_bn:+.2f}",
+                        "#22c55e" if snap.delta_bn > 0 else "#ef4444"))
+    if snap.vanna_bn:
+        rows.append(row("Vanna (B$)", f"{snap.vanna_bn:+.3f}",
+                        "#22c55e" if snap.vanna_bn > 0 else "#ef4444"))
+    if snap.charm_bn:
+        rows.append(row("Charm (B$)", f"{snap.charm_bn:+.3f}",
+                        "#22c55e" if snap.charm_bn > 0 else "#ef4444"))
+
+    # Campos extras do payload que não temos accessor explícito — tabela bruta
+    _SHOWN_KEYS = {
+        "gamma_flip", "gex_net_bn", "pc_ratio", "iv_rv_pp", "iv_30d", "rv_30d",
+        "squeeze_score", "tail_score", "call_wall", "put_wall", "daily_move",
+        "fragility", "delta_bn", "vanna_bn", "charm_bn", "skew_25d",
+        "flow_score_total", "vix", "squeeze_components",
+        # z/w já estão no flow_score panel
+        "z_cta", "z_dealer", "z_volctrl", "z_rp", "z_leveraged", "z_passive_etf",
+        "z_buyback", "z_cot",
+        "w_cta", "w_dealer", "w_volctrl", "w_rp", "w_leveraged", "w_passive_etf",
+        "w_buyback", "w_cot",
+    }
+    extras: list[tuple[str, str]] = []
+    for k, v in snap.metrics.items():
+        if k in _SHOWN_KEYS:
+            continue
+        if isinstance(v, (int, float)):
+            extras.append((k, f"{v:.4g}"))
+        elif isinstance(v, str) and v:
+            extras.append((k, v))
+    for k, v in sorted(extras):
+        rows.append(row(k, v))
+
+    if not rows:
+        return ""
+
+    return (
+        f"<div class='od-panel'>"
+        f"<div class='od-panel-title'>Métricas Completas (Greeks Dashboard)</div>"
+        f"<table style='width:100%;border-collapse:collapse'>{''.join(rows)}</table>"
+        f"<div style='font-size:9px;color:rgba(0,212,232,.3);padding:8px 12px;font-style:italic'>"
+        f"Snapshot: {snap.ts} · Importado: {snap.imported_at[:19] if snap.imported_at else '—'}"
+        f"</div>"
+        f"</div>"
     )
