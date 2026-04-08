@@ -654,6 +654,18 @@ def desk(
         except Exception as _exc_ing:
             _log.debug("bql_auto_ingest_skipped", error=str(_exc_ing))
 
+        # ── Refresh market_prices do bundle a partir do BBG DB atual ──────────
+        # O bundle salvo no JSON pode ter snapshot antigo (106 tickers); o BBG DB
+        # foi atualizado depois (274). Re-popula bundle.market_prices direto do DB.
+        try:
+            from app.providers.market_prices import collect as _collect_mp
+            _fresh_mp = _collect_mp()
+            if _fresh_mp:
+                bundle.market_prices = _fresh_mp
+                console.print(f"[dim]market_prices refreshed: {len(_fresh_mp)} tickers do BBG DB[/dim]")
+        except Exception as _exc_mp:
+            console.print(f"[yellow]market_prices refresh falhou: {_exc_mp}[/yellow]")
+
         # Roda portfolio pipeline para a aba Alocação (antes do brief — passa swaggy + zones)
         portfolio = None
         rrg_result = None
