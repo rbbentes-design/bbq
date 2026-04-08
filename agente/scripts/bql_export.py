@@ -481,55 +481,14 @@ def export_fundamentals():
 
 def export_fundamentals_history():
     """
-    Histórico de 252 dias dos fundamentals que mudam ao longo do tempo:
-    pe_ratio, dividend_yield, px_to_book, px_to_sales, beta.
-    Cobre: SECTOR_ETFS + MEGA_CAPS individuais.
-    Permite computar pe_percentile, pe_zscore, valuation expansion/compression.
+    DESATIVADO: PE_RATIO, PX_TO_BOOK, PX_TO_SALES, BETA são métricas
+    estáticas no BQL — não suportam dates=range. Snapshot diário só.
+
+    Para histórico de valuation, use o snapshot diário cumulativo
+    (cada run grava 1 linha; banco acumula).
     """
-    rows = []
-    for bbg_tk in FUND_TICKERS:
-        sector = SECTOR_LABELS.get(bbg_tk, '')
-        try:
-            resp = bq.execute(
-                f'get('
-                f'PE_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'PX_TO_BOOK_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'PX_TO_SALES_RATIO(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'EQY_DVD_YLD_IND(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'BETA(dates=range(-252D,0D),frq=D,fill=PREV)'
-                f') for(["{bbg_tk}"])'
-            )
-            frames = []
-            for r in resp:
-                s = r.df()[r.name]
-                s = s[~s.index.duplicated(keep='last')]
-                frames.append(s.rename(r.name))
-            df_h = pd.concat(frames, axis=1)
-            df_h.index = pd.to_datetime(df_h.index)
-            ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
-            for dt, row in df_h.iterrows():
-                pe   = pd.to_numeric(row.get('PE_RATIO'),         errors='coerce')
-                pb   = pd.to_numeric(row.get('PX_TO_BOOK_RATIO'), errors='coerce')
-                ps   = pd.to_numeric(row.get('PX_TO_SALES_RATIO'),errors='coerce')
-                dy   = pd.to_numeric(row.get('EQY_DVD_YLD_IND'),  errors='coerce')
-                beta = pd.to_numeric(row.get('BETA'),             errors='coerce')
-                if pd.isna(pe) and pd.isna(pb) and pd.isna(ps):
-                    continue
-                rows.append({
-                    'date':           dt.date().isoformat(),
-                    'ticker':         ticker_short,
-                    'sector':         sector,
-                    'pe':             round(float(pe),   4) if not pd.isna(pe)   else '',
-                    'pb':             round(float(pb),   4) if not pd.isna(pb)   else '',
-                    'ps':             round(float(ps),   4) if not pd.isna(ps)   else '',
-                    'dividend_yield': round(float(dy)/100,6) if not pd.isna(dy)  else '',
-                    'beta':           round(float(beta), 4) if not pd.isna(beta) else '',
-                })
-        except Exception as e:
-            _log(f'fund_hist warn {bbg_tk}: {e}')
-    if rows:
-        pd.DataFrame(rows).to_csv(OUT / f'fundamentals_history_{hoje}.csv', index=False)
-        _log(f'fundamentals_history — {len(rows)} linhas ({len(FUND_TICKERS)} tickers × 252d)')
+    _log('fundamentals_history: BQL não expõe PE/PB/PS histórico — pulando')
+    return
 
 
 # Cada bond ETF tem duração implícita pelo próprio nome/mandato.
@@ -657,33 +616,29 @@ def export_bond_etf_history():
         ticker_short = bbg_tk.replace(' US Equity', '')
         duration = RATES_DURATION.get(ticker_short, '')
         try:
+            # Só PX_LAST 252d (yield_ind histórico não funciona via dates=range)
             resp = bq.execute(
-                f'get('
-                f'PX_LAST(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'EQY_DVD_YLD_IND(dates=range(-252D,0D),frq=D,fill=PREV)'
-                f') for(["{bbg_tk}"])'
+                f'get(PX_LAST(dates=range(-252D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
             )
-            frames = []
-            for r in resp:
+            r = resp[0]
+            df_h = r.df()
+            if 'DATE' in df_h.columns:
+                dates = pd.to_datetime(df_h['DATE'])
+                vals  = pd.to_numeric(df_h[r.name], errors='coerce')
+            else:
                 s = r.df()[r.name]
-                s = s[~s.index.duplicated(keep='last')]
-                frames.append(s.rename(r.name))
-            df_h = pd.concat(frames, axis=1)
-            df_h.index = pd.to_datetime(df_h.index)
-            for dt, row in df_h.iterrows():
-                px  = pd.to_numeric(row.get('PX_LAST'),         errors='coerce')
-                yld = pd.to_numeric(row.get('EQY_DVD_YLD_IND'), errors='coerce')
-                if pd.isna(px) and pd.isna(yld):
-                    continue
-                rows.append({
-                    'date':     dt.date().isoformat(),
-                    'ticker':   ticker_short,
-                    'label':    label,
-                    'category': cat,
-                    'duration': duration,
-                    'price':    round(float(px),     4) if not pd.isna(px)  else '',
-                    'yield':    round(float(yld)/100,6) if not pd.isna(yld) else '',
-                })
+                dates = pd.to_datetime(s.index)
+                vals  = pd.to_numeric(s.values, errors='coerce')
+            for d, px in zip(dates, vals):
+                if pd.notna(px) and float(px) > 0:
+                    rows.append({
+                        'date':     d.date().isoformat(),
+                        'ticker':   ticker_short,
+                        'label':    label,
+                        'category': cat,
+                        'duration': duration,
+                        'price':    round(float(px), 4),
+                    })
         except Exception as e:
             _log(f'bond_hist warn {bbg_tk}: {e}')
     if rows:
@@ -1027,31 +982,37 @@ def export_earnings_calendar():
 
 def export_index_members():
     """
-    Membros + pesos dos índices principais (SPX, NDX, RUT).
-    Permite top contributors, breadth, concentration analysis.
+    Membros dos índices principais (SPX/NDX/RUT) — só com mcap + price.
+    O field id_index_weight() não existe nesta versão BQL; pesos podem
+    ser calculados client-side via mcap_member / mcap_total.
     """
     INDICES = [('SPX Index', 'SPX'), ('NDX Index', 'NDX'), ('RTY Index', 'RUT')]
     rows = []
     for bbg_idx, short in INDICES:
         try:
             members_univ = bq.univ.members(bbg_idx)
-            r = bq.execute(bql.Request(members_univ, {
-                'wt':    bq.data.id_index_weight(),
-                'mcap':  bq.data.cur_mkt_cap(),
-                'price': bq.data.px_last(),
-            }))
+            items = _safe_items([
+                ('mcap',  lambda: bq.data.cur_mkt_cap()),
+                ('price', lambda: bq.data.px_last()),
+            ])
+            if not items:
+                continue
+            r = bq.execute(bql.Request(members_univ, items))
             df_m = pd.concat([x.df()[x.name] for x in r], axis=1)
             df_m = df_m.loc[:, ~df_m.columns.duplicated()]
-            df_m['index'] = short
-            df_m['wt']    = pd.to_numeric(df_m['wt'],    errors='coerce') / 100
-            df_m['mcap']  = pd.to_numeric(df_m['mcap'],  errors='coerce') / 1e9
+            if 'mcap' in df_m.columns:
+                df_m['mcap'] = pd.to_numeric(df_m['mcap'], errors='coerce') / 1e9
             df_m.index.name = 'member'
+            # Pesos calculados a partir do mcap
+            total_mcap = float(df_m['mcap'].sum()) if 'mcap' in df_m.columns else 0.0
             for member, row in df_m.iterrows():
+                mcap = row.get('mcap')
+                wt = (float(mcap) / total_mcap) if (pd.notna(mcap) and total_mcap > 0) else ''
                 rows.append({
                     'index':    short,
                     'member':   member.replace(' US Equity', '').replace('/', '-'),
-                    'weight':   _to_num(row.get('wt')),
-                    'mcap_b':   _to_num(row.get('mcap')),
+                    'weight':   round(wt, 6) if wt != '' else '',
+                    'mcap_b':   _to_num(mcap),
                     'price':    _to_num(row.get('price')),
                 })
             _log(f'index_members {short}: {len(df_m)}')
@@ -1063,35 +1024,17 @@ def export_index_members():
 
 
 def export_etf_holdings():
-    """Top holdings dos sector ETFs principais (SPDR + Nasdaq sectoriais)."""
-    target_etfs = [f'{tk} US Equity' for tk, _ in SECTOR_ETFS if tk.startswith('XL')] + [
-        'SOXX US Equity', 'IGV US Equity', 'IBB US Equity', 'QCLN US Equity',
-        'GDX US Equity',  'GDXJ US Equity',
-    ]
-    rows = []
-    for bbg_etf in target_etfs:
-        short = bbg_etf.replace(' US Equity', '')
-        try:
-            r = bq.execute(bql.Request(bq.univ.list([bbg_etf]), {
-                'top_holdings': bq.data.fund_top_holdings(),
-            }))
-            df_h = r[0].df()
-            for idx, row in df_h.iterrows():
-                rows.append({
-                    'etf':      short,
-                    'holding':  str(idx).replace(' US Equity', '').replace('/', '-'),
-                    'value':    str(row.iloc[0]) if len(row) > 0 else '',
-                })
-        except Exception as e:
-            _log(f'holdings warn {short}: {e}')
-    if rows:
-        pd.DataFrame(rows).to_csv(OUT / f'etf_holdings_{hoje}.csv', index=False)
-        _log(f'etf_holdings — {len(rows)} linhas')
+    """
+    DESATIVADO: bq.data.fund_top_holdings() não existe nesta versão BQL.
+    Para holdings, use bq.univ.holdings('XLK US Equity') que retorna o
+    universo de membros — mas requer outro padrão de query.
+    """
+    _log('etf_holdings: bq.data.fund_top_holdings() não existe — pulando')
+    return
 
 
 def export_borrow_rate():
     """Borrow rate / cost to borrow para mega-caps (squeeze risk)."""
-    universe = list(set(MEGA_CAP_TICKERS))
     universe = list(set(MEGA_CAP_TICKERS))
     items = _safe_items([
         ('borrow',   lambda: bq.data.eqy_short_int_rate()),
@@ -1325,21 +1268,36 @@ def export_price_history():
 
 
 def export_price_history_bulk():
-    """252 dias de histórico para todos os tickers — para correlações de rede."""
+    """
+    252 dias de histórico para todos os tickers — base da rede de correlação.
+    O BQL retorna o df com colunas ['DATE', 'PX_LAST', 'CURRENCY'] (ou similar) e
+    o índice = ticker. Pegamos a coluna numérica e usamos DATE como index.
+    """
     rows = []
     for yf_tk, bbg_tk in _YF_TO_BBG.items():
         try:
             resp = bq.execute(
                 f'get(PX_LAST(dates=range(-252D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
             )
-            df2 = resp[0].df()
-            df2.columns = ['price']
-            df2 = df2.dropna()
-            df2.index = pd.to_datetime(df2.index)
-            for dt, row in df2.iterrows():
-                px = float(row['price'])
-                if px > 0:
-                    rows.append({'date': dt.date().isoformat(), 'yf_ticker': yf_tk, 'price': round(px, 4)})
+            r = resp[0]
+            df2 = r.df()
+            # df2 vem com várias colunas (DATE, PX_LAST, CURRENCY...) e ticker no index
+            # Usa o método .df()[r.name] que retorna a Series numérica direto
+            s = r.df()[r.name]
+            # Reset index pra obter as datas (se vier no índice ou em coluna DATE)
+            if 'DATE' in df2.columns:
+                dates = pd.to_datetime(df2['DATE'])
+                vals  = pd.to_numeric(df2[r.name], errors='coerce')
+            else:
+                dates = pd.to_datetime(s.index)
+                vals  = pd.to_numeric(s.values, errors='coerce')
+            for d, px in zip(dates, vals):
+                if pd.notna(px) and float(px) > 0:
+                    rows.append({
+                        'date':      d.date().isoformat(),
+                        'yf_ticker': yf_tk,
+                        'price':     round(float(px), 4),
+                    })
         except Exception as e:
             _log(f'hist_bulk warn {yf_tk}: {e}')
     if rows:
@@ -1348,33 +1306,13 @@ def export_price_history_bulk():
 
 
 def export_iv_history():
-    """252 dias de IV ATM para calcular iv_percentile."""
-    universe_iv = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'GOOGL', 'AMZN', 'AVGO',
-                   'JPM', 'XLF', 'XLE', 'XOM', 'GLD', 'TLT', 'IEF',
-                   'HYG', 'EEM', 'VIXY', 'SPY', 'QQQ', 'IWM']
-    rows = []
-    for yf_tk in universe_iv:
-        bbg_tk = _YF_TO_BBG.get(yf_tk)
-        if not bbg_tk:
-            continue
-        try:
-            resp = bq.execute(
-                f'get(IVOL_MID_ATM(expiry="30D", dates=range(-252D,0D), frq=D)) for(["{bbg_tk}"])'
-            )
-            df2 = resp[0].df()
-            df2.columns = ['iv']
-            df2 = df2.dropna()
-            df2['iv'] = pd.to_numeric(df2['iv'], errors='coerce') / 100
-            df2.index = pd.to_datetime(df2.index)
-            for dt, row in df2.iterrows():
-                iv = float(row['iv'])
-                if iv > 0:
-                    rows.append({'date': dt.date().isoformat(), 'yf_ticker': yf_tk, 'iv': round(iv, 4)})
-        except Exception as e:
-            _log(f'iv_hist warn {yf_tk}: {e}')
-    if rows:
-        pd.DataFrame(rows).to_csv(OUT / f'iv_history_{hoje}.csv', index=False)
-        _log(f'iv_history — {len(rows)} linhas')
+    """
+    DESATIVADO: IVOL_MID_ATM com (expiry, dates=range) não é aceito como
+    chamada histórica no BQL. Snapshot diário é o único disponível
+    (export_options_iv grava 1 linha por dia; banco acumula).
+    """
+    _log('iv_history: BQL não aceita IVOL_MID_ATM(expiry, dates=range) — pulando')
+    return
 
 
 def export_macro():
