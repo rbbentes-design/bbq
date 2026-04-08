@@ -711,3 +711,64 @@ def visible_subgraph(root_id: str, max_depth: int = 2) -> list[str]:
                 if child not in visited:
                     queue.append((child, depth + 1))
     return visited
+
+
+def _flatten_clusters_to_asset_class():
+    """
+    Achata a hierarquia: TODO ativo (nó com ticker) é re-parenteado direto
+    para o asset class de nível 1 (Equities, Fixed Income, Commodities,
+    Crypto, FX, Macro). Os nós intermediários (regions, indices, sectors)
+    sem ticker são removidos.
+
+    Resultado: o grafo passa de 7 níveis (World→AssetClass→Region→Index→
+    Sector→Asset) para 3 níveis (World→AssetClass→Asset). Sem cluster
+    expansíveis "[+]".
+    """
+    # 1. Coletar todos os ativos (nó com ticker) e descobrir o asset class
+    #    de cada um seguindo o parent até level 1.
+    asset_to_class: dict[str, str] = {}
+    for nid, node in list(NODES.items()):
+        if not node.get("ticker"):
+            continue
+        # Sobe na hierarquia até achar level 1
+        current = nid
+        asset_class = None
+        while current:
+            n = NODES.get(current)
+            if not n:
+                break
+            if n.get("level") == 1:
+                asset_class = current
+                break
+            current = n.get("parent")
+        if asset_class:
+            asset_to_class[nid] = asset_class
+
+    # 2. Identificar nós a remover: tudo nível 2-4 sem ticker
+    to_remove = {
+        nid for nid, n in NODES.items()
+        if n.get("level", 0) in (2, 3, 4) and not n.get("ticker")
+    }
+
+    # 3. Re-parentear os ativos direto pro asset class
+    for nid, asset_class in asset_to_class.items():
+        if nid in NODES:
+            NODES[nid]["parent"] = asset_class
+            NODES[nid]["level"] = 2  # filhos diretos do asset class viram nível 2
+
+    # 4. Remover os clusters intermediários
+    for nid in to_remove:
+        NODES.pop(nid, None)
+
+    # 5. Reconstruir as listas children dos asset classes (level 1) com os
+    #    novos filhos (todos os ativos do bucket)
+    for nid, node in NODES.items():
+        if node.get("level") == 1:
+            new_children = sorted([
+                aid for aid, ac in asset_to_class.items() if ac == nid
+            ])
+            node["children"] = new_children
+
+
+# Aplica o flatten na importação do módulo
+_flatten_clusters_to_asset_class()

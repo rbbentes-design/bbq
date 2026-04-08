@@ -625,7 +625,7 @@ def desk(
                     with console.status(f"[cyan]BQL data: extraindo {_bql_zip.name}...[/cyan]"):
                         with _zf.ZipFile(_bql_zip, "r") as _z:
                             _z.extractall(_bql_dir)
-                    console.print(f"[green]BQL data extraído:[/green] {_bql_zip.name} → bql_data/")
+                    console.print(f"[green]BQL data extraido:[/green] {_bql_zip.name} -> bql_data/")
                     _bql_extracted = True
         except Exception as _exc_bql:
             _log.debug("bql_data_auto_extract_skipped", error=str(_exc_bql))
@@ -1071,7 +1071,7 @@ def run_all(
     no_open: bool = typer.Option(False, "--no-open", help="Não abre HTML no browser."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Tudo em um: ingest → portfolio pipeline → writer → MacroDesk HTML."""
+    """Tudo em um: ingest -> portfolio pipeline -> writer -> MacroDesk HTML."""
     from datetime import date as _date
     configure_logging("DEBUG" if verbose else "INFO")
 
@@ -1079,7 +1079,7 @@ def run_all(
 
     console.print(Panel.fit(
         f"[bold cyan]Agente All-in-One[/bold cyan] — {target_date} "
-        f"| ingest → pipeline → writer → desk"
+        f"| ingest -> pipeline -> writer -> desk"
     ))
 
     # ── 1. Ingest (fontes: X, ZeroHedge, SpotGamma...) ────────────────────────
