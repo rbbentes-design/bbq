@@ -720,8 +720,12 @@ def export_options_iv():
         _log(f'options_iv warn: {e}')
 
 
-def fetch_spx_chain(spot):
-    lo, hi = spot * 0.95, spot * 1.05
+def fetch_chain(bbg_und, spot, lo_pct=0.95, hi_pct=1.05):
+    """
+    Pega chain de opções de QUALQUER underlying (índice ou ação) — mesma lógica
+    que o Greeks Dashboard usa para SPX. Funciona pra SPX/NDX/RUT/AAPL/etc.
+    """
+    lo, hi = spot * lo_pct, spot * hi_pct
     conditions = (
         bq.data.expire_dt() >= '0d'
     ).and_(bq.data.expire_dt() <= '45d'
@@ -729,7 +733,7 @@ def fetch_spx_chain(spot):
     ).and_(bq.data.strike_px() < hi
     ).and_(bq.data.open_int() > 0
     ).and_(bq.data.ivol() > 0)
-    univ  = bq.univ.filter(bq.univ.options(['SPX Index']), conditions)
+    univ  = bq.univ.filter(bq.univ.options([bbg_und]), conditions)
     items = {
         'expiry':   bq.data.expire_dt(),
         'strike':   bq.data.strike_px(),
@@ -746,10 +750,15 @@ def fetch_spx_chain(spot):
     return df.dropna(subset=['ivol'])
 
 
+# Wrapper de compatibilidade
+def fetch_spx_chain(spot):
+    return fetch_chain('SPX Index', spot)
+
+
 def export_gex_spx():
     spot = float(_bql(bq.univ.list(['SPX Index']), {'px': bq.data.px_last()})['px'].iloc[0])
     _log(f'SPX: {spot:,.0f}')
-    df = fetch_spx_chain(spot)
+    df = fetch_chain('SPX Index', spot)
     _log(f'Chain: {len(df)} contratos')
     T = (pd.to_datetime(df['expiry']) - pd.Timestamp.now()).dt.days / TRADING_DAYS
     T = T.clip(lower=1 / TRADING_DAYS)
@@ -782,16 +791,20 @@ def export_gex_spx():
 
 def export_options_greeks_full():
     """
-    Chain completa + Greeks dealer-aggregated por mega-cap individual.
-    Hoje só SPX tem GEX. Aqui replicamos para AAPL, NVDA, TSLA, etc.
-
-    Para cada underlying:
-      - Pega chain ±10% spot, expiries 0-45d, OI > 0
-      - Computa gamma BS local
-      - Agrega: gex_net_bn, gex_call_bn, gex_put_bn, call_wall, put_wall,
-                gamma_flip (zero-crossing do GEX cumulativo)
+    Chain completa + Greeks dealer-aggregated por underlying.
+    USA EXATAMENTE A MESMA LÓGICA do export_gex_spx — só muda o underlying.
+    Reutiliza fetch_chain() (mesmo padrão do Greeks Dashboard pro SPX).
     """
     UNDERLYINGS = [
+        # Índices (têm chain líquida via SPX-style)
+        ('SPX Index',       'SPX'),
+        ('NDX Index',       'NDX'),
+        ('RTY Index',       'RUT'),
+        # ETFs broad (chain líquida)
+        ('SPY US Equity',   'SPY'),
+        ('QQQ US Equity',   'QQQ'),
+        ('IWM US Equity',   'IWM'),
+        # Mega-caps (chain líquida)
         ('AAPL US Equity',  'AAPL'),
         ('MSFT US Equity',  'MSFT'),
         ('NVDA US Equity',  'NVDA'),
@@ -801,71 +814,42 @@ def export_options_greeks_full():
         ('AVGO US Equity',  'AVGO'),
         ('TSLA US Equity',  'TSLA'),
         ('NFLX US Equity',  'NFLX'),
-        ('SPY US Equity',   'SPY'),
-        ('QQQ US Equity',   'QQQ'),
-        ('IWM US Equity',   'IWM'),
-        ('NDX Index',       'NDX'),
-        ('RTY Index',       'RUT'),
     ]
 
     summary_rows = []
     for bbg_und, short in UNDERLYINGS:
         try:
-            spot = float(_bql(bq.univ.list([bbg_und]), {'px': bq.data.px_last()})['px'].iloc[0])
-        except Exception as e:
-            _log(f'greeks_full warn {short} spot: {e}')
-            continue
+            # Spot — mesma chamada do SPX
+            spot = float(_bql(bq.univ.list([bbg_und]),
+                              {'px': bq.data.px_last()})['px'].iloc[0])
 
-        try:
-            lo, hi = spot * 0.90, spot * 1.10
-            conditions = (
-                bq.data.expire_dt() >= '0d'
-            ).and_(bq.data.expire_dt() <= '45d'
-            ).and_(bq.data.strike_px() > lo
-            ).and_(bq.data.strike_px() < hi
-            ).and_(bq.data.open_int() > 0
-            ).and_(bq.data.ivol() > 0)
-            univ  = bq.univ.filter(bq.univ.options([bbg_und]), conditions)
-            # 'volume' por contrato não existe via bq.data — só fica OI.
-            items = {
-                'expiry':   bq.data.expire_dt(),
-                'strike':   bq.data.strike_px(),
-                'put_call': bq.data.put_call(),
-                'open_int': bq.data.open_int(),
-                'ivol':     bq.data.ivol(),
-            }
-            resp = bq.execute(bql.Request(univ, items))
-            df   = pd.concat([r.df()[r.name] for r in resp], axis=1)
-            df   = df.loc[:, ~df.columns.duplicated()]
-            df['ivol']     = pd.to_numeric(df['ivol'],     errors='coerce') / 100
-            df['strike']   = pd.to_numeric(df['strike'],   errors='coerce')
-            df['open_int'] = pd.to_numeric(df['open_int'], errors='coerce')
-            df = df.dropna(subset=['ivol', 'strike', 'open_int'])
+            # Chain — mesma função fetch_chain (idêntica ao SPX, só muda o underlying)
+            df = fetch_chain(bbg_und, spot)
             if df.empty:
                 _log(f'greeks_full warn {short}: chain vazia')
                 continue
 
+            # Cálculo idêntico ao export_gex_spx
             T = (pd.to_datetime(df['expiry']) - pd.Timestamp.now()).dt.days / TRADING_DAYS
             T = T.clip(lower=1 / TRADING_DAYS)
             g = calc_gamma(spot, df['strike'].values, df['ivol'].values, T.values)
-            df['gamma']  = g
+            df['gamma'] = g
             is_call = df['put_call'].str.upper().str.startswith('C')
-            df['is_call'] = is_call
             df['gex_bn'] = np.where(
                 is_call,
                  g * df['open_int'] * 100 * spot / 1e9,
                 -g * df['open_int'] * 100 * spot / 1e9,
             )
 
-            # Salva chain raw por ticker
+            # Salva chain raw por ticker (mesmo formato gex_spx_*.csv)
             df.to_csv(OUT / f'chain_{short}_{hoje}.csv')
 
-            # Agrega
+            # Agrega — mesma estrutura do gex_summary do SPX
             gex_total = float(df['gex_bn'].sum())
             gex_call  = float(df[is_call]['gex_bn'].sum())
             gex_put   = float(df[~is_call]['gex_bn'].sum())
 
-            # Walls: strike com max OI por put/call
+            # Walls: strike com maior OI por put/call
             calls = df[is_call]
             puts  = df[~is_call]
             call_wall = float(calls.loc[calls['open_int'].idxmax(), 'strike']) if not calls.empty else 0.0
@@ -880,11 +864,10 @@ def export_options_greeks_full():
                 gamma_flip = float(cum[sign_change].index[0])
 
             # P/C OI ratio
-            pc_oi = float(puts['open_int'].sum() / calls['open_int'].sum()) if not calls.empty and calls['open_int'].sum() > 0 else 0.0
-
-            # OI agregados (volume por contrato não disponível via bq.data)
-            total_call_oi  = float(calls['open_int'].sum())
-            total_put_oi   = float(puts['open_int'].sum())
+            pc_oi = (float(puts['open_int'].sum() / calls['open_int'].sum())
+                     if not calls.empty and calls['open_int'].sum() > 0 else 0.0)
+            total_call_oi = float(calls['open_int'].sum())
+            total_put_oi  = float(puts['open_int'].sum())
 
             summary_rows.append({
                 'ticker':         short,
@@ -903,7 +886,7 @@ def export_options_greeks_full():
                 'direction':      'long' if gex_total > 0 else 'short',
                 'gamma_regime':   'positive' if gex_total > 0 else 'negative',
             })
-            _log(f'greeks_full {short}: GEX={gex_total:+.2f}B chain={len(df)}')
+            _log(f'greeks_full {short}: spot={spot:,.0f} GEX={gex_total:+.2f}B chain={len(df)}')
         except Exception as e:
             _log(f'greeks_full warn {short}: {e}')
 
