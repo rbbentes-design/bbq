@@ -1050,20 +1050,36 @@ function rebuild() {
         gravity: 1.8, numIter: 400,
         fit: true, padding: 80,
       }
-    : {   // Modo rede: breadthfirst — SPX como âncora gravitacional
-        name: 'breadthfirst',
-        animate: true, animationDuration: 600,
-        directed: true,
-        roots: (() => {
-          // SPX como âncora: "o mercado tem um centro gravitacional"
-          const spx = cy.nodes('#sp500');
-          if (spx.length) return spx;
-          // Fallback: nós raiz da hierarquia (level 0, sem parent)
-          return cy.nodes().filter(n => !n.data('parent_id') && n.data('level') === 0);
-        })(),
-        spacingFactor: 1.6,
+    : {   // Modo rede: força-dirigida — espalhada para 250+ nós
+        name: 'cose',
+        animate: true, animationDuration: 800,
+        randomize: true,
+        // Repulsão alta: separa cada nó dos vizinhos
+        nodeRepulsion: function(n) {
+          const lvl = n.data('level');
+          if (lvl === 0) return 200000;          // World no centro
+          if (lvl === 1) return 120000;          // Asset classes
+          return 35000;                          // Ativos
+        },
+        // Edges mais longas: espaço entre clusters
+        idealEdgeLength: function(e) {
+          const t = e.data('type');
+          if (t === 'hierarchy') return 200;     // hierarquia bem espaçada
+          if (t === 'mst')       return 150;
+          if (t === 'rrg')       return 130;
+          return 140;
+        },
+        edgeElasticity: 80,
+        gravity: 0.4,                            // gravidade fraca: deixa espalhar
+        gravityRange: 4.0,
+        nestingFactor: 1.2,
+        numIter: 2500,                           // mais iterações = layout mais limpo
+        coolingFactor: 0.98,
+        initialTemp: 250,
+        minTemp: 1.0,
+        fit: true, padding: 80,
         avoidOverlap: true,
-        fit: true, padding: 50,
+        nodeOverlap: 30,
       };
 
   // Fallback para cose se layout falhar

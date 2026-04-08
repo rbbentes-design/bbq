@@ -412,17 +412,17 @@ def _synthetic_corr_edges(
             if count < 2:
                 continue
             rho = round(score, 3)
-            # só incluir correlações significativas
-            if abs(rho) >= 0.33:
+            # incluir correlações com algum sinal
+            if abs(rho) >= 0.20:
                 scored.append((abs(rho), a, b, rho))
 
-    # Ordena por |rho| desc, limita a N arestas (para não poluir)
-    MAX_SYNTH = 60
+    # Ordena por |rho| desc. Limite escala com nº de nós: ~1.2x cobertura.
+    # Garantia: cada nó sem MST ganha pelo menos 1 aresta (até saturar).
+    MAX_SYNTH = max(120, len(node_ids) * 2)
     scored.sort(key=lambda x: x[0], reverse=True)
     edges = []
     covered_nodes: set[str] = set(already_covered)
-    for abs_rho, a, b, rho in scored[:MAX_SYNTH * 2]:
-        # Garante que cada nó sem MST ganhe pelo menos 1 aresta sintética
+    for abs_rho, a, b, rho in scored:
         if len(edges) >= MAX_SYNTH and (a in covered_nodes and b in covered_nodes):
             continue
         color = "#22c55e" if rho >= 0 else "#ef4444"
