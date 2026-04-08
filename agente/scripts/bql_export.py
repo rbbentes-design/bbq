@@ -1445,49 +1445,54 @@ def auto_download():
 
 # ── Ciclos completos ──────────────────────────────────────────────────────
 
-def export_all():
-    """Snapshot do dia: TUDO via BQL — equity, bond, FX, commodity, options, macro."""
+def _safe(label, fn):
+    """Roda uma export envolvida em try/except — um crash não para o resto."""
+    try:
+        fn()
+    except Exception as e:
+        _log(f'{label} CRASHED: {type(e).__name__}: {e}')
+
+
+def export_all(_download=True):
+    """
+    Snapshot do dia: TUDO via BQL.
+    Se _download=False, não dispara o download (usado pelo bulk pra evitar
+    baixar 2 ZIPs).
+    """
     print(f'\n=== [{time.strftime("%H:%M:%S")}] Export ===')
 
     # ── Fundamentals snapshot ─────────────────────────────────────────────
-    print('Fundamentais (equity)...');     export_fundamentals()
-    print('Bond ETFs...');                 export_bond_etf_fundamentals()
-    print('FX ETFs...');                   export_fx_etf_fundamentals()
-    print('Commodity / Vol ETFs...');      export_commodity_etf_fundamentals()
+    print('Fundamentais (equity)...');           _safe('fundamentals', export_fundamentals)
+    print('Bond ETFs...');                       _safe('bond_etf', export_bond_etf_fundamentals)
+    print('FX ETFs...');                         _safe('fx_etf', export_fx_etf_fundamentals)
+    print('Commodity / Vol ETFs...');            _safe('commodity_etf', export_commodity_etf_fundamentals)
 
     # ── Options chain & greeks ───────────────────────────────────────────
-    print('Options IV ATM 30d...');        export_options_iv()
-    print('IV term structure 30/60/90/180/360...'); export_iv_term_structure()
-    print('Skew 25d + 10d (tails)...');    export_skew_tails()
-    print('GEX SPX...')
-    try:
-        export_gex_spx()
-    except Exception as e:
-        _log(f'GEX warn: {e}')
-    print('Greeks per ticker (mega-caps)...')
-    try:
-        export_options_greeks_full()
-    except Exception as e:
-        _log(f'greeks_full warn: {e}')
+    print('Options IV ATM 30d...');              _safe('options_iv', export_options_iv)
+    print('IV term structure 30/60/90/180/360...'); _safe('iv_term', export_iv_term_structure)
+    print('Skew 25d + 10d (tails)...');          _safe('skew_tails', export_skew_tails)
+    print('GEX SPX...');                         _safe('gex_spx', export_gex_spx)
+    print('Greeks per ticker (mega-caps)...');   _safe('greeks_full', export_options_greeks_full)
 
     # ── Volume / fluxos / short interest ─────────────────────────────────
-    print('Volume + dark flows + short interest...'); export_volume_flows()
+    print('Volume + dark flows + short interest...'); _safe('volume_flows', export_volume_flows)
 
     # ── LETF / earnings / borrow / dividends / revisions ──────────────────
-    print('LETF flows...');                export_letf()
-    print('Earnings calendar...');         export_earnings_calendar()
-    print('Borrow rate (mega-caps)...');   export_borrow_rate()
-    print('Dividends...');                 export_dividends()
-    print('EPS revisions...');             export_eps_revisions()
+    print('LETF flows...');                _safe('letf', export_letf)
+    print('Earnings calendar...');         _safe('earnings', export_earnings_calendar)
+    print('Borrow rate (mega-caps)...');   _safe('borrow', export_borrow_rate)
+    print('Dividends...');                 _safe('dividends', export_dividends)
+    print('EPS revisions...');             _safe('eps_revisions', export_eps_revisions)
 
     # ── Prices / macro ───────────────────────────────────────────────────
-    print('Realized vol (30/60/90/252d)...'); export_realized_vol()
-    print('Prices snapshot...');           export_prices()
-    print('Price history (snapshot)...');  export_price_history()
-    print('Macro series...');              export_macro()
+    print('Realized vol (30/60/90/252d)...');   _safe('realized_vol', export_realized_vol)
+    print('Prices snapshot...');                _safe('prices', export_prices)
+    print('Price history (snapshot)...');       _safe('price_history', export_price_history)
+    print('Macro series...');                   _safe('macro', export_macro)
 
     export_meta()
-    auto_download()
+    if _download:
+        auto_download()
     print('Pronto.')
 
 
@@ -1495,18 +1500,18 @@ def export_all_bulk():
     """Tudo + 252 dias de histórico (preços + IV + fundamentals + bonds + index members). ~10 min."""
     print(f'\n=== BULK [{time.strftime("%H:%M:%S")}] ===')
 
-    # Snapshot
-    export_all()
+    # Snapshot — sem baixar (download único no fim do bulk)
+    export_all(_download=False)
 
     # ── Histórico 252d ────────────────────────────────────────────────────
-    print('Fundamentals history (252d)...');   export_fundamentals_history()
-    print('Bond ETF history (252d)...');       export_bond_etf_history()
-    print('Price history bulk (252d)...');     export_price_history_bulk()
-    print('IV history (252d)...');             export_iv_history()
+    print('Fundamentals history (252d)...');   _safe('fund_history', export_fundamentals_history)
+    print('Bond ETF history (252d)...');       _safe('bond_history', export_bond_etf_history)
+    print('Price history bulk (252d)...');     _safe('price_bulk', export_price_history_bulk)
+    print('IV history (252d)...');             _safe('iv_history', export_iv_history)
 
     # ── Estrutura de mercado (members + holdings) ─────────────────────────
-    print('Index members + weights (SPX/NDX/RUT)...'); export_index_members()
-    print('ETF holdings (sectors)...');                export_etf_holdings()
+    print('Index members + weights (SPX/NDX/RUT)...'); _safe('index_members', export_index_members)
+    print('ETF holdings (sectors)...');                _safe('etf_holdings', export_etf_holdings)
 
     export_meta()
     auto_download()
