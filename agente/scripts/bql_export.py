@@ -547,8 +547,6 @@ def export_bond_etf_fundamentals():
         'EXPENSE_RATIO':     bq.data.fund_expense_ratio(),
         'FUND_TOTAL_ASSETS': bq.data.fund_total_assets(),
         'DVD_YLD':           bq.data.eqy_dvd_yld_ind(),  # proxy para yield do ETF
-        'CHG_PCT_YTD':       bq.data.chg_pct_ytd(),
-        'CHG_PCT_1D':        bq.data.chg_pct_1d(),
     }
     df = _bql(univ, items)
     df.rename(columns={
@@ -556,14 +554,10 @@ def export_bond_etf_fundamentals():
         'EXPENSE_RATIO':     'expense_ratio',
         'FUND_TOTAL_ASSETS': 'aum_b',
         'DVD_YLD':           'yield',
-        'CHG_PCT_YTD':       'ytd_return',
-        'CHG_PCT_1D':        'daily_return',
     }, inplace=True)
     df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
     df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
     df['yield']         = pd.to_numeric(df['yield'],         errors='coerce') / 100
-    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
-    df['daily_return']  = pd.to_numeric(df['daily_return'],  errors='coerce') / 100
     df['label']    = df.index.map(NON_EQUITY_LABELS)
     df['category'] = df.index.map(NON_EQUITY_CATEGORY)
     df.index.name = 'ticker'
@@ -574,24 +568,21 @@ def export_bond_etf_fundamentals():
 
 
 def export_fx_etf_fundamentals():
-    """Snapshot de FX ETFs: NAV, expense ratio, AUM."""
+    """Snapshot de FX ETFs: NAV, expense ratio, AUM. Retornos vêm de export_prices."""
     univ  = bq.univ.list(FX_FUND_TICKERS)
     items = {
-        'PX_LAST':             bq.data.px_last(),
-        'EXPENSE_RATIO':       bq.data.fund_expense_ratio(),
-        'FUND_TOTAL_ASSETS':   bq.data.fund_total_assets(),
-        'CHG_PCT_YTD':         bq.data.chg_pct_ytd(),
+        'PX_LAST':           bq.data.px_last(),
+        'EXPENSE_RATIO':     bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS': bq.data.fund_total_assets(),
     }
     df = _bql(univ, items)
     df.rename(columns={
         'PX_LAST':           'price',
         'EXPENSE_RATIO':     'expense_ratio',
         'FUND_TOTAL_ASSETS': 'aum_b',
-        'CHG_PCT_YTD':       'ytd_return',
     }, inplace=True)
     df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
     df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
-    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
     df['label']    = df.index.map(NON_EQUITY_LABELS)
     df['category'] = df.index.map(NON_EQUITY_CATEGORY)
     df.index.name = 'ticker'
@@ -601,27 +592,21 @@ def export_fx_etf_fundamentals():
 
 
 def export_commodity_etf_fundamentals():
-    """Snapshot de commodity ETFs: NAV, expense ratio, AUM, retorno YTD."""
+    """Snapshot de commodity ETFs: NAV, expense ratio, AUM. Retornos vêm de export_prices."""
     univ  = bq.univ.list(COMMODITY_FUND_TICKERS + VOL_FUND_TICKERS)
     items = {
-        'PX_LAST':             bq.data.px_last(),
-        'EXPENSE_RATIO':       bq.data.fund_expense_ratio(),
-        'FUND_TOTAL_ASSETS':   bq.data.fund_total_assets(),
-        'CHG_PCT_YTD':         bq.data.chg_pct_ytd(),
-        'CHG_PCT_1D':          bq.data.chg_pct_1d(),
+        'PX_LAST':           bq.data.px_last(),
+        'EXPENSE_RATIO':     bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS': bq.data.fund_total_assets(),
     }
     df = _bql(univ, items)
     df.rename(columns={
         'PX_LAST':           'price',
         'EXPENSE_RATIO':     'expense_ratio',
         'FUND_TOTAL_ASSETS': 'aum_b',
-        'CHG_PCT_YTD':       'ytd_return',
-        'CHG_PCT_1D':        'daily_return',
     }, inplace=True)
     df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
     df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
-    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
-    df['daily_return']  = pd.to_numeric(df['daily_return'],  errors='coerce') / 100
     df['label']    = df.index.map(NON_EQUITY_LABELS)
     df['category'] = df.index.map(NON_EQUITY_CATEGORY)
     df.index.name = 'ticker'
@@ -1042,14 +1027,12 @@ def export_index_members():
                 'wt':    bq.data.id_index_weight(),
                 'mcap':  bq.data.cur_mkt_cap(),
                 'price': bq.data.px_last(),
-                'chg':   bq.data.chg_pct_1d(),
             }))
             df_m = pd.concat([x.df()[x.name] for x in r], axis=1)
             df_m = df_m.loc[:, ~df_m.columns.duplicated()]
             df_m['index'] = short
             df_m['wt']    = pd.to_numeric(df_m['wt'],    errors='coerce') / 100
             df_m['mcap']  = pd.to_numeric(df_m['mcap'],  errors='coerce') / 1e9
-            df_m['chg']   = pd.to_numeric(df_m['chg'],   errors='coerce') / 100
             df_m.index.name = 'member'
             for member, row in df_m.iterrows():
                 rows.append({
@@ -1058,7 +1041,6 @@ def export_index_members():
                     'weight':   _to_num(row.get('wt')),
                     'mcap_b':   _to_num(row.get('mcap')),
                     'price':    _to_num(row.get('price')),
-                    'chg_1d':   _to_num(row.get('chg')),
                 })
             _log(f'index_members {short}: {len(df_m)}')
         except Exception as e:
@@ -1233,59 +1215,68 @@ def export_letf():
 def export_prices():
     """
     Snapshot atual de preços + retornos para todos os tickers.
-    Usa CHG_PCT_1D (Bloomberg nativo) para evitar daily_return=0 fora do horário.
+
+    Como bq.data.chg_pct_* não existe no BQL, computamos os retornos
+    client-side puxando uma série de px_last (-260D até hoje) por ticker
+    e calculando daily/weekly/ytd em pandas.
     """
     bbg_tickers = list(_YF_TO_BBG.values())
     yf_by_bbg   = {v: k for k, v in _YF_TO_BBG.items()}
-    try:
-        univ  = bq.univ.list(bbg_tickers)
-        items = {
-            'price':   bq.data.px_last(),
-            'chg_1d':  bq.data.chg_pct_1d(),
-            'chg_ytd': bq.data.chg_pct_ytd(),
-            'chg_5d':  bq.data.chg_pct_5d(),
-        }
-        df = _bql(univ, items)
-        df['chg_1d']  = pd.to_numeric(df['chg_1d'],  errors='coerce') / 100
-        df['chg_ytd'] = pd.to_numeric(df['chg_ytd'], errors='coerce') / 100
-        df['chg_5d']  = pd.to_numeric(df['chg_5d'],  errors='coerce') / 100
-        rows = []
-        for bbg_tk, row in df.iterrows():
-            yf_tk = yf_by_bbg.get(bbg_tk, bbg_tk.split()[0])
-            p = pd.to_numeric(row.get('price'), errors='coerce')
-            if pd.isna(p):
+    rows = []
+    today_dt = pd.Timestamp.today().normalize()
+    year_start = pd.Timestamp(today_dt.year, 1, 1)
+
+    for bbg_tk in bbg_tickers:
+        yf_tk = yf_by_bbg.get(bbg_tk, bbg_tk.split()[0])
+        try:
+            resp = bq.execute(
+                f'get(PX_LAST(dates=range(-260D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
+            )
+            df_h = resp[0].df()
+            df_h.columns = ['price']
+            df_h = df_h.dropna()
+            if df_h.empty:
                 continue
-            dr  = row.get('chg_1d')
-            ydr = row.get('chg_ytd')
-            wr  = row.get('chg_5d')
+            df_h.index = pd.to_datetime(df_h.index)
+            df_h = df_h.sort_index()
+            prices = df_h['price'].astype(float)
+
+            p_now = float(prices.iloc[-1])
+
+            # Daily return: vs último fechamento anterior
+            dr = ''
+            if len(prices) >= 2:
+                p_prev = float(prices.iloc[-2])
+                if p_prev > 0:
+                    dr = round((p_now - p_prev) / p_prev, 6)
+
+            # Weekly return: vs ~5 sessões atrás
+            wr = ''
+            if len(prices) >= 6:
+                p_5 = float(prices.iloc[-6])
+                if p_5 > 0:
+                    wr = round((p_now - p_5) / p_5, 6)
+
+            # YTD return: vs último preço antes do início do ano
+            ydr = ''
+            ytd_slice = prices[prices.index < year_start]
+            if not ytd_slice.empty:
+                p_ys = float(ytd_slice.iloc[-1])
+                if p_ys > 0:
+                    ydr = round((p_now - p_ys) / p_ys, 6)
+
             rows.append({
                 'yf_ticker':     yf_tk,
                 'bbg_ticker':    bbg_tk,
                 'name':          bbg_tk.split()[0],
-                'price':         round(float(p), 4),
-                'daily_return':  round(float(dr),  6) if not pd.isna(dr)  else '',
-                'ytd_return':    round(float(ydr), 6) if not pd.isna(ydr) else '',
-                'weekly_return': round(float(wr),  6) if not pd.isna(wr)  else '',
+                'price':         round(p_now, 4),
+                'daily_return':  dr,
+                'weekly_return': wr,
+                'ytd_return':    ydr,
             })
-    except Exception as e:
-        _log(f'prices batch warn: {e}')
-        # Fallback: coleta individual
-        rows = []
-        for yf_tk, bbg_tk in _YF_TO_BBG.items():
-            try:
-                r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                    'p':   bq.data.px_last(),
-                    'dr':  bq.data.chg_pct_1d(),
-                    'ydr': bq.data.chg_pct_ytd(),
-                }))[0].df()
-                p   = float(r.select_dtypes('number')['p'].iloc[-1])
-                dr  = float(r.select_dtypes('number')['dr'].iloc[-1])  / 100
-                ydr = float(r.select_dtypes('number')['ydr'].iloc[-1]) / 100
-                rows.append({'yf_ticker': yf_tk, 'bbg_ticker': bbg_tk,
-                             'name': bbg_tk.split()[0], 'price': round(p, 4),
-                             'daily_return': round(dr, 6), 'ytd_return': round(ydr, 6)})
-            except Exception as e2:
-                _log(f'prices warn {yf_tk}: {e2}')
+        except Exception as e:
+            _log(f'prices warn {yf_tk}: {e}')
+
     pd.DataFrame(rows).to_csv(OUT / f'prices_{hoje}.csv', index=False)
     _log(f'prices — {len(rows)} tickers')
 
