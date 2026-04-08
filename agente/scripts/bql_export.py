@@ -41,6 +41,32 @@ def _bql(univ, items):
     df = pd.concat(frames, axis=1)
     return df.loc[:, ~df.columns.duplicated()]
 
+
+def _safe_items(spec):
+    """
+    Constrói o dict de items do BQL pulando fields que não existem.
+
+    spec: lista de tuplas (alias, callable)
+      - callable: lambda: bq.data.foo()  → tenta chamar; se erro, pula
+    Retorna: dict {alias: bql_item} apenas com fields que existiram.
+    """
+    items = {}
+    for alias, item in spec:
+        try:
+            items[alias] = item()
+        except Exception as e:
+            _log(f'  field skipped {alias}: {type(e).__name__}')
+    return items
+
+
+def _to_num(v):
+    """Converte valor BQL para float, retorna '' se NaN."""
+    try:
+        n = pd.to_numeric(v, errors='coerce')
+        return round(float(n), 4) if not pd.isna(n) else ''
+    except Exception:
+        return ''
+
 def _log(msg): print(f'  {msg}')
 
 def calc_gamma(S, K, vol, T):
@@ -667,21 +693,31 @@ def export_bond_etf_history():
 
 def export_options_iv():
     univ  = bq.univ.list(FUND_TICKERS)
-    items = {
-        'atm_iv': bq.data.implied_volatility(expiry='30D', pct_moneyness='100'),
-        'put25':  bq.data.implied_volatility(expiry='30D', delta='25', put_call='PUT'),
-        'call25': bq.data.implied_volatility(expiry='30D', delta='25', put_call='CALL'),
-        'pcr_oi': bq.data.put_call_open_interest_ratio(),
-    }
-    df = _bql(univ, items)
-    df['atm_iv']   = pd.to_numeric(df['atm_iv'],  errors='coerce') / 100
-    df['skew_25d'] = (pd.to_numeric(df['put25'], errors='coerce') -
-                      pd.to_numeric(df['call25'], errors='coerce')) / 100
-    df = df[['atm_iv', 'skew_25d', 'pcr_oi']]
-    df.index.name = 'ticker'
-    df.index = df.index.str.replace(' US Equity', '', regex=False)
-    df.to_csv(OUT / f'options_iv_{hoje}.csv')
-    _log(f'options_iv — {len(df)} linhas')
+    items = _safe_items([
+        ('atm_iv', lambda: bq.data.implied_volatility(expiry='30D', pct_moneyness='100')),
+        ('put25',  lambda: bq.data.implied_volatility(expiry='30D', delta='25', put_call='PUT')),
+        ('call25', lambda: bq.data.implied_volatility(expiry='30D', delta='25', put_call='CALL')),
+        ('pcr_oi', lambda: bq.data.put_call_open_interest_ratio()),
+    ])
+    if not items:
+        _log('options_iv: nenhum field disponível')
+        return
+    try:
+        df = _bql(univ, items)
+        if 'atm_iv' in df.columns:
+            df['atm_iv'] = pd.to_numeric(df['atm_iv'], errors='coerce') / 100
+        if 'put25' in df.columns and 'call25' in df.columns:
+            df['skew_25d'] = (pd.to_numeric(df['put25'], errors='coerce') -
+                              pd.to_numeric(df['call25'], errors='coerce')) / 100
+        cols = [c for c in ['atm_iv', 'skew_25d', 'pcr_oi'] if c in df.columns]
+        if cols:
+            df = df[cols]
+        df.index.name = 'ticker'
+        df.index = df.index.str.replace(' US Equity', '', regex=False)
+        df.to_csv(OUT / f'options_iv_{hoje}.csv')
+        _log(f'options_iv — {len(df)} linhas, fields: {list(df.columns)}')
+    except Exception as e:
+        _log(f'options_iv warn: {e}')
 
 
 def fetch_spx_chain(spot):
@@ -790,12 +826,12 @@ def export_options_greeks_full():
             ).and_(bq.data.open_int() > 0
             ).and_(bq.data.ivol() > 0)
             univ  = bq.univ.filter(bq.univ.options([bbg_und]), conditions)
+            # 'volume' por contrato não existe via bq.data — só fica OI.
             items = {
                 'expiry':   bq.data.expire_dt(),
                 'strike':   bq.data.strike_px(),
                 'put_call': bq.data.put_call(),
                 'open_int': bq.data.open_int(),
-                'volume':   bq.data.volume(),
                 'ivol':     bq.data.ivol(),
             }
             resp = bq.execute(bql.Request(univ, items))
@@ -804,7 +840,6 @@ def export_options_greeks_full():
             df['ivol']     = pd.to_numeric(df['ivol'],     errors='coerce') / 100
             df['strike']   = pd.to_numeric(df['strike'],   errors='coerce')
             df['open_int'] = pd.to_numeric(df['open_int'], errors='coerce')
-            df['volume']   = pd.to_numeric(df['volume'],   errors='coerce')
             df = df.dropna(subset=['ivol', 'strike', 'open_int'])
             if df.empty:
                 _log(f'greeks_full warn {short}: chain vazia')
@@ -847,11 +882,9 @@ def export_options_greeks_full():
             # P/C OI ratio
             pc_oi = float(puts['open_int'].sum() / calls['open_int'].sum()) if not calls.empty and calls['open_int'].sum() > 0 else 0.0
 
-            # OI / volume agregados
+            # OI agregados (volume por contrato não disponível via bq.data)
             total_call_oi  = float(calls['open_int'].sum())
             total_put_oi   = float(puts['open_int'].sum())
-            total_call_vol = float(calls['volume'].sum())
-            total_put_vol  = float(puts['volume'].sum())
 
             summary_rows.append({
                 'ticker':         short,
@@ -866,8 +899,6 @@ def export_options_greeks_full():
                 'pc_oi':          round(pc_oi, 4),
                 'total_call_oi':  int(total_call_oi),
                 'total_put_oi':   int(total_put_oi),
-                'total_call_vol': int(total_call_vol),
-                'total_put_vol':  int(total_put_vol),
                 'n_contracts':    len(df),
                 'direction':      'long' if gex_total > 0 else 'short',
                 'gamma_regime':   'positive' if gex_total > 0 else 'negative',
@@ -935,36 +966,41 @@ def export_skew_tails():
 
 def export_volume_flows():
     """
-    Volume + dollar volume + ETF flows (creation/redemption) + short interest.
-    Cobre todos os tickers de equity (ETFs setoriais + mega-caps).
+    Volume + dollar volume + short interest + ETF flows (creation/redemption).
+    Usa _safe_items: pula fields que não existem no BQL desta versão.
     """
     universe = list(set(FUND_TICKERS))
     univ  = bq.univ.list(universe)
-    items = {
-        'volume':           bq.data.px_volume(),
-        'volume_avg_30d':   bq.data.px_volume(dates=bq.func.range('-30D','-1D'), fill='PREV'),
-        'price':            bq.data.px_last(),
-        'short_int_ratio':  bq.data.short_int_ratio(),
-        'short_int_pct':    bq.data.eqy_short_interest_ratio_pct_of_float(),
-        'days_to_cover':    bq.data.short_int_days_to_cover(),
-        'fund_flow_1d':     bq.data.fund_net_creation(),
-    }
+    items = _safe_items([
+        ('volume',          lambda: bq.data.px_volume()),
+        ('price',           lambda: bq.data.px_last()),
+        # Short interest — variantes possíveis
+        ('short_int',       lambda: bq.data.short_int()),
+        ('short_int_ratio', lambda: bq.data.short_int_ratio()),
+        ('si_pct_float',    lambda: bq.data.short_int_ratio_pct_of_float()),
+        ('days_to_cover',   lambda: bq.data.short_int_days_to_cover()),
+        # ETF flows
+        ('fund_flow',       lambda: bq.data.fund_net_creation()),
+    ])
+    if not items:
+        _log('volume_flows: nenhum field disponível')
+        return
     try:
         df = _bql(univ, items)
-        df['volume']         = pd.to_numeric(df['volume'],         errors='coerce')
-        df['volume_avg_30d'] = pd.to_numeric(df['volume_avg_30d'], errors='coerce')
-        df['price']          = pd.to_numeric(df['price'],          errors='coerce')
-        df['dollar_volume']  = df['volume'] * df['price']
-        df['vol_ratio']      = df['volume'] / df['volume_avg_30d']
-        df['short_int_pct']  = pd.to_numeric(df['short_int_pct'],  errors='coerce') / 100
-        df['fund_flow_1d']   = pd.to_numeric(df['fund_flow_1d'],   errors='coerce')
-        df = df[['volume', 'volume_avg_30d', 'vol_ratio', 'price',
-                 'dollar_volume', 'short_int_ratio', 'short_int_pct',
-                 'days_to_cover', 'fund_flow_1d']]
+        if 'volume' in df.columns:
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        if 'price' in df.columns:
+            df['price'] = pd.to_numeric(df['price'], errors='coerce')
+        if 'volume' in df.columns and 'price' in df.columns:
+            df['dollar_volume'] = df['volume'] * df['price']
+        for c in ('short_int', 'short_int_ratio', 'si_pct_float',
+                  'days_to_cover', 'fund_flow'):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
         df.index.name = 'ticker'
         df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
         df.to_csv(OUT / f'volume_flows_{hoje}.csv')
-        _log(f'volume_flows — {len(df)} tickers')
+        _log(f'volume_flows — {len(df)} tickers, fields: {list(df.columns)}')
     except Exception as e:
         _log(f'volume_flows warn: {e}')
 
@@ -972,45 +1008,38 @@ def export_volume_flows():
 def export_earnings_calendar():
     """
     Próximas datas de earnings + estimates por mega-cap.
-    Permite blackout periods, earnings risk filter.
-    Coleta ticker-a-ticker porque next_announcement_date é categorical
-    e não fica bem em batch.
+    Usa _safe_items: pula fields que não existem nesta versão BQL.
     """
     universe = list(set(MEGA_CAP_TICKERS))
+    items = _safe_items([
+        ('next_dt', lambda: bq.data.next_announcement_date()),
+        ('eps_est', lambda: bq.data.eps_estimate()),
+        ('rev_est', lambda: bq.data.sales_estimate()),
+        ('growth',  lambda: bq.data.eps_growth_estimate()),
+    ])
+    if not items:
+        _log('earnings_calendar: nenhum field disponível')
+        return
     rows = []
     for bbg_tk in universe:
         try:
-            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'next_dt':  bq.data.next_announcement_date(),
-                'eps_est':  bq.data.eps_estimate(),
-                'rev_est':  bq.data.sales_estimate(),
-                'growth':   bq.data.eps_growth_estimate(),
-            }))
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), items))
             df_e = pd.concat([x.df()[x.name] for x in r], axis=1)
             ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
-            row = df_e.iloc[0] if len(df_e) > 0 else None
-            if row is not None:
+            if len(df_e) > 0:
+                row = df_e.iloc[0]
                 rows.append({
                     'ticker':         ticker_short,
-                    'next_earn_date': str(row.get('next_dt', ''))[:10],
-                    'eps_estimate':   _to_num(row.get('eps_est')),
-                    'rev_estimate':   _to_num(row.get('rev_est')),
-                    'eps_growth_est': _to_num(row.get('growth')),
+                    'next_earn_date': str(row.get('next_dt', ''))[:10] if 'next_dt' in items else '',
+                    'eps_estimate':   _to_num(row.get('eps_est'))      if 'eps_est' in items else '',
+                    'rev_estimate':   _to_num(row.get('rev_est'))      if 'rev_est' in items else '',
+                    'eps_growth_est': _to_num(row.get('growth'))       if 'growth'  in items else '',
                 })
         except Exception as e:
             _log(f'earnings warn {bbg_tk}: {e}')
     if rows:
         pd.DataFrame(rows).to_csv(OUT / f'earnings_calendar_{hoje}.csv', index=False)
         _log(f'earnings_calendar — {len(rows)} mega-caps')
-
-
-def _to_num(v):
-    """Converte valor BQL para float, retorna '' se NaN."""
-    try:
-        n = pd.to_numeric(v, errors='coerce')
-        return round(float(n), 4) if not pd.isna(n) else ''
-    except Exception:
-        return ''
 
 
 def export_index_members():
@@ -1080,20 +1109,25 @@ def export_etf_holdings():
 def export_borrow_rate():
     """Borrow rate / cost to borrow para mega-caps (squeeze risk)."""
     universe = list(set(MEGA_CAP_TICKERS))
+    universe = list(set(MEGA_CAP_TICKERS))
+    items = _safe_items([
+        ('borrow',   lambda: bq.data.eqy_short_int_rate()),
+        ('sl_avail', lambda: bq.data.sec_lend_avail()),
+    ])
+    if not items:
+        _log('borrow_rate: nenhum field disponível')
+        return
     rows = []
     for bbg_tk in universe:
         try:
-            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'borrow':  bq.data.eqy_short_int_rate(),
-                'sl_avail':bq.data.sec_lend_avail(),
-            }))
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), items))
             df_b = pd.concat([x.df()[x.name] for x in r], axis=1)
-            row  = df_b.iloc[0] if len(df_b) > 0 else None
-            if row is not None:
+            if len(df_b) > 0:
+                row = df_b.iloc[0]
                 rows.append({
                     'ticker':       bbg_tk.replace(' US Equity', '').replace('/', '-'),
-                    'borrow_rate':  _to_num(row.get('borrow')),
-                    'sl_available': _to_num(row.get('sl_avail')),
+                    'borrow_rate':  _to_num(row.get('borrow'))   if 'borrow'   in items else '',
+                    'sl_available': _to_num(row.get('sl_avail')) if 'sl_avail' in items else '',
                 })
         except Exception as e:
             _log(f'borrow warn {bbg_tk}: {e}')
@@ -1105,24 +1139,28 @@ def export_borrow_rate():
 def export_dividends():
     """Próximas datas de dividendos (gap risk)."""
     universe = list(set(FUND_TICKERS))
+    items = _safe_items([
+        ('next_div', lambda: bq.data.next_dvd_pay_dt()),
+        ('ex_div',   lambda: bq.data.dvd_ex_dt()),
+        ('div_amt',  lambda: bq.data.dvd_sh_last()),
+        ('yld_ind',  lambda: bq.data.eqy_dvd_yld_ind()),
+    ])
+    if not items:
+        _log('dividends: nenhum field disponível')
+        return
     rows = []
     for bbg_tk in universe:
         try:
-            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'next_div': bq.data.next_dvd_pay_dt(),
-                'ex_div':   bq.data.dvd_ex_dt(),
-                'div_amt':  bq.data.dvd_sh_last(),
-                'yld_ind':  bq.data.eqy_dvd_yld_ind(),
-            }))
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), items))
             df_d = pd.concat([x.df()[x.name] for x in r], axis=1)
-            row  = df_d.iloc[0] if len(df_d) > 0 else None
-            if row is not None:
+            if len(df_d) > 0:
+                row = df_d.iloc[0]
                 rows.append({
                     'ticker':         bbg_tk.replace(' US Equity', '').replace('/', '-'),
-                    'next_div_date':  str(row.get('next_div', ''))[:10],
-                    'ex_div_date':    str(row.get('ex_div', ''))[:10],
-                    'div_amount':     _to_num(row.get('div_amt')),
-                    'div_yield':      _to_num(row.get('yld_ind')),
+                    'next_div_date':  str(row.get('next_div', ''))[:10] if 'next_div' in items else '',
+                    'ex_div_date':    str(row.get('ex_div', ''))[:10]   if 'ex_div'   in items else '',
+                    'div_amount':     _to_num(row.get('div_amt'))       if 'div_amt'  in items else '',
+                    'div_yield':      _to_num(row.get('yld_ind'))       if 'yld_ind'  in items else '',
                 })
         except Exception as e:
             _log(f'div warn {bbg_tk}: {e}')
@@ -1134,20 +1172,24 @@ def export_dividends():
 def export_eps_revisions():
     """EPS estimate revisions (momentum fundamental)."""
     universe = list(set(MEGA_CAP_TICKERS) | set(FUND_TICKERS))
+    items = _safe_items([
+        ('eps_est',    lambda: bq.data.eps_estimate()),
+        ('eps_3m_ago', lambda: bq.data.eps_estimate(dates='-90D')),
+        ('eps_up',     lambda: bq.data.eps_est_up_count_30d()),
+        ('eps_down',   lambda: bq.data.eps_est_down_count_30d()),
+    ])
+    if not items:
+        _log('eps_revisions: nenhum field disponível')
+        return
     rows = []
     for bbg_tk in universe:
         try:
-            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
-                'eps_est':       bq.data.eps_estimate(),
-                'eps_3m_ago':    bq.data.eps_estimate(dates='-90D'),
-                'eps_up':        bq.data.eps_est_up_count_30d(),
-                'eps_down':      bq.data.eps_est_down_count_30d(),
-            }))
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), items))
             df_r = pd.concat([x.df()[x.name] for x in r], axis=1)
-            row  = df_r.iloc[0] if len(df_r) > 0 else None
-            if row is not None:
-                eps_now = _to_num(row.get('eps_est'))
-                eps_old = _to_num(row.get('eps_3m_ago'))
+            if len(df_r) > 0:
+                row = df_r.iloc[0]
+                eps_now = _to_num(row.get('eps_est'))    if 'eps_est'    in items else ''
+                eps_old = _to_num(row.get('eps_3m_ago')) if 'eps_3m_ago' in items else ''
                 rev_pct = ''
                 try:
                     if eps_now != '' and eps_old != '' and eps_old != 0:
@@ -1159,8 +1201,8 @@ def export_eps_revisions():
                     'eps_est':      eps_now,
                     'eps_3m_ago':   eps_old,
                     'eps_rev_3m':   rev_pct,
-                    'eps_up_30d':   _to_num(row.get('eps_up')),
-                    'eps_down_30d': _to_num(row.get('eps_down')),
+                    'eps_up_30d':   _to_num(row.get('eps_up'))   if 'eps_up'   in items else '',
+                    'eps_down_30d': _to_num(row.get('eps_down')) if 'eps_down' in items else '',
                 })
         except Exception as e:
             _log(f'eps_rev warn {bbg_tk}: {e}')
@@ -1173,16 +1215,20 @@ def export_realized_vol():
     """RV (realized volatility) 30d, 60d, 90d, 252d via px_volatility BQL."""
     universe = list(set(FUND_TICKERS))
     univ  = bq.univ.list(universe)
-    items = {
-        'rv_30d':  bq.data.px_volatility(period='30D'),
-        'rv_60d':  bq.data.px_volatility(period='60D'),
-        'rv_90d':  bq.data.px_volatility(period='90D'),
-        'rv_252d': bq.data.px_volatility(period='260D'),
-    }
+    items = _safe_items([
+        ('rv_30d',  lambda: bq.data.px_volatility(period='30D')),
+        ('rv_60d',  lambda: bq.data.px_volatility(period='60D')),
+        ('rv_90d',  lambda: bq.data.px_volatility(period='90D')),
+        ('rv_252d', lambda: bq.data.px_volatility(period='260D')),
+    ])
+    if not items:
+        _log('realized_vol: nenhum field disponível')
+        return
     try:
         df = _bql(univ, items)
-        for c in ['rv_30d', 'rv_60d', 'rv_90d', 'rv_252d']:
-            df[c] = pd.to_numeric(df[c], errors='coerce') / 100
+        for c in list(items.keys()):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce') / 100
         df.index.name = 'ticker'
         df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
         df.to_csv(OUT / f'realized_vol_{hoje}.csv')
