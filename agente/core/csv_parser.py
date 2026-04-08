@@ -50,19 +50,36 @@ except ImportError:
 # ── Mapeamento de prefixo → tipo de dataset ───────────────────────────────────
 # Ordem importa: prefixos mais específicos primeiro (price_history antes de prices)
 _PREFIX_TO_TYPE: list[tuple[str, str]] = [
-    ("price_history_bulk_",        "price_history"),  # bulk export (252d) — mesmo formato que daily
+    # Mais específicos primeiro
+    ("price_history_bulk_",        "price_history"),
     ("price_history_",             "price_history"),
     ("prices_",                    "prices"),
-    ("fundamentals_history_",      "fundamentals_history"),   # 252d pe/pb/ps/dy/beta
-    ("fundamentals_",              "fundamentals"),           # equity ETFs + mega-caps
-    ("bond_etf_history_",          "bond_etf_history"),       # 252d yield/duration/oas
-    ("bond_etf_fundamentals_",     "bond_etf_fundamentals"),  # snapshot bonds
-    ("fx_etf_fundamentals_",       "fx_etf_fundamentals"),    # snapshot FX
-    ("commodity_etf_fundamentals_","commodity_etf_fundamentals"),  # snapshot commodities + vol
+    ("fundamentals_history_",      "fundamentals_history"),
+    ("fundamentals_",              "fundamentals"),
+    ("bond_etf_history_",          "bond_etf_history"),
+    ("bond_etf_fundamentals_",     "bond_etf_fundamentals"),
+    ("fx_etf_fundamentals_",       "fx_etf_fundamentals"),
+    ("commodity_etf_fundamentals_","commodity_etf_fundamentals"),
+    # Options / greeks
     ("options_iv_",                "options_iv"),
     ("iv_history_",                "iv_history"),
+    ("iv_term_",                   "iv_term"),                # term structure 30/60/90/180/360
+    ("skew_tails_",                "skew_tails"),             # 25d + 10d skew
     ("gex_summary_",               "gex_summary"),
     ("gex_spx_",                   "gex_spx"),
+    ("greeks_per_ticker_",         "greeks_per_ticker"),      # mega-cap GEX/walls/flip
+    ("chain_",                     "chain"),                  # chain raw por ticker
+    # Volume / fluxos / short / borrow / earnings / dividends / revisions
+    ("volume_flows_",              "volume_flows"),
+    ("borrow_rate_",               "borrow_rate"),
+    ("earnings_calendar_",         "earnings_calendar"),
+    ("dividends_",                 "dividends"),
+    ("eps_revisions_",             "eps_revisions"),
+    ("realized_vol_",              "realized_vol"),
+    # Estrutura de mercado
+    ("index_members_",             "index_members"),
+    ("etf_holdings_",              "etf_holdings"),
+    # Macro / LETF
     ("letf_flows_",                "letf_flows"),
     ("macro_history_",             "macro_history"),
     ("macro_series_",              "macro_series"),
@@ -81,8 +98,20 @@ _REQUIRED_COLS: dict[str, list[str]] = {
     "commodity_etf_fundamentals": ["ticker", "price"],
     "options_iv":                 ["ticker", "atm_iv"],
     "iv_history":                 ["date", "yf_ticker", "iv"],
+    "iv_term":                    ["ticker", "iv_30d"],
+    "skew_tails":                 ["ticker", "skew_25d"],
     "gex_summary":                ["gex_total_bn"],
     "gex_spx":                    ["strike", "gex_bn"],
+    "greeks_per_ticker":          ["ticker", "gex_total_bn"],
+    "chain":                      ["strike", "ivol"],
+    "volume_flows":               ["ticker", "volume"],
+    "borrow_rate":                ["ticker", "borrow_rate"],
+    "earnings_calendar":          ["ticker", "next_earn_date"],
+    "dividends":                  ["ticker", "next_div_date"],
+    "eps_revisions":              ["ticker", "eps_est"],
+    "realized_vol":               ["ticker", "rv_30d"],
+    "index_members":              ["index", "member"],
+    "etf_holdings":               ["etf", "holding"],
     "letf_flows":                 ["ticker", "nav"],
     "macro_series":               ["bbg_ticker", "px_last"],
     "macro_history":              ["date", "bbg_ticker", "value"],

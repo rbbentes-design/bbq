@@ -723,6 +723,463 @@ def export_gex_spx():
     _log(f'gex_spx — GEX={gex_total:+.2f}B')
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  COBERTURA COMPLETA — funções adicionais para fechar 100% via BQL
+# ═══════════════════════════════════════════════════════════════════════════
+
+def export_options_greeks_full():
+    """
+    Chain completa + Greeks dealer-aggregated por mega-cap individual.
+    Hoje só SPX tem GEX. Aqui replicamos para AAPL, NVDA, TSLA, etc.
+
+    Para cada underlying:
+      - Pega chain ±10% spot, expiries 0-45d, OI > 0
+      - Computa gamma BS local
+      - Agrega: gex_net_bn, gex_call_bn, gex_put_bn, call_wall, put_wall,
+                gamma_flip (zero-crossing do GEX cumulativo)
+    """
+    UNDERLYINGS = [
+        ('AAPL US Equity',  'AAPL'),
+        ('MSFT US Equity',  'MSFT'),
+        ('NVDA US Equity',  'NVDA'),
+        ('GOOGL US Equity', 'GOOGL'),
+        ('META US Equity',  'META'),
+        ('AMZN US Equity',  'AMZN'),
+        ('AVGO US Equity',  'AVGO'),
+        ('TSLA US Equity',  'TSLA'),
+        ('NFLX US Equity',  'NFLX'),
+        ('SPY US Equity',   'SPY'),
+        ('QQQ US Equity',   'QQQ'),
+        ('IWM US Equity',   'IWM'),
+        ('NDX Index',       'NDX'),
+        ('RTY Index',       'RUT'),
+    ]
+
+    summary_rows = []
+    for bbg_und, short in UNDERLYINGS:
+        try:
+            spot = float(_bql(bq.univ.list([bbg_und]), {'px': bq.data.px_last()})['px'].iloc[0])
+        except Exception as e:
+            _log(f'greeks_full warn {short} spot: {e}')
+            continue
+
+        try:
+            lo, hi = spot * 0.90, spot * 1.10
+            conditions = (
+                bq.data.expire_dt() >= '0d'
+            ).and_(bq.data.expire_dt() <= '45d'
+            ).and_(bq.data.strike_px() > lo
+            ).and_(bq.data.strike_px() < hi
+            ).and_(bq.data.open_int() > 0
+            ).and_(bq.data.ivol() > 0)
+            univ  = bq.univ.filter(bq.univ.options([bbg_und]), conditions)
+            items = {
+                'expiry':   bq.data.expire_dt(),
+                'strike':   bq.data.strike_px(),
+                'put_call': bq.data.put_call(),
+                'open_int': bq.data.open_int(),
+                'volume':   bq.data.volume(),
+                'ivol':     bq.data.ivol(),
+            }
+            resp = bq.execute(bql.Request(univ, items))
+            df   = pd.concat([r.df()[r.name] for r in resp], axis=1)
+            df   = df.loc[:, ~df.columns.duplicated()]
+            df['ivol']     = pd.to_numeric(df['ivol'],     errors='coerce') / 100
+            df['strike']   = pd.to_numeric(df['strike'],   errors='coerce')
+            df['open_int'] = pd.to_numeric(df['open_int'], errors='coerce')
+            df['volume']   = pd.to_numeric(df['volume'],   errors='coerce')
+            df = df.dropna(subset=['ivol', 'strike', 'open_int'])
+            if df.empty:
+                _log(f'greeks_full warn {short}: chain vazia')
+                continue
+
+            T = (pd.to_datetime(df['expiry']) - pd.Timestamp.now()).dt.days / TRADING_DAYS
+            T = T.clip(lower=1 / TRADING_DAYS)
+            g = calc_gamma(spot, df['strike'].values, df['ivol'].values, T.values)
+            df['gamma']  = g
+            is_call = df['put_call'].str.upper().str.startswith('C')
+            df['is_call'] = is_call
+            df['gex_bn'] = np.where(
+                is_call,
+                 g * df['open_int'] * 100 * spot / 1e9,
+                -g * df['open_int'] * 100 * spot / 1e9,
+            )
+
+            # Salva chain raw por ticker
+            df.to_csv(OUT / f'chain_{short}_{hoje}.csv')
+
+            # Agrega
+            gex_total = float(df['gex_bn'].sum())
+            gex_call  = float(df[is_call]['gex_bn'].sum())
+            gex_put   = float(df[~is_call]['gex_bn'].sum())
+
+            # Walls: strike com max OI por put/call
+            calls = df[is_call]
+            puts  = df[~is_call]
+            call_wall = float(calls.loc[calls['open_int'].idxmax(), 'strike']) if not calls.empty else 0.0
+            put_wall  = float(puts.loc[puts['open_int'].idxmax(), 'strike'])  if not puts.empty  else 0.0
+
+            # Gamma flip: zero-crossing do GEX cumulativo por strike
+            gex_by_strike = df.groupby('strike')['gex_bn'].sum().sort_index()
+            gamma_flip = 0.0
+            cum = gex_by_strike.cumsum()
+            sign_change = (cum.shift() * cum) < 0
+            if sign_change.any():
+                gamma_flip = float(cum[sign_change].index[0])
+
+            # P/C OI ratio
+            pc_oi = float(puts['open_int'].sum() / calls['open_int'].sum()) if not calls.empty and calls['open_int'].sum() > 0 else 0.0
+
+            # OI / volume agregados
+            total_call_oi  = float(calls['open_int'].sum())
+            total_put_oi   = float(puts['open_int'].sum())
+            total_call_vol = float(calls['volume'].sum())
+            total_put_vol  = float(puts['volume'].sum())
+
+            summary_rows.append({
+                'ticker':         short,
+                'bbg':            bbg_und,
+                'spot':           round(spot, 4),
+                'gex_total_bn':   round(gex_total, 4),
+                'gex_call_bn':    round(gex_call,  4),
+                'gex_put_bn':     round(gex_put,   4),
+                'call_wall':      round(call_wall, 2),
+                'put_wall':       round(put_wall,  2),
+                'gamma_flip':     round(gamma_flip, 2),
+                'pc_oi':          round(pc_oi, 4),
+                'total_call_oi':  int(total_call_oi),
+                'total_put_oi':   int(total_put_oi),
+                'total_call_vol': int(total_call_vol),
+                'total_put_vol':  int(total_put_vol),
+                'n_contracts':    len(df),
+                'direction':      'long' if gex_total > 0 else 'short',
+                'gamma_regime':   'positive' if gex_total > 0 else 'negative',
+            })
+            _log(f'greeks_full {short}: GEX={gex_total:+.2f}B chain={len(df)}')
+        except Exception as e:
+            _log(f'greeks_full warn {short}: {e}')
+
+    if summary_rows:
+        pd.DataFrame(summary_rows).to_csv(OUT / f'greeks_per_ticker_{hoje}.csv', index=False)
+        _log(f'greeks_per_ticker — {len(summary_rows)} underlyings')
+
+
+def export_iv_term_structure():
+    """
+    IV ATM por vencimento (term structure) — 30d, 60d, 90d, 180d, 360d.
+    Permite detectar contango / backwardation, vol curve steepness.
+    """
+    universe = list(set(FUND_TICKERS))  # equity ETFs + mega-caps
+    univ  = bq.univ.list(universe)
+    items = {
+        'iv_30d':  bq.data.implied_volatility(expiry='30D',  pct_moneyness='100'),
+        'iv_60d':  bq.data.implied_volatility(expiry='60D',  pct_moneyness='100'),
+        'iv_90d':  bq.data.implied_volatility(expiry='90D',  pct_moneyness='100'),
+        'iv_180d': bq.data.implied_volatility(expiry='180D', pct_moneyness='100'),
+        'iv_360d': bq.data.implied_volatility(expiry='360D', pct_moneyness='100'),
+    }
+    df = _bql(univ, items)
+    for c in ['iv_30d', 'iv_60d', 'iv_90d', 'iv_180d', 'iv_360d']:
+        df[c] = pd.to_numeric(df[c], errors='coerce') / 100
+    df['contango_60_30']  = df['iv_60d']  - df['iv_30d']
+    df['contango_90_30']  = df['iv_90d']  - df['iv_30d']
+    df['contango_180_30'] = df['iv_180d'] - df['iv_30d']
+    df.index.name = 'ticker'
+    df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
+    df.to_csv(OUT / f'iv_term_{hoje}.csv')
+    _log(f'iv_term — {len(df)} tickers')
+
+
+def export_skew_tails():
+    """
+    Skew completo: 25-delta E 10-delta (tails finos).
+    25d = skew "normal", 10d = tail risk verdadeiro.
+    """
+    universe = list(set(FUND_TICKERS))
+    univ  = bq.univ.list(universe)
+    items = {
+        'put25':  bq.data.implied_volatility(expiry='30D', delta='25', put_call='PUT'),
+        'call25': bq.data.implied_volatility(expiry='30D', delta='25', put_call='CALL'),
+        'put10':  bq.data.implied_volatility(expiry='30D', delta='10', put_call='PUT'),
+        'call10': bq.data.implied_volatility(expiry='30D', delta='10', put_call='CALL'),
+    }
+    df = _bql(univ, items)
+    for c in ['put25', 'call25', 'put10', 'call10']:
+        df[c] = pd.to_numeric(df[c], errors='coerce') / 100
+    df['skew_25d'] = df['put25'] - df['call25']
+    df['skew_10d'] = df['put10'] - df['call10']
+    df['tail_premium'] = df['skew_10d'] - df['skew_25d']  # quanto a tail é mais cara que o skew normal
+    df = df[['put25', 'call25', 'skew_25d', 'put10', 'call10', 'skew_10d', 'tail_premium']]
+    df.index.name = 'ticker'
+    df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
+    df.to_csv(OUT / f'skew_tails_{hoje}.csv')
+    _log(f'skew_tails — {len(df)} tickers')
+
+
+def export_volume_flows():
+    """
+    Volume + dollar volume + ETF flows (creation/redemption) + short interest.
+    Cobre todos os tickers de equity (ETFs setoriais + mega-caps).
+    """
+    universe = list(set(FUND_TICKERS))
+    univ  = bq.univ.list(universe)
+    items = {
+        'volume':           bq.data.px_volume(),
+        'volume_avg_30d':   bq.data.px_volume(dates=bq.func.range('-30D','-1D'), fill='PREV'),
+        'price':            bq.data.px_last(),
+        'short_int_ratio':  bq.data.short_int_ratio(),
+        'short_int_pct':    bq.data.eqy_short_interest_ratio_pct_of_float(),
+        'days_to_cover':    bq.data.short_int_days_to_cover(),
+        'fund_flow_1d':     bq.data.fund_net_creation(),
+    }
+    try:
+        df = _bql(univ, items)
+        df['volume']         = pd.to_numeric(df['volume'],         errors='coerce')
+        df['volume_avg_30d'] = pd.to_numeric(df['volume_avg_30d'], errors='coerce')
+        df['price']          = pd.to_numeric(df['price'],          errors='coerce')
+        df['dollar_volume']  = df['volume'] * df['price']
+        df['vol_ratio']      = df['volume'] / df['volume_avg_30d']
+        df['short_int_pct']  = pd.to_numeric(df['short_int_pct'],  errors='coerce') / 100
+        df['fund_flow_1d']   = pd.to_numeric(df['fund_flow_1d'],   errors='coerce')
+        df = df[['volume', 'volume_avg_30d', 'vol_ratio', 'price',
+                 'dollar_volume', 'short_int_ratio', 'short_int_pct',
+                 'days_to_cover', 'fund_flow_1d']]
+        df.index.name = 'ticker'
+        df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
+        df.to_csv(OUT / f'volume_flows_{hoje}.csv')
+        _log(f'volume_flows — {len(df)} tickers')
+    except Exception as e:
+        _log(f'volume_flows warn: {e}')
+
+
+def export_earnings_calendar():
+    """
+    Próximas datas de earnings + estimates por mega-cap.
+    Permite blackout periods, earnings risk filter.
+    Coleta ticker-a-ticker porque next_announcement_date é categorical
+    e não fica bem em batch.
+    """
+    universe = list(set(MEGA_CAP_TICKERS))
+    rows = []
+    for bbg_tk in universe:
+        try:
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
+                'next_dt':  bq.data.next_announcement_date(),
+                'eps_est':  bq.data.eps_estimate(),
+                'rev_est':  bq.data.sales_estimate(),
+                'growth':   bq.data.eps_growth_estimate(),
+            }))
+            df_e = pd.concat([x.df()[x.name] for x in r], axis=1)
+            ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
+            row = df_e.iloc[0] if len(df_e) > 0 else None
+            if row is not None:
+                rows.append({
+                    'ticker':         ticker_short,
+                    'next_earn_date': str(row.get('next_dt', ''))[:10],
+                    'eps_estimate':   _to_num(row.get('eps_est')),
+                    'rev_estimate':   _to_num(row.get('rev_est')),
+                    'eps_growth_est': _to_num(row.get('growth')),
+                })
+        except Exception as e:
+            _log(f'earnings warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'earnings_calendar_{hoje}.csv', index=False)
+        _log(f'earnings_calendar — {len(rows)} mega-caps')
+
+
+def _to_num(v):
+    """Converte valor BQL para float, retorna '' se NaN."""
+    try:
+        n = pd.to_numeric(v, errors='coerce')
+        return round(float(n), 4) if not pd.isna(n) else ''
+    except Exception:
+        return ''
+
+
+def export_index_members():
+    """
+    Membros + pesos dos índices principais (SPX, NDX, RUT).
+    Permite top contributors, breadth, concentration analysis.
+    """
+    INDICES = [('SPX Index', 'SPX'), ('NDX Index', 'NDX'), ('RTY Index', 'RUT')]
+    rows = []
+    for bbg_idx, short in INDICES:
+        try:
+            members_univ = bq.univ.members(bbg_idx)
+            r = bq.execute(bql.Request(members_univ, {
+                'wt':    bq.data.id_index_weight(),
+                'mcap':  bq.data.cur_mkt_cap(),
+                'price': bq.data.px_last(),
+                'chg':   bq.data.chg_pct_1d(),
+            }))
+            df_m = pd.concat([x.df()[x.name] for x in r], axis=1)
+            df_m = df_m.loc[:, ~df_m.columns.duplicated()]
+            df_m['index'] = short
+            df_m['wt']    = pd.to_numeric(df_m['wt'],    errors='coerce') / 100
+            df_m['mcap']  = pd.to_numeric(df_m['mcap'],  errors='coerce') / 1e9
+            df_m['chg']   = pd.to_numeric(df_m['chg'],   errors='coerce') / 100
+            df_m.index.name = 'member'
+            for member, row in df_m.iterrows():
+                rows.append({
+                    'index':    short,
+                    'member':   member.replace(' US Equity', '').replace('/', '-'),
+                    'weight':   _to_num(row.get('wt')),
+                    'mcap_b':   _to_num(row.get('mcap')),
+                    'price':    _to_num(row.get('price')),
+                    'chg_1d':   _to_num(row.get('chg')),
+                })
+            _log(f'index_members {short}: {len(df_m)}')
+        except Exception as e:
+            _log(f'index_members warn {short}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'index_members_{hoje}.csv', index=False)
+        _log(f'index_members — {len(rows)} linhas')
+
+
+def export_etf_holdings():
+    """Top holdings dos sector ETFs principais (SPDR + Nasdaq sectoriais)."""
+    target_etfs = [f'{tk} US Equity' for tk, _ in SECTOR_ETFS if tk.startswith('XL')] + [
+        'SOXX US Equity', 'IGV US Equity', 'IBB US Equity', 'QCLN US Equity',
+        'GDX US Equity',  'GDXJ US Equity',
+    ]
+    rows = []
+    for bbg_etf in target_etfs:
+        short = bbg_etf.replace(' US Equity', '')
+        try:
+            r = bq.execute(bql.Request(bq.univ.list([bbg_etf]), {
+                'top_holdings': bq.data.fund_top_holdings(),
+            }))
+            df_h = r[0].df()
+            for idx, row in df_h.iterrows():
+                rows.append({
+                    'etf':      short,
+                    'holding':  str(idx).replace(' US Equity', '').replace('/', '-'),
+                    'value':    str(row.iloc[0]) if len(row) > 0 else '',
+                })
+        except Exception as e:
+            _log(f'holdings warn {short}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'etf_holdings_{hoje}.csv', index=False)
+        _log(f'etf_holdings — {len(rows)} linhas')
+
+
+def export_borrow_rate():
+    """Borrow rate / cost to borrow para mega-caps (squeeze risk)."""
+    universe = list(set(MEGA_CAP_TICKERS))
+    rows = []
+    for bbg_tk in universe:
+        try:
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
+                'borrow':  bq.data.eqy_short_int_rate(),
+                'sl_avail':bq.data.sec_lend_avail(),
+            }))
+            df_b = pd.concat([x.df()[x.name] for x in r], axis=1)
+            row  = df_b.iloc[0] if len(df_b) > 0 else None
+            if row is not None:
+                rows.append({
+                    'ticker':       bbg_tk.replace(' US Equity', '').replace('/', '-'),
+                    'borrow_rate':  _to_num(row.get('borrow')),
+                    'sl_available': _to_num(row.get('sl_avail')),
+                })
+        except Exception as e:
+            _log(f'borrow warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'borrow_rate_{hoje}.csv', index=False)
+        _log(f'borrow_rate — {len(rows)} mega-caps')
+
+
+def export_dividends():
+    """Próximas datas de dividendos (gap risk)."""
+    universe = list(set(FUND_TICKERS))
+    rows = []
+    for bbg_tk in universe:
+        try:
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
+                'next_div': bq.data.next_dvd_pay_dt(),
+                'ex_div':   bq.data.dvd_ex_dt(),
+                'div_amt':  bq.data.dvd_sh_last(),
+                'yld_ind':  bq.data.eqy_dvd_yld_ind(),
+            }))
+            df_d = pd.concat([x.df()[x.name] for x in r], axis=1)
+            row  = df_d.iloc[0] if len(df_d) > 0 else None
+            if row is not None:
+                rows.append({
+                    'ticker':         bbg_tk.replace(' US Equity', '').replace('/', '-'),
+                    'next_div_date':  str(row.get('next_div', ''))[:10],
+                    'ex_div_date':    str(row.get('ex_div', ''))[:10],
+                    'div_amount':     _to_num(row.get('div_amt')),
+                    'div_yield':      _to_num(row.get('yld_ind')),
+                })
+        except Exception as e:
+            _log(f'div warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'dividends_{hoje}.csv', index=False)
+        _log(f'dividends — {len(rows)} tickers')
+
+
+def export_eps_revisions():
+    """EPS estimate revisions (momentum fundamental)."""
+    universe = list(set(MEGA_CAP_TICKERS) | set(FUND_TICKERS))
+    rows = []
+    for bbg_tk in universe:
+        try:
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), {
+                'eps_est':       bq.data.eps_estimate(),
+                'eps_3m_ago':    bq.data.eps_estimate(dates='-90D'),
+                'eps_up':        bq.data.eps_est_up_count_30d(),
+                'eps_down':      bq.data.eps_est_down_count_30d(),
+            }))
+            df_r = pd.concat([x.df()[x.name] for x in r], axis=1)
+            row  = df_r.iloc[0] if len(df_r) > 0 else None
+            if row is not None:
+                eps_now = _to_num(row.get('eps_est'))
+                eps_old = _to_num(row.get('eps_3m_ago'))
+                rev_pct = ''
+                try:
+                    if eps_now != '' and eps_old != '' and eps_old != 0:
+                        rev_pct = round((eps_now - eps_old) / eps_old, 6)
+                except Exception:
+                    pass
+                rows.append({
+                    'ticker':       bbg_tk.replace(' US Equity', '').replace('/', '-'),
+                    'eps_est':      eps_now,
+                    'eps_3m_ago':   eps_old,
+                    'eps_rev_3m':   rev_pct,
+                    'eps_up_30d':   _to_num(row.get('eps_up')),
+                    'eps_down_30d': _to_num(row.get('eps_down')),
+                })
+        except Exception as e:
+            _log(f'eps_rev warn {bbg_tk}: {e}')
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'eps_revisions_{hoje}.csv', index=False)
+        _log(f'eps_revisions — {len(rows)} tickers')
+
+
+def export_realized_vol():
+    """RV (realized volatility) 30d, 60d, 90d, 252d via px_volatility BQL."""
+    universe = list(set(FUND_TICKERS))
+    univ  = bq.univ.list(universe)
+    items = {
+        'rv_30d':  bq.data.px_volatility(period='30D'),
+        'rv_60d':  bq.data.px_volatility(period='60D'),
+        'rv_90d':  bq.data.px_volatility(period='90D'),
+        'rv_252d': bq.data.px_volatility(period='260D'),
+    }
+    try:
+        df = _bql(univ, items)
+        for c in ['rv_30d', 'rv_60d', 'rv_90d', 'rv_252d']:
+            df[c] = pd.to_numeric(df[c], errors='coerce') / 100
+        df.index.name = 'ticker'
+        df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
+        df.to_csv(OUT / f'realized_vol_{hoje}.csv')
+        _log(f'realized_vol — {len(df)} tickers')
+    except Exception as e:
+        _log(f'realized_vol warn: {e}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 def export_letf():
     items = {
         'nav':      bq.data.px_last(),
@@ -937,48 +1394,68 @@ def auto_download():
 # ── Ciclos completos ──────────────────────────────────────────────────────
 
 def export_all():
-    """Snapshot do dia: fundamentais (equity + bond/fx/commodity), IV, GEX, LETF, prices, macro."""
+    """Snapshot do dia: TUDO via BQL — equity, bond, FX, commodity, options, macro."""
     print(f'\n=== [{time.strftime("%H:%M:%S")}] Export ===')
+
+    # ── Fundamentals snapshot ─────────────────────────────────────────────
     print('Fundamentais (equity)...');     export_fundamentals()
     print('Bond ETFs...');                 export_bond_etf_fundamentals()
     print('FX ETFs...');                   export_fx_etf_fundamentals()
     print('Commodity / Vol ETFs...');      export_commodity_etf_fundamentals()
-    print('Options IV...');                export_options_iv()
+
+    # ── Options chain & greeks ───────────────────────────────────────────
+    print('Options IV ATM 30d...');        export_options_iv()
+    print('IV term structure 30/60/90/180/360...'); export_iv_term_structure()
+    print('Skew 25d + 10d (tails)...');    export_skew_tails()
     print('GEX SPX...')
     try:
         export_gex_spx()
     except Exception as e:
         _log(f'GEX warn: {e}')
-    print('LETF...');                      export_letf()
-    print('Prices...');                    export_prices()
-    print('Price history...');             export_price_history()
+    print('Greeks per ticker (mega-caps)...')
+    try:
+        export_options_greeks_full()
+    except Exception as e:
+        _log(f'greeks_full warn: {e}')
+
+    # ── Volume / fluxos / short interest ─────────────────────────────────
+    print('Volume + dark flows + short interest...'); export_volume_flows()
+
+    # ── LETF / earnings / borrow / dividends / revisions ──────────────────
+    print('LETF flows...');                export_letf()
+    print('Earnings calendar...');         export_earnings_calendar()
+    print('Borrow rate (mega-caps)...');   export_borrow_rate()
+    print('Dividends...');                 export_dividends()
+    print('EPS revisions...');             export_eps_revisions()
+
+    # ── Prices / macro ───────────────────────────────────────────────────
+    print('Realized vol (30/60/90/252d)...'); export_realized_vol()
+    print('Prices snapshot...');           export_prices()
+    print('Price history (snapshot)...');  export_price_history()
     print('Macro series...');              export_macro()
+
     export_meta()
     auto_download()
     print('Pronto.')
 
 
 def export_all_bulk():
-    """Tudo + 252 dias de histórico (preços + IV + fundamentals + bonds). ~7 min."""
+    """Tudo + 252 dias de histórico (preços + IV + fundamentals + bonds + index members). ~10 min."""
     print(f'\n=== BULK [{time.strftime("%H:%M:%S")}] ===')
-    print('Fundamentais (equity)...');     export_fundamentals()
-    print('Bond ETFs...');                 export_bond_etf_fundamentals()
-    print('FX ETFs...');                   export_fx_etf_fundamentals()
-    print('Commodity / Vol ETFs...');      export_commodity_etf_fundamentals()
-    print('Options IV...');                export_options_iv()
-    print('GEX SPX...')
-    try:
-        export_gex_spx()
-    except Exception as e:
-        _log(f'GEX warn: {e}')
-    print('LETF...');                          export_letf()
-    print('Prices...');                        export_prices()
-    print('Price history...');                 export_price_history()
-    print('Macro series...');                  export_macro()
+
+    # Snapshot
+    export_all()
+
+    # ── Histórico 252d ────────────────────────────────────────────────────
     print('Fundamentals history (252d)...');   export_fundamentals_history()
     print('Bond ETF history (252d)...');       export_bond_etf_history()
     print('Price history bulk (252d)...');     export_price_history_bulk()
     print('IV history (252d)...');             export_iv_history()
+
+    # ── Estrutura de mercado (members + holdings) ─────────────────────────
+    print('Index members + weights (SPX/NDX/RUT)...'); export_index_members()
+    print('ETF holdings (sectors)...');                export_etf_holdings()
+
     export_meta()
     auto_download()
     print('Bulk pronto.')

@@ -141,8 +141,20 @@ class DataNormalizer:
             "commodity_etf_fundamentals": self._normalize_commodity_etf_fundamentals,
             "options_iv":                 self._normalize_options_iv,
             "iv_history":                 self._normalize_iv_history,
+            "iv_term":                    self._normalize_iv_term,
+            "skew_tails":                 self._normalize_skew_tails,
             "gex_summary":                self._normalize_gex_summary,
             "gex_spx":                    self._normalize_gex_spx,
+            "greeks_per_ticker":          self._normalize_greeks_per_ticker,
+            "chain":                      self._normalize_chain,
+            "volume_flows":               self._normalize_volume_flows,
+            "borrow_rate":                self._normalize_borrow_rate,
+            "earnings_calendar":          self._normalize_earnings_calendar,
+            "dividends":                  self._normalize_dividends,
+            "eps_revisions":              self._normalize_eps_revisions,
+            "realized_vol":               self._normalize_realized_vol,
+            "index_members":              self._normalize_index_members,
+            "etf_holdings":               self._normalize_etf_holdings,
             "letf_flows":                 self._normalize_letf_flows,
             "macro_series":               self._normalize_macro_series,
             "macro_history":              self._normalize_macro_history,
@@ -369,6 +381,153 @@ class DataNormalizer:
             ticker_col_candidates=["ticker", "bbg_ticker"],
             fields=["price", "expense_ratio", "aum_b", "ytd_return", "daily_return"],
         )
+
+    # ── COBERTURA COMPLETA — normalizers das novas exports ─────────────────
+
+    def _normalize_iv_term(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """iv_term_*.csv: ticker, iv_30d, iv_60d, iv_90d, iv_180d, iv_360d, contango_*"""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["iv_30d", "iv_60d", "iv_90d", "iv_180d", "iv_360d",
+                    "contango_60_30", "contango_90_30", "contango_180_30"],
+        )
+
+    def _normalize_skew_tails(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """skew_tails_*.csv: ticker, put25, call25, skew_25d, put10, call10, skew_10d, tail_premium"""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["put25", "call25", "skew_25d", "put10", "call10", "skew_10d", "tail_premium"],
+        )
+
+    def _normalize_greeks_per_ticker(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """greeks_per_ticker_*.csv: GEX/walls/flip por mega-cap."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["spot", "gex_total_bn", "gex_call_bn", "gex_put_bn",
+                    "call_wall", "put_wall", "gamma_flip", "pc_oi",
+                    "total_call_oi", "total_put_oi", "total_call_vol", "total_put_vol",
+                    "n_contracts"],
+        )
+
+    def _normalize_chain(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        chain_TICKER_*.csv: chain raw por strike (não vai pra timeseries do banco
+        — fica disponível pra consumidores diretos via leitura do CSV).
+        """
+        return [], []
+
+    def _normalize_volume_flows(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """volume_flows_*.csv: volume + dollar volume + short interest + ETF flows."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["volume", "volume_avg_30d", "vol_ratio", "price",
+                    "dollar_volume", "short_int_ratio", "short_int_pct",
+                    "days_to_cover", "fund_flow_1d"],
+        )
+
+    def _normalize_borrow_rate(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """borrow_rate_*.csv: borrow rate + sec lending availability."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["borrow_rate", "sl_available"],
+        )
+
+    def _normalize_earnings_calendar(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """earnings_calendar_*.csv: ticker, next_earn_date, eps_estimate, rev_estimate, eps_growth_est."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["eps_estimate", "rev_estimate", "eps_growth_est"],
+        )
+
+    def _normalize_dividends(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """dividends_*.csv: ticker, next_div_date, ex_div_date, div_amount, div_yield."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["div_amount", "div_yield"],
+        )
+
+    def _normalize_eps_revisions(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """eps_revisions_*.csv: ticker, eps_est, eps_3m_ago, eps_rev_3m, eps_up_30d, eps_down_30d."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["eps_est", "eps_3m_ago", "eps_rev_3m", "eps_up_30d", "eps_down_30d"],
+        )
+
+    def _normalize_realized_vol(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """realized_vol_*.csv: ticker, rv_30d, rv_60d, rv_90d, rv_252d."""
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["rv_30d", "rv_60d", "rv_90d", "rv_252d"],
+        )
+
+    def _normalize_index_members(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        index_members_*.csv: index, member, weight, mcap_b, price, chg_1d.
+        Cada member vira ts records identificados como ticker do membro.
+        """
+        ts, missing = [], []
+        cols = {c.lower(): c for c in df.columns}
+        member_col = cols.get("member")
+        index_col  = cols.get("index")
+        if not member_col:
+            return ts, missing
+        for idx, row in df.iterrows():
+            row_num = int(idx) + 2
+            member  = _to_str(row.get(member_col))
+            index_n = _to_str(row.get(index_col)) if index_col else ""
+            if not member:
+                continue
+            for f in ("weight", "mcap_b", "price", "chg_1d"):
+                col = cols.get(f)
+                if not col:
+                    continue
+                val = _to_float(row.get(col))
+                ts.append(self._record(member, f"index_{index_n}_{f}",
+                                       default_date, val, source_file, ingest_ts))
+                if val is None:
+                    missing.append(self._missing(source_file, row_num, member, f, default_date,
+                                                 "missing_value", f"{f} ausente"))
+        return ts, missing
+
+    def _normalize_etf_holdings(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        etf_holdings_*.csv: etf, holding, value (string).
+        Estrutura/lista — não vira timeseries, fica para consumo direto.
+        """
+        return [], []
 
     def _normalize_options_iv(
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
