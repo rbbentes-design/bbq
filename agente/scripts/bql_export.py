@@ -775,14 +775,14 @@ def fetch_spx_chain(spot):
 def export_gex_spx():
     spot = float(_bql(bq.univ.list(['SPX Index']), {'px': bq.data.px_last()})['px'].iloc[0])
     _log(f'SPX: {spot:,.0f}')
-    df = fetch_chain('SPX Index', spot)
+    df = fetch_chain('SPX Index', spot).copy()
     _log(f'Chain: {len(df)} contratos')
     T = (pd.to_datetime(df['expiry']) - pd.Timestamp.now()).dt.days / TRADING_DAYS
     T = T.clip(lower=1 / TRADING_DAYS)
     g = calc_gamma(spot, df['strike'].values, df['ivol'].values, T.values)
-    df['gamma'] = g
+    df.loc[:, 'gamma'] = g
     is_call = df['put_call'].str.upper().str.startswith('C')
-    df['gex_bn'] = np.where(
+    df.loc[:, 'gex_bn'] = np.where(
         is_call,
          g * df['open_int'] * 100 * spot / 1e9,
         -g * df['open_int'] * 100 * spot / 1e9,
@@ -841,7 +841,7 @@ def export_options_greeks_full():
                               {'px': bq.data.px_last()})['px'].iloc[0])
 
             # Chain — mesma função fetch_chain (idêntica ao SPX, só muda o underlying)
-            df = fetch_chain(bbg_und, spot)
+            df = fetch_chain(bbg_und, spot).copy()
             if df.empty:
                 _log(f'greeks_full warn {short}: chain vazia')
                 continue
@@ -850,9 +850,9 @@ def export_options_greeks_full():
             T = (pd.to_datetime(df['expiry']) - pd.Timestamp.now()).dt.days / TRADING_DAYS
             T = T.clip(lower=1 / TRADING_DAYS)
             g = calc_gamma(spot, df['strike'].values, df['ivol'].values, T.values)
-            df['gamma'] = g
+            df.loc[:, 'gamma'] = g
             is_call = df['put_call'].str.upper().str.startswith('C')
-            df['gex_bn'] = np.where(
+            df.loc[:, 'gex_bn'] = np.where(
                 is_call,
                  g * df['open_int'] * 100 * spot / 1e9,
                 -g * df['open_int'] * 100 * spot / 1e9,
