@@ -714,7 +714,11 @@ function currentElements() {
       const d = Object.assign({}, n.data);
       delete d.parent;
       d._bg = getNodeBg(d);
-      if ((CHILDREN[d.id] || []).length > 0) {
+      // Hierarquia achatada: nó com children só vira [+] se todos os filhos
+      // estiverem ESCONDIDOS na vista atual. Se já estão visíveis, é hub.
+      const kids = CHILDREN[d.id] || [];
+      const hiddenKids = kids.filter(k => !visIds.has(k));
+      if (hiddenKids.length > 0) {
         d.expandable = true;
         d.label = '[+] ' + (n.data.label || n.data.id);
       }
