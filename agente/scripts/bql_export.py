@@ -506,40 +506,69 @@ def export_fundamentals_history():
         _log(f'fundamentals_history — {len(rows)} linhas ({len(FUND_TICKERS)} tickers × 252d)')
 
 
+# Cada bond ETF tem duração implícita pelo próprio nome/mandato.
+# Usamos um mapa estático em vez de tentar puxar fund_effective_duration
+# (que não existe como campo BQL — duration é uma característica do produto).
+RATES_DURATION = {
+    'BIL':  0.15,   # 1-3M T-bills (~0.1y)
+    'SHV':  0.40,   # 0-1Y (~0.4y)
+    'SHY':  1.85,   # 1-3Y (~1.9y)
+    'IEI':  4.50,   # 3-7Y (~4.5y)
+    'IEF':  7.50,   # 7-10Y (~7.5y)
+    'TLH':  13.50,  # 10-20Y
+    'TLT':  17.00,  # 20Y+ (~17y)
+    'EDV':  24.00,  # 25Y+ extended duration
+    'GOVT': 6.00,   # broad treasuries (~6y)
+    'LQD':  8.50,   # IG corporate (~8.5y)
+    'HYG':  3.50,   # HY corporate (~3.5y)
+    'JNK':  3.50,   # HY corporate alt
+    'EMB':  7.00,   # EM USD bonds
+    'BNDX': 7.50,   # international bonds
+    'TIP':  6.50,   # TIPS broad
+    'STIP': 2.50,   # TIPS short
+    'LTPZ': 19.00,  # TIPS long
+    'BKLN': 0.10,   # senior loans (floating rate)
+    'CWB':  3.00,   # convertibles
+    'PFF':  6.00,   # preferred stock
+}
+
+
 def export_bond_etf_fundamentals():
     """
-    Snapshot de bond ETFs: yield, effective duration, expense ratio, AUM, NAV.
-    Cobre toda a duration ladder (BIL→TLT→EDV) + credit + TIPS.
+    Snapshot de bond ETFs: NAV, expense ratio, AUM, dividend yield (proxy de yield),
+    YTD return.
+
+    Duration vem do mapa estático RATES_DURATION (cada ETF tem duração implícita
+    pelo seu mandato — TLT=20Y+, SHY=1-3Y, etc — não é um campo dinâmico no BQL).
     """
     univ  = bq.univ.list(RATES_FUND_TICKERS)
     items = {
-        'PX_LAST':              bq.data.px_last(),
-        'EXPENSE_RATIO':        bq.data.fund_expense_ratio(),
-        'FUND_TOTAL_ASSETS':    bq.data.fund_total_assets(),
-        # Bond-specific
-        'YIELD':                bq.data.yield_to_maturity(),  # YTM agregado da carteira
-        'EFFECTIVE_DURATION':   bq.data.fund_effective_duration(),
-        'AVG_MATURITY':         bq.data.fund_avg_maturity(),
-        'OAS_SPREAD':           bq.data.oas_spread_to_govt(),
+        'PX_LAST':           bq.data.px_last(),
+        'EXPENSE_RATIO':     bq.data.fund_expense_ratio(),
+        'FUND_TOTAL_ASSETS': bq.data.fund_total_assets(),
+        'DVD_YLD':           bq.data.eqy_dvd_yld_ind(),  # proxy para yield do ETF
+        'CHG_PCT_YTD':       bq.data.chg_pct_ytd(),
+        'CHG_PCT_1D':        bq.data.chg_pct_1d(),
     }
     df = _bql(univ, items)
     df.rename(columns={
-        'PX_LAST':            'price',
-        'EXPENSE_RATIO':      'expense_ratio',
-        'FUND_TOTAL_ASSETS':  'aum_b',
-        'YIELD':              'yield',
-        'EFFECTIVE_DURATION': 'duration',
-        'AVG_MATURITY':       'avg_maturity',
-        'OAS_SPREAD':         'oas',
+        'PX_LAST':           'price',
+        'EXPENSE_RATIO':     'expense_ratio',
+        'FUND_TOTAL_ASSETS': 'aum_b',
+        'DVD_YLD':           'yield',
+        'CHG_PCT_YTD':       'ytd_return',
+        'CHG_PCT_1D':        'daily_return',
     }, inplace=True)
     df['aum_b']         = pd.to_numeric(df['aum_b'],         errors='coerce') / 1e9
     df['expense_ratio'] = pd.to_numeric(df['expense_ratio'], errors='coerce') / 100
     df['yield']         = pd.to_numeric(df['yield'],         errors='coerce') / 100
-    df['oas']           = pd.to_numeric(df['oas'],           errors='coerce')
+    df['ytd_return']    = pd.to_numeric(df['ytd_return'],    errors='coerce') / 100
+    df['daily_return']  = pd.to_numeric(df['daily_return'],  errors='coerce') / 100
     df['label']    = df.index.map(NON_EQUITY_LABELS)
     df['category'] = df.index.map(NON_EQUITY_CATEGORY)
     df.index.name = 'ticker'
     df.index = df.index.str.replace(' US Equity', '', regex=False)
+    df['duration'] = df.index.map(RATES_DURATION)  # mapeia depois do strip
     df.to_csv(OUT / f'bond_etf_fundamentals_{hoje}.csv')
     _log(f'bond_etf_fundamentals — {len(df)} linhas')
 
@@ -603,19 +632,24 @@ def export_commodity_etf_fundamentals():
 
 def export_bond_etf_history():
     """
-    Histórico de 252 dias de yield + duration dos bond ETFs.
-    Permite computar yield curve over time, duration drift, OAS percentile.
+    Histórico de 252 dias dos bond ETFs.
+    Como duration é estática (vem de RATES_DURATION) e OAS/yield_to_maturity
+    não existem como fields BQL agregados, usamos:
+      - PX_LAST: preço (que reflete movimento de yield via NAV)
+      - EQY_DVD_YLD_IND: dividend yield indicado (proxy de yield do ETF)
+    Permite track de yield drift, duration risk e movimento de NAV.
     """
     rows = []
     for bbg_tk in RATES_FUND_TICKERS:
         label = NON_EQUITY_LABELS.get(bbg_tk, '')
         cat   = NON_EQUITY_CATEGORY.get(bbg_tk, '')
+        ticker_short = bbg_tk.replace(' US Equity', '')
+        duration = RATES_DURATION.get(ticker_short, '')
         try:
             resp = bq.execute(
                 f'get('
-                f'YIELD_TO_MATURITY(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'FUND_EFFECTIVE_DURATION(dates=range(-252D,0D),frq=D,fill=PREV),'
-                f'OAS_SPREAD_TO_GOVT(dates=range(-252D,0D),frq=D,fill=PREV)'
+                f'PX_LAST(dates=range(-252D,0D),frq=D,fill=PREV),'
+                f'EQY_DVD_YLD_IND(dates=range(-252D,0D),frq=D,fill=PREV)'
                 f') for(["{bbg_tk}"])'
             )
             frames = []
@@ -625,21 +659,19 @@ def export_bond_etf_history():
                 frames.append(s.rename(r.name))
             df_h = pd.concat(frames, axis=1)
             df_h.index = pd.to_datetime(df_h.index)
-            ticker_short = bbg_tk.replace(' US Equity', '')
             for dt, row in df_h.iterrows():
-                yld = pd.to_numeric(row.get('YIELD_TO_MATURITY'),         errors='coerce')
-                dur = pd.to_numeric(row.get('FUND_EFFECTIVE_DURATION'),   errors='coerce')
-                oas = pd.to_numeric(row.get('OAS_SPREAD_TO_GOVT'),        errors='coerce')
-                if pd.isna(yld) and pd.isna(dur):
+                px  = pd.to_numeric(row.get('PX_LAST'),         errors='coerce')
+                yld = pd.to_numeric(row.get('EQY_DVD_YLD_IND'), errors='coerce')
+                if pd.isna(px) and pd.isna(yld):
                     continue
                 rows.append({
                     'date':     dt.date().isoformat(),
                     'ticker':   ticker_short,
                     'label':    label,
                     'category': cat,
-                    'yield':    round(float(yld)/100, 6) if not pd.isna(yld) else '',
-                    'duration': round(float(dur),     4) if not pd.isna(dur) else '',
-                    'oas':      round(float(oas),     4) if not pd.isna(oas) else '',
+                    'duration': duration,
+                    'price':    round(float(px),     4) if not pd.isna(px)  else '',
+                    'yield':    round(float(yld)/100,6) if not pd.isna(yld) else '',
                 })
         except Exception as e:
             _log(f'bond_hist warn {bbg_tk}: {e}')

@@ -320,12 +320,15 @@ class DataNormalizer:
     ) -> tuple[list[dict], list[dict]]:
         """
         bond_etf_fundamentals_*.csv
-        Colunas: ticker, price, expense_ratio, aum_b, yield, duration, avg_maturity, oas, label, category
+        Colunas: ticker, price, expense_ratio, aum_b, yield, ytd_return,
+                 daily_return, label, category, duration
+        Duration vem do mapa estático no script (RATES_DURATION).
         """
         return self._normalize_wide(
             df, source_file, default_date, ingest_ts,
             ticker_col_candidates=["ticker", "bbg_ticker"],
-            fields=["price", "expense_ratio", "aum_b", "yield", "duration", "avg_maturity", "oas"],
+            fields=["price", "expense_ratio", "aum_b", "yield",
+                    "ytd_return", "daily_return", "duration"],
         )
 
     def _normalize_bond_etf_history(
@@ -333,7 +336,7 @@ class DataNormalizer:
     ) -> tuple[list[dict], list[dict]]:
         """
         bond_etf_history_*.csv (252d)
-        Colunas: date, ticker, label, category, yield, duration, oas
+        Colunas: date, ticker, label, category, duration, price, yield
         """
         ts, missing = [], []
         cols = {c.lower(): c for c in df.columns}
@@ -345,7 +348,7 @@ class DataNormalizer:
             date    = _to_str(row.get(date_col))   if date_col   else default_date
             if not ticker or not date:
                 continue
-            for f in ("yield", "duration", "oas"):
+            for f in ("price", "yield"):
                 col = cols.get(f)
                 if not col:
                     continue
