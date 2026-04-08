@@ -652,6 +652,14 @@ def build_graph(
             node["data"]["flow"] = flow_map[ticker]
         cyto_nodes.append(node)
 
+    # ── FILTRO: remove nós sem dados de mercado ──────────────────────────────
+    # Só ficam ativos com has_data=True. Os hubs (level 0/1) ficam sempre.
+    cyto_nodes = [
+        n for n in cyto_nodes
+        if n["data"].get("has_data") or n["data"].get("level", 99) <= 1
+    ]
+    selected_ids = {n["data"]["id"] for n in cyto_nodes}
+
     # ── Internal layers (nível 7) — expandidos dinamicamente por asset ────────
     if include_internal_layers:
         # Para cada asset (level 5) com dados, adiciona sub-nós de camada interna

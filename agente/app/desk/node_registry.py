@@ -715,14 +715,15 @@ def visible_subgraph(root_id: str, max_depth: int = 2) -> list[str]:
 
 def _flatten_clusters_to_asset_class():
     """
-    Achata a hierarquia: TODO ativo (nó com ticker) é re-parenteado direto
-    para o asset class de nível 1 (Equities, Fixed Income, Commodities,
-    Crypto, FX, Macro). Os nós intermediários (regions, indices, sectors)
-    sem ticker são removidos.
+    Achata a hierarquia e elimina hubs redundantes:
+    - World: removido (não significa nada como nó)
+    - Equities: removido (universo é equity, redundante)
+    - Commodities: removido (mesmo tratamento)
+    - Os ativos antes desses hubs viram nós soltos (parent=None, level=1).
 
-    Resultado: o grafo passa de 7 níveis (World→AssetClass→Region→Index→
-    Sector→Asset) para 3 níveis (World→AssetClass→Asset). Sem cluster
-    expansíveis "[+]".
+    Mantém: crypto, fx, fixed_income, macro_layer (com seus poucos ativos).
+    Os clusters intermediários (region, index, sector) sem ticker continuam
+    removidos.
     """
     # 1. Coletar todos os ativos (nó com ticker) e descobrir o asset class
     #    de cada um seguindo o parent até level 1.
@@ -730,7 +731,6 @@ def _flatten_clusters_to_asset_class():
     for nid, node in list(NODES.items()):
         if not node.get("ticker"):
             continue
-        # Sobe na hierarquia até achar level 1
         current = nid
         asset_class = None
         while current:
@@ -744,28 +744,42 @@ def _flatten_clusters_to_asset_class():
         if asset_class:
             asset_to_class[nid] = asset_class
 
-    # 2. Identificar nós a remover: tudo nível 2-4 sem ticker
-    to_remove = {
+    # 2. Hubs a REMOVER completamente (não existem como nó):
+    #    - world (nada significa)
+    #    - equities (universo é equity)
+    #    - commodities (idem)
+    HUBS_REMOVED = {"world", "equities", "commodities"}
+
+    # 3. Nós intermediários sem ticker (regions/indexes/sectors)
+    intermediates_to_remove = {
         nid for nid, n in NODES.items()
         if n.get("level", 0) in (2, 3, 4) and not n.get("ticker")
     }
+    to_remove = HUBS_REMOVED | intermediates_to_remove
 
-    # 3. Re-parentear os ativos direto pro asset class
+    # 4. Re-parentear os ativos:
+    #    - Ativos cujo asset_class está em HUBS_REMOVED → parent=None, level=1
+    #    - Outros (crypto/fx/fixed_income/macro_layer) → parent=asset_class, level=2
     for nid, asset_class in asset_to_class.items():
-        if nid in NODES:
+        if nid not in NODES:
+            continue
+        if asset_class in HUBS_REMOVED:
+            NODES[nid]["parent"] = None
+            NODES[nid]["level"] = 1
+        else:
             NODES[nid]["parent"] = asset_class
-            NODES[nid]["level"] = 2  # filhos diretos do asset class viram nível 2
+            NODES[nid]["level"] = 2
 
-    # 4. Remover os clusters intermediários
+    # 5. Remover hubs e intermediários
     for nid in to_remove:
         NODES.pop(nid, None)
 
-    # 5. Reconstruir as listas children dos asset classes (level 1) com os
-    #    novos filhos (todos os ativos do bucket)
+    # 6. Reconstruir as listas children dos asset classes que sobraram
     for nid, node in NODES.items():
-        if node.get("level") == 1:
+        if node.get("level") == 1 and node.get("children") is not None:
             new_children = sorted([
-                aid for aid, ac in asset_to_class.items() if ac == nid
+                aid for aid, ac in asset_to_class.items()
+                if ac == nid and ac not in HUBS_REMOVED
             ])
             node["children"] = new_children
 
