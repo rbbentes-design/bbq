@@ -728,32 +728,95 @@ def desk(
         console.print(f"[yellow]HTML geração falhou: {exc}[/yellow]")
 
     # ── Bloomberg ZIP Watcher — roda enquanto a janela estiver aberta ─────────
-    # Detecta novos bql_data_*.zip em ~/Downloads, ingere automaticamente E
-    # regenera o MacroDesk HTML em sequência (desk = sempre fresh).
-    def _regenerate_desk_html() -> None:
-        """Re-roda portfolio pipeline + macro_desk_v2 com market_prices fresh do BBG DB."""
+    # Detecta novos bql_data_*.zip em ~/Downloads e dispara a sequência completa:
+    #   1. ingest do ZIP no BBG DB
+    #   2. portfolio pipeline (sinais alpha + RRG + desk intel)
+    #   3. writer (curação LLM + texto + brief HTML) — opcional, só se LLM ok
+    #   4. MacroDesk HTML
+    #   5. Netlify deploy
+    def _regenerate_full_pipeline() -> None:
+        """Re-roda TUDO com market_prices fresh: pipeline → writer → desk → netlify."""
         try:
             from app.providers.market_prices import collect as _mp_collect
             from app.pipeline.portfolio_pipeline import run_portfolio_pipeline as _rpp
             from app.views.macro_desk_v2 import save_macro_desk_v2 as _save_md
             from app.providers.options_store import options_store as _os_re
 
-            # Refresh market_prices direto do BBG DB
+            # 1. Refresh market_prices direto do BBG DB
             _fresh = _mp_collect()
             if _fresh:
                 bundle.market_prices = _fresh
-            # Re-roda portfolio pipeline (sinais alpha + RRG + desk intel)
+                console.print(f"[dim]market_prices: {len(_fresh)} tickers fresh do BBG DB[/dim]")
+
+            # 2. Portfolio pipeline (sinais alpha + RRG + desk intel)
+            console.print("[cyan]Portfolio pipeline...[/cyan]")
             _portf, _sigs, _ = _rpp(bundle)
             _rrg = getattr(_portf, "_rrg_result", None)
+            _swaggy = getattr(_portf, "_swaggy_result", None)
+
+            # 3. Writer (curação LLM + texto + brief HTML)
+            _new_curation_path = curation_path
+            _new_curation_obj = curation_obj
+            try:
+                from app.curation.orchestrator import run_curation as _run_cur
+                from app.utils.timestamps import new_ulid as _ulid
+                from datetime import date as _date_w
+                from pathlib import Path as _Pw
+                from app.storage.paths import workspace as _ws
+
+                _run_id_w = _ulid()
+                _today_w = _date_w.today().isoformat()
+                console.print("[cyan]Writer (curação + texto + brief)...[/cyan]")
+                _cur_result = _run_cur(bundle, run_id=_run_id_w, run_date=_today_w)
+                _cur_path = _ws.bundles / _today_w / f"{_run_id_w}_curation.json"
+                _cur_path.write_text(_cur_result.model_dump_json(indent=2), encoding="utf-8")
+                _new_curation_path = str(_cur_path)
+                _new_curation_obj = _cur_result
+                console.print(f"[green]Writer ok:[/green] {len(_cur_result.scored_items)} items")
+
+                # Brief HTML (texto + tabelas)
+                try:
+                    from app.views.week_ahead_brief import save_writer_brief as _save_br
+                    _save_br(bundle, _new_curation_path,
+                             swaggy_result=_swaggy, signals=_sigs or {})
+                except Exception as _exc_br:
+                    console.print(f"[yellow]Brief falhou: {_exc_br}[/yellow]")
+            except Exception as _exc_w:
+                console.print(f"[yellow]Writer falhou (segue sem texto novo): {_exc_w}[/yellow]")
+
+            # 4. MacroDesk HTML
             _opts = _os_re.load_latest()
             _new_path = _save_md(
-                bundle, curation_obj,
+                bundle, _new_curation_obj,
                 portfolio=_portf, rrg_result=_rrg,
                 options_snapshot=_opts,
             )
             console.print(f"[green]MacroDesk regenerado:[/green] {_new_path.name}")
+
+            # 5. Netlify deploy automático
+            try:
+                import shutil as _shu
+                import subprocess as _sub
+                from pathlib import Path as _Pn
+                _deploy_dir = _Pn.home() / "netlify_deploy"
+                _deploy_dir.mkdir(exist_ok=True)
+                _shu.copy(_new_path, _deploy_dir / "index.html")
+                _nl = _sub.run(
+                    f'netlify deploy --dir "{_deploy_dir}" --prod',
+                    capture_output=True, timeout=90, shell=True,
+                )
+                _out = (_nl.stdout or b"").decode("utf-8", errors="replace")
+                _url = next(
+                    (l.split("Production URL:")[-1].strip().strip("<>")
+                     for l in _out.splitlines() if "Production URL:" in l),
+                    None,
+                )
+                if _url:
+                    console.print(f"[cyan]Netlify:[/cyan] {_url}")
+            except Exception as _exc_n:
+                console.print(f"[dim]Netlify skipped: {_exc_n}[/dim]")
         except Exception as _exc_rd:
-            console.print(f"[yellow]MacroDesk regen falhou: {_exc_rd}[/yellow]")
+            console.print(f"[yellow]Pipeline regen falhou: {_exc_rd}[/yellow]")
 
     _watch_dl   = Path.home() / "Downloads"
     _watch_seen = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
@@ -777,8 +840,8 @@ def desk(
                             f"({'OK' if _r.status == 'ok' else _r.status})"
                         )
                         if _r.status == "ok" and _r.rows_ingested > 0:
-                            console.print("[cyan]Regenerando MacroDesk com dados novos...[/cyan]")
-                            _regenerate_desk_html()
+                            console.print("[bold cyan]>> Pipeline completo: pipeline + writer + desk + netlify[/bold cyan]")
+                            _regenerate_full_pipeline()
                     except Exception as _e:
                         console.print(f"[yellow]Bloomberg ingest erro: {_e}[/yellow]")
                 _watch_seen = _current
