@@ -728,12 +728,37 @@ def desk(
         console.print(f"[yellow]HTML geração falhou: {exc}[/yellow]")
 
     # ── Bloomberg ZIP Watcher — roda enquanto a janela estiver aberta ─────────
-    # Detecta novos bql_data_*.zip em ~/Downloads e ingere automaticamente.
-    # O terminal fica ativo como daemon de dados Bloomberg.
+    # Detecta novos bql_data_*.zip em ~/Downloads, ingere automaticamente E
+    # regenera o MacroDesk HTML em sequência (desk = sempre fresh).
+    def _regenerate_desk_html() -> None:
+        """Re-roda portfolio pipeline + macro_desk_v2 com market_prices fresh do BBG DB."""
+        try:
+            from app.providers.market_prices import collect as _mp_collect
+            from app.pipeline.portfolio_pipeline import run_portfolio_pipeline as _rpp
+            from app.views.macro_desk_v2 import save_macro_desk_v2 as _save_md
+            from app.providers.options_store import options_store as _os_re
+
+            # Refresh market_prices direto do BBG DB
+            _fresh = _mp_collect()
+            if _fresh:
+                bundle.market_prices = _fresh
+            # Re-roda portfolio pipeline (sinais alpha + RRG + desk intel)
+            _portf, _sigs, _ = _rpp(bundle)
+            _rrg = getattr(_portf, "_rrg_result", None)
+            _opts = _os_re.load_latest()
+            _new_path = _save_md(
+                bundle, curation_obj,
+                portfolio=_portf, rrg_result=_rrg,
+                options_snapshot=_opts,
+            )
+            console.print(f"[green]MacroDesk regenerado:[/green] {_new_path.name}")
+        except Exception as _exc_rd:
+            console.print(f"[yellow]MacroDesk regen falhou: {_exc_rd}[/yellow]")
+
     _watch_dl   = Path.home() / "Downloads"
     _watch_seen = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
     console.print()
-    console.print("[bold cyan]Bloomberg Watcher ativo[/bold cyan] — aguardando ZIPs em Downloads...")
+    console.print("[bold cyan]Bloomberg Watcher ativo[/bold cyan] — ZIP novo dispara ingest + desk regen")
     console.print("[dim]Feche esta janela para parar.[/dim]")
     import time as _time
     while True:
@@ -751,6 +776,9 @@ def desk(
                             f"[green]Bloomberg DB:[/green] {_r.rows_ingested} linhas "
                             f"({'OK' if _r.status == 'ok' else _r.status})"
                         )
+                        if _r.status == "ok" and _r.rows_ingested > 0:
+                            console.print("[cyan]Regenerando MacroDesk com dados novos...[/cyan]")
+                            _regenerate_desk_html()
                     except Exception as _e:
                         console.print(f"[yellow]Bloomberg ingest erro: {_e}[/yellow]")
                 _watch_seen = _current
