@@ -153,6 +153,7 @@ class DataNormalizer:
             "dividends":                  self._normalize_dividends,
             "eps_revisions":              self._normalize_eps_revisions,
             "realized_vol":               self._normalize_realized_vol,
+            "thematic_flow":              self._normalize_thematic_flow,
             "index_members":              self._normalize_index_members,
             "etf_holdings":               self._normalize_etf_holdings,
             "letf_flows":                 self._normalize_letf_flows,
@@ -401,11 +402,18 @@ class DataNormalizer:
     def _normalize_skew_tails(
         self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
     ) -> tuple[list[dict], list[dict]]:
-        """skew_tails_*.csv: ticker, put25, call25, skew_25d, put10, call10, skew_10d, tail_premium"""
+        """
+        skew_tails_*.csv: 25 fields × 3 tenors (30D / 90D / 180D) por ticker.
+        Ex: atm_30D, put25_90D, call_skew_180D, rr_25d_30D, tail_premium_180D, etc.
+        """
+        TENORS = ["30D", "90D", "180D"]
+        BASE = ["atm", "put25", "call25", "put10", "call10",
+                "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
+        fields = [f"{b}_{t}" for b in BASE for t in TENORS]
         return self._normalize_wide(
             df, source_file, default_date, ingest_ts,
             ticker_col_candidates=["ticker"],
-            fields=["put25", "call25", "skew_25d", "put10", "call10", "skew_10d", "tail_premium"],
+            fields=fields,
         )
 
     def _normalize_greeks_per_ticker(
@@ -490,6 +498,19 @@ class DataNormalizer:
             df, source_file, default_date, ingest_ts,
             ticker_col_candidates=["ticker"],
             fields=["rv_30d", "rv_60d", "rv_90d", "rv_252d"],
+        )
+
+    def _normalize_thematic_flow(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        thematic_flow_*.csv: ticker, theme, price, ret_1d, ret_5d, ret_21d, ret_63d, ret_ytd
+        Substitui DeepVue scraping — performance por ETF temático.
+        """
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=["price", "ret_1d", "ret_5d", "ret_21d", "ret_63d", "ret_ytd"],
         )
 
     def _normalize_index_members(

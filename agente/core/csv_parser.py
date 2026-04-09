@@ -76,6 +76,7 @@ _PREFIX_TO_TYPE: list[tuple[str, str]] = [
     ("dividends_",                 "dividends"),
     ("eps_revisions_",             "eps_revisions"),
     ("realized_vol_",              "realized_vol"),
+    ("thematic_flow_",             "thematic_flow"),
     # Estrutura de mercado
     ("index_members_",             "index_members"),
     ("etf_holdings_",              "etf_holdings"),
@@ -110,6 +111,7 @@ _REQUIRED_COLS: dict[str, list[str]] = {
     "dividends":                  ["ticker", "next_div_date"],
     "eps_revisions":              ["ticker", "eps_est"],
     "realized_vol":               ["ticker", "rv_30d"],
+    "thematic_flow":              ["ticker", "theme"],
     "index_members":              ["index", "member"],
     "etf_holdings":               ["etf", "holding"],
     "letf_flows":                 ["ticker", "nav"],

@@ -940,28 +940,226 @@ def export_iv_term_structure():
 
 def export_skew_tails():
     """
-    Skew completo: 25-delta E 10-delta (tails finos).
-    25d = skew "normal", 10d = tail risk verdadeiro.
+    Skew snapshot completo (todos os tickers, todos os tenors):
+
+    Por tenor (30D, 90D, 180D), captura:
+      - atm                          (IV ATM = 100% moneyness)
+      - put25, call25, put10, call10  (4 deltas)
+      - skew_25d   = put25 - call25      (skew clássico)
+      - skew_10d   = put10 - call10      (tail skew)
+      - call_skew  = call25 / atm        (cobertura para o lado direito)
+      - put_skew   = put25  / atm        (cobertura para o lado esquerdo)
+      - rr_25d     = put25 - call25      (risk reversal 25-delta)
+      - tail_premium = skew_10d - skew_25d
     """
     universe = list(set(FUND_TICKERS))
     univ  = bq.univ.list(universe)
-    items = {
-        'put25':  bq.data.implied_volatility(expiry='30D', delta='25', put_call='PUT'),
-        'call25': bq.data.implied_volatility(expiry='30D', delta='25', put_call='CALL'),
-        'put10':  bq.data.implied_volatility(expiry='30D', delta='10', put_call='PUT'),
-        'call10': bq.data.implied_volatility(expiry='30D', delta='10', put_call='CALL'),
-    }
-    df = _bql(univ, items)
-    for c in ['put25', 'call25', 'put10', 'call10']:
-        df[c] = pd.to_numeric(df[c], errors='coerce') / 100
-    df['skew_25d'] = df['put25'] - df['call25']
-    df['skew_10d'] = df['put10'] - df['call10']
-    df['tail_premium'] = df['skew_10d'] - df['skew_25d']  # quanto a tail é mais cara que o skew normal
-    df = df[['put25', 'call25', 'skew_25d', 'put10', 'call10', 'skew_10d', 'tail_premium']]
-    df.index.name = 'ticker'
-    df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
-    df.to_csv(OUT / f'skew_tails_{hoje}.csv')
-    _log(f'skew_tails — {len(df)} tickers')
+
+    TENORS = ['30D', '90D', '180D']
+    items = _safe_items([
+        # snapshot por tenor
+        *[
+            (f'atm_{t}', (lambda t=t: bq.data.implied_volatility(expiry=t, pct_moneyness='100')))
+            for t in TENORS
+        ],
+        *[
+            (f'put25_{t}', (lambda t=t: bq.data.implied_volatility(expiry=t, delta='25', put_call='PUT')))
+            for t in TENORS
+        ],
+        *[
+            (f'call25_{t}', (lambda t=t: bq.data.implied_volatility(expiry=t, delta='25', put_call='CALL')))
+            for t in TENORS
+        ],
+        *[
+            (f'put10_{t}', (lambda t=t: bq.data.implied_volatility(expiry=t, delta='10', put_call='PUT')))
+            for t in TENORS
+        ],
+        *[
+            (f'call10_{t}', (lambda t=t: bq.data.implied_volatility(expiry=t, delta='10', put_call='CALL')))
+            for t in TENORS
+        ],
+    ])
+    if not items:
+        _log('skew_tails: nenhum field disponível')
+        return
+
+    try:
+        df = _bql(univ, items)
+        # Converte tudo para decimal (IV vem em pct)
+        for c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce') / 100
+
+        # Calcula derivados por tenor
+        for t in TENORS:
+            atm = df.get(f'atm_{t}')
+            p25 = df.get(f'put25_{t}')
+            c25 = df.get(f'call25_{t}')
+            p10 = df.get(f'put10_{t}')
+            c10 = df.get(f'call10_{t}')
+            if atm is not None and c25 is not None:
+                df[f'call_skew_{t}'] = c25 / atm    # ratio call25/ATM (right-tail hedge)
+            if atm is not None and p25 is not None:
+                df[f'put_skew_{t}'] = p25 / atm     # ratio put25/ATM (left-tail hedge)
+            if p25 is not None and c25 is not None:
+                df[f'skew_25d_{t}'] = p25 - c25     # skew 25d clássico
+                df[f'rr_25d_{t}']   = p25 - c25     # risk reversal 25d
+            if p10 is not None and c10 is not None:
+                df[f'skew_10d_{t}'] = p10 - c10     # tail skew 10d
+            if (f'skew_10d_{t}' in df.columns and f'skew_25d_{t}' in df.columns):
+                df[f'tail_premium_{t}'] = df[f'skew_10d_{t}'] - df[f'skew_25d_{t}']
+
+        df.index.name = 'ticker'
+        df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
+        df.to_csv(OUT / f'skew_tails_{hoje}.csv')
+        _log(f'skew_tails — {len(df)} tickers, {len(df.columns)} fields ({len(TENORS)} tenors)')
+    except Exception as e:
+        _log(f'skew_tails warn: {e}')
+
+
+# ── Universo de ETFs temáticos (substitui DeepVue scraping) ─────────────────
+# Cada tema é representado pelo ETF mais líquido. Permite track de performance
+# por tema (Today/1W/1M/YTD) direto do Bloomberg, sem depender de scraping.
+THEMATIC_ETFS = [
+    # ── Tech / AI / Innovation ─────────────────────────────────────────────
+    ('IGV',  'Software'),
+    ('SOXX', 'Semiconductors'),
+    ('SMH',  'Semiconductors (alt)'),
+    ('CIBR', 'Cybersecurity'),
+    ('ARKK', 'Innovation / Disruptive'),
+    ('BOTZ', 'Robotics & AI'),
+    ('IRBO', 'Robotics & AI (alt)'),
+    ('AIQ',  'AI Multisector'),
+    ('SKYY', 'Cloud'),
+    ('CLOU', 'Cloud (alt)'),
+    ('FINX', 'Fintech'),
+    ('IPAY', 'Payments'),
+    ('SOCL', 'Social Media'),
+    ('HACK', 'Cybersecurity (alt)'),
+    # ── Crypto ──────────────────────────────────────────────────────────────
+    ('IBIT', 'Bitcoin spot ETF'),
+    ('BITO', 'Bitcoin futures ETF'),
+    ('BITQ', 'Crypto industry'),
+    # ── Health / Bio ────────────────────────────────────────────────────────
+    ('IBB',  'Biotech'),
+    ('XBI',  'Biotech (small cap)'),
+    ('IHI',  'Medical Devices'),
+    ('GNOM', 'Genomics'),
+    ('IDNA', 'Genomics & Immunology'),
+    ('PSCH', 'Healthcare small cap'),
+    # ── Clean Energy / ESG / Climate ────────────────────────────────────────
+    ('QCLN', 'Clean Energy'),
+    ('ICLN', 'Clean Energy (alt)'),
+    ('TAN',  'Solar'),
+    ('FAN',  'Wind'),
+    ('LIT',  'Lithium / Battery'),
+    ('URA',  'Uranium'),
+    # ── Defense / Aerospace ─────────────────────────────────────────────────
+    ('ITA',  'Aerospace & Defense'),
+    ('PPA',  'Aerospace & Defense (alt)'),
+    # ── Industrials thematic ────────────────────────────────────────────────
+    ('XHB',  'Home Construction'),
+    ('ITB',  'Home Builders'),
+    ('IYT',  'Transports'),
+    # ── Consumer thematic ───────────────────────────────────────────────────
+    ('XRT',  'Retail'),
+    ('PEJ',  'Leisure & Entertainment'),
+    ('BJK',  'Casinos / Gaming'),
+    ('PBJ',  'Food & Beverage'),
+    # ── Financials sub-industries ───────────────────────────────────────────
+    ('KBE',  'Banks'),
+    ('KRE',  'Regional Banks'),
+    ('IAI',  'Broker-Dealers'),
+    ('KIE',  'Insurance'),
+    # ── Real Estate ─────────────────────────────────────────────────────────
+    ('REZ',  'Residential REIT'),
+    ('PSR',  'Active REIT'),
+    # ── Materials thematic ──────────────────────────────────────────────────
+    ('XME',  'Metals & Mining'),
+    ('PICK', 'Industrial Metals'),
+    ('REMX', 'Rare Earth & Critical Materials'),
+    ('COPX', 'Copper Miners'),
+    # ── Utilities thematic ──────────────────────────────────────────────────
+    ('GRID', 'Smart Grid'),
+    ('XLU',  'Utilities broad'),
+]
+
+THEMATIC_TICKERS = [f'{tk} US Equity' for tk, _ in THEMATIC_ETFS]
+THEMATIC_LABELS  = {f'{tk} US Equity': label for tk, label in THEMATIC_ETFS}
+
+
+def export_thematic_flow():
+    """
+    Performance por tema — substituto Bloomberg do scraping DeepVue.
+
+    Para cada ETF temático puxa price + retornos via histórico (260d).
+    Computa retornos client-side: 1d, 5d, 21d (1M), 63d (3M), YTD.
+    Resultado: dataset 'thematic_flow_*.csv' com 1 linha por tema.
+    """
+    rows = []
+    today_dt = pd.Timestamp.today().normalize()
+    year_start = pd.Timestamp(today_dt.year, 1, 1)
+
+    for bbg_tk in THEMATIC_TICKERS:
+        label = THEMATIC_LABELS.get(bbg_tk, '')
+        ticker_short = bbg_tk.replace(' US Equity', '')
+        try:
+            resp = bq.execute(
+                f'get(PX_LAST(dates=range(-260D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
+            )
+            r = resp[0]
+            df_h = r.df()
+            if 'DATE' in df_h.columns:
+                dates_idx = pd.to_datetime(df_h['DATE'])
+                vals      = pd.to_numeric(df_h[r.name], errors='coerce')
+                prices    = pd.Series(vals.values, index=dates_idx).dropna().sort_index()
+            else:
+                s = r.df()[r.name]
+                prices = pd.Series(
+                    pd.to_numeric(s.values, errors='coerce'),
+                    index=pd.to_datetime(s.index),
+                ).dropna().sort_index()
+            if prices.empty or len(prices) < 2:
+                continue
+            prices = prices.astype(float)
+            p_now = float(prices.iloc[-1])
+
+            def _ret(n):
+                if len(prices) < n + 1:
+                    return ''
+                p_past = float(prices.iloc[-(n + 1)])
+                if p_past <= 0:
+                    return ''
+                return round((p_now - p_past) / p_past, 6)
+
+            ydr = ''
+            ytd_slice = prices[prices.index < year_start]
+            if not ytd_slice.empty:
+                p_ys = float(ytd_slice.iloc[-1])
+                if p_ys > 0:
+                    ydr = round((p_now - p_ys) / p_ys, 6)
+
+            rows.append({
+                'ticker':    ticker_short,
+                'theme':     label,
+                'price':     round(p_now, 4),
+                'ret_1d':    _ret(1),
+                'ret_5d':    _ret(5),
+                'ret_21d':   _ret(21),     # 1M
+                'ret_63d':   _ret(63),     # 3M
+                'ret_ytd':   ydr,
+            })
+        except Exception as e:
+            _log(f'thematic warn {ticker_short}: {e}')
+
+    if rows:
+        # Ordena por retorno 1d desc — leaderboard automático
+        df_out = pd.DataFrame(rows)
+        try:
+            df_out = df_out.sort_values('ret_1d', ascending=False, na_position='last')
+        except Exception:
+            pass
+        df_out.to_csv(OUT / f'thematic_flow_{hoje}.csv', index=False)
+        _log(f'thematic_flow — {len(rows)} temas')
 
 
 def export_volume_flows():
@@ -1478,9 +1676,12 @@ def export_all(_download=True):
     # ── Options chain & greeks ───────────────────────────────────────────
     print('Options IV ATM 30d...');              _safe('options_iv', export_options_iv)
     print('IV term structure 30/60/90/180/360...'); _safe('iv_term', export_iv_term_structure)
-    print('Skew 25d + 10d (tails)...');          _safe('skew_tails', export_skew_tails)
+    print('Skew tails (30/90/180D, todos tickers)...'); _safe('skew_tails', export_skew_tails)
     print('GEX SPX...');                         _safe('gex_spx', export_gex_spx)
     print('Greeks per ticker (mega-caps)...');   _safe('greeks_full', export_options_greeks_full)
+
+    # ── Flow temático (substitui DeepVue scraping) ────────────────────────
+    print('Thematic flow (50+ ETFs por tema)...'); _safe('thematic', export_thematic_flow)
 
     # ── Volume / fluxos / short interest ─────────────────────────────────
     print('Volume + dark flows + short interest...'); _safe('volume_flows', export_volume_flows)
