@@ -224,6 +224,19 @@ def run_portfolio_pipeline(
     except Exception as exc:
         _log.warning("cta_positioning_failed", error=str(exc))
 
+    # ── 3d2. Positioning Models (CTA + VolCtrl + RP via BQL CSV) ─────────────
+    positioning_result = None
+    try:
+        from app.providers.positioning_models import load_positioning_models
+        positioning_result = load_positioning_models()
+        _log.info("positioning_models_done",
+                  n=len(positioning_result.signals),
+                  cta_b=round(positioning_result.aggregate_cta_b, 2),
+                  rp_b=round(positioning_result.aggregate_rp_b, 2),
+                  volctrl_b=round(positioning_result.aggregate_volctrl_b, 2))
+    except Exception as exc:
+        _log.warning("positioning_models_failed", error=str(exc))
+
     # ── 3e. Relative Strength / RRG ──────────────────────────────────────────
     rrg_result = None
     try:
@@ -492,6 +505,7 @@ def run_portfolio_pipeline(
     portfolio._vol_regime       = vol_regime        # VolRegimeResult | None para options tab
     portfolio._finra_result     = finra_result      # FinraDarkPoolResult | None — dark pool real
     portfolio._options_map      = options_map       # dict[ticker, {...iv_percentile, skew...}] para convexity layer
+    portfolio._positioning      = positioning_result  # PositioningModelsResult — CTA + VolCtrl + RP do BQL
 
     # ── Desk Intelligence — motor de inferência regime-aware ──────────────────
     portfolio._desk_intel = None
@@ -509,6 +523,7 @@ def run_portfolio_pipeline(
             market_prices=market_prices,
             swaggy_result=swaggy_result,
             options_snapshot=options_snapshot,
+            positioning_result=positioning_result,
         )
     except Exception as exc:
         _log.warning("desk_intelligence_failed", error=str(exc))

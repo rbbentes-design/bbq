@@ -293,6 +293,7 @@ def compute_opportunity_scores(
     options_map: dict[str, dict] | None,
     shadow_flow: Any | None,
     cta_result: Any | None,
+    positioning_result: Any | None = None,
 ) -> dict[str, float]:
     """
     Detecta ativos cujo preço ainda não lidera, mas onde opções/fluxo/skew
@@ -361,6 +362,18 @@ def compute_opportunity_scores(
         if cta_surprise > 0.30:
             score += 0.08
 
+        # Positioning models (BQL CTA + VolCtrl + RP) — re-leveraging = oportunidade
+        if positioning_result and hasattr(positioning_result, "signals"):
+            psig = positioning_result.signals.get(ticker)
+            if psig:
+                # VolCtrl + RP positivos = vol caindo = funds re-alavancando = bullish flow
+                rebal = (psig.volctrl_score + psig.rp_score) / 2.0
+                if rebal > 0.30:
+                    score += 0.12
+                # CTA já comprado mas sem extreme: confirma trend
+                if 0.20 < psig.cta_score < 0.60:
+                    score += 0.06
+
         scores[ticker] = math.tanh(score * 2.0)
 
     return scores
@@ -374,6 +387,7 @@ def compute_fragility_scores(
     options_map: dict[str, dict] | None,
     shadow_flow: Any | None,
     cta_result: Any | None,
+    positioning_result: Any | None = None,
 ) -> dict[str, float]:
     """
     Detecta ativos que parecem fortes no preço mas estão deteriorando internamente.
@@ -431,6 +445,17 @@ def compute_fragility_scores(
         tail = _safe(sig.tail_score) or 0.0
         if comp > 0 and tail > 0.60:
             score += 0.10
+
+        # Positioning models (BQL): de-leveraging por VolCtrl/RP = fragilidade
+        if positioning_result and hasattr(positioning_result, "signals"):
+            psig = positioning_result.signals.get(ticker)
+            if psig:
+                rebal = (psig.volctrl_score + psig.rp_score) / 2.0
+                if rebal < -0.30:
+                    score += 0.15
+                # CTA já em extreme long via score >= 0.6 (vulnerável a unwind)
+                if psig.cta_score >= 0.60:
+                    score += 0.12
 
         scores[ticker] = _clamp(score, 0.0, 1.0)
 
@@ -817,6 +842,7 @@ def compute_desk_intelligence(
     flow_pred: Any | None = None,
     swaggy_result: Any | None = None,    # SwaggyResult (WSB + squeeze)
     options_snapshot: Any | None = None, # OptionsSnapshot (Greeks Dashboard BBQ)
+    positioning_result: Any | None = None, # PositioningModelsResult (CTA+VolCtrl+RP do BQL)
 ) -> DeskIntelligenceResult:
     """
     Ponto de entrada principal.
@@ -879,6 +905,7 @@ def compute_desk_intelligence(
         options_map=options_map,
         shadow_flow=shadow_flow,
         cta_result=cta_result,
+        positioning_result=positioning_result,
     )
 
     # C. Fragility scores
@@ -888,6 +915,7 @@ def compute_desk_intelligence(
         options_map=options_map,
         shadow_flow=shadow_flow,
         cta_result=cta_result,
+        positioning_result=positioning_result,
     )
 
     # D. Contagion scores

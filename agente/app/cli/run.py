@@ -1180,7 +1180,7 @@ def run_all(
 
     # ── 2. Portfolio pipeline (mercado, charts, sinais alpha, desk intel) ──────
     console.print("\n[bold]2/4[/bold] Portfolio pipeline...")
-    portfolio, signals, html_path = _run_portfolio_after_ingest(bundle)
+    html_path, portfolio, signals = _run_portfolio_after_ingest(bundle)
 
     # ── 3. Writer (curação LLM + texto + brief HTML) ──────────────────────────
     console.print("\n[bold]3/4[/bold] Curação + Writer...")

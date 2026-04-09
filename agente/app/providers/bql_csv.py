@@ -320,6 +320,103 @@ def load_letf_flows() -> list[dict[str, Any]]:
     return result
 
 
+def load_skew_tails() -> dict[str, dict[str, Any]]:
+    """
+    Lê skew_tails_*.csv (3 tenores × 11 campos por ticker).
+
+    Para cada ticker, retorna:
+      atm_<T>, put25_<T>, call25_<T>, put10_<T>, call10_<T>,
+      call_skew_<T>, put_skew_<T>, skew_25d_<T>, rr_25d_<T>,
+      skew_10d_<T>, tail_premium_<T>
+    onde T ∈ {30D, 90D, 180D}.
+
+    Conveniências (tenor 30D = principal):
+      skew_5pct → skew_25d_30D
+      put_skew  → put_skew_30D
+      call_skew → call_skew_30D
+      tail_premium → tail_premium_30D
+    """
+    rows = _read_csv("skew_tails")
+    result: dict[str, dict[str, Any]] = {}
+    if not rows:
+        return result
+
+    _NUMERIC_COLS = [
+        "atm_30D", "atm_90D", "atm_180D",
+        "put25_30D", "put25_90D", "put25_180D",
+        "call25_30D", "call25_90D", "call25_180D",
+        "put10_30D", "put10_90D", "put10_180D",
+        "call10_30D", "call10_90D", "call10_180D",
+        "call_skew_30D", "put_skew_30D", "skew_25d_30D",
+        "rr_25d_30D", "skew_10d_30D", "tail_premium_30D",
+        "call_skew_90D", "put_skew_90D", "skew_25d_90D",
+        "rr_25d_90D", "skew_10d_90D", "tail_premium_90D",
+        "call_skew_180D", "put_skew_180D", "skew_25d_180D",
+        "rr_25d_180D", "skew_10d_180D", "tail_premium_180D",
+    ]
+
+    for r in rows:
+        tk = (r.get("ticker") or "").strip()
+        if not tk:
+            continue
+        entry: dict[str, Any] = {}
+        for col in _NUMERIC_COLS:
+            entry[col] = _float(r.get(col))
+        # Convenience aliases (tenor 30D = principal)
+        entry["skew_5pct"]    = entry.get("skew_25d_30D")
+        entry["put_skew"]     = entry.get("put_skew_30D")
+        entry["call_skew"]    = entry.get("call_skew_30D")
+        entry["tail_premium"] = entry.get("tail_premium_30D")
+        entry["rr_25d"]       = entry.get("rr_25d_30D")
+        entry["atm_iv"]       = entry.get("atm_30D")
+        result[tk] = entry
+
+    if result:
+        _log.info("skew_tails_loaded", n=len(result))
+    return result
+
+
+def load_positioning_models() -> dict[str, dict[str, Any]]:
+    """
+    Lê positioning_models_*.csv (CTA + VolCtrl + Risk Parity por ticker).
+
+    Retorna {ticker: {price, rv_5d, rv_30d, rv_60d,
+                      cta_score, cta_leverage, cta_notional_b,
+                      volctrl_score, volctrl_leverage, volctrl_notional_b,
+                      rp_score, rp_weight, rp_notional_b,
+                      flow_total_b, flow_direction}}.
+    """
+    rows = _read_csv("positioning_models")
+    result: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        tk = (r.get("ticker") or "").strip()
+        if not tk:
+            continue
+        result[tk] = {
+            "price":              _float(r.get("price")),
+            "rv_5d":              _float(r.get("rv_5d")),
+            "rv_30d":             _float(r.get("rv_30d")),
+            "rv_60d":             _float(r.get("rv_60d")),
+            "cta_sig_20d":        _float(r.get("cta_sig_20d")),
+            "cta_sig_60d":        _float(r.get("cta_sig_60d")),
+            "cta_sig_120d":       _float(r.get("cta_sig_120d")),
+            "cta_score":          _float(r.get("cta_score")),
+            "cta_leverage":       _float(r.get("cta_leverage")),
+            "cta_notional_b":     _float(r.get("cta_notional_b")),
+            "volctrl_score":      _float(r.get("volctrl_score")),
+            "volctrl_leverage":   _float(r.get("volctrl_leverage")),
+            "volctrl_notional_b": _float(r.get("volctrl_notional_b")),
+            "rp_score":           _float(r.get("rp_score")),
+            "rp_weight":          _float(r.get("rp_weight")),
+            "rp_notional_b":      _float(r.get("rp_notional_b")),
+            "flow_total_b":       _float(r.get("flow_total_b")),
+            "flow_direction":     (r.get("flow_direction") or "").strip(),
+        }
+    if result:
+        _log.info("positioning_models_loaded", n=len(result))
+    return result
+
+
 def load_prices() -> dict[str, Any]:
     """
     Retorna {yf_ticker: {name, price, daily_return, weekly_return, ytd_return}}.

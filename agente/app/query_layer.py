@@ -416,7 +416,23 @@ class BloombergQueryLayer:
         BASE = ["atm", "put25", "call25", "put10", "call10",
                 "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
         fields = [f"{b}_{t}" for b in BASE for t in TENORS]
-        return self._get_latest_by_fields(fields, ticker_filter=ticker)
+        result = self._get_latest_by_fields(fields, ticker_filter=ticker)
+        if not result:
+            # Fallback: ler direto do CSV skew_tails_*.csv
+            try:
+                from app.providers.bql_csv import load_skew_tails
+                csv_data = load_skew_tails()
+                if csv_data:
+                    if ticker:
+                        for key in (ticker, ticker.replace("^", ""), f"{ticker} US Equity"):
+                            if key in csv_data:
+                                result = {ticker: csv_data[key]}
+                                break
+                    else:
+                        result = csv_data
+            except Exception:
+                pass
+        return result
 
     # ── GEX ───────────────────────────────────────────────────────────────────
 
