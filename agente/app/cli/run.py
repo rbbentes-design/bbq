@@ -699,26 +699,8 @@ def desk(
 
         console.print(f"[green]MacroDesk HTML:[/green] {desk_path.name}")
 
-        # ── Netlify deploy automático ──────────────────────────────────────────
-        try:
-            import shutil as _shutil
-            import subprocess as _subp
-            _deploy_dir = Path.home() / "netlify_deploy"
-            _deploy_dir.mkdir(exist_ok=True)
-            _shutil.copy(desk_path, _deploy_dir / "index.html")
-            with console.status("[cyan]Netlify deploy...[/cyan]"):
-                _nl = _subp.run(
-                    f'netlify deploy --dir "{_deploy_dir}" --prod',
-                    capture_output=True, timeout=90, shell=True,
-                )
-            _out = (_nl.stdout or b"").decode("utf-8", errors="replace")
-            _url = next(
-                (l.split("Production URL:")[-1].strip().strip("<>") for l in _out.splitlines() if "Production URL:" in l),
-                "https://papaya-kringle-4a3378.netlify.app",
-            )
-            console.print(f"[cyan]Netlify:[/cyan] {_url}")
-        except Exception as _ne:
-            console.print(f"[dim]Netlify deploy skipped: {_ne}[/dim]")
+        # ── Netlify deploy DESATIVADO (sem credito) ───────────────────────────
+        # O HTML fica local em workspace/bundles/{date}/{ulid}_desk_v2.html
 
         if not no_open:
             import webbrowser
@@ -733,7 +715,7 @@ def desk(
     #   2. portfolio pipeline (sinais alpha + RRG + desk intel)
     #   3. writer (curação LLM + texto + brief HTML) — opcional, só se LLM ok
     #   4. MacroDesk HTML
-    #   5. Netlify deploy
+    #   (Netlify deploy DESATIVADO — sem credito)
     def _regenerate_full_pipeline() -> None:
         """Re-roda TUDO com market_prices fresh: pipeline → writer → desk → netlify."""
         try:
@@ -792,29 +774,7 @@ def desk(
                 options_snapshot=_opts,
             )
             console.print(f"[green]MacroDesk regenerado:[/green] {_new_path.name}")
-
-            # 5. Netlify deploy automático
-            try:
-                import shutil as _shu
-                import subprocess as _sub
-                from pathlib import Path as _Pn
-                _deploy_dir = _Pn.home() / "netlify_deploy"
-                _deploy_dir.mkdir(exist_ok=True)
-                _shu.copy(_new_path, _deploy_dir / "index.html")
-                _nl = _sub.run(
-                    f'netlify deploy --dir "{_deploy_dir}" --prod',
-                    capture_output=True, timeout=90, shell=True,
-                )
-                _out = (_nl.stdout or b"").decode("utf-8", errors="replace")
-                _url = next(
-                    (l.split("Production URL:")[-1].strip().strip("<>")
-                     for l in _out.splitlines() if "Production URL:" in l),
-                    None,
-                )
-                if _url:
-                    console.print(f"[cyan]Netlify:[/cyan] {_url}")
-            except Exception as _exc_n:
-                console.print(f"[dim]Netlify skipped: {_exc_n}[/dim]")
+            # Netlify deploy DESATIVADO (sem credito)
         except Exception as _exc_rd:
             console.print(f"[yellow]Pipeline regen falhou: {_exc_rd}[/yellow]")
 
