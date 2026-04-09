@@ -385,29 +385,6 @@ def collect(
                         "source":    "bloomberg",
                     }
             if results:
-                # ── Enriquecimento com skew_tails (3 tenores × 11 campos) ──
-                try:
-                    from app.providers.bql_csv import load_skew_tails
-                    skew_map = load_skew_tails()
-                    if skew_map:
-                        _enriched = 0
-                        for sym in results:
-                            for key in (sym, sym.replace("^", ""), f"{sym} US Equity"):
-                                st = skew_map.get(key)
-                                if st:
-                                    # Sobrescreve skew_5pct com o valor rico (skew_25d_30D)
-                                    if st.get("skew_5pct") is not None:
-                                        results[sym]["skew_5pct"] = st["skew_5pct"]
-                                    # Adiciona campos novos: put_skew, call_skew, tail_premium, rr, etc.
-                                    for k, v in st.items():
-                                        if k not in results[sym] and v is not None:
-                                            results[sym][k] = v
-                                    _enriched += 1
-                                    break
-                        _log.info("options_skew_tails_merged", enriched=_enriched, of=len(results))
-                except Exception as exc:
-                    _log.debug("options_skew_tails_merge_failed", error=str(exc)[:80])
-
                 _log.info("options_bloomberg_loaded", loaded=len(results))
                 return results  # ← RETURN IMEDIATO — sem IBKR/yfinance
     except Exception as exc:

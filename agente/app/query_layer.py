@@ -416,23 +416,22 @@ class BloombergQueryLayer:
         BASE = ["atm", "put25", "call25", "put10", "call10",
                 "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
         fields = [f"{b}_{t}" for b in BASE for t in TENORS]
-        result = self._get_latest_by_fields(fields, ticker_filter=ticker)
-        if not result:
-            # Fallback: ler direto do CSV skew_tails_*.csv
-            try:
-                from app.providers.bql_csv import load_skew_tails
-                csv_data = load_skew_tails()
-                if csv_data:
-                    if ticker:
-                        for key in (ticker, ticker.replace("^", ""), f"{ticker} US Equity"):
-                            if key in csv_data:
-                                result = {ticker: csv_data[key]}
-                                break
-                    else:
-                        result = csv_data
-            except Exception:
-                pass
-        return result
+        return self._get_latest_by_fields(fields, ticker_filter=ticker)
+
+    def get_positioning_models(self, ticker: str | None = None) -> dict[str, dict[str, Any]]:
+        """
+        Retorna positioning models (CTA + VolCtrl + Risk Parity) por ticker.
+        Fonte: bql_latest (populado por positioning_models_*.csv via BQuant ingest).
+        """
+        fields = [
+            "price", "rv_5d", "rv_30d", "rv_60d",
+            "cta_sig_20d", "cta_sig_60d", "cta_sig_120d",
+            "cta_score", "cta_leverage", "cta_notional_b",
+            "volctrl_score", "volctrl_leverage", "volctrl_notional_b",
+            "rp_score", "rp_weight", "rp_notional_b",
+            "flow_total_b",
+        ]
+        return self._get_latest_by_fields(fields, ticker_filter=ticker)
 
     # ── GEX ───────────────────────────────────────────────────────────────────
 

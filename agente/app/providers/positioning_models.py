@@ -1,7 +1,8 @@
 """
 Provider: Positioning Models — CTA + Vol Control + Risk Parity (BofA/GS style)
 
-Consome o CSV `positioning_models_*.csv` exportado pelo BQL (bql_export.py).
+Lê via `BloombergQueryLayer.get_positioning_models()` (que consulta `bql_latest`,
+populado pelo fluxo BQuant zip → csv_parser → data_normalizer → db_writer).
 Para cada ticker, expõe:
   - cta_score, cta_notional_b
   - volctrl_score, volctrl_notional_b
@@ -80,8 +81,9 @@ def load_positioning_models() -> PositioningModelsResult:
     result = PositioningModelsResult(timestamp=datetime.now().isoformat())
 
     try:
-        from app.providers.bql_csv import load_positioning_models as _load_csv
-        raw = _load_csv()
+        from app.query_layer import BloombergQueryLayer
+        ql = BloombergQueryLayer()
+        raw = ql.get_positioning_models()
     except Exception as exc:
         _log.warning("positioning_models_load_failed", error=str(exc))
         return result
