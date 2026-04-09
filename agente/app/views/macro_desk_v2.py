@@ -1052,34 +1052,36 @@ function rebuild() {
       }
     : {   // Modo rede: força-dirigida — espalhada para 250+ nós
         name: 'cose',
-        animate: true, animationDuration: 800,
+        animate: true, animationDuration: 1000,
         randomize: true,
         // Repulsão alta: separa cada nó dos vizinhos
         nodeRepulsion: function(n) {
           const lvl = n.data('level');
-          if (lvl === 0) return 200000;          // World no centro
-          if (lvl === 1) return 120000;          // Asset classes
-          return 35000;                          // Ativos
+          if (lvl === 0) return 350000;          // raiz no centro (se houver)
+          if (lvl === 1 && n.data('is_hub')) return 180000;  // hubs (fixed_income/fx/macro)
+          // ativos: repulsão escala com tamanho — gigantes empurram mais
+          const sz = n.data('size') || 30;
+          return 60000 + sz * 1500;
         },
         // Edges mais longas: espaço entre clusters
         idealEdgeLength: function(e) {
           const t = e.data('type');
-          if (t === 'hierarchy') return 200;     // hierarquia bem espaçada
-          if (t === 'mst')       return 150;
-          if (t === 'rrg')       return 130;
-          return 140;
+          if (t === 'hierarchy') return 280;     // hierarquia bem espaçada
+          if (t === 'mst')       return 220;
+          if (t === 'rrg')       return 200;
+          return 230;
         },
-        edgeElasticity: 80,
-        gravity: 0.4,                            // gravidade fraca: deixa espalhar
-        gravityRange: 4.0,
-        nestingFactor: 1.2,
-        numIter: 2500,                           // mais iterações = layout mais limpo
-        coolingFactor: 0.98,
-        initialTemp: 250,
+        edgeElasticity: 60,
+        gravity: 0.25,                           // gravidade fraca: deixa espalhar
+        gravityRange: 5.0,
+        nestingFactor: 1.5,
+        numIter: 3500,                           // mais iterações = layout mais limpo
+        coolingFactor: 0.985,
+        initialTemp: 350,
         minTemp: 1.0,
-        fit: true, padding: 80,
+        fit: true, padding: 120,
         avoidOverlap: true,
-        nodeOverlap: 30,
+        nodeOverlap: 50,
       };
 
   // Fallback para cose se layout falhar

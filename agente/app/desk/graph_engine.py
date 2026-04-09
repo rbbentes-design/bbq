@@ -257,44 +257,35 @@ def _node_size_dynamic(
     liquidity_weight: float | None,
 ) -> int:
     """
-    Tamanho baseado na contribuição do ativo ao movimento do dia.
+    Tamanho dinâmico baseado em peso × |daily_return|.
 
-    Fórmula: contribution = weight × (1 + |daily| × 20)
-      - weight    : peso do ativo no índice-pai (ex: AAPL = 7.5% do SPX)
-      - |daily|   : retorno absoluto do dia
-      - × 20      : amplifica retornos pequenos (1% = ×1.2, 3% = ×1.6)
-
-    Efeito visual:
-      - AAPL flat:     tamanho médio-grande  (peso 7.5%)
-      - AAPL +3%:      esfera grande         (peso amplificado pela alta)
-      - INTC flat:     esfera pequena        (peso 0.5%)
-      - Tech flat:     sector grande         (peso 31%)
-      - Energy flat:   sector pequeno        (peso 4%)
+    Após o flatten, quase todos os ativos estão no level 1. O critério
+    primário é has_data: se tem dados, escala por contribuição.
+    Se não tem (hub remanescente: fixed_income/fx/crypto/macro_layer),
+    tamanho fixo por hub.
     """
-    # Níveis estruturais (sem preços diretos): tamanho estático
-    if level <= 2:
-        return _node_size(level, is_hub, has_data)
+    # Hubs sem dados de mercado: tamanho fixo (são os agrupadores que sobraram)
+    if not has_data:
+        return 70 if is_hub else 36
 
+    # Ativos com dados: escala por contribuição (peso × retorno)
     w = weight or liquidity_weight or 0.005
     ret = abs(daily or 0)
     contribution = w * (1.0 + ret * 20.0)
 
-    if level == 3:       # índices
-        norm, min_sz, max_sz = 0.80, 32, 72
-    elif level == 4:     # setores
-        norm, min_sz, max_sz = 0.60, 22, 60
-    elif level == 5:     # stocks / macro assets
-        norm, min_sz, max_sz = 0.15, 22, 52
-    else:                # nível 7 (internal layers)
-        norm, min_sz, max_sz = 0.10, 18, 32
+    # Range escalável: nó pequeno → grande conforme peso × movimento
+    norm    = 0.15
+    min_sz  = 22
+    max_sz  = 60
 
     scale = min(contribution / norm, 1.0)
     sz = int(min_sz + scale * (max_sz - min_sz))
 
+    # Boost extra por |movimento|: até +12px para ativos com daily > 2%
+    sz += int(min(ret * 6, 12))
+
     if is_hub:
         sz = int(sz * 1.25)
-    if not has_data:
-        sz = int(sz * 0.80)
 
     return max(min_sz, sz)
 
