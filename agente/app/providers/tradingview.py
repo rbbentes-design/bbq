@@ -29,7 +29,7 @@ _log = get_logger("providers.tradingview")
 _TV_CANDIDATES = ["tv", "tv.cmd", "npx tradingview-mcp"]
 _TV_CMD: str | None = None
 _SWITCH_DELAY = 2.5   # seconds after chart_set_symbol / chart_set_timeframe
-_TOOL_TIMEOUT = 12    # seconds per tv CLI call
+_TOOL_TIMEOUT = 4     # seconds per tv CLI call (era 12 - perdia tempo demais)
 
 # ── Indicator name aliases (matched to "ultimate profile" layout) ──────────────
 # tv values returns: {"studies": [{"name": "...", "values": {"Key": "123.45"}}]}
