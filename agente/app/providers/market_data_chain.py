@@ -480,56 +480,16 @@ def collect_historical(
     if not remaining:
         return closes
 
-    # ── Camada 2: IBKR historical ─────────────────────────────────────────────
-    try:
-        from app.providers.ibkr import fetch_historical_closes
-        ibkr_hist = fetch_historical_closes(remaining, lookback_days=lookback_days)
-        for t, series in ibkr_hist.items():
-            if t not in closes and len(series) >= 10:
-                closes[t] = series
-        remaining = [t for t in remaining if t not in closes]
-        if ibkr_hist:
-            _log.info("chain_ibkr_hist", got=len(ibkr_hist))
-    except Exception as exc:
-        _log.debug("chain_ibkr_hist_failed", error=str(exc))
-
-    if not remaining:
-        return closes
-
-    # ── Camada 2b: yfinance (gratuito, sem API key) ───────────────────────────
-    try:
-        import yfinance as yf
-        import datetime as _dt
-        _start = (_dt.date.today() - _dt.timedelta(days=lookback_days + 10)).strftime("%Y-%m-%d")
-        # Filtra tickers incompatíveis com yfinance (futuros sem sufixo =F, etc.)
-        yf_tickers = [t for t in remaining if not (len(t) <= 3 and t.isupper()
-                      and t not in ("SPY", "QQQ", "IWM", "GLD", "TLT", "HYG",
-                                    "EEM", "EFA", "XOM", "JNJ", "JPM", "WMT",
-                                    "COST", "AMZN", "AAPL", "MSFT", "GOOGL",
-                                    "META", "NVDA", "TSLA", "AVGO", "V", "MA",
-                                    "PG", "UNH", "LLY", "NFLX", "BRK-B"))]
-        yf_tickers = remaining  # use all — yfinance handles unknowns gracefully
-        data = yf.download(yf_tickers, start=_start, progress=False, auto_adjust=True)
-        close_col = data["Close"] if "Close" in data.columns else data
-        if hasattr(close_col, "columns"):
-            for t in yf_tickers:
-                if t in close_col.columns:
-                    series = close_col[t].dropna().tolist()
-                    if len(series) >= 10 and t not in closes:
-                        closes[t] = series[-lookback_days:]
-        else:
-            # single ticker
-            if len(yf_tickers) == 1:
-                series = close_col.dropna().tolist()
-                if len(series) >= 10 and yf_tickers[0] not in closes:
-                    closes[yf_tickers[0]] = series[-lookback_days:]
-        remaining = [t for t in remaining if t not in closes]
-        if yf_tickers:
-            _log.info("chain_yfinance_hist", got=len(closes), remaining=len(remaining))
-    except Exception as exc:
-        _log.debug("chain_yfinance_hist_failed", error=str(exc))
-
-    if not remaining:
+    # ── Camada 2/2b DESABILITADAS por padrão ──────────────────────────────
+    # IBKR (15s/ticker × 270 = 70min) e yfinance (lento + bate em rate limit)
+    # estavam dominando o tempo do pipeline. O Bloomberg DB já cobre 99% dos
+    # tickers que importam. Para reativar, set USE_FALLBACKS=1 no env.
+    import os as _os
+    if not _os.environ.get("USE_FALLBACKS"):
+        if remaining:
+            _log.info("chain_fallbacks_skipped",
+                      remaining=len(remaining),
+                      hint="set USE_FALLBACKS=1 to enable IBKR/yfinance")
         return closes
 
     # ── Camada 3: Alpha Vantage ───────────────────────────────────────────────

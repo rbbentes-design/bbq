@@ -222,7 +222,25 @@ def _regime_hmm(returns: np.ndarray) -> float | None:
 # ── Coleta de dados ───────────────────────────────────────────────────────────
 
 def _fetch_returns(ticker: str, period: str = "1y") -> np.ndarray | None:
-    """Baixa histórico via yfinance e retorna array de log-retornos."""
+    """
+    Retorna log-retornos. Tenta primeiro Bloomberg DB (price_history); fallback
+    yfinance só se USE_FALLBACKS=1 (yfinance era ~5s/ticker × 270 = 22 min).
+    """
+    # ── Tier 0: Bloomberg DB ──
+    try:
+        from app.providers.bql_csv import load_price_history
+        bbg_hist = load_price_history()
+        if bbg_hist:
+            series = bbg_hist.get(ticker)
+            if series and len(series) >= _MIN_OBS:
+                return _returns_from_prices(np.array(series, dtype=float))
+    except Exception:
+        pass
+
+    # ── Tier 1: yfinance (só se USE_FALLBACKS=1) ──
+    import os as _os
+    if not _os.environ.get("USE_FALLBACKS"):
+        return None
     try:
         import yfinance as yf
         hist = yf.Ticker(ticker).history(period=period, auto_adjust=True)

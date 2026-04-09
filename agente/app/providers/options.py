@@ -352,41 +352,66 @@ def collect(
 ) -> dict[str, dict[str, Any]]:
     """
     Coleta snapshot de opções.
-    Hierarquia: IBKR → OCC (free, PCR/OI) → Cboe (Greeks completos).
+    PRIORIDADE ABSOLUTA: Bloomberg via BQL DB. Se BBG retornar qualquer
+    coisa, usa só isso e RETORNA imediatamente — sem IBKR, sem yfinance.
 
     Args:
         tickers: lista de símbolos. None = OPTIONS_UNIVERSE.
 
     Returns:
-        {ticker: {atm_iv, skew_5pct, pcr_oi, gex_b, term_structure, ...}}
+        {ticker: {atm_iv, skew_5pct, pcr_oi, ...}}
     """
     universe = tickers or list(OPTIONS_UNIVERSE.keys())
     _log.info("options_start", tickers=len(universe))
 
     results: dict[str, dict[str, Any]] = {}
 
-    # ── Tier 0: Bloomberg CSV (BQL export — atm_iv, skew_25d, pcr_oi) ─────────
-    # Mais preciso que IBKR snapshot — Bloomberg tem IV implícita delta-neutral
+    # ── Tier 0: Bloomberg via query_layer (BBG DB direto) ─────────────────
+    # Se Bloomberg DB tem qualquer dado, usa só isso. RETURN imediato.
     try:
-        from app.providers.bql_csv import load_options_iv
-        bbg_iv = load_options_iv()
+        from app.query_layer import BloombergQueryLayer
+        ql = BloombergQueryLayer()
+        bbg_iv = ql.get_options_iv()
         if bbg_iv:
             for sym in universe:
-                # Tenta ticker normalizado e variações
+                key = sym.replace("^", "")
+                entry = bbg_iv.get(key) or bbg_iv.get(sym)
+                if entry and entry.get("atm_iv"):
+                    results[sym] = {
+                        "label":     OPTIONS_UNIVERSE.get(sym, sym),
+                        "atm_iv":    entry.get("atm_iv"),
+                        "skew_5pct": entry.get("skew_25d"),
+                        "pcr_oi":    entry.get("pcr_oi"),
+                        "source":    "bloomberg",
+                    }
+            if results:
+                _log.info("options_bloomberg_loaded", loaded=len(results))
+                return results  # ← RETURN IMEDIATO — sem IBKR/yfinance
+    except Exception as exc:
+        _log.debug("options_bloomberg_failed", error=str(exc)[:80])
+
+    # Fallback CSV legado (caso query_layer falhe)
+    try:
+        from app.providers.bql_csv import load_options_iv
+        bbg_csv = load_options_iv()
+        if bbg_csv:
+            for sym in universe:
                 for key in [sym, sym.replace("^", ""), f"{sym} US Equity"]:
-                    entry = bbg_iv.get(key)
+                    entry = bbg_csv.get(key)
                     if entry and entry.get("atm_iv"):
                         results[sym] = {
                             "label":     OPTIONS_UNIVERSE.get(sym, sym),
                             "atm_iv":    entry.get("atm_iv"),
-                            "skew_5pct": entry.get("skew_25d"),   # delta-25 skew proxy
+                            "skew_5pct": entry.get("skew_25d"),
                             "pcr_oi":    entry.get("pcr_oi"),
-                            "source":    "bloomberg",
+                            "source":    "bloomberg_csv",
                         }
                         break
-            _log.info("options_bloomberg_loaded", loaded=len([s for s in universe if s in results]))
+            if results:
+                _log.info("options_bloomberg_csv_loaded", loaded=len(results))
+                return results  # ← RETURN IMEDIATO
     except Exception as exc:
-        _log.debug("options_bloomberg_failed", error=str(exc)[:80])
+        _log.debug("options_bloomberg_csv_failed", error=str(exc)[:80])
 
     # ── Tenta IBKR primeiro ────────────────────────────────────────────────────
     try:
