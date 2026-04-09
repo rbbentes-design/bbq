@@ -1146,10 +1146,35 @@ def run_all(
     ))
 
     # ── 1. Ingest (fontes: X, ZeroHedge, SpotGamma...) ────────────────────────
+    # Cache: se já tem bundle do dia gerado nas últimas 2h, reusa em vez de
+    # re-rodar o ingest (que abre browser, scrape X, ZH, etc — demora 5-10 min).
     console.print("\n[bold]1/4[/bold] Coletando fontes...")
-    with console.status("[cyan]Ingest...[/cyan]"):
-        bundle = run_ingestion(headless=True)
-    console.print(f"[green]Ingest ok:[/green] {len(bundle.x_items)} X · "
+    bundle = None
+    try:
+        from app.storage.bundle_store import bundle_store
+        from app.models.daily_ingestion_bundle import DailyIngestionBundle
+        import time as _t
+        cands = sorted(
+            [p for p in bundle_store.list_bundles()
+             if str(target_date) in str(p)
+             and not p.stem.endswith("_summary")
+             and not p.stem.endswith("_curation")],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if cands:
+            age_h = (_t.time() - cands[0].stat().st_mtime) / 3600
+            if age_h < 2:
+                bundle = DailyIngestionBundle.model_validate_json(
+                    cands[0].read_text(encoding="utf-8")
+                )
+                console.print(f"[dim]Bundle cache hit: {cands[0].name} ({age_h:.1f}h)[/dim]")
+    except Exception:
+        pass
+
+    if bundle is None:
+        with console.status("[cyan]Ingest...[/cyan]"):
+            bundle = run_ingestion(headless=True)
+    console.print(f"[green]Bundle ok:[/green] {len(bundle.x_items)} X · "
                   f"{len(bundle.market_ear_blocks)} ZH/ME · "
                   f"{len(bundle.spotgamma_reports)} SpotGamma")
 
@@ -1165,21 +1190,37 @@ def run_all(
         from app.utils.timestamps import new_ulid
         from pathlib import Path as _P
         from app.storage.paths import workspace
+        import time as _time
 
-        run_id = new_ulid()
-        with console.status("[cyan]Writer: narrativa + texto...[/cyan]"):
-            curation_result = run_curation(bundle, run_id=run_id, run_date=str(target_date))
+        # Cache: se já tem curation do dia gerada nas últimas 4h, reusa.
+        # Curação LLM custa 2-5 min — não vale re-rodar a cada ciclo.
+        bundle_dir = workspace.bundles / str(target_date)
+        existing = sorted(
+            bundle_dir.glob("*_curation.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ) if bundle_dir.exists() else []
+        fresh = None
+        if existing:
+            age_h = (_time.time() - existing[0].stat().st_mtime) / 3600
+            if age_h < 4:
+                fresh = existing[0]
+                console.print(f"[dim]Curação cache hit: {fresh.name} ({age_h:.1f}h)[/dim]")
+                curation_path = str(fresh)
 
-        import json as _json
-        curation_path = str(
-            workspace.bundles / str(target_date) / f"{run_id}_curation.json"
-        )
-        _P(curation_path).write_text(
-            curation_result.model_dump_json(indent=2), encoding="utf-8"
-        )
-        console.print(f"[green]Writer ok:[/green] "
-                      f"{len(curation_result.scored_items)} items · "
-                      f"modo={getattr(curation_result, 'written_mode', '?')}")
+        if not fresh:
+            run_id = new_ulid()
+            with console.status("[cyan]Writer: narrativa + texto...[/cyan]"):
+                curation_result = run_curation(bundle, run_id=run_id, run_date=str(target_date))
+            curation_path = str(
+                workspace.bundles / str(target_date) / f"{run_id}_curation.json"
+            )
+            _P(curation_path).write_text(
+                curation_result.model_dump_json(indent=2), encoding="utf-8"
+            )
+            console.print(f"[green]Writer ok:[/green] "
+                          f"{len(curation_result.scored_items)} items · "
+                          f"modo={getattr(curation_result, 'written_mode', '?')}")
     except Exception as exc:
         console.print(f"[yellow]Writer falhou: {exc}[/yellow]")
 

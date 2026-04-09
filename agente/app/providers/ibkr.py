@@ -46,9 +46,9 @@ _log = get_logger("providers.ibkr")
 IBKR_HOST       = os.getenv("IBKR_HOST",      "127.0.0.1")
 IBKR_PORT       = int(os.getenv("IBKR_PORT",  "4001"))      # ibeam/Gateway
 IBKR_CLIENT_ID  = int(os.getenv("IBKR_CLIENT_ID", "20"))
-CONNECT_TIMEOUT = 10        # segundos por tentativa
-MAX_RETRIES     = 3         # tentativas antes de desistir + alertar
-RETRY_BACKOFF   = [2, 5, 15]  # segundos entre tentativas
+CONNECT_TIMEOUT = 3         # segundos por tentativa (era 10)
+MAX_RETRIES     = 1         # tentativa única — sem backoff
+RETRY_BACKOFF   = [2]       # vazio efetivamente
 REQUEST_DELAY   = 0.05      # throttle entre requisições (50ms)
 BATCH_SIZE      = 40        # max contratos por lote de histData
 
