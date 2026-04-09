@@ -824,6 +824,46 @@ class BloombergQueryLayer:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def get_field_history(
+        self,
+        fields: list[str],
+        ticker: str | None = None,
+        days: int = 90,
+    ) -> dict[str, dict[str, list[tuple[str, float]]]]:
+        """
+        Retorna historico de (date, value) para cada (ticker, field) em bql_timeseries.
+
+        Returns:
+            {ticker: {field: [(date, value), ...]}}  ordenado por data asc.
+        """
+        try:
+            placeholders = ",".join("?" * len(fields))
+            params: list[Any] = list(fields)
+
+            sql = f"""
+                SELECT ticker, field, date, value
+                FROM bql_timeseries
+                WHERE field IN ({placeholders})
+                  AND value IS NOT NULL
+                  AND date >= date('now', ?)
+            """
+            params.append(f"-{int(days)} days")
+            if ticker:
+                sql += " AND ticker = ?"
+                params.append(ticker)
+            sql += " ORDER BY ticker, field, date ASC"
+
+            with self._connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return {}
+
+        result: dict[str, dict[str, list[tuple[str, float]]]] = {}
+        for row in rows:
+            tk, fld, dt, val = row["ticker"], row["field"], row["date"], row["value"]
+            result.setdefault(tk, {}).setdefault(fld, []).append((dt, val))
+        return result
+
     def _get_latest_by_fields(
         self,
         fields: list[str],

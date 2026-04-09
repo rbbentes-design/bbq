@@ -306,11 +306,13 @@ def _build_options_panel(snapshot: "OptionsSnapshot | None") -> str:
 
 def _panel_skew_term_structure() -> str:
     """
-    Painel de Skew Term Structure por ticker.
-    Lê do BBG DB (skew_tails_*.csv ingerido) e mostra:
-      - Por tenor (30D, 90D, 180D): atm, call_skew (call25/ATM), put_skew (put25/ATM)
-      - Risk reversal 25d, tail premium
-    Para os 15 tickers principais (índices + mega-caps + ETFs).
+    Painel de Skew Term Structure por ticker — agora com interpretação.
+
+    Para cada ticker (tenor 30D principal):
+      - ATM IV, CALL/ATM, PUT/ATM, RR 25D, TAIL PREM
+      - Δ PUT/ATM (mudança vs leitura anterior)
+      - Percentil do PUT/ATM nos últimos 60d
+      - Bias (BULL / NEUTRO / BEAR) e leitura estratégica curta
     """
     try:
         from app.query_layer import BloombergQueryLayer
@@ -336,50 +338,149 @@ def _panel_skew_term_structure() -> str:
         "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",
         "GLD", "TLT", "HYG", "EEM",
     ]
-    rows_html = []
 
-    def _fmt(v, mult=1.0, suffix=""):
+    # ── Histórico (60d) para percentil + delta ──────────────────────────────
+    hist = {}
+    try:
+        hist = ql.get_field_history(
+            fields=["put_skew_30D", "call_skew_30D", "atm_30D"],
+            days=60,
+        )
+    except Exception:
+        pass
+
+    def _fmt(v, mult=1.0, suffix="", signed=True):
         if v is None or v == "":
             return "<span style='color:#475569'>—</span>"
         try:
-            return f"{float(v) * mult:+.2f}{suffix}"
+            f = float(v) * mult
+            sign = "+" if signed and f > 0 else ("" if signed else "")
+            return f"{sign}{f:.2f}{suffix}" if signed else f"{f:.2f}{suffix}"
         except Exception:
             return "<span style='color:#475569'>—</span>"
 
-    def _color_skew_ratio(v, neutral=1.0):
-        if v is None:
-            return "#94a3b8"
-        try:
-            d = float(v) - neutral
-            if d > 0.05:  return "#22c55e"   # call premium positivo (right tail caro)
-            if d < -0.05: return "#ef4444"   # right tail barato
-            return "#94a3b8"
-        except Exception:
-            return "#94a3b8"
+    def _percentile(series: list[float], val: float) -> float | None:
+        if not series or val is None:
+            return None
+        n = len(series)
+        if n < 5:
+            return None
+        below = sum(1 for x in series if x < val)
+        return below / n * 100.0
 
+    def _interpret(put_skew, call_skew, delta_ps, pct_ps) -> tuple[str, str, str]:
+        """
+        Retorna (label, color, leitura_curta) baseado em put_skew + delta + percentil.
+        """
+        if put_skew is None:
+            return ("—", "#64748b", "sem dados")
+
+        # Componentes
+        ps = float(put_skew)
+        d  = float(delta_ps) if delta_ps is not None else 0.0
+        p  = float(pct_ps) if pct_ps is not None else 50.0
+
+        # Score: -1 (bear) a +1 (bull)
+        # put_skew alto = hedging demand = bearish
+        # put_skew subindo = piora
+        # percentil alto = stretched bearish
+        score = 0.0
+        if ps > 1.15:   score -= 0.4
+        elif ps < 1.05: score += 0.4
+        if d > 0.02:    score -= 0.3
+        elif d < -0.02: score += 0.3
+        if p > 80:      score -= 0.3
+        elif p < 20:    score += 0.3
+        if call_skew is not None:
+            cs = float(call_skew)
+            if cs > 1.00: score += 0.2
+            if cs < 0.90: score -= 0.1
+
+        # Label
+        if score >= 0.3:
+            label, color = "BULL", "#22c55e"
+        elif score <= -0.3:
+            label, color = "BEAR", "#ef4444"
+        else:
+            label, color = "NEUTRO", "#fbbf24"
+
+        # Leitura estratégica curta
+        if ps > 1.15 and d > 0.02:
+            txt = "demanda por hedge subindo — fragilidade crescente"
+        elif ps > 1.15 and p > 80:
+            txt = "put premium esticado — protecao cara, contrarian setup"
+        elif ps < 1.05 and d < -0.02:
+            txt = "complacencia — tail risk subprecificado"
+        elif ps < 1.05 and p < 20:
+            txt = "volatilidade vendida — melt-up favoravel mas vulneravel"
+        elif d > 0.02:
+            txt = "skew piorando — viés de protecao aumentando"
+        elif d < -0.02:
+            txt = "skew aliviando — risco-on em formacao"
+        elif p > 70:
+            txt = "skew elevado para padrao recente"
+        elif p < 30:
+            txt = "skew comprimido para padrao recente"
+        else:
+            txt = "regime estavel"
+        return (label, color, txt)
+
+    rows_html = []
+    bull_setups: list[tuple[str, str]] = []   # (ticker, leitura)
+    bear_setups: list[tuple[str, str]] = []
     for ticker in PRIORITY:
         d = all_skew.get(ticker)
         if not d:
             continue
-        # Linha por tenor
-        for tenor in ["30D", "90D", "180D"]:
-            atm    = d.get(f"atm_{tenor}")
-            cs     = d.get(f"call_skew_{tenor}")
-            ps     = d.get(f"put_skew_{tenor}")
-            rr     = d.get(f"rr_25d_{tenor}")
-            tp     = d.get(f"tail_premium_{tenor}")
-            cs_color = _color_skew_ratio(cs)
-            rows_html.append(
-                f"<tr>"
-                f"<td style='padding:5px 12px;font-size:11px;color:#e2e8f0;font-weight:700'>{ticker}</td>"
-                f"<td style='padding:5px 12px;font-size:10px;color:#94a3b8'>{tenor}</td>"
-                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#00d4e8;text-align:right'>{_fmt(atm, mult=100, suffix='%')}</td>"
-                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:{cs_color};text-align:right'>{_fmt(cs)}</td>"
-                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(ps)}</td>"
-                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#fbbf24;text-align:right'>{_fmt(rr, mult=100, suffix='pp')}</td>"
-                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#a78bfa;text-align:right'>{_fmt(tp, mult=100, suffix='pp')}</td>"
-                f"</tr>"
-            )
+        atm    = d.get("atm_30D")
+        cs     = d.get("call_skew_30D")
+        ps     = d.get("put_skew_30D")
+        rr     = d.get("rr_25d_30D")
+        tp     = d.get("tail_premium_30D")
+
+        # Histórico do put_skew_30D
+        ps_hist = (hist.get(ticker, {}) or {}).get("put_skew_30D", []) or []
+        delta_ps = None
+        pct_ps   = None
+        if len(ps_hist) >= 2 and ps is not None:
+            try:
+                delta_ps = float(ps) - float(ps_hist[-2][1])
+            except Exception:
+                pass
+        if ps is not None:
+            series = [v for _, v in ps_hist if v is not None]
+            pct_ps = _percentile(series, float(ps))
+
+        label, lab_color, leitura = _interpret(ps, cs, delta_ps, pct_ps)
+        if label == "BULL":
+            bull_setups.append((ticker, leitura))
+        elif label == "BEAR":
+            bear_setups.append((ticker, leitura))
+
+        # Cores
+        delta_color = "#94a3b8"
+        if delta_ps is not None:
+            if delta_ps > 0.02:   delta_color = "#ef4444"   # piora (mais bearish)
+            elif delta_ps < -0.02: delta_color = "#22c55e"  # alivia
+        pct_color = "#94a3b8"
+        if pct_ps is not None:
+            if pct_ps >= 80:   pct_color = "#ef4444"
+            elif pct_ps <= 20: pct_color = "#22c55e"
+
+        rows_html.append(
+            f"<tr>"
+            f"<td style='padding:6px 10px;font-size:11px;color:#e2e8f0;font-weight:700'>{ticker}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#00d4e8;text-align:right'>{_fmt(atm, mult=100, suffix='%', signed=False)}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(cs, signed=False)}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(ps, signed=False)}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{delta_color};text-align:right'>{_fmt(delta_ps)}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{pct_color};text-align:right'>{('—' if pct_ps is None else f'{pct_ps:.0f}')}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#fbbf24;text-align:right'>{_fmt(rr, mult=100, suffix='pp')}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#a78bfa;text-align:right'>{_fmt(tp, mult=100, suffix='pp')}</td>"
+            f"<td style='padding:6px 10px;font-size:10px;color:{lab_color};font-weight:800;text-align:center'>{label}</td>"
+            f"<td style='padding:6px 10px;font-size:10px;color:#cbd5e1;font-style:italic'>{leitura}</td>"
+            f"</tr>"
+        )
 
     if not rows_html:
         return (
@@ -390,21 +491,54 @@ def _panel_skew_term_structure() -> str:
 
     header = (
         "<thead><tr>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TICKER</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TENOR</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>ATM IV</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>CALL/ATM</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>PUT/ATM</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>RR 25D</th>"
-        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>TAIL PREM</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TICKER</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>ATM IV</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>CALL/ATM</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>PUT/ATM</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>Δ PUT</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>%ile 60d</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>RR 25D</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>TAIL PREM</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:center;letter-spacing:1px'>BIAS</th>"
+        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>LEITURA ESTRATÉGICA</th>"
         "</tr></thead>"
     )
+    # ── Bloco resumo: BULL setups vs BEAR setups ────────────────────────────
+    def _setup_block(title: str, items: list[tuple[str, str]], color: str) -> str:
+        if not items:
+            body = "<div style='padding:10px 12px;font-size:10px;color:#475569;font-style:italic'>nenhum</div>"
+        else:
+            chips = "".join(
+                f"<div style='display:flex;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid rgba(148,163,184,.08)'>"
+                f"<span style='font-size:11px;font-weight:800;color:{color};min-width:48px'>{tk}</span>"
+                f"<span style='font-size:10px;color:#cbd5e1;font-style:italic'>{txt}</span>"
+                f"</div>"
+                for tk, txt in items
+            )
+            body = chips
+        return (
+            f"<div style='flex:1;border:1px solid rgba(148,163,184,.15);border-radius:6px;background:rgba(15,23,42,.4)'>"
+            f"<div style='padding:8px 12px;font-size:10px;font-weight:800;letter-spacing:1px;color:{color};border-bottom:1px solid rgba(148,163,184,.15)'>"
+            f"{title} <span style='color:#64748b;font-weight:400'>({len(items)})</span></div>"
+            f"{body}</div>"
+        )
+
+    setups_html = (
+        "<div style='display:flex;gap:12px;padding:12px'>"
+        f"{_setup_block('▲ BULL SETUPS — confirmacao p/ longs', bull_setups, '#22c55e')}"
+        f"{_setup_block('▼ BEAR SETUPS — confirmacao p/ hedges/shorts', bear_setups, '#ef4444')}"
+        "</div>"
+    )
+
     return (
         f"<div class='od-panel'>"
-        f"<div class='od-panel-title'>Skew Term Structure — Call/ATM · Put/ATM · RR · Tail Premium</div>"
+        f"<div class='od-panel-title'>Skew Term Structure 30D — Bias · Δ · Percentil · Leitura Estratégica</div>"
+        f"{setups_html}"
         f"<table style='width:100%;border-collapse:collapse'>{header}<tbody>{''.join(rows_html)}</tbody></table>"
         f"<div style='font-size:9px;color:rgba(0,212,232,.4);padding:8px 12px;font-style:italic'>"
-        f"CALL/ATM &lt; 1 = right-tail barato (underhedged) · RR positivo = put premium · TAIL PREM = skew_10d − skew_25d"
+        f"PUT/ATM &gt; 1.15 = hedging caro · Δ positivo = piora (mais bearish) · %ile 60d &gt; 80 = stretched bear · "
+        f"BIAS combina nivel + delta + percentil + call_skew · "
+        f"Use BULL/BEAR setups como confirmacao cruzada com CTA, RP e Desk Intelligence"
         f"</div>"
         f"</div>"
     )
