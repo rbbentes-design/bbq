@@ -1008,10 +1008,6 @@ def export_skew_tails():
             if (f'skew_10d_{t}' in df.columns and f'skew_25d_{t}' in df.columns):
                 df[f'tail_premium_{t}'] = df[f'skew_10d_{t}'] - df[f'skew_25d_{t}']
 
-        # Alias plain (sem sufixo de tenor) — contrato do csv_parser exige `skew_25d`
-        if 'skew_25d_30D' in df.columns:
-            df['skew_25d'] = df['skew_25d_30D']
-
         df.index.name = 'ticker'
         df.index = df.index.str.replace(' US Equity', '', regex=False).str.replace('/', '-')
         df.to_csv(OUT / f'skew_tails_{hoje}.csv')

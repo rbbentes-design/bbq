@@ -882,7 +882,7 @@ class DataNormalizer:
                 continue
 
             for field in fields:
-                col = cols.get(field)
+                col = cols.get(field.lower())
                 raw = row.get(col) if col else None
                 val = _to_float(raw) if col else None
 
