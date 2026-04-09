@@ -298,9 +298,116 @@ def _build_options_panel(snapshot: "OptionsSnapshot | None") -> str:
         f"<div class='od-grid-3'>{_panel_levels(snapshot)}{_panel_greeks(snapshot)}{_panel_skew(snapshot)}</div>",
         _panel_squeeze_breakdown(snapshot),
         _panel_flow_score(snapshot),
+        _panel_skew_term_structure(),
         _panel_metrics_table(snapshot),
     ]
     return "".join(panels)
+
+
+def _panel_skew_term_structure() -> str:
+    """
+    Painel de Skew Term Structure por ticker.
+    Lê do BBG DB (skew_tails_*.csv ingerido) e mostra:
+      - Por tenor (30D, 90D, 180D): atm, call_skew (call25/ATM), put_skew (put25/ATM)
+      - Risk reversal 25d, tail premium
+    Para os 15 tickers principais (índices + mega-caps + ETFs).
+    """
+    try:
+        from app.query_layer import BloombergQueryLayer
+        ql = BloombergQueryLayer()
+        all_skew = ql.get_skew_term_structure()
+    except Exception as exc:
+        return (
+            f"<div class='od-panel'><div class='od-panel-title'>Skew Term Structure</div>"
+            f"<div class='od-empty' style='padding:20px;text-align:center;color:#64748b'>"
+            f"Erro: {str(exc)[:80]}</div></div>"
+        )
+
+    if not all_skew:
+        return (
+            "<div class='od-panel'><div class='od-panel-title'>Skew Term Structure</div>"
+            "<div class='od-empty' style='padding:20px;text-align:center;color:#64748b'>"
+            "Sem dados de skew tails. Rode Bulk no BQuant para popular.</div></div>"
+        )
+
+    PRIORITY = [
+        "SPY", "QQQ", "IWM", "DIA",
+        "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "AVGO", "TSLA", "NFLX",
+        "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",
+        "GLD", "TLT", "HYG", "EEM",
+    ]
+    rows_html = []
+
+    def _fmt(v, mult=1.0, suffix=""):
+        if v is None or v == "":
+            return "<span style='color:#475569'>—</span>"
+        try:
+            return f"{float(v) * mult:+.2f}{suffix}"
+        except Exception:
+            return "<span style='color:#475569'>—</span>"
+
+    def _color_skew_ratio(v, neutral=1.0):
+        if v is None:
+            return "#94a3b8"
+        try:
+            d = float(v) - neutral
+            if d > 0.05:  return "#22c55e"   # call premium positivo (right tail caro)
+            if d < -0.05: return "#ef4444"   # right tail barato
+            return "#94a3b8"
+        except Exception:
+            return "#94a3b8"
+
+    for ticker in PRIORITY:
+        d = all_skew.get(ticker)
+        if not d:
+            continue
+        # Linha por tenor
+        for tenor in ["30D", "90D", "180D"]:
+            atm    = d.get(f"atm_{tenor}")
+            cs     = d.get(f"call_skew_{tenor}")
+            ps     = d.get(f"put_skew_{tenor}")
+            rr     = d.get(f"rr_25d_{tenor}")
+            tp     = d.get(f"tail_premium_{tenor}")
+            cs_color = _color_skew_ratio(cs)
+            rows_html.append(
+                f"<tr>"
+                f"<td style='padding:5px 12px;font-size:11px;color:#e2e8f0;font-weight:700'>{ticker}</td>"
+                f"<td style='padding:5px 12px;font-size:10px;color:#94a3b8'>{tenor}</td>"
+                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#00d4e8;text-align:right'>{_fmt(atm, mult=100, suffix='%')}</td>"
+                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:{cs_color};text-align:right'>{_fmt(cs)}</td>"
+                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(ps)}</td>"
+                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#fbbf24;text-align:right'>{_fmt(rr, mult=100, suffix='pp')}</td>"
+                f"<td style='padding:5px 12px;font-family:monospace;font-size:11px;color:#a78bfa;text-align:right'>{_fmt(tp, mult=100, suffix='pp')}</td>"
+                f"</tr>"
+            )
+
+    if not rows_html:
+        return (
+            "<div class='od-panel'><div class='od-panel-title'>Skew Term Structure</div>"
+            "<div class='od-empty' style='padding:20px;text-align:center;color:#64748b'>"
+            "Sem nenhum ticker da lista priority com dados de skew.</div></div>"
+        )
+
+    header = (
+        "<thead><tr>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TICKER</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TENOR</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>ATM IV</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>CALL/ATM</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>PUT/ATM</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>RR 25D</th>"
+        "<th style='padding:6px 12px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>TAIL PREM</th>"
+        "</tr></thead>"
+    )
+    return (
+        f"<div class='od-panel'>"
+        f"<div class='od-panel-title'>Skew Term Structure — Call/ATM · Put/ATM · RR · Tail Premium</div>"
+        f"<table style='width:100%;border-collapse:collapse'>{header}<tbody>{''.join(rows_html)}</tbody></table>"
+        f"<div style='font-size:9px;color:rgba(0,212,232,.4);padding:8px 12px;font-style:italic'>"
+        f"CALL/ATM &lt; 1 = right-tail barato (underhedged) · RR positivo = put premium · TAIL PREM = skew_10d − skew_25d"
+        f"</div>"
+        f"</div>"
+    )
 
 
 # ═══════════════════════════════════════════════════════

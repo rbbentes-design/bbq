@@ -391,6 +391,33 @@ class BloombergQueryLayer:
         """
         return self._get_latest_by_fields(["atm_iv", "skew_25d", "pcr_oi"], ticker_filter=ticker)
 
+    def get_skew_term_structure(self, ticker: str | None = None) -> dict[str, dict[str, Any]]:
+        """
+        Retorna skew completo (3 tenors × 11 fields) por ticker.
+
+        Returns:
+            {
+              "SPY": {
+                "atm_30D": 0.18, "atm_90D": 0.20, "atm_180D": 0.22,
+                "put25_30D": ..., "call25_30D": ...,
+                "put10_30D": ..., "call10_30D": ...,
+                "call_skew_30D": 0.85,    # call25/atm
+                "put_skew_30D":  1.12,    # put25/atm
+                "skew_25d_30D":  0.04,    # put25 - call25
+                "rr_25d_30D":    0.04,    # risk reversal
+                "skew_10d_30D":  0.06,
+                "tail_premium_30D": 0.02,
+                ... (idem para 90D, 180D)
+              },
+              ...
+            }
+        """
+        TENORS = ["30D", "90D", "180D"]
+        BASE = ["atm", "put25", "call25", "put10", "call10",
+                "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
+        fields = [f"{b}_{t}" for b in BASE for t in TENORS]
+        return self._get_latest_by_fields(fields, ticker_filter=ticker)
+
     # ── GEX ───────────────────────────────────────────────────────────────────
 
     def get_gex_summary(self) -> dict[str, Any]:

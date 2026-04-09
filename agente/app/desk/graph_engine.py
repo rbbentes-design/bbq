@@ -383,9 +383,9 @@ def _synthetic_corr_edges(
     if len(vectors) < 2:
         return []
 
-    # Pares — calcula pseudo-rho
+    # Pares — calcula pseudo-rho para TODOS os pares (sem limite mínimo)
     node_ids = list(vectors.keys())
-    scored: list[tuple[float, str, str]] = []
+    all_pairs: list[tuple[float, str, str, float]] = []
     for i in range(len(node_ids)):
         for j in range(i + 1, len(node_ids)):
             a, b = node_ids[i], node_ids[j]
@@ -403,26 +403,26 @@ def _synthetic_corr_edges(
             if count < 2:
                 continue
             rho = round(score, 3)
-            # incluir correlações com algum sinal
-            if abs(rho) >= 0.20:
-                scored.append((abs(rho), a, b, rho))
+            all_pairs.append((abs(rho), a, b, rho))
 
-    # Ordena por |rho| desc. Limite escala com nº de nós: ~1.2x cobertura.
-    # Garantia: cada nó sem MST ganha pelo menos 1 aresta (até saturar).
-    MAX_SYNTH = max(120, len(node_ids) * 2)
-    scored.sort(key=lambda x: x[0], reverse=True)
-    edges = []
+    all_pairs.sort(key=lambda x: x[0], reverse=True)
+
+    edges: list[dict[str, Any]] = []
+    edge_keys: set[tuple[str, str]] = set()
     covered_nodes: set[str] = set(already_covered)
-    for abs_rho, a, b, rho in scored:
-        if len(edges) >= MAX_SYNTH and (a in covered_nodes and b in covered_nodes):
-            continue
+
+    def _add_edge(abs_rho: float, a: str, b: str, rho: float) -> None:
+        key = (a, b) if a < b else (b, a)
+        if key in edge_keys:
+            return
+        edge_keys.add(key)
         color = "#22c55e" if rho >= 0 else "#ef4444"
         edges.append({
             "data": {
                 "id":          f"syn_{a}_{b}",
                 "source":      a,
                 "target":      b,
-                "type":        "mst",   # mesmo tipo para herdar estilo
+                "type":        "mst",
                 "correlation": rho,
                 "distance":    round(1.0 - abs_rho, 3),
                 "color":       color,
@@ -434,7 +434,30 @@ def _synthetic_corr_edges(
         covered_nodes.add(a)
         covered_nodes.add(b)
 
-    _log.info("synthetic_corr_edges", n=len(edges), nodes_covered=len(covered_nodes))
+    # Pass 1: arestas fortes (|rho| >= 0.20) — populates main backbone
+    MAX_STRONG = max(150, len(node_ids) * 3)
+    strong = [p for p in all_pairs if p[0] >= 0.20]
+    for abs_rho, a, b, rho in strong:
+        if len(edges) >= MAX_STRONG and (a in covered_nodes and b in covered_nodes):
+            continue
+        _add_edge(abs_rho, a, b, rho)
+
+    # Pass 2: garantir que TODO nó tenha pelo menos 1 conexão.
+    # Para cada isolado, busca o melhor par disponível (qualquer rho).
+    isolated = [n for n in node_ids if n not in covered_nodes]
+    for iso in isolated:
+        best = None
+        for abs_rho, a, b, rho in all_pairs:
+            if a == iso or b == iso:
+                best = (abs_rho, a, b, rho)
+                break
+        if best:
+            _add_edge(*best)
+
+    _log.info("synthetic_corr_edges",
+              n=len(edges),
+              nodes_covered=len(covered_nodes),
+              isolated_remaining=len([n for n in node_ids if n not in covered_nodes]))
     return edges
 
 
@@ -721,9 +744,13 @@ def build_graph(
         cyto_edges.extend(_rrg_edges(rrg_result, selected_ids))
 
     # Arestas sintéticas de correlação — proxy via retornos snapshot
-    # Ativado quando MST cobre menos de 50% dos data nodes (ex: IBKR offline)
+    # Sempre garante que TODO nó com dados tenha pelo menos uma conexão.
+    # _synthetic_corr_edges itera por |rho| desc e adiciona arestas até cada
+    # nó isolado ganhar pelo menos 1 vizinho.
     data_node_ids = {n["data"]["id"] for n in cyto_nodes if n["data"].get("has_data")}
-    if len(mst_node_ids) < len(data_node_ids) * 0.5:
+    isolated = data_node_ids - mst_node_ids
+    if isolated:
+        _log.info("synthetic_fill_isolated", isolated=len(isolated), mst_covered=len(mst_node_ids))
         cyto_edges.extend(
             _synthetic_corr_edges(market_prices, selected_ids, mst_node_ids)
         )
