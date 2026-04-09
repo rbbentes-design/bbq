@@ -154,6 +154,7 @@ class DataNormalizer:
             "eps_revisions":              self._normalize_eps_revisions,
             "realized_vol":               self._normalize_realized_vol,
             "thematic_flow":              self._normalize_thematic_flow,
+            "positioning_models":         self._normalize_positioning_models,
             "index_members":              self._normalize_index_members,
             "etf_holdings":               self._normalize_etf_holdings,
             "letf_flows":                 self._normalize_letf_flows,
@@ -511,6 +512,26 @@ class DataNormalizer:
             df, source_file, default_date, ingest_ts,
             ticker_col_candidates=["ticker"],
             fields=["price", "ret_1d", "ret_5d", "ret_21d", "ret_63d", "ret_ytd"],
+        )
+
+    def _normalize_positioning_models(
+        self, df: "pd.DataFrame", source_file: str, default_date: str, ingest_ts: str
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        positioning_models_*.csv: CTA + Vol Control + Risk Parity por ticker.
+        ~17 fields cobrindo 3 modelos de positioning estilo BofA/GS.
+        """
+        return self._normalize_wide(
+            df, source_file, default_date, ingest_ts,
+            ticker_col_candidates=["ticker"],
+            fields=[
+                "price", "rv_5d", "rv_30d", "rv_60d",
+                "cta_sig_20d", "cta_sig_60d", "cta_sig_120d",
+                "cta_score", "cta_leverage", "cta_notional_b",
+                "volctrl_score", "volctrl_leverage", "volctrl_notional_b",
+                "rp_score", "rp_weight", "rp_notional_b",
+                "flow_total_b",
+            ],
         )
 
     def _normalize_index_members(

@@ -1423,6 +1423,159 @@ def export_realized_vol():
         _log(f'realized_vol warn: {e}')
 
 
+def export_positioning_models():
+    """
+    Modelo CTA + Risk Parity + Vol Control para TODOS os tickers.
+
+    Replica a metodologia BofA/GS usada no Greeks Dashboard:
+
+    CTA (Trend Follower):
+      Sinal por janela: tanh((P_now - P_avg_window) / (vol * sqrt(window/252)))
+      Janelas: 20d (curto), 60d (médio), 120d (longo)
+      Score final = média dos 3 sinais (range [-1, +1])
+      Notional estimado = score × AUM_universo × vol_target / vol_realizada
+
+    Vol Control / Vol Targeting:
+      Position weight = vol_target / max(vol_realizada, vol_floor)
+      Score = +1 se vol cai (re-leveraging), -1 se vol sobe (de-leveraging)
+      Notional flow = -delta_vol * AUM * leverage_sensitivity
+
+    Risk Parity:
+      Position weight ∝ 1 / vol_realizada
+      Sinal de re-balance: derivada da vol em janela curta
+      Score = -delta_vol_5d_pct (vol caindo = comprador)
+    """
+    universe = list(set(FUND_TICKERS))
+
+    # AUM assumido por classe (universo CTA + RP + VolCtrl em USD bilhões)
+    AUM_CTA       = 350.0   # CTAs total ~$350B em equity (BofA estimate)
+    AUM_VOLCTRL   = 220.0   # Vol target funds (~$220B)
+    AUM_RP        = 180.0   # Risk Parity (~$180B)
+    VOL_TARGET    = 0.10    # 10% target vol (BofA standard)
+    VOL_FLOOR     = 0.05    # piso pra evitar leverage absurdo
+
+    rows = []
+    for bbg_tk in universe:
+        ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
+        try:
+            # Pega 260d de PX_LAST
+            resp = bq.execute(
+                f'get(PX_LAST(dates=range(-260D,0D),frq=D,fill=PREV)) for(["{bbg_tk}"])'
+            )
+            r = resp[0]
+            df_h = r.df()
+            if 'DATE' in df_h.columns:
+                dates = pd.to_datetime(df_h['DATE'])
+                vals  = pd.to_numeric(df_h[r.name], errors='coerce')
+                prices = pd.Series(vals.values, index=dates).dropna().sort_index()
+            else:
+                s = r.df()[r.name]
+                prices = pd.Series(
+                    pd.to_numeric(s.values, errors='coerce'),
+                    index=pd.to_datetime(s.index),
+                ).dropna().sort_index()
+            if len(prices) < 130:  # precisa pelo menos 130 dias pro 120d window
+                continue
+            prices = prices.astype(float)
+            p_now = float(prices.iloc[-1])
+
+            # Retornos log
+            rets = np.log(prices / prices.shift(1)).dropna()
+
+            # Vol realizada anualizada
+            def _ann_vol(window):
+                if len(rets) < window:
+                    return None
+                return float(rets.iloc[-window:].std() * np.sqrt(252))
+
+            vol_30  = _ann_vol(30)
+            vol_60  = _ann_vol(60)
+            vol_5   = _ann_vol(5)
+            vol_5_prev = _ann_vol(10) if len(rets) > 10 else None
+
+            # ── CTA: trend signal por janela (BofA/GS) ──────────────────────
+            def _trend_signal(window):
+                if len(prices) < window + 1:
+                    return None
+                p_past = float(prices.iloc[-(window + 1)])
+                if p_past <= 0:
+                    return None
+                ret_window = (p_now - p_past) / p_past
+                # Normaliza pelo risk-budget esperado da janela
+                vol_w = _ann_vol(window) or 0.20
+                expected_move = vol_w * np.sqrt(window / 252.0)
+                if expected_move == 0:
+                    return None
+                return float(np.tanh(ret_window / expected_move))
+
+            sig_20  = _trend_signal(20)
+            sig_60  = _trend_signal(60)
+            sig_120 = _trend_signal(120)
+            cta_signals = [s for s in (sig_20, sig_60, sig_120) if s is not None]
+            cta_score = float(np.mean(cta_signals)) if cta_signals else 0.0
+
+            # CTA notional estimado
+            vol_for_cta = vol_60 or 0.20
+            cta_leverage = VOL_TARGET / max(vol_for_cta, VOL_FLOOR)
+            cta_notional_b = cta_score * AUM_CTA * cta_leverage / len(universe) * 100  # spread
+
+            # ── Vol Control / Vol Targeting ────────────────────────────────
+            # Score: vol caindo = re-leveraging (positivo), vol subindo = de-leveraging (negativo)
+            volctrl_score = 0.0
+            if vol_5 is not None and vol_5_prev is not None and vol_5_prev > 0:
+                # Negativo do delta de vol — quanto mais vol cai, mais positivo
+                volctrl_score = float(np.tanh(-5.0 * (vol_5 - vol_5_prev) / vol_5_prev))
+            volctrl_leverage = VOL_TARGET / max(vol_30 or 0.15, VOL_FLOOR)
+            volctrl_notional_b = volctrl_score * AUM_VOLCTRL * volctrl_leverage / len(universe) * 100
+
+            # ── Risk Parity ─────────────────────────────────────────────────
+            # Position weight ∝ 1/vol; rebalance puxa pra cima quando vol cai
+            rp_weight = 1.0 / max(vol_60 or 0.20, VOL_FLOOR)
+            rp_score = volctrl_score  # mesmo proxy de delta vol
+            rp_notional_b = rp_score * AUM_RP * rp_weight / 30  # normalização leve
+
+            rows.append({
+                'ticker':            ticker_short,
+                'price':             round(p_now, 4),
+                # ── Vol realizada ──
+                'rv_5d':             round(vol_5, 4)  if vol_5  is not None else '',
+                'rv_30d':            round(vol_30, 4) if vol_30 is not None else '',
+                'rv_60d':            round(vol_60, 4) if vol_60 is not None else '',
+                # ── CTA model ──
+                'cta_sig_20d':       round(sig_20, 4)  if sig_20  is not None else '',
+                'cta_sig_60d':       round(sig_60, 4)  if sig_60  is not None else '',
+                'cta_sig_120d':      round(sig_120, 4) if sig_120 is not None else '',
+                'cta_score':         round(cta_score, 4),
+                'cta_leverage':      round(cta_leverage, 3),
+                'cta_notional_b':    round(cta_notional_b, 4),
+                # ── Vol Control ──
+                'volctrl_score':     round(volctrl_score, 4),
+                'volctrl_leverage':  round(volctrl_leverage, 3),
+                'volctrl_notional_b':round(volctrl_notional_b, 4),
+                # ── Risk Parity ──
+                'rp_score':          round(rp_score, 4),
+                'rp_weight':         round(rp_weight, 3),
+                'rp_notional_b':     round(rp_notional_b, 4),
+                # ── Posicionamento líquido (todos os 3 modelos somados) ──
+                'flow_total_b':      round(cta_notional_b + volctrl_notional_b + rp_notional_b, 4),
+                # Direção macro
+                'flow_direction':    ('long' if (cta_score + volctrl_score + rp_score) > 0.1
+                                      else 'short' if (cta_score + volctrl_score + rp_score) < -0.1
+                                      else 'flat'),
+            })
+        except Exception as e:
+            _log(f'positioning warn {ticker_short}: {e}')
+
+    if rows:
+        df_out = pd.DataFrame(rows)
+        try:
+            df_out = df_out.sort_values('flow_total_b', ascending=False, na_position='last')
+        except Exception:
+            pass
+        df_out.to_csv(OUT / f'positioning_models_{hoje}.csv', index=False)
+        _log(f'positioning_models — {len(rows)} tickers (CTA + VolCtrl + RP)')
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -1695,6 +1848,7 @@ def export_all(_download=True):
 
     # ── Prices / macro ───────────────────────────────────────────────────
     print('Realized vol (30/60/90/252d)...');   _safe('realized_vol', export_realized_vol)
+    print('Positioning models (CTA+VolCtrl+RP)...'); _safe('positioning', export_positioning_models)
     print('Prices snapshot...');                _safe('prices', export_prices)
     print('Price history (snapshot)...');       _safe('price_history', export_price_history)
     print('Macro series...');                   _safe('macro', export_macro)
