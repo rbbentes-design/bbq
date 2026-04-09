@@ -174,7 +174,9 @@ def run_portfolio_pipeline(
     if options_map is None:
         try:
             from app.providers.options import collect as options_collect
-            options_map = options_collect() or {}
+            # Passa TODOS os tickers da rede pra ter convexity em todos os nós
+            _opts_universe = sorted(set(market_prices.keys()))
+            options_map = options_collect(tickers=_opts_universe) or {}
         except Exception as exc:
             _log.warning("options_failed", error=str(exc))
             options_map = {}

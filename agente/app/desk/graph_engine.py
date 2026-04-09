@@ -854,13 +854,15 @@ def build_from_bundle(
         except Exception as exc:
             _log.warning("anatomy_failed", error=str(exc))
 
-    # ── Options: IV, skew, GEX para tickers líquidos ─────────────────────────
+    # ── Options: IV, skew, GEX para TODOS os tickers da rede ─────────────────
     options_map: dict[str, Any] = cached_options or {}
     vix_term: dict[str, Any] = {}
     if not skip_options and not cached_options:
         try:
             from app.providers.options import collect as options_collect, vix_term_structure
-            options_map = options_collect() or {}
+            # Passa TODOS os tickers do market_prices, não só o OPTIONS_UNIVERSE default
+            _opts_universe = sorted(set(market_prices.keys()))
+            options_map = options_collect(tickers=_opts_universe) or {}
             vix_term    = vix_term_structure(market_prices)
             _log.info("options_collected", count=len(options_map))
         except Exception as exc:
