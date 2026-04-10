@@ -2221,6 +2221,83 @@ def _render_portfolio_tab(portfolio, market_prices: "dict | None", flow_pred) ->
 
 # ── HTML builder ──────────────────────────────────────────────────────────────
 
+def _build_spotgamma_top_block(bundle: "DailyIngestionBundle") -> str:
+    """
+    Bloco resumo no topo da aba Editorial: Flow Dynamics (FlowPatrol) +
+    Founders Note (PMNote/FoundersNote) lado a lado, antes do brief.html.
+
+    Retorna string vazia se nao houver reports SpotGamma.
+    """
+    try:
+        reports = getattr(bundle, "spotgamma_reports", []) or []
+    except Exception:
+        return ""
+    if not reports:
+        return ""
+
+    # Pega o mais recente de cada tipo
+    flow_patrol = None
+    founders = None
+    for r in reports:
+        rt = (r.report_type or "").strip()
+        if rt == "FlowPatrol" and (flow_patrol is None or (r.report_date and (not flow_patrol.report_date or r.report_date > flow_patrol.report_date))):
+            flow_patrol = r
+        elif rt in ("PMNote", "FoundersNote") and (founders is None or (r.report_date and (not founders.report_date or r.report_date > founders.report_date))):
+            founders = r
+
+    if not flow_patrol and not founders:
+        return ""
+
+    def _format_text(text: str, max_chars: int = 4000) -> str:
+        """Quebra paragrafos preservando linhas curtas."""
+        if not text:
+            return ""
+        text = text[:max_chars]
+        # Escapa HTML
+        text = (text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+        # Quebra por linhas duplas em <p>
+        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+        return "".join(f"<p style='margin:0 0 8px 0;line-height:1.5'>{p.replace(chr(10), '<br>')}</p>" for p in paras)
+
+    def _card(emoji: str, title: str, subtitle: str, body_html: str, accent: str) -> str:
+        return (
+            f"<div style='flex:1;min-width:0;border:1px solid rgba(148,163,184,.18);"
+            f"border-radius:10px;background:rgba(15,23,42,.55);overflow:hidden;display:flex;flex-direction:column'>"
+            f"<div style='padding:10px 14px;border-bottom:1px solid rgba(148,163,184,.15);"
+            f"background:linear-gradient(90deg,{accent}22,transparent)'>"
+            f"<div style='font-size:11px;font-weight:800;letter-spacing:1.2px;color:{accent}'>{emoji} {title}</div>"
+            f"<div style='font-size:10px;color:#94a3b8;margin-top:2px'>{subtitle}</div>"
+            f"</div>"
+            f"<div style='padding:14px 16px;font-size:11px;color:#cbd5e1;max-height:340px;overflow-y:auto'>{body_html}</div>"
+            f"</div>"
+        )
+
+    cards: list[str] = []
+    if flow_patrol:
+        date_str = str(flow_patrol.report_date) if flow_patrol.report_date else ""
+        title = (flow_patrol.title or "Flow Patrol").strip()[:80]
+        body = _format_text(flow_patrol.raw_text or "", max_chars=4500)
+        if not body:
+            body = "<p style='color:#64748b;font-style:italic'>sem texto extraido</p>"
+        cards.append(_card("📊", "FLOW DYNAMICS", f"{title} · {date_str}", body, "#00d4e8"))
+    if founders:
+        date_str = str(founders.report_date) if founders.report_date else ""
+        title = (founders.title or "Founders Note").strip()[:80]
+        rt_label = "FOUNDERS NOTE" if founders.report_type == "FoundersNote" else "PM NOTE"
+        body = _format_text(founders.raw_text or "", max_chars=4500)
+        if not body:
+            body = "<p style='color:#64748b;font-style:italic'>sem texto extraido</p>"
+        cards.append(_card("📝", rt_label, f"{title} · {date_str}", body, "#a78bfa"))
+
+    return (
+        "<div style='display:flex;gap:14px;padding:14px 16px;background:#06080f'>"
+        + "".join(cards)
+        + "</div>"
+    )
+
+
 def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
     """
     Carrega o editorial diário para a aba Informações de Mercado.
@@ -2468,6 +2545,11 @@ def generate_macro_desk_v2_html(
             '<span style="font-size:11px">Rode <code>agente writer</code> para gerar o conteúdo.</span>'
             '</div>'
         )
+
+    # Bloco SpotGamma (FlowPatrol + FoundersNote) acima do brief
+    _spotgamma_top = _build_spotgamma_top_block(bundle) if bundle else ""
+    if _spotgamma_top:
+        editorial_content = _spotgamma_top + editorial_content
 
     # ── Desk Radar tab ────────────────────────────────────────────────────────
     # Reutiliza os valores já resolvidos no início
