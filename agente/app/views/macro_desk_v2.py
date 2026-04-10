@@ -2263,14 +2263,14 @@ def _build_spotgamma_top_block(bundle: "DailyIngestionBundle") -> str:
 
     def _card(emoji: str, title: str, subtitle: str, body_html: str, accent: str) -> str:
         return (
-            f"<div style='flex:1;min-width:0;border:1px solid rgba(148,163,184,.18);"
-            f"border-radius:10px;background:rgba(15,23,42,.55);overflow:hidden;display:flex;flex-direction:column'>"
+            f"<div style='border:1px solid rgba(148,163,184,.18);"
+            f"border-radius:10px;background:rgba(15,23,42,.55);overflow:hidden'>"
             f"<div style='padding:10px 14px;border-bottom:1px solid rgba(148,163,184,.15);"
             f"background:linear-gradient(90deg,{accent}22,transparent)'>"
             f"<div style='font-size:11px;font-weight:800;letter-spacing:1.2px;color:{accent}'>{emoji} {title}</div>"
             f"<div style='font-size:10px;color:#94a3b8;margin-top:2px'>{subtitle}</div>"
             f"</div>"
-            f"<div style='padding:14px 16px;font-size:11px;color:#cbd5e1;max-height:340px;overflow-y:auto'>{body_html}</div>"
+            f"<div style='padding:14px 16px;font-size:12px;color:#cbd5e1;line-height:1.6'>{body_html}</div>"
             f"</div>"
         )
 
@@ -2292,7 +2292,7 @@ def _build_spotgamma_top_block(bundle: "DailyIngestionBundle") -> str:
         cards.append(_card("📝", rt_label, f"{title} · {date_str}", body, "#a78bfa"))
 
     return (
-        "<div style='display:flex;gap:14px;padding:14px 16px;background:#06080f'>"
+        "<div style='display:flex;flex-direction:column;gap:14px;padding:14px 16px;background:#06080f'>"
         + "".join(cards)
         + "</div>"
     )
@@ -2319,7 +2319,7 @@ def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
         raw = candidates[0].read_text(encoding="utf-8")
         # srcdoc precisa de & e " escapados
         srcdoc = raw.replace("&", "&amp;").replace('"', "&quot;")
-        return f'<iframe srcdoc="{srcdoc}" style="width:100%;flex:1;border:none;display:block;background:#06080f;min-height:0"></iframe>'
+        return f'<iframe srcdoc="{srcdoc}" style="width:100%;min-height:80vh;border:none;display:block;background:#06080f"></iframe>'
     except Exception:
         return ""
 
@@ -2824,7 +2824,7 @@ def generate_macro_desk_v2_html(
   {portfolio_tab_html}
 </div>
 
-<div id="editorial-view" class="main-view" style="overflow:hidden;background:#06080f">
+<div id="editorial-view" class="main-view" style="display:flex;flex-direction:column;overflow-y:auto;background:#06080f">
   {editorial_content}
 </div>
 
