@@ -2824,7 +2824,7 @@ def generate_macro_desk_v2_html(
   {portfolio_tab_html}
 </div>
 
-<div id="editorial-view" class="main-view" style="display:flex;flex-direction:column;overflow-y:auto;background:#06080f">
+<div id="editorial-view" class="main-view" style="flex-direction:column;overflow-y:auto;background:#06080f">
   {editorial_content}
 </div>
 
