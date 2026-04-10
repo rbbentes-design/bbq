@@ -341,11 +341,20 @@ def _panel_skew_term_structure() -> str:
 
     # ── Histórico (60d) para percentil + delta ──────────────────────────────
     hist = {}
+    has_history = False
     try:
         hist = ql.get_field_history(
             fields=["put_skew_30D", "call_skew_30D", "atm_30D"],
             days=60,
         )
+        # Verifica se há pelo menos 2 datas distintas em algum ticker
+        for tk_hist in hist.values():
+            for fld_hist in tk_hist.values():
+                if len(fld_hist) >= 2:
+                    has_history = True
+                    break
+            if has_history:
+                break
     except Exception:
         pass
 
@@ -467,14 +476,19 @@ def _panel_skew_term_structure() -> str:
             if pct_ps >= 80:   pct_color = "#ef4444"
             elif pct_ps <= 20: pct_color = "#22c55e"
 
+        hist_cols = ""
+        if has_history:
+            hist_cols = (
+                f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{delta_color};text-align:right'>{_fmt(delta_ps)}</td>"
+                f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{pct_color};text-align:right'>{('—' if pct_ps is None else f'{pct_ps:.0f}')}</td>"
+            )
         rows_html.append(
             f"<tr>"
             f"<td style='padding:6px 10px;font-size:11px;color:#e2e8f0;font-weight:700'>{ticker}</td>"
             f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#00d4e8;text-align:right'>{_fmt(atm, mult=100, suffix='%', signed=False)}</td>"
             f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(cs, signed=False)}</td>"
             f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#94a3b8;text-align:right'>{_fmt(ps, signed=False)}</td>"
-            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{delta_color};text-align:right'>{_fmt(delta_ps)}</td>"
-            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:{pct_color};text-align:right'>{('—' if pct_ps is None else f'{pct_ps:.0f}')}</td>"
+            f"{hist_cols}"
             f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#fbbf24;text-align:right'>{_fmt(rr, mult=100, suffix='pp')}</td>"
             f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#a78bfa;text-align:right'>{_fmt(tp, mult=100, suffix='pp')}</td>"
             f"<td style='padding:6px 10px;font-size:10px;color:{lab_color};font-weight:800;text-align:center'>{label}</td>"
@@ -489,18 +503,24 @@ def _panel_skew_term_structure() -> str:
             "Sem nenhum ticker da lista priority com dados de skew.</div></div>"
         )
 
+    _th = "padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);letter-spacing:1px"
+    hist_header = ""
+    if has_history:
+        hist_header = (
+            f"<th style='{_th};text-align:right'>Δ PUT</th>"
+            f"<th style='{_th};text-align:right'>%ile 60d</th>"
+        )
     header = (
         "<thead><tr>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>TICKER</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>ATM IV</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>CALL/ATM</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>PUT/ATM</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>Δ PUT</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>%ile 60d</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>RR 25D</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:right;letter-spacing:1px'>TAIL PREM</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:center;letter-spacing:1px'>BIAS</th>"
-        "<th style='padding:6px 10px;font-size:10px;color:rgba(0,212,232,.6);text-align:left;letter-spacing:1px'>LEITURA ESTRATÉGICA</th>"
+        f"<th style='{_th};text-align:left'>TICKER</th>"
+        f"<th style='{_th};text-align:right'>ATM IV</th>"
+        f"<th style='{_th};text-align:right'>CALL/ATM</th>"
+        f"<th style='{_th};text-align:right'>PUT/ATM</th>"
+        f"{hist_header}"
+        f"<th style='{_th};text-align:right'>RR 25D</th>"
+        f"<th style='{_th};text-align:right'>TAIL PREM</th>"
+        f"<th style='{_th};text-align:center'>BIAS</th>"
+        f"<th style='{_th};text-align:left'>LEITURA ESTRATÉGICA</th>"
         "</tr></thead>"
     )
     # ── Bloco resumo: BULL setups vs BEAR setups ────────────────────────────

@@ -2546,10 +2546,10 @@ def generate_macro_desk_v2_html(
             '</div>'
         )
 
-    # Bloco SpotGamma (FlowPatrol + FoundersNote) acima do brief
+    # Bloco SpotGamma (FlowPatrol + FoundersNote) abaixo do brief
     _spotgamma_top = _build_spotgamma_top_block(bundle) if bundle else ""
     if _spotgamma_top:
-        editorial_content = _spotgamma_top + editorial_content
+        editorial_content = editorial_content + _spotgamma_top
 
     # ── Desk Radar tab ────────────────────────────────────────────────────────
     # Reutiliza os valores já resolvidos no início
