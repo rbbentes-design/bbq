@@ -2536,6 +2536,16 @@ def generate_macro_desk_v2_html(
     if editorial_html is None:
         editorial_html = _load_editorial_html(bundle)
 
+    # Injeta SpotGamma dentro do HTML do brief (antes do </body>)
+    # para que fique na mesma coluna scrollável, abaixo de todo o texto
+    _spotgamma_block = _build_spotgamma_top_block(bundle) if bundle else ""
+    if editorial_html and _spotgamma_block:
+        # editorial_html é <iframe srcdoc="...HTML...">
+        # O srcdoc tem o HTML raw com </body> sem escapar.
+        # Escapa " pra não quebrar o atributo srcdoc.
+        _sg_for_srcdoc = _spotgamma_block.replace('"', "&quot;")
+        editorial_html = editorial_html.replace("</body>", _sg_for_srcdoc + "</body>")
+
     if editorial_html:
         editorial_content = editorial_html
     else:
@@ -2545,11 +2555,9 @@ def generate_macro_desk_v2_html(
             '<span style="font-size:11px">Rode <code>agente writer</code> para gerar o conteúdo.</span>'
             '</div>'
         )
-
-    # Bloco SpotGamma (FlowPatrol + FoundersNote) abaixo do brief
-    _spotgamma_top = _build_spotgamma_top_block(bundle) if bundle else ""
-    if _spotgamma_top:
-        editorial_content = editorial_content + _spotgamma_top
+        # Sem iframe — cola bloco SpotGamma direto
+        if _spotgamma_block:
+            editorial_content = editorial_content + _spotgamma_block
 
     # ── Desk Radar tab ────────────────────────────────────────────────────────
     # Reutiliza os valores já resolvidos no início
