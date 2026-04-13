@@ -35,7 +35,9 @@ try:
     from .dispersion import *
 except ImportError:
     import sys, os as _os
-    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    _dir = _os.path.dirname(_os.path.abspath(__file__)) if '__file__' in dir() else _os.getcwd()
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
     from config import *
     from ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
     from greeks import calculate_all_greeks, black_scholes_price_vec, calculate_flip, implied_move_pct, fmt_value

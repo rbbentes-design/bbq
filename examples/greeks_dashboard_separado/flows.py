@@ -23,7 +23,9 @@ try:
                          MM_VOLUME_SHARES, OPTIONS_TOTAL_ADC)
 except ImportError:
     import sys, os as _os
-    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    _dir = _os.path.dirname(_os.path.abspath(__file__)) if '__file__' in dir() else _os.getcwd()
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
     from config import (bq, _C, INDEX_PROXY, LEVERAGED_ETFS, LEVERAGED_ETFS_EXT,
                         HAS_SKLEARN, HAS_BQPLOT, DASH_TEMPLATE, FLOW_FIG_LAYOUT,
                         PASSIVE_ETFS, COT_FUTURES_MAP, COT_CONTRACTS, DEFAULT_AUM,

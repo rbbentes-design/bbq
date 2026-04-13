@@ -9,7 +9,9 @@ try:
     from .greeks import calculate_all_greeks, black_scholes_price_vec
 except ImportError:
     import sys, os as _os
-    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    _dir = _os.path.dirname(_os.path.abspath(__file__)) if '__file__' in dir() else _os.getcwd()
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
     from config import GREEK_CONFIGS, FUTURES_MULTIPLIER
     from greeks import calculate_all_greeks, black_scholes_price_vec
 

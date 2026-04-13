@@ -30,7 +30,9 @@ try:
     from .ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
 except ImportError:
     import sys, os as _os
-    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    _dir = _os.path.dirname(_os.path.abspath(__file__)) if '__file__' in dir() else _os.getcwd()
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
     from config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_DATAGRID,
                         TRADING_DAYS, FUTURES_MULTIPLIER, GREEK_CONFIGS, INDEX_PROXY,
                         MAG7, _greek_cache, _snapshot,
