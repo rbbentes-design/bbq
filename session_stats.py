@@ -1968,20 +1968,50 @@ def analyze_ticker(ticker: str, out_root: Path, years: int = 5,
     return {"ticker": ticker, "dir": str(tdir), "metrics": bt.metrics}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Session Stats Engine")
-    parser.add_argument("tickers", nargs="*", default=DEFAULT_UNIVERSE,
-                         help="Tickers yfinance (default: universo preset)")
-    parser.add_argument("--years", type=int, default=5, help="Janela diaria em anos")
-    parser.add_argument("--minute", action="store_true",
-                         help="Tentar baixar barras de 1 minuto (ultimos 30d)")
-    parser.add_argument("--out", type=str, default="session_stats_out",
-                         help="Diretorio de saida")
-    parser.add_argument("--no-nomura", action="store_true",
-                         help="Pular secao Nomura (options PnL + skew + flows)")
-    parser.add_argument("--nomura-ticker", type=str, default="SPY",
-                         help="Ticker spot para secao Nomura (default SPY)")
-    args = parser.parse_args()
+def _in_notebook() -> bool:
+    """Detecta se esta rodando dentro de Jupyter/IPython/BQuant."""
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+        return ip is not None and ip.__class__.__name__ != "TerminalInteractiveShell"
+    except Exception:
+        return False
+
+
+def main(tickers=None, years=5, fetch_minute=False, out="session_stats_out",
+          no_nomura=False, nomura_ticker="SPY"):
+    """
+    Entry point. Aceita chamada programatica (Python/BQuant) ou CLI.
+
+    BQuant:   main()   ou   main(tickers=["SPY","QQQ"], years=5)
+    CLI:      python session_stats.py SPY QQQ --years 10
+    """
+    # Se chamado programaticamente (em notebook ou import), usa kwargs.
+    # Se chamado via CLI direto, parseia sys.argv.
+    if _in_notebook() or tickers is not None:
+        class _A: pass
+        args = _A()
+        args.tickers = tickers if tickers is not None else DEFAULT_UNIVERSE
+        args.years = years
+        args.minute = fetch_minute
+        args.out = out
+        args.no_nomura = no_nomura
+        args.nomura_ticker = nomura_ticker
+    else:
+        parser = argparse.ArgumentParser(description="Session Stats Engine")
+        parser.add_argument("tickers", nargs="*", default=DEFAULT_UNIVERSE,
+                             help="Tickers yfinance (default: universo preset)")
+        parser.add_argument("--years", type=int, default=5,
+                             help="Janela diaria em anos")
+        parser.add_argument("--minute", action="store_true",
+                             help="Tentar baixar barras de 1 minuto (ultimos 30d)")
+        parser.add_argument("--out", type=str, default="session_stats_out",
+                             help="Diretorio de saida")
+        parser.add_argument("--no-nomura", action="store_true",
+                             help="Pular secao Nomura (options PnL + skew + flows)")
+        parser.add_argument("--nomura-ticker", type=str, default="SPY",
+                             help="Ticker spot para secao Nomura (default SPY)")
+        args = parser.parse_args()
 
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
