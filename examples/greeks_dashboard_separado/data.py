@@ -10,6 +10,8 @@ import bql
 try:
     from .config import bq, _C, TRADING_DAYS
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import bq, _C, TRADING_DAYS
 
 

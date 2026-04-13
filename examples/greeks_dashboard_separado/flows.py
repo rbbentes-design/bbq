@@ -22,6 +22,8 @@ try:
                          _greek_cache, _snapshot, wd, BQL_PARAMS,
                          MM_VOLUME_SHARES, OPTIONS_TOTAL_ADC)
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import (bq, _C, INDEX_PROXY, LEVERAGED_ETFS, LEVERAGED_ETFS_EXT,
                         HAS_SKLEARN, HAS_BQPLOT, DASH_TEMPLATE, FLOW_FIG_LAYOUT,
                         PASSIVE_ETFS, COT_FUTURES_MAP, COT_CONTRACTS, DEFAULT_AUM,

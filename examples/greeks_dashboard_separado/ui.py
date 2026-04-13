@@ -9,6 +9,8 @@ import plotly.graph_objects as go
 try:
     from .config import _C, wd, HTML, display
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import _C, wd, HTML, display
 
 

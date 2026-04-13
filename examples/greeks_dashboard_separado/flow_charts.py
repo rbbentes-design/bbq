@@ -9,6 +9,8 @@ import ipywidgets as wd
 try:
     from .config import _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_BQPLOT, HAS_DATAGRID, wd
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_BQPLOT, HAS_DATAGRID, wd
 
 try:

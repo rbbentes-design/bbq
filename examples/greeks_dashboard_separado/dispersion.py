@@ -20,6 +20,8 @@ try:
     from .data import _bql_ts
     from .ui import _hud_panel
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_SKLEARN,
                         HAS_DATAGRID, HAS_BQPLOT, wd, INDEX_PROXY, TRADING_DAYS,
                         DISP_COR1M, DISP_DSPX, DISP_VIXEQ, DISP_TOP_N, DISP_EXCLUDE,

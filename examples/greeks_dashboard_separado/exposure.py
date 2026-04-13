@@ -8,6 +8,8 @@ try:
     from .config import GREEK_CONFIGS, FUTURES_MULTIPLIER
     from .greeks import calculate_all_greeks, black_scholes_price_vec
 except ImportError:
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from config import GREEK_CONFIGS, FUTURES_MULTIPLIER
     from greeks import calculate_all_greeks, black_scholes_price_vec
 
