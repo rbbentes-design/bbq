@@ -1968,30 +1968,22 @@ def analyze_ticker(ticker: str, out_root: Path, years: int = 5,
     return {"ticker": ticker, "dir": str(tdir), "metrics": bt.metrics}
 
 
-def _in_notebook() -> bool:
-    """Detecta se esta rodando dentro de Jupyter/IPython/BQuant."""
-    try:
-        from IPython import get_ipython
-        ip = get_ipython()
-        return ip is not None and ip.__class__.__name__ != "TerminalInteractiveShell"
-    except Exception:
-        return False
-
-
 def main(tickers=None, years=5, fetch_minute=False, out="session_stats_out",
           no_nomura=False, nomura_ticker="SPY"):
     """
     Entry point. Aceita chamada programatica (Python/BQuant) ou CLI.
 
-    BQuant:   main()   ou   main(tickers=["SPY","QQQ"], years=5)
+    BQuant:   main()                              # universo default
+              main(tickers=["SPY","QQQ"], years=5)
     CLI:      python session_stats.py SPY QQQ --years 10
     """
-    # Se chamado programaticamente (em notebook ou import), usa kwargs.
-    # Se chamado via CLI direto, parseia sys.argv.
-    if _in_notebook() or tickers is not None:
+    # Se veio tickers explicitos (chamada programatica), usa direto.
+    # Caso contrario, tenta parsear CLI. Uso parse_known_args pra ignorar
+    # argumentos do kernel Jupyter/BQuant (-f /path/kernel.json).
+    if tickers is not None:
         class _A: pass
         args = _A()
-        args.tickers = tickers if tickers is not None else DEFAULT_UNIVERSE
+        args.tickers = tickers
         args.years = years
         args.minute = fetch_minute
         args.out = out
@@ -2011,7 +2003,10 @@ def main(tickers=None, years=5, fetch_minute=False, out="session_stats_out",
                              help="Pular secao Nomura (options PnL + skew + flows)")
         parser.add_argument("--nomura-ticker", type=str, default="SPY",
                              help="Ticker spot para secao Nomura (default SPY)")
-        args = parser.parse_args()
+        # parse_known_args ignora args do kernel Jupyter (-f kernel.json)
+        args, unknown = parser.parse_known_args()
+        if unknown:
+            log.info(f"Args ignorados (provavelmente kernel Jupyter): {unknown}")
 
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
