@@ -18,15 +18,26 @@ from plotly.subplots import make_subplots
 import ipywidgets as wd
 from IPython.display import display, HTML
 
-from .config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_DATAGRID,
-                     TRADING_DAYS, FUTURES_MULTIPLIER, GREEK_CONFIGS, INDEX_PROXY,
-                     MAG7, _greek_cache, _snapshot,
-                     SPX_ANNUAL_BUYBACK_EST, MM_VOLUME_SHARES,
-                     VOL_CTRL_AUM, VOL_CTRL_MAX_LEV, VOL_CTRL_MIN_EXP, _vc_exposure)
-from .data import _bql_ts, _bql_ts_df, fetch_options_chain
-from .exposure import compute_strike_exposures, compute_walls
-from .greeks import calculate_all_greeks, black_scholes_price_vec, fmt_value
-from .ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
+try:
+    from .config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_DATAGRID,
+                         TRADING_DAYS, FUTURES_MULTIPLIER, GREEK_CONFIGS, INDEX_PROXY,
+                         MAG7, _greek_cache, _snapshot,
+                         SPX_ANNUAL_BUYBACK_EST, MM_VOLUME_SHARES,
+                         VOL_CTRL_AUM, VOL_CTRL_MAX_LEV, VOL_CTRL_MIN_EXP, _vc_exposure)
+    from .data import _bql_ts, _bql_ts_df, fetch_options_chain
+    from .exposure import compute_strike_exposures, compute_walls
+    from .greeks import calculate_all_greeks, black_scholes_price_vec, fmt_value
+    from .ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
+except ImportError:
+    from config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_DATAGRID,
+                        TRADING_DAYS, FUTURES_MULTIPLIER, GREEK_CONFIGS, INDEX_PROXY,
+                        MAG7, _greek_cache, _snapshot,
+                        SPX_ANNUAL_BUYBACK_EST, MM_VOLUME_SHARES,
+                        VOL_CTRL_AUM, VOL_CTRL_MAX_LEV, VOL_CTRL_MIN_EXP, _vc_exposure)
+    from data import _bql_ts, _bql_ts_df, fetch_options_chain
+    from exposure import compute_strike_exposures, compute_walls
+    from greeks import calculate_all_greeks, black_scholes_price_vec, fmt_value
+    from ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
 
 def build_mbad_summary_cards(prices_df, weights=None, spx_chg_pct=None):
     """

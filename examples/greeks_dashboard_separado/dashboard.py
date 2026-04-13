@@ -19,30 +19,34 @@ import matplotlib.pyplot as plt
 import ipywidgets as wd
 from IPython.display import display, clear_output, HTML
 
-from .config import *
-from .ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
-from .greeks import calculate_all_greeks, black_scholes_price_vec, calculate_flip, implied_move_pct, fmt_value
-from .data import fetch_market_data, fetch_options_chain, fetch_historical, _bql_ts
-from .exposure import compute_strike_exposures, compute_model_curves, compute_walls, fit_risk_model, run_monte_carlo, compute_pnl_curves
-from .flow_charts import *
-from . import flows
-from . import flow_charts
-from . import dispersion
-from . import charts
-# All functions from flows, charts, dispersion will be available once those modules are created.
-# They are called without prefix to match the original monolithic code exactly.
 try:
+    from .config import *
+    from .ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
+    from .greeks import calculate_all_greeks, black_scholes_price_vec, calculate_flip, implied_move_pct, fmt_value
+    from .data import fetch_market_data, fetch_options_chain, fetch_historical, _bql_ts
+    from .exposure import compute_strike_exposures, compute_model_curves, compute_walls, fit_risk_model, run_monte_carlo, compute_pnl_curves
+    from .flow_charts import *
+    from . import flows
+    from . import flow_charts
+    from . import dispersion
+    from . import charts
     from .flows import *
-except ImportError:
-    pass
-try:
     from .charts import *
-except ImportError:
-    pass
-try:
     from .dispersion import *
 except ImportError:
-    pass
+    from config import *
+    from ui import _hud_panel, _svg_ring_html, create_gauge, create_symmetric_gauge
+    from greeks import calculate_all_greeks, black_scholes_price_vec, calculate_flip, implied_move_pct, fmt_value
+    from data import fetch_market_data, fetch_options_chain, fetch_historical, _bql_ts
+    from exposure import compute_strike_exposures, compute_model_curves, compute_walls, fit_risk_model, run_monte_carlo, compute_pnl_curves
+    from flow_charts import *
+    import flows
+    import flow_charts
+    import dispersion
+    import charts
+    from flows import *
+    from charts import *
+    from dispersion import *
 
 
 def build_greek_overview(greeks_now, df, spot, etf_flows=None):

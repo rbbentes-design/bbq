@@ -4,8 +4,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import t as student_t
 
-from .config import GREEK_CONFIGS, FUTURES_MULTIPLIER
-from .greeks import calculate_all_greeks, black_scholes_price_vec
+try:
+    from .config import GREEK_CONFIGS, FUTURES_MULTIPLIER
+    from .greeks import calculate_all_greeks, black_scholes_price_vec
+except ImportError:
+    from config import GREEK_CONFIGS, FUTURES_MULTIPLIER
+    from greeks import calculate_all_greeks, black_scholes_price_vec
 
 
 def compute_strike_exposures(df, greeks, spot):

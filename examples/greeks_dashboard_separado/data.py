@@ -7,7 +7,10 @@ from datetime import datetime
 
 import bql
 
-from .config import bq, _C, TRADING_DAYS
+try:
+    from .config import bq, _C, TRADING_DAYS
+except ImportError:
+    from config import bq, _C, TRADING_DAYS
 
 
 def _bql_ts(resp_item, field):

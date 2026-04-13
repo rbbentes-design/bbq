@@ -14,12 +14,20 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import bql
 
-from .config import (bq, _C, INDEX_PROXY, LEVERAGED_ETFS, LEVERAGED_ETFS_EXT,
-                     HAS_SKLEARN, HAS_BQPLOT, DASH_TEMPLATE, FLOW_FIG_LAYOUT,
-                     PASSIVE_ETFS, COT_FUTURES_MAP, COT_CONTRACTS, DEFAULT_AUM,
-                     COT_TRADER_REPORT_MAP, SPX_ANNUAL_BUYBACK_EST, TRADING_DAYS,
-                     _greek_cache, _snapshot, wd, BQL_PARAMS,
-                     MM_VOLUME_SHARES, OPTIONS_TOTAL_ADC)
+try:
+    from .config import (bq, _C, INDEX_PROXY, LEVERAGED_ETFS, LEVERAGED_ETFS_EXT,
+                         HAS_SKLEARN, HAS_BQPLOT, DASH_TEMPLATE, FLOW_FIG_LAYOUT,
+                         PASSIVE_ETFS, COT_FUTURES_MAP, COT_CONTRACTS, DEFAULT_AUM,
+                         COT_TRADER_REPORT_MAP, SPX_ANNUAL_BUYBACK_EST, TRADING_DAYS,
+                         _greek_cache, _snapshot, wd, BQL_PARAMS,
+                         MM_VOLUME_SHARES, OPTIONS_TOTAL_ADC)
+except ImportError:
+    from config import (bq, _C, INDEX_PROXY, LEVERAGED_ETFS, LEVERAGED_ETFS_EXT,
+                        HAS_SKLEARN, HAS_BQPLOT, DASH_TEMPLATE, FLOW_FIG_LAYOUT,
+                        PASSIVE_ETFS, COT_FUTURES_MAP, COT_CONTRACTS, DEFAULT_AUM,
+                        COT_TRADER_REPORT_MAP, SPX_ANNUAL_BUYBACK_EST, TRADING_DAYS,
+                        _greek_cache, _snapshot, wd, BQL_PARAMS,
+                        MM_VOLUME_SHARES, OPTIONS_TOTAL_ADC)
 
 try:
     from sklearn.preprocessing import StandardScaler

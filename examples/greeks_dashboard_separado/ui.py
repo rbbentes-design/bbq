@@ -6,7 +6,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from .config import _C, wd, HTML, display
+try:
+    from .config import _C, wd, HTML, display
+except ImportError:
+    from config import _C, wd, HTML, display
 
 
 def _hud_panel(content, title='', scan=True, glow=False):

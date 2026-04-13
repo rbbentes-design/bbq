@@ -12,12 +12,20 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import bql
 
-from .config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_SKLEARN,
-                     HAS_DATAGRID, HAS_BQPLOT, wd, INDEX_PROXY, TRADING_DAYS,
-                     DISP_COR1M, DISP_DSPX, DISP_VIXEQ, DISP_TOP_N, DISP_EXCLUDE,
-                     MAG7, MAG8, GAMMA_HISTORY_PATH, DISP_CORR_WINDOWS, DISP_SPXSK3)
-from .data import _bql_ts
-from .ui import _hud_panel
+try:
+    from .config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_SKLEARN,
+                         HAS_DATAGRID, HAS_BQPLOT, wd, INDEX_PROXY, TRADING_DAYS,
+                         DISP_COR1M, DISP_DSPX, DISP_VIXEQ, DISP_TOP_N, DISP_EXCLUDE,
+                         MAG7, MAG8, GAMMA_HISTORY_PATH, DISP_CORR_WINDOWS, DISP_SPXSK3)
+    from .data import _bql_ts
+    from .ui import _hud_panel
+except ImportError:
+    from config import (bq, _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_SKLEARN,
+                        HAS_DATAGRID, HAS_BQPLOT, wd, INDEX_PROXY, TRADING_DAYS,
+                        DISP_COR1M, DISP_DSPX, DISP_VIXEQ, DISP_TOP_N, DISP_EXCLUDE,
+                        MAG7, MAG8, GAMMA_HISTORY_PATH, DISP_CORR_WINDOWS, DISP_SPXSK3)
+    from data import _bql_ts
+    from ui import _hud_panel
 
 try:
     from ipydatagrid import DataGrid, TextRenderer

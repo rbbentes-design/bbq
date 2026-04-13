@@ -6,7 +6,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import ipywidgets as wd
 
-from .config import _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_BQPLOT, HAS_DATAGRID, wd
+try:
+    from .config import _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_BQPLOT, HAS_DATAGRID, wd
+except ImportError:
+    from config import _C, DASH_TEMPLATE, FLOW_FIG_LAYOUT, HAS_BQPLOT, HAS_DATAGRID, wd
 
 try:
     import ipydatagrid as ipd
