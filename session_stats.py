@@ -4203,23 +4203,207 @@ def _regime_card_html(snap: dict, similar: dict = None) -> str:
     """
 
 
+def detect_recent_patterns(df: pd.DataFrame,
+                              min_hit_rate: float = 0.70,
+                              min_n: int = 3) -> pd.DataFrame:
+    """
+    Pattern miner: detecta regularidades recentes no retorno por weekday.
+
+    Exemplos: "ultimo 4w: segunda sobe 4/4 (100%)", "desde 1-mar: quinta cai 5/6 (83%)".
+
+    Scanneia varias janelas:
+      - last_4w (20 dias uteis)
+      - last_8w (40)
+      - last_12w (60)
+      - last_6m (126)
+      - since_month_start (desde dia 1 do mes corrente)
+      - since_year_start (YTD)
+      - last_30d_cal (30 dias calendario)
+
+    Retorna DataFrame ordenado por forca do padrao (hit_rate * sqrt(n)).
+    Filtra: hit_rate >= min_hit_rate e n >= min_n.
+    """
+    if 'rth_return' not in df.columns:
+        return pd.DataFrame()
+    last_date = df.index[-1]
+
+    def _range_since(year, month, day):
+        try:
+            start = pd.Timestamp(year=year, month=month, day=day)
+            if df.index.tz is not None:
+                start = start.tz_localize(df.index.tz)
+            return df[df.index >= start]
+        except Exception:
+            return df
+
+    windows = {
+        'last_4w (20d)': df.tail(20),
+        'last_8w (40d)': df.tail(40),
+        'last_12w (60d)': df.tail(60),
+        'last_6m (126d)': df.tail(126),
+        'since_month_start': _range_since(last_date.year, last_date.month, 1),
+        'since_year_start': _range_since(last_date.year, 1, 1),
+    }
+
+    rows = []
+    for win_name, sub in windows.items():
+        if len(sub) < min_n:
+            continue
+        for wd in WEEKDAY_ORDER:
+            r = sub[sub['weekday_name'] == wd]['rth_return']
+            n = len(r)
+            if n < min_n:
+                continue
+            up = (r > 0).sum()
+            down = (r < 0).sum()
+            hit_up = up / n
+            hit_down = down / n
+            mean_ret = r.mean() * 100
+
+            # Padrao de ALTA
+            if hit_up >= min_hit_rate:
+                strength = hit_up * math.sqrt(n)
+                rows.append({
+                    'window': win_name, 'weekday': wd, 'pattern': 'UP',
+                    'hit_rate_pct': round(hit_up * 100, 1),
+                    'n_occurrences': n, 'n_positive': int(up),
+                    'mean_return_pct': round(mean_ret, 2),
+                    'strength': round(strength, 2),
+                })
+            # Padrao de BAIXA
+            if hit_down >= min_hit_rate:
+                strength = hit_down * math.sqrt(n)
+                rows.append({
+                    'window': win_name, 'weekday': wd, 'pattern': 'DOWN',
+                    'hit_rate_pct': round(hit_down * 100, 1),
+                    'n_occurrences': n, 'n_positive': int(up),
+                    'mean_return_pct': round(mean_ret, 2),
+                    'strength': round(strength, 2),
+                })
+
+    return pd.DataFrame(rows).sort_values('strength', ascending=False).reset_index(drop=True)
+
+
+def _patterns_card_html(patterns: pd.DataFrame) -> str:
+    """Card HUD destacando os padroes mais fortes."""
+    if len(patterns) == 0:
+        return (
+            "<div class='mm-dash'><div class='mm-card'>"
+            "<p class='mm-metric-lbl'>🔥 Pattern Miner</p>"
+            "<p style='color:#8b949e;'>Nenhum padrao forte (hit>=70%) detectado nas "
+            "janelas 4w/8w/12w/6m/mes/YTD.</p></div></div>")
+
+    # Agrupa por janela pra card organizado
+    cards = ''
+    seen_windows = []
+    for win in patterns['window'].unique():
+        if len(seen_windows) >= 5: break
+        sub = patterns[patterns['window'] == win].head(5)
+        if len(sub) == 0: continue
+        seen_windows.append(win)
+        rows_html = ''
+        for _, row in sub.iterrows():
+            emoji = '🟢' if row['pattern'] == 'UP' else '🔴'
+            color = _C['green'] if row['pattern'] == 'UP' else _C['red']
+            rows_html += f"""
+            <div style='margin:5px 0; font-size:13px; color:#cce8ff;'>
+              {emoji} <b style='color:{color}'>{row['weekday'].upper()}</b>:
+              {row['pattern']} &nbsp;
+              <span style='color:#fff;'>{int(row['n_positive']) if row['pattern']=='UP' else (row['n_occurrences']-int(row['n_positive']))}/{int(row['n_occurrences'])}</span>
+              <span style='color:#8b949e;'>({row['hit_rate_pct']}%,
+              mean {row['mean_return_pct']:+.2f}%)</span>
+            </div>
+            """
+        cards += f"""
+          <div style='margin-bottom:14px;'>
+            <div style='color:#d29922; font-size:11px; letter-spacing:2px;
+                        text-transform:uppercase; margin-bottom:6px;'>
+              📅 {win}
+            </div>
+            {rows_html}
+          </div>
+        """
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:18px 22px;'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:12px;'>
+          🔥 Pattern Miner — weekday patterns com hit &gt;= 70%
+        </div>
+        {cards}
+        <div style='margin-top:10px; font-size:10px; color:#8b949e; font-style:italic;'>
+          Ordenado por <b>strength</b> (hit_rate × √n). Padroes com n pequeno sao
+          coincidencias; padroes com n &gt;= 6 ja sao relevantes. Ainda nao
+          significa edge — so que o padrao EXISTE no recorte.
+        </div>
+      </div>
+    </div>
+    """
+
+
+def fig_pattern_weekday_recent(df: pd.DataFrame, n_days: int = 40,
+                                  ticker: str = '') -> go.Figure:
+    """Grid dia-a-dia das ultimas N sessoes, colorido por weekday + RTH return."""
+    sub = df.tail(n_days).copy()
+    if len(sub) == 0:
+        return go.Figure().update_layout(title='Pattern — sem dados', **_FIG_LAYOUT)
+    sub['week'] = sub.index.isocalendar().week
+    sub['weekday_num'] = sub.index.weekday  # 0=Mon
+    sub['ret_pct'] = sub['rth_return'] * 100
+
+    # Pivot week × weekday
+    pv = sub.pivot_table(index='week', columns='weekday_num', values='ret_pct',
+                          aggfunc='last')
+    # Reordena index (semanas recentes em cima)
+    pv = pv.sort_index(ascending=False)
+    # Cria text com data + %
+    dates_pv = sub.pivot_table(index='week', columns='weekday_num',
+                                 values='rth_return',
+                                 aggfunc=lambda x: x.index.strftime('%d/%m')[-1] if len(x) else '')
+    dates_pv = dates_pv.reindex(pv.index)
+
+    vmax = np.nanpercentile(np.abs(pv.values[~np.isnan(pv.values)]), 95) \
+           if np.any(~np.isnan(pv.values)) else 1
+    text = [[f'{d}<br>{v:+.2f}%' if pd.notna(v) else ''
+             for d, v in zip(drow, vrow)]
+            for drow, vrow in zip(dates_pv.values, pv.values)]
+
+    fig = go.Figure(go.Heatmap(
+        z=pv.values, x=['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        y=[f'W{int(w)}' for w in pv.index],
+        colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
+        zmin=-vmax, zmax=vmax,
+        text=text, texttemplate='%{text}',
+        textfont=dict(size=9, color='#cce8ff'),
+        colorbar=dict(title='RTH %')))
+    fig.update_layout(
+        title=f'{ticker} — RTH diario ultimas {n_days} sessoes (grid semana x weekday)',
+        **{**_FIG_LAYOUT, 'height': max(400, len(pv) * 22 + 100)})
+    return fig
+
+
 def run_regime_section(df: pd.DataFrame, ticker: str,
                          vol_indices: pd.DataFrame = None) -> dict:
-    """Pipeline completo: computa regimes + snapshots + similar + figs."""
+    """Pipeline completo: computa regimes + snapshots + similar + figs + pattern miner."""
     regime_df = compute_regimes(df, vol_indices)
     snapshot = regime_snapshot(regime_df)
     similar = similar_historical_regimes(df, regime_df, n_forward=20)
     duration_stats = regime_duration_stats(regime_df)
+    patterns = detect_recent_patterns(df, min_hit_rate=0.70, min_n=3)
 
     return {
         'regime_df': regime_df,
         'snapshot': snapshot,
         'similar': similar,
         'duration_stats': duration_stats,
+        'patterns': patterns,
         'figs': {
             'timeline': fig_regime_timeline(regime_df, ticker),
             'duration_dist': fig_regime_duration_dist(regime_df, ticker),
             'forward_hist': fig_regime_forward_histogram(similar, ticker),
+            'pattern_grid_40d': fig_pattern_weekday_recent(df, n_days=40, ticker=ticker),
+            'pattern_grid_60d': fig_pattern_weekday_recent(df, n_days=60, ticker=ticker),
         }
     }
 
@@ -4343,25 +4527,35 @@ def compute_session_stats(ticker: str, years: int = 5,
                 'pnl_30d_daily': pnl_30d, 'pnl_30d_summary': summary_30d,
                 'sharpe_30d': sharpe_30d,
                 'skew_pctiles': sp, 'flows': flows, 'vol_indices': vol,
-                'figs': {
-                    'options_pnl_0dte': fig_options_pnl_heatmap(
-                        summary_0dte, sharpe_0dte, tenor_label='0DTE (T=1d, daily rolado)'),
-                    'options_pnl_30d': fig_options_pnl_heatmap(
-                        summary_30d, sharpe_30d, tenor_label='30d Monthly (T=21d, mensal)'),
-                    'strategies_equity_0dte': fig_nomura_strategies_equity(
-                        pnl_0dte, tenor_label='0DTE (T=1d)'),
-                    'strategies_equity_30d': fig_nomura_strategies_equity(
-                        pnl_30d, tenor_label='30d Monthly (T=21d)'),
-                    'strategies_rolling_0dte': fig_nomura_strategies_rolling(
-                        pnl_0dte, window=60, tenor_label='0DTE (T=1d)'),
-                    'strategies_rolling_30d': fig_nomura_strategies_rolling(
-                        pnl_30d, window=60, tenor_label='30d Monthly (T=21d)'),
-                    'skew_pctiles': fig_skew_multi(sp),
-                    'iv_rank': fig_iv_rank(vol),
-                    'flows': fig_systematic_flows(flows),
-                    'vol_panic': fig_vol_panic_proxy(daily, vol, ticker),
-                }
+                'figs': {}
             }
+            # Constroi figs individualmente pra falha em uma nao mata as outras
+            nomura_fig_builders = [
+                ('options_pnl_0dte', lambda: fig_options_pnl_heatmap(
+                    summary_0dte, sharpe_0dte, tenor_label='0DTE (T=1d, daily rolado)')),
+                ('options_pnl_30d', lambda: fig_options_pnl_heatmap(
+                    summary_30d, sharpe_30d, tenor_label='30d Monthly (T=21d, mensal)')),
+                ('strategies_equity_0dte', lambda: fig_nomura_strategies_equity(
+                    pnl_0dte, tenor_label='0DTE (T=1d)')),
+                ('strategies_equity_30d', lambda: fig_nomura_strategies_equity(
+                    pnl_30d, tenor_label='30d Monthly (T=21d)')),
+                ('strategies_rolling_0dte', lambda: fig_nomura_strategies_rolling(
+                    pnl_0dte, window=60, tenor_label='0DTE (T=1d)')),
+                ('strategies_rolling_30d', lambda: fig_nomura_strategies_rolling(
+                    pnl_30d, window=60, tenor_label='30d Monthly (T=21d)')),
+                ('skew_pctiles', lambda: fig_skew_multi(sp)),
+                ('iv_rank', lambda: fig_iv_rank(vol)),
+                ('flows', lambda: fig_systematic_flows(flows)),
+                ('vol_panic', lambda: fig_vol_panic_proxy(daily, vol, ticker)),
+            ]
+            for fig_name, builder in nomura_fig_builders:
+                try:
+                    nomura['figs'][fig_name] = builder()
+                except Exception as fig_e:
+                    log.warning(f'[nomura] fig {fig_name} falhou: {fig_e}')
+                    import traceback
+                    log.warning(traceback.format_exc())
+            log.info(f'[nomura] OK ({len(nomura["figs"])} figs geradas)')
         except Exception as e:
             log.warning(f'Nomura section falhou: {e}')
             import traceback
@@ -4592,14 +4786,34 @@ def build_section_widgets(result: dict) -> list:
     sec.append(go.FigureWidget(result['figs']['rolling_return_5d']))
     sec.append(go.FigureWidget(result['figs']['rolling_return_20d']))
 
-    # ====== PARTE II: REGIME DETECTION ======
+    # ====== PARTE II: REGIME DETECTION + PATTERN MINER ======
     if result.get('regime') and result['regime'].get('snapshot'):
         r_data = result['regime']
         sec.append(wd.HTML(_big_divider(
-            'Parte II — Regime Detection',
-            '5 dimensoes (trend/vol/session/direction/voldir) | 15d = pattern confirmado | forward returns historicos')))
+            'Parte II — Regime Detection + Pattern Miner',
+            '5 dimensoes | 15d = pattern confirmado | weekday patterns em 4w/8w/12w/6m/mes/YTD | forward returns historicos')))
         sec.append(wd.HTML(_regime_card_html(r_data['snapshot'],
                                                  r_data.get('similar'))))
+
+        # Pattern Miner — destaque, logo apos o regime card
+        patterns = r_data.get('patterns')
+        if patterns is not None:
+            sec.append(wd.HTML(_patterns_card_html(patterns)))
+            if len(patterns) > 0:
+                sec.append(wd.HTML("<div class='mm-section-label'>Tabela completa "
+                                     "dos padroes detectados (ordem por strength)</div>"))
+                sec.append(wd.HTML(_df_to_html_table(patterns)))
+
+        # Grid visual das ultimas sessoes
+        if 'pattern_grid_40d' in r_data['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Grid visual — "
+                                 "ultimas 40 sessoes por semana × weekday</div>"))
+            sec.append(go.FigureWidget(r_data['figs']['pattern_grid_40d']))
+        if 'pattern_grid_60d' in r_data['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Grid visual — "
+                                 "ultimas 60 sessoes por semana × weekday</div>"))
+            sec.append(go.FigureWidget(r_data['figs']['pattern_grid_60d']))
+
         sec.append(wd.HTML("<div class='mm-section-label'>Timeline — quando "
                              "cada dimensao mudou</div>"))
         sec.append(go.FigureWidget(r_data['figs']['timeline']))
