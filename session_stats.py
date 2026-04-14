@@ -4557,9 +4557,11 @@ def compute_session_stats(ticker: str, years: int = 5,
                     log.warning(traceback.format_exc())
             log.info(f'[nomura] OK ({len(nomura["figs"])} figs geradas)')
         except Exception as e:
-            log.warning(f'Nomura section falhou: {e}')
             import traceback
-            log.warning(traceback.format_exc())
+            err_trace = traceback.format_exc()
+            log.warning(f'Nomura section falhou: {e}')
+            log.warning(err_trace)
+            nomura = {'error': str(e), 'traceback': err_trace}
 
     gs_factors = {}
     if include_gs_factors:
@@ -4569,10 +4571,14 @@ def compute_session_stats(ticker: str, years: int = 5,
                 benchmark_ticker=benchmark_ticker,
                 session_frame=df,
                 regime_df=regime.get('regime_df') if regime else None)
+            if not gs_factors:
+                gs_factors = {'error': 'run_gs_factor_section retornou {} (BQL pode ter falhado pra todos os tickers)'}
         except Exception as e:
-            log.warning(f'GS Factor section falhou: {e}')
             import traceback
-            log.warning(traceback.format_exc())
+            err_trace = traceback.format_exc()
+            log.warning(f'GS Factor section falhou: {e}')
+            log.warning(err_trace)
+            gs_factors = {'error': str(e), 'traceback': err_trace}
 
     passive_breaks = {}
     if include_passive_breaks:
@@ -4975,14 +4981,21 @@ def build_section_widgets(result: dict) -> list:
         'Parte IV — Cross-Sectional Factor Monitor',
         'GS Barra Pair Indices + Momentum + GS Themes + BBG Themes | scan 1D/5D/1M/YTD/1Y | rotacao de factors')))
     gs_factors_data = result.get('gs_factors') or {}
-    if not gs_factors_data:
+    if gs_factors_data.get('error'):
+        tb = gs_factors_data.get('traceback', '')
+        sec.append(wd.HTML(
+            f"<div class='mm-card'>"
+            f"<p class='mm-flag'>❌ Factor Monitor falhou:</p>"
+            f"<p style='color:#cce8ff; font-size:13px;'><b>{gs_factors_data['error']}</b></p>"
+            f"<pre style='color:#8b949e; font-size:10px; max-height:300px; "
+            f"overflow:auto; background:rgba(0,0,0,0.3); padding:10px;'>{tb}</pre>"
+            f"</div>"))
+    elif not gs_factors_data:
         sec.append(wd.HTML(
             "<div class='mm-card'>"
             "<p class='mm-flag'>⚠ Factor Monitor nao foi gerado.</p>"
             "<p style='color:#8b949e; font-size:11px;'>"
-            "Possiveis causas: checkbox 'Incluir GS Factor Monitor' nao marcado, "
-            "BQL queries falharam (entitlements), ou erro durante fetch. "
-            "Confira logs com '[gs_factors]' prefix."
+            "Checkbox 'Incluir GS Factor Monitor' provavelmente nao esta marcado."
             "</p></div>"))
     elif gs_factors_data.get('table') is None or len(gs_factors_data.get('table', [])) == 0:
         sec.append(wd.HTML(
@@ -5047,14 +5060,21 @@ def build_section_widgets(result: dict) -> list:
         'Parte V — Nomura Options Framework',
         'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
     nomura_data = result.get('nomura') or {}
-    if not nomura_data:
+    if nomura_data.get('error'):
+        tb = nomura_data.get('traceback', '')
+        sec.append(wd.HTML(
+            f"<div class='mm-card'>"
+            f"<p class='mm-flag'>❌ Nomura falhou:</p>"
+            f"<p style='color:#cce8ff; font-size:13px;'><b>{nomura_data['error']}</b></p>"
+            f"<pre style='color:#8b949e; font-size:10px; max-height:300px; "
+            f"overflow:auto; background:rgba(0,0,0,0.3); padding:10px;'>{tb}</pre>"
+            f"</div>"))
+    elif not nomura_data:
         sec.append(wd.HTML(
             "<div class='mm-card'>"
             "<p class='mm-flag'>⚠ Nomura nao foi gerado.</p>"
             "<p style='color:#8b949e; font-size:11px;'>"
-            "Possiveis causas: checkbox 'Incluir Nomura' nao marcado, "
-            "ou falha ao baixar VIX Index / SKEW Index / spot via BQL. "
-            "Confira logs com '[nomura]' ou 'Nomura section falhou' prefix."
+            "Checkbox 'Incluir Nomura' provavelmente nao esta marcado."
             "</p></div>"))
     elif not nomura_data.get('figs'):
         sec.append(wd.HTML(
@@ -5062,8 +5082,6 @@ def build_section_widgets(result: dict) -> list:
             "<p class='mm-flag'>⚠ Nomura inicializou mas sem figs.</p>"
             "<p style='color:#8b949e; font-size:11px;'>"
             "Todos os fig builders falharam individualmente. Confira logs.</p></div>"))
-    elif False:  # Placeholder pra fluxo abaixo continuar
-        n = nomura_data
     else:
         n = nomura_data
         sec.append(wd.HTML(
