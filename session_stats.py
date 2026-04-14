@@ -6144,6 +6144,174 @@ def _fig_macro_dual(s1: pd.Series, s2: pd.Series, name1: str, name2: str,
     return fig
 
 
+def _ms_snapshot_html() -> str:
+    """
+    Snapshot narrativo das views do relatorio MS (Weekly Warm-up, Apr 2026).
+    Dados parafraseados — forecasts + sector ratings + consensus estimates.
+    """
+    # MS SPX 2026YE price targets (top-down)
+    targets = [
+        ('Bear',  '5,600',  '-18%',   '20.0x',  '$280'),
+        ('Base',  '7,800',  '+14%',   '22.0x',  '$356'),
+        ('Bull',  '9,000',  '+32%',   '23.0x',  '$393'),
+    ]
+    tgt_rows = ''.join(
+        f"<tr><td><b>{s}</b></td><td>{p}</td><td>{ch}</td>"
+        f"<td>{pe}</td><td>{eps}</td></tr>"
+        for s, p, ch, pe, eps in targets)
+
+    # Sector ratings
+    sector_ratings = {
+        'Overweight': ['Financials', 'Industrials', 'Health Care',
+                        'Consumer Discretionary Goods'],
+        'Equal-weight': ['Tech', 'Comm. Services', 'Utilities',
+                          'Materials', 'Energy', 'Consumer Services'],
+        'Underweight': ['Staples', 'Real Estate'],
+    }
+    rating_colors = {'Overweight': '#7ae582',
+                      'Equal-weight': '#ffb84d',
+                      'Underweight': '#ff6b6b'}
+    rating_html = ''.join(
+        f"<div style='margin-bottom:6px;'><span style='color:{rating_colors[r]};"
+        f"font-weight:700;'>{r}:</span> "
+        f"<span style='color:#cce8ff;'>{', '.join(sectors)}</span></div>"
+        for r, sectors in sector_ratings.items())
+
+    # Consensus SPX EPS Y/Y growth by quarter
+    consensus_q = [
+        ('1Q26E', '11.9%'), ('2Q26E', '15.9%'),
+        ('3Q26E', '20.2%'), ('4Q26E', '19.1%'),
+    ]
+    q_rows = ''.join(
+        f"<tr><td>{q}</td><td style='color:#7ae582;'>{g}</td></tr>"
+        for q, g in consensus_q)
+
+    # Annual growth
+    annual = [
+        ('2026 Sales', '+8%'), ('2026 EPS', '+18%'),
+        ('2027 Sales', '+7%'), ('2027 EPS', '+16%'),
+    ]
+    a_rows = ''.join(
+        f"<tr><td>{m}</td><td style='color:#7ae582;'>{v}</td></tr>"
+        for m, v in annual)
+
+    # Mag 7 vs SP493
+    mag7 = [
+        ('2026', 'Mag 7: +25%', 'SP493: +11%'),
+        ('2027', 'Mag 7: +19%', 'SP493: +15%'),
+    ]
+    m7_rows = ''.join(
+        f"<tr><td><b>{y}</b></td><td>{m}</td><td>{s}</td></tr>"
+        for y, m, s in mag7)
+
+    # Margins
+    margins = [
+        ('2025 EBIT margin', '18.3%'),
+        ('2026 EBIT margin', '19.8% (+150bps)'),
+        ('2027 EBIT margin', '21.1%'),
+        ('2025 Net margin',  '13.8%'),
+        ('2026 Net margin',  '14.7%'),
+        ('2027 Net margin',  '15.9%'),
+    ]
+    mg_rows = ''.join(
+        f"<tr><td>{m}</td><td style='color:#cce8ff;'>{v}</td></tr>"
+        for m, v in margins)
+
+    # Thesis bullets (paraphrased)
+    thesis = [
+        "Correcao dentro de bull market (nao bear) — P/E caiu 18% do pico "
+        "compensado por EPS revisando alta (NTM +20% Y/Y)",
+        "Barbell: ciclicos (Financials, Industrials, Cons Disc Goods) + "
+        "quality growth (hyperscalers) — valuations resetaram",
+        "Oil shock temporario — watch Brent/WTI spread peak como sinal de "
+        "resolucao; energy stocks relative ja virou",
+        "Rebalanceamento de 3 pilares + 4o pilar novo (economia privada > "
+        "governo) — DOGE cortou 10% Y/Y dos federal payrolls",
+        "Fed em pivot neutro (Powell Harvard 3/31) — financial conditions "
+        "podem afrouxar; bond vol (MOVE) caindo ajuda multiplos",
+        "Earnings revisions breadth +10% (positivo) — semis + energy + "
+        "comm svcs liderando; banks e staples deteriorando",
+    ]
+    th_html = ''.join(f"<li style='margin-bottom:6px;'>{t}</li>"
+                       for t in thesis)
+
+    return f"""
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:10px;'>
+        MORGAN STANLEY — 2026YE Price Targets (top-down, 12-18m)
+      </div>
+      <table class='mm-table' style='width:auto;'>
+        <tr><th>Scenario</th><th>SPX Target</th><th>vs Current</th>
+            <th>P/E Target</th><th>EPS</th></tr>
+        {tgt_rows}
+      </table>
+      <div style='color:#8b949e; font-size:11px; margin-top:6px;'>
+        Current ~6,817 | MS assumes EPS $272 ('25), $317 ('26), $356 ('27)
+      </div>
+    </div>
+
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:10px;'>
+        SECTOR RATINGS (Morgan Stanley view)
+      </div>
+      {rating_html}
+    </div>
+
+    <div style='display:flex; gap:12px; flex-wrap:wrap;'>
+      <div class='mm-card' style='padding:14px 18px; flex:1; min-width:260px;'>
+        <div class='mm-metric-lbl' style='font-size:12px; margin-bottom:8px;'>
+          SPX Consensus EPS Y/Y Growth
+        </div>
+        <table class='mm-table' style='width:100%;'>
+          <tr><th>Quarter</th><th>Growth</th></tr>{q_rows}
+        </table>
+      </div>
+
+      <div class='mm-card' style='padding:14px 18px; flex:1; min-width:260px;'>
+        <div class='mm-metric-lbl' style='font-size:12px; margin-bottom:8px;'>
+          Annual Consensus (FY)
+        </div>
+        <table class='mm-table' style='width:100%;'>
+          <tr><th>Metric</th><th>Value</th></tr>{a_rows}
+        </table>
+      </div>
+
+      <div class='mm-card' style='padding:14px 18px; flex:1; min-width:260px;'>
+        <div class='mm-metric-lbl' style='font-size:12px; margin-bottom:8px;'>
+          Mag 7 vs SP493 (consensus)
+        </div>
+        <table class='mm-table' style='width:100%;'>
+          <tr><th>Year</th><th>Mag 7</th><th>SP493</th></tr>{m7_rows}
+        </table>
+      </div>
+    </div>
+
+    <div class='mm-card' style='padding:14px 18px;'>
+      <div class='mm-metric-lbl' style='font-size:12px; margin-bottom:8px;'>
+        Margin Expansion Path (consensus)
+      </div>
+      <table class='mm-table' style='width:auto;'>
+        <tr><th>Metric</th><th>Value</th></tr>{mg_rows}
+      </table>
+    </div>
+
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:10px;'>
+        KEY THESIS BULLETS (Morgan Stanley, Apr 2026)
+      </div>
+      <ul style='color:#cce8ff; font-size:12px; padding-left:20px; margin:0;'>
+        {th_html}
+      </ul>
+    </div>
+
+    <div class='mm-note' style='margin-top:8px;'>
+      <b>Fonte:</b> Morgan Stanley US Equity Strategy Weekly Warm-up
+      "The Market Waits for No One" (Apr 13, 2026). Dados parafraseados —
+      nao e recomendacao, apenas resumo das views reportadas.
+    </div>
+    """
+
+
 SECTOR_ETFS = {
     'XLK': 'Tech',           'XLF': 'Financials',   'XLE': 'Energy',
     'XLV': 'Health Care',    'XLI': 'Industrials',  'XLY': 'Cons. Disc.',
@@ -7419,7 +7587,12 @@ def build_section_widgets(result: dict) -> list:
         # ----- PARTE VII: MACRO ECONOMICO -----
         sec.append(wd.HTML(_big_divider(
             'Parte VII — Macro Economico',
-            'Valuation + Rates/Vol/Credit/FX + Commodities + Breadth + Internacional')))
+            'MS Research Snapshot + Valuation + Rates/Vol/Credit/FX + Commodities + Breadth + Internacional')))
+
+        # MS Research Snapshot (hardcoded views do relatorio)
+        sec.append(wd.HTML("<div class='mm-section-label'>@ · MS Research Snapshot "
+                             "— forecasts + ratings + thesis (Morgan Stanley view)</div>"))
+        sec.append(wd.HTML(_ms_snapshot_html()))
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
