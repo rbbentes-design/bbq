@@ -232,7 +232,18 @@ def _bql_ts(response_item, col_name='Value'):
 
 
 def _bql_one_field(ticker: str, bq_field, period: str = '-5Y') -> pd.Series:
-    """Executa uma request de 1 field (padrao exato do greeks_dashboard.fetch_historical)."""
+    """
+    Executa uma request de 1 field (padrao exato do greeks_dashboard.fetch_historical).
+    Cap automatico em -20Y (limite do Bloomberg).
+    """
+    # Parse period e cap em 20Y
+    if period.endswith('Y') or period.endswith('y'):
+        try:
+            yrs = int(period.replace('-', '').replace('Y', '').replace('y', ''))
+            if yrs > 20:
+                period = '-20Y'
+        except Exception:
+            pass
     req = bql.Request(ticker, {'Value': bq_field(
         dates=bq.func.range(period, '0D'), fill='PREV')})
     s = _bql_ts(bq.execute(req)[0], 'Value')
@@ -246,7 +257,10 @@ def load_daily_bql(ticker: str, years: int = 5) -> pd.DataFrame:
     Se open/high/low falharem (comum em indices puros como SPX Index),
     degrada graciosamente: usa close como proxy e desabilita features que
     dependem de OHLC completo (range, gap).
+
+    NOTA: Bloomberg trava com janelas > 20Y. Capamos automaticamente.
     """
+    years = min(years, 20)  # cap BQL em 20Y (limite do Bloomberg)
     period = f'-{years}Y'
     out = {}
     # Close e volume sao obrigatorios
@@ -5201,8 +5215,9 @@ def _snapshot_html() -> str:
 
 ticker_w = wd.Text(value='SPX Index', description='Ticker:',
                     layout=wd.Layout(width='280px'))
-years_w = wd.IntSlider(value=5, min=1, max=10, step=1, description='Years:',
-                        layout=wd.Layout(width='300px'))
+years_w = wd.IntSlider(value=5, min=1, max=20, step=1, description='Years:',
+                        layout=wd.Layout(width='300px'),
+                        tooltip='Janela principal (BBG cap = 20y)')
 nomura_ticker_w = wd.Text(value='SPY US Equity', description='Nomura spot:',
                             layout=wd.Layout(width='280px'))
 nomura_chk_w = wd.Checkbox(value=True,
@@ -5219,10 +5234,10 @@ passive_breaks_chk_w = wd.Checkbox(value=False,
                                       layout=wd.Layout(width='450px'))
 pb_ticker_w = wd.Text(value='SPY US Equity', description='PB spot:',
                          layout=wd.Layout(width='280px'))
-pb_years_w = wd.IntSlider(value=30, min=10, max=50, step=5,
+pb_years_w = wd.IntSlider(value=20, min=5, max=20, step=1,
                              description='PB Years:',
                              layout=wd.Layout(width='320px'),
-                             tooltip='Janela de historia pro Passive Breaks (longo: 25-30y+)')
+                             tooltip='Janela de historia (BBG cap = 20y maximo)')
 
 run_btn = wd.Button(description='▶ Iniciar Analise', button_style='success',
                      icon='play', layout=wd.Layout(width='180px'))
