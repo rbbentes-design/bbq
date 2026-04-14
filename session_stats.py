@@ -2025,12 +2025,298 @@ def fig_vol_panic_proxy(daily: pd.DataFrame, vol_indices: pd.DataFrame,
 
 
 # =============================================================================
+# 7c. GS FACTOR MONITOR (Barra pair indices + Thematic baskets)
+# =============================================================================
+#
+# Universo inspirado no GS US Factor Monitor (Soria et al).
+# Bloomberg libera o HISTORICO (px_last) dos Barra pair indices e das
+# thematic baskets da GS quando colocamos "Index" no final do ticker.
+# A carteira (constituents) nao e liberada, mas o level da serie esta.
+# =============================================================================
+
+GS_FACTOR_UNIVERSE = {
+    'Barra Factors': [
+        ('GSP1MOMO', 'Momentum (Hi/Lo)'),
+        ('GSP1BETA', 'Beta (Hi/Lo)'),
+        ('GSP1LEVG', 'Leverage (Hi/Lo)'),
+        ('GSP1PROF', 'Profitability (Hi/Lo)'),
+        ('GSP1ERNY', 'Earnings Yield (Hi/Lo)'),
+        ('GSP1RSVL', 'Res Vol (Hi/Lo)'),
+        ('GSP1GRWT', 'Growth (Hi/Lo)'),
+        ('GSPUGRVA', 'Growth vs Value'),
+        ('GSP1VALU', 'Value (Cheap/Expensive)'),
+        ('GSP1SIZE', 'Size (Large/Small)'),
+        ('GSP1QUAL', 'Quality (Hi/Lo)'),
+    ],
+    'Momentum': [
+        ('GSPRHIMO', 'High Beta Momentum'),
+        ('GSPRHMO6', '6m Momentum'),
+        ('GSPRHMO3', '3m Momentum'),
+        ('GSTMTMOM', 'TMT Momentum'),
+        ('GSPUMOXX', 'Cross Sector Momo ex AI'),
+        ('GSFIMOMO', 'Financials Momentum'),
+        ('GSENEMOM', 'Energy Momentum'),
+        ('GSINMOMO', 'Industrial Momentum'),
+        ('GSHCMOMO', 'Health Care Momentum'),
+        ('GSCNMOMO', 'Consumer Momentum'),
+    ],
+    'Themes': [
+        ('GSXUMEME', 'US Memes Stocks'),
+        ('GSXUNPTC', 'Non Profitable Tech'),
+        ('GSXUQNTM', 'Quantum Computing'),
+        ('GSXURFAV', 'Retail Favorites'),
+        ('GSXUROBO', 'Robotics/Automation'),
+        ('GSTHREPO', 'Buyback (US)'),
+        ('GSXUDFNS', 'US Defense'),
+        ('GSXUMOXL', 'High Mo ex AI & BTC'),
+        ('GSXURANI', 'US Uranium'),
+        ('GSXUMFML', 'Marquee Momentum'),
+        ('GSXUHOME', 'US Housing'),
+        ('GSXUCYCL', 'US Cyclicals'),
+        ('GSXUHICN', 'High Income Consumer'),
+        ('GSXUCADR', 'China ADRs'),
+        ('GSXUCOND', 'US Consumer Disc'),
+        ('GSXULOCN', 'Low Income Consumer'),
+        ('GSXUCOMP', 'Defensive Compounder'),
+        ('GSXURNEW', 'US Renewables'),
+        ('GSXUMIDC', 'Mid Income Consumer'),
+        ('GSXUEDEF', 'Expensive Defensives'),
+        ('GSXURETL', 'US Retail'),
+        ('GSPUCRWD', 'Crowding'),
+        ('GSPUWSHI', 'Short Interest'),
+        ('GSPUOILY', 'Oil Sensitivity'),
+    ],
+}
+
+
+def fetch_gs_factors(years: int = 2) -> pd.DataFrame:
+    """
+    Busca close history de todos os tickers do universo GS Factor em batch.
+    Retorna DataFrame wide: index=date, cols=ticker.
+
+    Requer BQL (BQuant). Fora do BQuant retorna DataFrame vazio.
+    """
+    if not HAS_BQL:
+        log.warning('[gs_factors] sem BQL — pulando')
+        return pd.DataFrame()
+
+    all_items = []
+    for cat, items in GS_FACTOR_UNIVERSE.items():
+        for tk, name in items:
+            all_items.append((tk, name, cat))
+
+    log.info(f'[gs_factors] buscando {len(all_items)} factors via BQL...')
+    frames = {}
+    for tk, name, cat in all_items:
+        try:
+            bbg = f'{tk} Index'
+            s = _bql_one_field(bbg, bq.data.px_last, period=f'-{years}Y')
+            if len(s) > 50:
+                frames[tk] = s
+        except Exception as e:
+            log.warning(f'[gs_factors] {tk} falhou: {e}')
+    if not frames:
+        return pd.DataFrame()
+    out = pd.DataFrame(frames).sort_index()
+    return out
+
+
+def factor_monitor_table(history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tabela estilo GS Factor Monitor:
+      Ticker | Name | Category | 1D % | 5D % | 1M % | YTD % | 1Y Return | Std Dev 252d
+
+    Positivos em verde implicito (cor fica na viz, nao na tabela).
+    """
+    if len(history) == 0:
+        return pd.DataFrame()
+
+    # Mapa ticker -> (name, category)
+    meta = {}
+    for cat, items in GS_FACTOR_UNIVERSE.items():
+        for tk, name in items:
+            meta[tk] = (name, cat)
+
+    today = history.index[-1]
+    ytd_start = pd.Timestamp(year=today.year, month=1, day=1)
+    if history.index.tz is not None:
+        ytd_start = ytd_start.tz_localize(history.index.tz)
+
+    rows = []
+    for tk in history.columns:
+        s = history[tk].dropna()
+        if len(s) < 10:
+            continue
+        name, cat = meta.get(tk, (tk, 'Other'))
+        last = s.iloc[-1]
+        # 1D
+        d1 = ((last / s.iloc[-2] - 1) * 100) if len(s) > 1 else np.nan
+        # 5D
+        d5 = ((last / s.iloc[-6] - 1) * 100) if len(s) > 5 else np.nan
+        # 1M (21 dias uteis)
+        d21 = ((last / s.iloc[-22] - 1) * 100) if len(s) > 21 else np.nan
+        # YTD
+        ytd_s = s[s.index >= ytd_start]
+        ytd = ((last / ytd_s.iloc[0] - 1) * 100) if len(ytd_s) > 0 else np.nan
+        # 1Y
+        d252 = ((last / s.iloc[-253] - 1) * 100) if len(s) > 252 else np.nan
+        # Std dev (anualizado)
+        ret = s.pct_change().dropna()
+        stdev = ret.rolling(252, min_periods=60).std().iloc[-1] * math.sqrt(252) * 100 \
+                if len(ret) > 60 else np.nan
+        rows.append({
+            'Ticker': tk,
+            'Name': name,
+            'Category': cat,
+            '1D_pct': round(d1, 2) if pd.notna(d1) else np.nan,
+            '5D_pct': round(d5, 2) if pd.notna(d5) else np.nan,
+            '1M_pct': round(d21, 2) if pd.notna(d21) else np.nan,
+            'YTD_pct': round(ytd, 2) if pd.notna(ytd) else np.nan,
+            '1Y_pct': round(d252, 2) if pd.notna(d252) else np.nan,
+            'Std_Dev_pct': round(stdev, 2) if pd.notna(stdev) else np.nan,
+        })
+    df = pd.DataFrame(rows)
+    # Sort por YTD desc
+    df = df.sort_values('YTD_pct', ascending=False, na_position='last').reset_index(drop=True)
+    return df
+
+
+def fig_factor_heatmap(table: pd.DataFrame) -> go.Figure:
+    """Heatmap Ticker x Horizonte, cor pela performance."""
+    if len(table) == 0:
+        return go.Figure().update_layout(title='Factor Monitor — sem dados',
+                                           **_FIG_LAYOUT)
+    cols = ['1D_pct', '5D_pct', '1M_pct', 'YTD_pct', '1Y_pct']
+    labels = ['1D', '5D', '1M', 'YTD', '1Y']
+    z = table[cols].values.astype(float)
+    y = [f"{r['Ticker']}  {r['Name']}" for _, r in table.iterrows()]
+    vmax = np.nanpercentile(np.abs(z[~np.isnan(z)]), 95) if np.any(~np.isnan(z)) else 20
+    fig = go.Figure(go.Heatmap(
+        z=z, x=labels, y=y,
+        colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
+        zmin=-vmax, zmax=vmax,
+        text=[[f'{v:+.2f}%' if pd.notna(v) else '' for v in row] for row in z],
+        texttemplate='%{text}', textfont=dict(size=10, color='#cce8ff'),
+        colorbar=dict(title='%', tickfont=dict(size=9))))
+    fig.update_layout(
+        title=f'GS Factor Monitor — {len(table)} factors/themes (ordenado por YTD)',
+        **{**_FIG_LAYOUT, 'height': max(520, len(table) * 18),
+           'margin': dict(l=280, r=60, t=55, b=40)})
+    return fig
+
+
+def fig_factor_leaderboard(table: pd.DataFrame, horizon: str = 'YTD_pct',
+                             top_n: int = 10) -> go.Figure:
+    """Top N winners + losers por horizonte."""
+    if len(table) == 0:
+        return go.Figure().update_layout(title='Leaderboard — sem dados',
+                                           **_FIG_LAYOUT)
+    df = table.dropna(subset=[horizon]).copy()
+    top = df.head(top_n)
+    bot = df.tail(top_n).iloc[::-1]
+    combined = pd.concat([top, bot])
+    colors = [_C['green'] if v > 0 else _C['red'] for v in combined[horizon]]
+    labels = [f"{r['Ticker']} · {r['Name'][:22]}" for _, r in combined.iterrows()]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=combined[horizon], y=labels, orientation='h',
+        marker_color=colors,
+        text=[f'{v:+.2f}%' for v in combined[horizon]],
+        textposition='outside', showlegend=False))
+    fig.add_vline(x=0, line_color=_C['text_muted'], line_width=0.6)
+    fig.update_layout(
+        title=f'GS Factor Leaderboard — Top/Bottom {top_n} ({horizon.replace("_pct", "")})',
+        xaxis_title='%',
+        yaxis=dict(autorange='reversed'),
+        **{**_FIG_LAYOUT, 'height': max(520, top_n * 40 + 100),
+           'margin': dict(l=280, r=60, t=55, b=40)})
+    return fig
+
+
+def fig_factor_category_avg(table: pd.DataFrame) -> go.Figure:
+    """Performance media por categoria (Barra / Momentum / Themes)."""
+    if len(table) == 0:
+        return go.Figure().update_layout(title='Categoria — sem dados',
+                                           **_FIG_LAYOUT)
+    grp = table.groupby('Category')[['1D_pct', '5D_pct', '1M_pct',
+                                        'YTD_pct', '1Y_pct']].mean().round(2)
+    fig = go.Figure()
+    hz_colors = {'1D_pct': _C['accent'], '5D_pct': _C['orange'],
+                  '1M_pct': _C['yellow'], 'YTD_pct': _C['green'],
+                  '1Y_pct': _C['purple']}
+    for col in grp.columns:
+        fig.add_trace(go.Bar(
+            x=grp.index, y=grp[col], name=col.replace('_pct', ''),
+            marker_color=hz_colors.get(col, _C['accent']),
+            text=[f'{v:+.2f}%' for v in grp[col]],
+            textposition='outside'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(
+        title='GS Factor Monitor — Media por Categoria',
+        barmode='group', yaxis_title='%',
+        **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
+def fig_factor_rolling(history: pd.DataFrame, tickers: list = None,
+                         max_lines: int = 8) -> go.Figure:
+    """
+    Rolling relative performance dos top N factors (YTD) vs inicio da janela.
+    Estilo "Performance of factors across regimes" do report Soria.
+    """
+    if len(history) == 0:
+        return go.Figure().update_layout(title='Rolling — sem dados',
+                                           **_FIG_LAYOUT)
+    # Normaliza tudo em 100 no inicio
+    norm = history.apply(lambda s: s / s.dropna().iloc[0] * 100 if len(s.dropna()) else s)
+    # Pega os top N por retorno final
+    final = norm.iloc[-1].dropna().sort_values(ascending=False)
+    picked = tickers or list(final.index[:max_lines])
+    fig = go.Figure()
+    palette = ['#00c8ff', '#ff8c00', '#00ff88', '#ff4757', '#b44aff',
+                '#ffd32a', '#ff6b9d', '#7efff5']
+    for i, tk in enumerate(picked):
+        if tk not in norm.columns:
+            continue
+        s = norm[tk].dropna()
+        fig.add_trace(go.Scatter(
+            x=s.index, y=s.values, name=tk,
+            line=dict(color=palette[i % len(palette)], width=1.2)))
+    fig.add_hline(y=100, line_color=_C['text_muted'], line_width=0.5, line_dash='dot')
+    fig.update_layout(
+        title=f'GS Factor Monitor — Rolling performance (norm=100) Top {max_lines}',
+        yaxis_title='Level (norm=100)',
+        **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
+def run_gs_factor_section(years: int = 2) -> dict:
+    """Pipeline completo da secao GS Factors. Retorna dict com tabela + figs."""
+    history = fetch_gs_factors(years=years)
+    if len(history) == 0:
+        return {}
+    table = factor_monitor_table(history)
+    return {
+        'history': history,
+        'table': table,
+        'figs': {
+            'heatmap': fig_factor_heatmap(table),
+            'leaderboard_ytd': fig_factor_leaderboard(table, 'YTD_pct'),
+            'leaderboard_1m': fig_factor_leaderboard(table, '1M_pct'),
+            'category_avg': fig_factor_category_avg(table),
+            'rolling_top': fig_factor_rolling(history, max_lines=8),
+        }
+    }
+
+
+# =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
 
 def compute_session_stats(ticker: str, years: int = 5,
                             include_nomura: bool = True,
-                            nomura_ticker: str = 'SPY US Equity') -> dict:
+                            nomura_ticker: str = 'SPY US Equity',
+                            include_gs_factors: bool = False) -> dict:
     """
     Computa TUDO e retorna dict com tabelas + figs + metrics.
     Isso e o que sera importado pelo greeks_dashboard no futuro.
@@ -2132,12 +2418,22 @@ def compute_session_stats(ticker: str, years: int = 5,
             import traceback
             log.warning(traceback.format_exc())
 
+    gs_factors = {}
+    if include_gs_factors:
+        try:
+            gs_factors = run_gs_factor_section(years=max(2, min(years, 5)))
+        except Exception as e:
+            log.warning(f'GS Factor section falhou: {e}')
+            import traceback
+            log.warning(traceback.format_exc())
+
     return {
         'ticker': ticker, 'years': years,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'bt': bt, 'bt_eth': bt_eth,
         'bottom_line': bottom_line,
         'tables': tables, 'figs': figs, 'nomura': nomura,
+        'gs_factors': gs_factors,
     }
 
 
@@ -2329,11 +2625,28 @@ def build_section_widgets(result: dict) -> list:
                              "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
         sec.append(go.FigureWidget(n['figs']['flows']))
 
+    # --- GS Factor Monitor ---
+    if result.get('gs_factors') and result['gs_factors'].get('table') is not None \
+       and len(result['gs_factors']['table']) > 0:
+        gf = result['gs_factors']
+        sec.append(wd.HTML(
+            "<div class='mm-section-label'>GS Factor Monitor — Barra Pair Indices + "
+            "Momentum + Thematic Baskets (historico via BQL)</div>"))
+        sec.append(go.FigureWidget(gf['figs']['category_avg']))
+        sec.append(go.FigureWidget(gf['figs']['leaderboard_ytd']))
+        sec.append(go.FigureWidget(gf['figs']['leaderboard_1m']))
+        sec.append(go.FigureWidget(gf['figs']['heatmap']))
+        sec.append(go.FigureWidget(gf['figs']['rolling_top']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Factor Monitor table "
+                             "(ordenado por YTD, %)</div>"))
+        sec.append(wd.HTML(_df_to_html_table(gf['table'])))
+
     sec.append(wd.HTML(
         "<div class='mm-note'>"
         "<b>Obs:</b> estatistica nao e edge automatico. Linhas com n&lt;30 "
         "tem leitura fraca. 25d IVs aproximados via SKEW index — plugar chain "
-        "real (OVDV/OptionMetrics) pra precisao total."
+        "real (OVDV/OptionMetrics) pra precisao total. GS Factor Monitor usa "
+        "apenas o nivel (px_last) — a carteira interna nao e liberada."
         "</div>"))
     return sec
 
@@ -2393,6 +2706,9 @@ nomura_ticker_w = wd.Text(value='SPY US Equity', description='Nomura spot:',
 nomura_chk_w = wd.Checkbox(value=True,
                              description='Incluir Nomura (Options PnL + Skew + Flows)',
                              layout=wd.Layout(width='400px'))
+gs_factors_chk_w = wd.Checkbox(value=False,
+                                  description='Incluir GS Factor Monitor (lento: ~50 BQL queries)',
+                                  layout=wd.Layout(width='400px'))
 
 run_btn = wd.Button(description='▶ Iniciar Analise', button_style='success',
                      icon='play', layout=wd.Layout(width='180px'))
@@ -2413,19 +2729,18 @@ def _run_analysis(_):
             ticker = ticker_w.value.strip() or 'SPX Index'
             years = int(years_w.value)
             include_n = bool(nomura_chk_w.value)
+            include_gs = bool(gs_factors_chk_w.value)
             nom_tk = nomura_ticker_w.value.strip() or 'SPY US Equity'
 
-            steps = [
-                '1/4: Carregando diario via BQL...',
-                '2/4: Calculando features + stats...',
-                '3/4: Gerando graficos Plotly...',
-                '4/4: Secao Nomura (Options PnL + Skew + Flows)...',
-            ]
-            loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>{steps[0]}</div></div>"
+            loading.value = DASH_CSS + ("<div class='mm-dash'><div class='mm-card mm-loading'>"
+                                           "Processando... (BQL: 1 query spot + VIX/SKEW + "
+                                           f"{'~50 factors' if include_gs else 'sem factors'})"
+                                           "</div></div>")
 
             result = compute_session_stats(ticker, years,
                                              include_nomura=include_n,
-                                             nomura_ticker=nom_tk)
+                                             nomura_ticker=nom_tk,
+                                             include_gs_factors=include_gs)
 
             loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets...</div></div>"
             sections = build_section_widgets(result)
@@ -2491,6 +2806,14 @@ def _export_zip(_):
                                        ('systematic_flows', r['nomura']['flows'])]:
                         try: zf.writestr(f'data/nomura_{name}.csv', df.to_csv())
                         except Exception as ex: log.warning(f'csv nomura {name} skip: {ex}')
+                if r.get('gs_factors') and r['gs_factors']:
+                    try:
+                        zf.writestr('data/gs_factor_monitor.csv',
+                                     r['gs_factors']['table'].to_csv(index=False))
+                        zf.writestr('data/gs_factor_history.csv',
+                                     r['gs_factors']['history'].to_csv())
+                    except Exception as ex:
+                        log.warning(f'csv gs_factors skip: {ex}')
 
             buf.seek(0)
             b64 = base64.b64encode(buf.read()).decode('ascii')
@@ -2525,6 +2848,7 @@ def launch():
         wd.VBox([
             wd.HBox([ticker_w, years_w]),
             wd.HBox([nomura_ticker_w, nomura_chk_w]),
+            wd.HBox([gs_factors_chk_w]),
             wd.HBox([run_btn, zip_btn]),
         ]),
         out_zip,
