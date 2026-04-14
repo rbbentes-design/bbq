@@ -1452,6 +1452,40 @@ def rth_eth_bottom_line(bt_rth: BacktestResult, bt_eth: BacktestResult,
     }
 
 
+def fig_rth_eth_cumret(bt_rth: BacktestResult, bt_eth: BacktestResult,
+                         ticker: str) -> go.Figure:
+    """
+    Retorno cumulativo em % das duas estrategias — grafico simples, 1 painel.
+    Comeca em 0%, linha do tempo, valor final destacado na legenda.
+    """
+    rth_cum = (bt_rth.equity - 1) * 100   # % desde o inicio
+    eth_cum = (bt_eth.equity - 1) * 100
+
+    rth_final = rth_cum.iloc[-1] if len(rth_cum) else np.nan
+    eth_final = eth_cum.iloc[-1] if len(eth_cum) else np.nan
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=rth_cum.index, y=rth_cum.values,
+        name=f'RTH (open→close) → final {rth_final:+.2f}%',
+        line=dict(color=_C['accent'], width=2.2),
+        fill='tozeroy', fillcolor='rgba(88,166,255,0.06)',
+        hovertemplate='%{x|%Y-%m-%d}<br>%{y:+.2f}%<extra>RTH</extra>'))
+    fig.add_trace(go.Scatter(
+        x=eth_cum.index, y=eth_cum.values,
+        name=f'ETH (close→open) → final {eth_final:+.2f}%',
+        line=dict(color=_C['orange'], width=2.2),
+        hovertemplate='%{x|%Y-%m-%d}<br>%{y:+.2f}%<extra>ETH</extra>'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.8,
+                   line_dash='dot')
+    fig.update_layout(
+        title=f'{ticker} — Retorno cumulativo (%): RTH vs ETH',
+        yaxis_title='Retorno cumulativo %',
+        yaxis_ticksuffix='%',
+        **{**_FIG_LAYOUT, 'height': 460})
+    return fig
+
+
 def fig_rth_eth_simple(bt_rth: BacktestResult, bt_eth: BacktestResult,
                         ticker: str, initial: float = 10000.0) -> go.Figure:
     """
@@ -1691,6 +1725,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'updown_weekday': fig_updown_weekday(tables['updown_by_weekday'], ticker),
         'equity_dd_rth': fig_equity_dd(bt, f'{ticker} RTH'),
         'equity_dd_eth': fig_equity_dd(bt_eth, f'{ticker} ETH'),
+        'rth_eth_cumret': fig_rth_eth_cumret(bt, bt_eth, ticker),
         'rth_eth_simple': fig_rth_eth_simple(bt, bt_eth, ticker),
         'rth_vs_eth': fig_rth_vs_eth_equity(bt, bt_eth, ticker),
         'rth_vs_eth_scatter': fig_rth_vs_eth_scatter(df, ticker),
@@ -1787,6 +1822,9 @@ def build_section_widgets(result: dict) -> list:
     # --- BOTTOM LINE bem no topo (direto ao ponto: $10k virou quanto?) ---
     if result.get('bottom_line'):
         sec.append(wd.HTML(_bottom_line_html(result['bottom_line'], ticker)))
+    # Retorno cumulativo % — grafico simples, direto ao ponto
+    sec.append(go.FigureWidget(result['figs']['rth_eth_cumret']))
+    # Em dolares absolutos
     sec.append(go.FigureWidget(result['figs']['rth_eth_simple']))
 
     # Header com metricas RTH e ETH lado a lado
