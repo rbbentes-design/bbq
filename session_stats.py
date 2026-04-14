@@ -6580,6 +6580,8 @@ def compute_macro_charts(years: int = 10) -> dict:
     _try('conf_board', 'CONCCONF Index')  # Conference Board (may alias)
     _try('ppi_yoy', 'PPI YOY Index')
     _try('cpi_yoy', 'CPI YOY Index')
+    _try('cpi_lvl', 'CPURNSA Index')      # CPI level (deflator pra real EPS)
+    _try('us10y_real', 'USGGT10Y Index')  # 10Y TIPS (real yield)
 
     # Valuation (SPX + sectors)
     for tk, key in [('SPX Index', 'spx_pe')]:
@@ -6622,6 +6624,12 @@ def compute_macro_charts(years: int = 10) -> dict:
     # SPX spot atual
     spx_spot = float(series['spx'].iloc[-1]) if 'spx' in series else None
     us10y_now = float(series['us10y'].iloc[-1]) if 'us10y' in series else None
+    tips10y_now = (float(series['us10y_real'].iloc[-1])
+                     if 'us10y_real' in series else None)
+    # Fallback: real = nominal - breakeven
+    if tips10y_now is None and us10y_now and 'be10' in series:
+        be = float(series['be10'].iloc[-1])
+        tips10y_now = us10y_now - be
 
     # FALLBACK: se best_eps falhou, deriva via spot / trailing PE
     if not eps_ntm and spx_spot and 'spx_pe' in series:
@@ -6937,6 +6945,73 @@ def compute_macro_charts(years: int = 10) -> dict:
             'SPX NTM EPS ($)', 'SPX Level',
             'S&P 500 NTM EPS vs Total Return Level')
 
+    # --- J. REAL RATES + REAL EPS + REAL ERP ---
+    # Real yield: nominal 10Y vs TIPS vs breakeven
+    real_rates = {}
+    if 'us10y' in series:
+        real_rates['10Y Nominal'] = series['us10y']
+    if 'us10y_real' in series:
+        real_rates['10Y Real (TIPS)'] = series['us10y_real']
+    if 'be10' in series:
+        real_rates['10Y Breakeven'] = series['be10']
+    # Derive real 10Y se TIPS nao existe mas breakeven sim
+    if 'us10y_real' not in series and 'us10y' in series and 'be10' in series:
+        n, b = series['us10y'].align(series['be10'], join='inner')
+        real_rates['10Y Real (derived)'] = n - b
+    if len(real_rates) >= 2:
+        figs['real_rates'] = _fig_macro(real_rates,
+                                             'Real Rates: Nominal vs TIPS vs Breakeven',
+                                             '%')
+
+    # Real ERP = earnings yield - real 10Y (TIPS ou derived)
+    real_10y = None
+    if 'us10y_real' in series:
+        real_10y = series['us10y_real']
+    elif 'us10y' in series and 'be10' in series:
+        n, b = series['us10y'].align(series['be10'], join='inner')
+        real_10y = (n - b).dropna()
+    if 'spx_pe' in series and real_10y is not None:
+        pe, r10 = series['spx_pe'].align(real_10y, join='inner')
+        ey = (1.0 / pe) * 100.0
+        erp_real = (ey - r10) * 100  # bps
+        # Comparar com ERP nominal se tivermos
+        comp = {'Real ERP (vs TIPS) bps': erp_real}
+        if 'us10y' in series:
+            pe_n, y_n = series['spx_pe'].align(series['us10y'], join='inner')
+            erp_n = ((1.0/pe_n)*100 - y_n) * 100
+            comp['Nominal ERP bps'] = erp_n
+        figs['real_erp'] = _fig_macro(comp,
+                                           'Real ERP (earnings yield - real 10Y)',
+                                           'bps', colors=['#7ae582', '#00d4ff'])
+
+    # Real EPS: nominal EPS deflated by CPI (rebased to 100 no inicio)
+    if 'spx_best_eps' in series and 'cpi_lvl' in series:
+        eps_n = series['spx_best_eps'].dropna()
+        cpi_ = series['cpi_lvl'].dropna()
+        a = pd.concat([eps_n, cpi_], axis=1, join='inner').dropna()
+        if len(a) > 0:
+            a.columns = ['eps', 'cpi']
+            real_eps = a['eps'] / a['cpi'] * a['cpi'].iloc[0]  # deflated to base
+            figs['spx_eps_real'] = _fig_macro({
+                'Nominal NTM EPS': a['eps'],
+                'Real NTM EPS (CPI-deflated)': real_eps,
+            }, 'SPX NTM EPS: Nominal vs Real (inflation-adjusted)', '$',
+                colors=['#00d4ff', '#7ae582'])
+
+    # Real SPX (priced in CPI)
+    if 'spx' in series and 'cpi_lvl' in series:
+        sp = series['spx'].dropna()
+        cp = series['cpi_lvl'].dropna()
+        a = pd.concat([sp, cp], axis=1, join='inner').dropna()
+        if len(a) > 0:
+            a.columns = ['spx', 'cpi']
+            real_spx = a['spx'] / a['cpi'] * a['cpi'].iloc[0]
+            figs['spx_real_cpi'] = _fig_macro({
+                'SPX Nominal': a['spx'],
+                'SPX Real (CPI-deflated)': real_spx,
+            }, 'S&P 500: Nominal vs Real (CPI-deflated)', 'index',
+                colors=['#00d4ff', '#7ae582'])
+
     # --- I. HARDCODED BAR CHARTS (from MS report values) ---
     # 2026 EPS growth by sector
     sector_eps_2026 = [
@@ -7034,7 +7109,7 @@ def compute_macro_charts(years: int = 10) -> dict:
              'n_figs': len(figs),
              'spx_spot': spx_spot, 'eps_fy1': eps_fy1,
              'eps_fy2': eps_fy2, 'eps_ntm': eps_ntm,
-             'us10y': us10y_now}
+             'us10y': us10y_now, 'us10y_real': tips10y_now}
 
 
 # =============================================================================
@@ -8055,8 +8130,58 @@ def build_section_widgets(result: dict) -> list:
 
         sec.append(wd.HTML(
             "<div class='mm-section-label' style='margin-top:8px;'>"
-            "Gordon Growth Model — ajuste ERP/step/range (live)</div>"))
-        sec.append(wd.HBox([erp_sl, step_sl, range_sl]))
+            "Gordon Growth Model — Nominal vs Real (TIPS) (live)</div>"))
+
+        # Toggle Real/Nominal + sliders
+        mode_tog = wd.ToggleButtons(
+            options=[('Nominal', 'nominal'), ('Real (TIPS)', 'real')],
+            value='nominal', description='Modo:',
+            layout=wd.Layout(width='320px'))
+        g_real_sl = wd.FloatSlider(
+            value=2.0, min=0.5, max=4.0, step=0.25,
+            description='g real %:',
+            layout=wd.Layout(width='340px'),
+            readout_format='.2f')
+        # Real ERP slider (usado apenas no modo real)
+        erp_real_sl = wd.FloatSlider(
+            value=3.0, min=1.0, max=6.0, step=0.25,
+            description='ERP real %:',
+            layout=wd.Layout(width='340px'),
+            readout_format='.2f')
+
+        def _redraw_gordon(*_):
+            with gordon_out:
+                clear_output(wait=True)
+                if mode_tog.value == 'real' and macro_data.get('us10y_real'):
+                    # Real: rf = TIPS, ERP real, g real
+                    display(wd.HTML(_gordon_sensitivity_html(
+                        spx_spot=spot_w.value, eps_fy1=eps1_w.value,
+                        us10y=macro_data.get('us10y_real'),
+                        erp=erp_real_sl.value,
+                        step_pct=step_sl.value, range_pct=range_sl.value,
+                        g_scenarios=[g_real_sl.value / 100.0,
+                                      (g_real_sl.value + 0.5) / 100.0,
+                                      (g_real_sl.value + 1.0) / 100.0,
+                                      (g_real_sl.value + 1.5) / 100.0])))
+                    display(wd.HTML(
+                        f"<div class='mm-note'>Modo REAL: rf = TIPS 10Y "
+                        f"<b>{macro_data.get('us10y_real'):.2f}%</b> | "
+                        f"ERP real <b>{erp_real_sl.value:.2f}%</b> | "
+                        f"g real em torno de <b>{g_real_sl.value:.2f}%</b>. "
+                        f"EPS nominal (PE real × EPS nominal = SPX nominal fair).</div>"))
+                else:
+                    # Nominal (default)
+                    display(wd.HTML(_gordon_sensitivity_html(
+                        spx_spot=spot_w.value, eps_fy1=eps1_w.value,
+                        us10y=_gy, erp=erp_sl.value,
+                        step_pct=step_sl.value, range_pct=range_sl.value)))
+
+        for w in (mode_tog, g_real_sl, erp_real_sl):
+            w.observe(_redraw_gordon, names='value')
+        _redraw_gordon()
+
+        sec.append(wd.HBox([mode_tog, erp_sl, erp_real_sl]))
+        sec.append(wd.HBox([step_sl, range_sl, g_real_sl]))
         sec.append(gordon_out)
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
@@ -8064,8 +8189,9 @@ def build_section_widgets(result: dict) -> list:
         _add_figs(['spx_pe', 'spx_eps_level', 'spx_eps_yoy', 'erp'])
 
         sec.append(wd.HTML("<div class='mm-section-label'>B · Rates, Vol & Credit "
-                             "— VIX/MOVE, yield curve, breakeven, DXY, credit, NFCI</div>"))
+                             "— VIX/MOVE, yield curve, breakeven, real rates (TIPS), real ERP, DXY, credit, NFCI</div>"))
         _add_figs(['vix', 'move', 'us_yields', 'yield_curve', 'breakeven',
+                    'real_rates', 'real_erp',
                     'corr_spx_10y', 'dxy', 'credit', 'nfci'])
 
         sec.append(wd.HTML("<div class='mm-section-label'>C · Commodities & FX "
@@ -8087,9 +8213,10 @@ def build_section_widgets(result: dict) -> list:
         _add_figs(['payrolls', 'fed_employees', 'consumer_conf', 'inflation'])
 
         sec.append(wd.HTML("<div class='mm-section-label'>G · Consensus EPS "
-                             "— SPX EPS por trimestre + NTM vs total return + sector growth</div>"))
+                             "+ Real — SPX EPS por trimestre, NTM vs level, real EPS + real SPX, sector growth</div>"))
         _add_figs(['spx_eps_quarters', 'spx_eps_yoy_quarters',
-                    'spx_eps_vs_level', 'sector_eps_2026', 'sector_eps_2027'])
+                    'spx_eps_vs_level', 'spx_eps_real', 'spx_real_cpi',
+                    'sector_eps_2026', 'sector_eps_2027'])
 
         sec.append(wd.HTML("<div class='mm-section-label'>H · Reporting Season "
                              "— calendario 1Q26 (% earnings por semana + # companies)</div>"))
