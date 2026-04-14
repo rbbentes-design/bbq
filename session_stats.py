@@ -6785,12 +6785,13 @@ def build_section_widgets(result: dict) -> list:
                     f"<div class='mm-metric-lbl' style='margin-bottom:8px;'>"
                     f"Estrutura (spot ${op['spot']:.2f}, IV {op['iv']*100:.1f}%, "
                     f"T=21d)</div>{_legs_html(op['legs'])}</div>"))
-                # Payoff chart: embed HTML (FigureWidget estava falhando silenciosamente)
+                # Payoff: usa wd.Output + display() porque wd.HTML sanitiza
+                # os <script> do Plotly. go.FigureWidget estava falhando tambem.
                 try:
-                    payoff_html = op['payoff_fig'].to_html(
-                        full_html=False, include_plotlyjs='cdn',
-                        default_height='460px')
-                    sec.append(wd.HTML(f"<div style='margin:8px 0'>{payoff_html}</div>"))
+                    payoff_out = wd.Output()
+                    with payoff_out:
+                        display(op['payoff_fig'])
+                    sec.append(payoff_out)
                 except Exception as pe:
                     import traceback
                     sec.append(wd.HTML(
@@ -6801,10 +6802,10 @@ def build_section_widgets(result: dict) -> list:
 
                 if len(op.get('backtest', [])) > 0:
                     try:
-                        bt_html = op['backtest_fig'].to_html(
-                            full_html=False, include_plotlyjs=False,
-                            default_height='340px')
-                        sec.append(wd.HTML(f"<div style='margin:8px 0'>{bt_html}</div>"))
+                        bt_out = wd.Output()
+                        with bt_out:
+                            display(op['backtest_fig'])
+                        sec.append(bt_out)
                     except Exception:
                         sec.append(go.FigureWidget(op['backtest_fig']))
                     sec.append(wd.HTML(_df_to_html_table(op['backtest'])))
