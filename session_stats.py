@@ -6563,7 +6563,7 @@ def compute_macro_charts(years: int = 10) -> dict:
                                                       'index')
 
     # --- D. SECTOR RELATIVE PERFORMANCE (11 sectors vs SPX) ---
-    bench = series.get('spy') or series.get('spx')
+    bench = series.get('spy') if 'spy' in series else series.get('spx')
     if bench is not None:
         for etf, name in SECTOR_ETFS.items():
             k = f'sec_{etf}'
