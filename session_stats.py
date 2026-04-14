@@ -3398,6 +3398,485 @@ def _passive_state_card_html(state: dict) -> str:
 
 
 # =============================================================================
+# 7e. REGIME DETECTION ENGINE
+# =============================================================================
+#
+# Filosofia: 3 semanas (15 dias uteis) no mesmo modus operandi = PATTERN.
+# Identificar cedo = vantagem. Alem disso:
+#   - 45+ dias = ENTRENCHED (risco de reversao alto)
+#   - transicoes abruptas sao os momentos mais caros
+#
+# 5 dimensoes de regime:
+#   1. Trend (posicao relativa as MAs)
+#   2. Volatility (VIX ou RV percentile)
+#   3. Session (RTH vs ETH dominance rolling 20d)
+#   4. Direction (sinal do retorno 20d)
+#   5. Vol Direction (ATR subindo ou descendo)
+# =============================================================================
+
+REGIME_DURATION_THRESHOLDS = {
+    'forming': 0,       # < 15d
+    'confirmed': 15,    # 15-44d (3 semanas)
+    'entrenched': 45,   # >= 45d
+}
+
+REGIME_COLORS = {
+    # trend
+    'uptrend': '#3fb950', 'downtrend': '#f85149', 'sideways': '#8b949e',
+    # vol
+    'low_vol': '#3fb950', 'medium_vol': '#d29922', 'high_vol': '#f85149',
+    # session
+    'rth_led': '#58a6ff', 'eth_led': '#f0883e', 'balanced': '#8b949e',
+    # direction
+    'up_month': '#3fb950', 'down_month': '#f85149', 'flat_month': '#8b949e',
+    # vol direction
+    'vol_rising': '#f85149', 'vol_falling': '#3fb950', 'vol_stable': '#8b949e',
+    # status
+    'forming': '#d29922', 'confirmed': '#58a6ff', 'entrenched': '#bc8cff',
+}
+
+
+def _compute_state_duration(series: pd.Series) -> pd.Series:
+    """Dias consecutivos no estado atual."""
+    result = []
+    current = None
+    count = 0
+    for val in series:
+        if val == current:
+            count += 1
+        else:
+            current = val
+            count = 1
+        result.append(count)
+    return pd.Series(result, index=series.index)
+
+
+def _duration_status(d) -> str:
+    if pd.isna(d):
+        return 'na'
+    d = int(d)
+    if d < 15:
+        return 'forming'
+    if d < 45:
+        return 'confirmed'
+    return 'entrenched'
+
+
+def compute_regimes(df: pd.DataFrame, vol_indices: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    Calcula series temporais de regime em 5 dimensoes + duracao + status.
+
+    Retorna DataFrame com:
+      trend_regime, vol_regime, session_regime, direction_regime, voldir_regime
+      + {dim}_duration (dias no estado)
+      + {dim}_status (forming/confirmed/entrenched)
+    """
+    out = pd.DataFrame(index=df.index)
+    close = df['close']
+
+    # --- 1. Trend ---
+    ma20 = close.rolling(20, min_periods=10).mean()
+    ma50 = close.rolling(50, min_periods=20).mean()
+    trend = np.where((close > ma20) & (ma20 > ma50), 'uptrend',
+             np.where((close < ma20) & (ma20 < ma50), 'downtrend', 'sideways'))
+    out['trend_regime'] = trend
+
+    # --- 2. Volatility (VIX pctile se disponivel, senao RV) ---
+    if (vol_indices is not None and len(vol_indices) > 0
+          and 'vix' in vol_indices.columns):
+        vix = vol_indices['vix'].reindex(df.index).ffill()
+        vol_pct = vix.rolling(252, min_periods=60).apply(
+            lambda x: x.rank(pct=True).iloc[-1], raw=False)
+    else:
+        rv = df['close'].pct_change().rolling(21, min_periods=10).std()
+        vol_pct = rv.rolling(252, min_periods=60).apply(
+            lambda x: x.rank(pct=True).iloc[-1], raw=False)
+    vol_regime = np.where(vol_pct < 0.3, 'low_vol',
+                  np.where(vol_pct > 0.7, 'high_vol', 'medium_vol'))
+    out['vol_regime'] = vol_regime
+
+    # --- 3. Session dominance (RTH vs ETH cum 20d) ---
+    if 'rth_return' in df.columns and 'eth_return' in df.columns:
+        rth_cum = df['rth_return'].rolling(20, min_periods=10).sum()
+        eth_cum = df['eth_return'].rolling(20, min_periods=10).sum()
+        diff = rth_cum - eth_cum
+        session = np.where(diff > 0.01, 'rth_led',
+                    np.where(diff < -0.01, 'eth_led', 'balanced'))
+    else:
+        session = ['balanced'] * len(df)
+    out['session_regime'] = session
+
+    # --- 4. Direction (retorno 20d) ---
+    ret20 = close.pct_change(20)
+    direction = np.where(ret20 > 0.02, 'up_month',
+                  np.where(ret20 < -0.02, 'down_month', 'flat_month'))
+    out['direction_regime'] = direction
+
+    # --- 5. Vol Direction (ATR subindo/caindo vs MA60 de ATR) ---
+    if 'true_range' in df.columns:
+        tr = df['true_range']
+    else:
+        prev_c = df['close'].shift(1)
+        tr = pd.concat([df['high'] - df['low'],
+                         (df['high'] - prev_c).abs(),
+                         (df['low'] - prev_c).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=5).mean()
+    atr60 = tr.rolling(60, min_periods=20).mean()
+    vd_ratio = atr14 / atr60
+    voldir = np.where(vd_ratio > 1.1, 'vol_rising',
+              np.where(vd_ratio < 0.9, 'vol_falling', 'vol_stable'))
+    out['voldir_regime'] = voldir
+
+    # --- Duracao + status ---
+    for dim in ['trend', 'vol', 'session', 'direction', 'voldir']:
+        col = f'{dim}_regime'
+        out[f'{dim}_duration'] = _compute_state_duration(out[col])
+        out[f'{dim}_status'] = out[f'{dim}_duration'].apply(_duration_status)
+
+    return out
+
+
+def regime_snapshot(regime_df: pd.DataFrame) -> dict:
+    """Estado atual (ultima linha) de todas as dimensoes."""
+    if len(regime_df) == 0:
+        return {}
+    last = regime_df.iloc[-1]
+    dims = ['trend', 'vol', 'session', 'direction', 'voldir']
+    out = {}
+    for d in dims:
+        out[d] = {
+            'state': last[f'{d}_regime'],
+            'duration_days': int(last[f'{d}_duration']),
+            'status': last[f'{d}_status'],
+            'color': REGIME_COLORS.get(last[f'{d}_regime'], _C['text_muted']),
+        }
+    return out
+
+
+def similar_historical_regimes(df: pd.DataFrame, regime_df: pd.DataFrame,
+                                  n_forward: int = 20) -> dict:
+    """
+    Acha instancias historicas com o MESMO combo de regimes do estado atual
+    (trend + vol + direction + voldir — session intencionalmente omitido pq
+    tem menos amostra). Retorna:
+      - numero de matches historicos
+      - forward 20d: mean, median, hit rate, best, worst
+      - matches list (datas onde combinou)
+    """
+    if len(regime_df) < n_forward + 50:
+        return {'n_matches': 0, 'error': 'historia curta'}
+
+    last = regime_df.iloc[-1]
+    combo_cols = ['trend_regime', 'vol_regime', 'direction_regime', 'voldir_regime']
+    current = {c: last[c] for c in combo_cols}
+
+    mask = pd.Series(True, index=regime_df.index)
+    for c, v in current.items():
+        mask &= (regime_df[c] == v)
+    # Exclui ultimos n_forward dias (pra ter dados forward)
+    mask.iloc[-n_forward:] = False
+    match_dates = regime_df.index[mask]
+
+    if len(match_dates) < 3:
+        return {
+            'n_matches': len(match_dates),
+            'current_combo': current,
+            'note': 'poucas ocorrencias historicas (< 3)',
+        }
+
+    # Forward returns pra cada match
+    close = df['close']
+    forward_rets = []
+    for dt in match_dates:
+        try:
+            i = close.index.get_loc(dt)
+        except KeyError:
+            continue
+        if i + n_forward < len(close):
+            fwd = (close.iloc[i + n_forward] / close.iloc[i] - 1) * 100
+            forward_rets.append(fwd)
+
+    forward_rets = pd.Series(forward_rets)
+    return {
+        'n_matches': len(forward_rets),
+        'current_combo': current,
+        'fwd_n_days': n_forward,
+        'fwd_mean_pct': round(forward_rets.mean(), 2),
+        'fwd_median_pct': round(forward_rets.median(), 2),
+        'fwd_std_pct': round(forward_rets.std(), 2),
+        'fwd_hit_rate_pct': round((forward_rets > 0).sum() / len(forward_rets) * 100, 2),
+        'fwd_best_pct': round(forward_rets.max(), 2),
+        'fwd_worst_pct': round(forward_rets.min(), 2),
+        'forward_returns_series': forward_rets,
+    }
+
+
+def regime_duration_stats(regime_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Quantos dias cada estado costuma durar historicamente.
+    Util pra saber: se ja estou 40 dias em uptrend, esta esticado vs historico?
+    """
+    rows = []
+    dims = ['trend', 'vol', 'session', 'direction', 'voldir']
+    for dim in dims:
+        col = f'{dim}_regime'
+        dur = f'{dim}_duration'
+        # Duracoes de cada bloco continuo
+        states = regime_df[col]
+        durations = regime_df[dur]
+        # Acha o ultimo dia de cada bloco (onde o estado vai mudar)
+        change = states != states.shift(-1)
+        block_ends = durations[change]
+        block_states = states[change]
+        for state in states.dropna().unique():
+            mask = block_states == state
+            if mask.sum() < 2:
+                continue
+            dd = block_ends[mask]
+            rows.append({
+                'dimension': dim,
+                'state': state,
+                'n_episodes': int(mask.sum()),
+                'avg_duration_days': round(dd.mean(), 1),
+                'median_duration_days': int(dd.median()),
+                'max_duration_days': int(dd.max()),
+                'p90_duration_days': int(dd.quantile(0.9)),
+            })
+    return pd.DataFrame(rows)
+
+
+def fig_regime_timeline(regime_df: pd.DataFrame, ticker: str) -> go.Figure:
+    """
+    5 faixas empilhadas mostrando o regime ao longo do tempo (cor por estado).
+    Visual rapido de quando cada dimensao mudou.
+    """
+    if len(regime_df) == 0:
+        return go.Figure().update_layout(title='Regime timeline — sem dados',
+                                           **_FIG_LAYOUT)
+    dims = [('trend', 'Trend'), ('vol', 'Volatility'),
+            ('session', 'Session'), ('direction', 'Direction'),
+            ('voldir', 'Vol Direction')]
+
+    fig = make_subplots(rows=len(dims), cols=1, shared_xaxes=True,
+                         vertical_spacing=0.03,
+                         subplot_titles=[d[1] for d in dims])
+
+    for i, (dim, label) in enumerate(dims):
+        col = f'{dim}_regime'
+        states = regime_df[col].unique()
+        for state in states:
+            if pd.isna(state): continue
+            mask = regime_df[col] == state
+            # Series binaria 1 onde estado=state, senao nan
+            y_vals = np.where(mask, 1, np.nan)
+            fig.add_trace(go.Scatter(
+                x=regime_df.index, y=y_vals,
+                mode='lines', name=f'{label} · {state}',
+                line=dict(color=REGIME_COLORS.get(state, _C['text_muted']),
+                          width=12),
+                hovertemplate=f'<b>{label}: {state}</b><br>%{{x|%Y-%m-%d}}<extra></extra>',
+                showlegend=(i == 0)),
+                row=i + 1, col=1)
+        fig.update_yaxes(visible=False, range=[0.5, 1.5], row=i + 1, col=1)
+
+    fig.update_layout(
+        title=f'{ticker} — Regime Timeline (5 dimensoes, cor por estado)',
+        **{**_FIG_LAYOUT, 'height': 620,
+           'legend': dict(orientation='h', yanchor='bottom', y=-0.12,
+                           xanchor='center', x=0.5, font=dict(size=9))})
+    return fig
+
+
+def fig_regime_duration_dist(regime_df: pd.DataFrame, ticker: str) -> go.Figure:
+    """Distribuicao historica da duracao dos regimes (box plot por dimensao)."""
+    if len(regime_df) == 0:
+        return go.Figure().update_layout(title='Duration — sem dados', **_FIG_LAYOUT)
+    dims = [('trend', 'Trend'), ('vol', 'Vol'), ('session', 'Session'),
+            ('direction', 'Direction'), ('voldir', 'VolDir')]
+    fig = go.Figure()
+    for dim, label in dims:
+        col = f'{dim}_regime'
+        dur = f'{dim}_duration'
+        states = regime_df[col].unique()
+        change = regime_df[col] != regime_df[col].shift(-1)
+        block_ends = regime_df.loc[change, dur]
+        block_states = regime_df.loc[change, col]
+        for state in states:
+            if pd.isna(state): continue
+            vals = block_ends[block_states == state].values
+            if len(vals) < 2: continue
+            fig.add_trace(go.Box(
+                y=vals, name=f'{label}·{state}',
+                marker_color=REGIME_COLORS.get(state, _C['text_muted']),
+                boxmean=True, showlegend=False))
+    fig.add_hline(y=15, line_color=_C['yellow'], line_dash='dash',
+                   annotation_text='15d = pattern confirmado')
+    fig.add_hline(y=45, line_color=_C['purple'], line_dash='dot',
+                   annotation_text='45d = entrenched')
+    fig.update_layout(
+        title=f'{ticker} — Distribuicao historica de duracao por regime',
+        yaxis_title='dias no estado',
+        **{**_FIG_LAYOUT, 'height': 520,
+           'margin': dict(l=60, r=40, t=55, b=120)})
+    fig.update_xaxes(tickangle=-45, tickfont=dict(size=9))
+    return fig
+
+
+def fig_regime_forward_histogram(similar_data: dict, ticker: str) -> go.Figure:
+    """Histograma dos forward returns quando o combo atual aconteceu antes."""
+    if similar_data.get('n_matches', 0) < 3:
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Poucas ocorrencias historicas<br>({similar_data.get('n_matches', 0)} matches)",
+            showarrow=False, font=dict(size=16, color=_C['text_muted']),
+            x=0.5, y=0.5, xref='paper', yref='paper')
+        fig.update_layout(title='Forward Returns — sem amostra suficiente',
+                           **_FIG_LAYOUT)
+        return fig
+
+    rets = similar_data['forward_returns_series']
+    mean = similar_data['fwd_mean_pct']
+    median = similar_data['fwd_median_pct']
+    hit = similar_data['fwd_hit_rate_pct']
+
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=rets, nbinsx=30,
+        marker_color=_C['accent'], marker_line_color=_C['border'],
+        opacity=0.85, showlegend=False))
+    fig.add_vline(x=0, line_color=_C['text_muted'], line_dash='dash')
+    fig.add_vline(x=mean, line_color=_C['orange'], line_dash='dot',
+                   annotation_text=f'mean {mean:+.2f}%')
+    fig.add_vline(x=median, line_color=_C['green'], line_dash='dot',
+                   annotation_text=f'median {median:+.2f}%')
+    fig.update_layout(
+        title=f'{ticker} — Forward {similar_data["fwd_n_days"]}d apos combo atual '
+              f'({similar_data["n_matches"]} matches historicos, hit {hit:.1f}%)',
+        xaxis_title='retorno %', yaxis_title='frequencia',
+        **_FIG_LAYOUT)
+    return fig
+
+
+def _regime_card_html(snap: dict, similar: dict = None) -> str:
+    """Card HUD com o regime atual em cada dimensao + status."""
+    STATUS_EMOJI = {'forming': '🟡', 'confirmed': '🔵', 'entrenched': '🟣',
+                      'na': '⚪'}
+    STATE_LABELS = {
+        'uptrend': 'UPTREND', 'downtrend': 'DOWNTREND', 'sideways': 'SIDEWAYS',
+        'low_vol': 'LOW VOL', 'medium_vol': 'MED VOL', 'high_vol': 'HIGH VOL',
+        'rth_led': 'RTH-LED', 'eth_led': 'ETH-LED', 'balanced': 'BALANCED',
+        'up_month': 'UP MONTH', 'down_month': 'DOWN MONTH', 'flat_month': 'FLAT MONTH',
+        'vol_rising': 'VOL ↑', 'vol_falling': 'VOL ↓', 'vol_stable': 'VOL →',
+    }
+    dim_labels = {
+        'trend': 'TREND', 'vol': 'VOLATILITY', 'session': 'SESSION',
+        'direction': 'DIRECTION', 'voldir': 'VOL DIR',
+    }
+
+    rows_html = ''
+    for dim in ['trend', 'vol', 'session', 'direction', 'voldir']:
+        d = snap.get(dim, {})
+        state = d.get('state', 'na')
+        duration = d.get('duration_days', 0)
+        status = d.get('status', 'na')
+        color = d.get('color', _C['text_muted'])
+        rows_html += f"""
+        <tr>
+          <td style='padding:8px 14px; color:#8b949e; font-size:10px;
+                     letter-spacing:2px;'>{dim_labels[dim]}</td>
+          <td style='padding:8px 14px; color:{color}; font-weight:700;
+                     font-size:16px;'>{STATE_LABELS.get(state, state.upper())}</td>
+          <td style='padding:8px 14px; color:#cce8ff; font-size:14px;
+                     font-weight:600;'>{duration} dias</td>
+          <td style='padding:8px 14px; color:{REGIME_COLORS.get(status, _C["text_muted"])};
+                     font-size:11px; font-weight:700; letter-spacing:1.5px;'>
+                     {STATUS_EMOJI.get(status, "")} {status.upper()}</td>
+        </tr>
+        """
+
+    similar_html = ''
+    if similar and similar.get('n_matches', 0) >= 3:
+        color = _C['green'] if similar['fwd_mean_pct'] > 0 else _C['red']
+        similar_html = f"""
+        <div style='margin-top:16px; padding-top:14px;
+                    border-top:1px solid rgba(0,200,255,0.2);'>
+          <div style='font-size:10px; color:#8b949e; letter-spacing:2px;
+                      text-transform:uppercase; margin-bottom:8px;'>
+            Historico — combo atual apareceu {similar['n_matches']} vezes
+          </div>
+          <div style='display:flex; gap:20px; flex-wrap:wrap;'>
+            <div>
+              <div class='mm-metric-lbl'>Forward {similar['fwd_n_days']}d mean</div>
+              <div style='font-size:20px; color:{color}; font-weight:700;'>
+                {similar['fwd_mean_pct']:+.2f}%
+              </div>
+            </div>
+            <div>
+              <div class='mm-metric-lbl'>Hit rate</div>
+              <div style='font-size:20px; color:#cce8ff; font-weight:700;'>
+                {similar['fwd_hit_rate_pct']:.1f}%
+              </div>
+            </div>
+            <div>
+              <div class='mm-metric-lbl'>Melhor / pior</div>
+              <div style='font-size:14px; color:#cce8ff; font-weight:700; padding-top:4px;'>
+                {similar['fwd_best_pct']:+.2f}% / {similar['fwd_worst_pct']:+.2f}%
+              </div>
+            </div>
+            <div>
+              <div class='mm-metric-lbl'>Std dev</div>
+              <div style='font-size:14px; color:#cce8ff; font-weight:700; padding-top:4px;'>
+                {similar['fwd_std_pct']:.2f}%
+              </div>
+            </div>
+          </div>
+        </div>
+        """
+    elif similar:
+        similar_html = f"""
+        <div style='margin-top:12px; color:{_C['text_muted']}; font-size:11px; font-style:italic;'>
+          {similar.get('note', 'Sem amostra historica suficiente pra este combo especifico.')}
+        </div>
+        """
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:18px 22px;'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:12px;'>
+          🔍 Regime Detection — 3 semanas no mesmo estado = pattern confirmado
+        </div>
+        <table style='width:100%; border-collapse:collapse;'>
+          {rows_html}
+        </table>
+        {similar_html}
+      </div>
+    </div>
+    """
+
+
+def run_regime_section(df: pd.DataFrame, ticker: str,
+                         vol_indices: pd.DataFrame = None) -> dict:
+    """Pipeline completo: computa regimes + snapshots + similar + figs."""
+    regime_df = compute_regimes(df, vol_indices)
+    snapshot = regime_snapshot(regime_df)
+    similar = similar_historical_regimes(df, regime_df, n_forward=20)
+    duration_stats = regime_duration_stats(regime_df)
+
+    return {
+        'regime_df': regime_df,
+        'snapshot': snapshot,
+        'similar': similar,
+        'duration_stats': duration_stats,
+        'figs': {
+            'timeline': fig_regime_timeline(regime_df, ticker),
+            'duration_dist': fig_regime_duration_dist(regime_df, ticker),
+            'forward_hist': fig_regime_forward_histogram(similar, ticker),
+        }
+    }
+
+
+# =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
 
@@ -3439,6 +3918,13 @@ def compute_session_stats(ticker: str, years: int = 5,
     tables['drawdown_curve_eth'] = bt_eth.drawdown.to_frame('drawdown')
     tables['rth_vs_eth_summary'] = rth_vs_eth_summary(bt, bt_eth, df)
     bottom_line = rth_eth_bottom_line(bt, bt_eth, initial=10000.0)
+
+    # Regime detection — calcula sempre (default on)
+    try:
+        regime = run_regime_section(df, ticker, vol_indices=None)
+    except Exception as e:
+        log.warning(f'Regime detection falhou: {e}')
+        regime = {}
 
     # GS-style streak analysis: usa o streak atual como target
     up_flags = (daily['close'].pct_change() > 0).astype(int)
@@ -3579,6 +4065,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'bt': bt, 'bt_eth': bt_eth,
         'bottom_line': bottom_line,
+        'regime': regime,
         'tables': tables, 'figs': figs, 'nomura': nomura,
         'gs_factors': gs_factors,
         'passive_breaks': passive_breaks,
@@ -3752,69 +4239,27 @@ def build_section_widgets(result: dict) -> list:
     sec.append(go.FigureWidget(result['figs']['rolling_return_5d']))
     sec.append(go.FigureWidget(result['figs']['rolling_return_20d']))
 
-    if result.get('nomura'):
-        n = result['nomura']
+    # ====== PARTE II: REGIME DETECTION ======
+    if result.get('regime') and result['regime'].get('snapshot'):
+        r_data = result['regime']
         sec.append(wd.HTML(_big_divider(
-            'Parte II — Nomura Options Framework',
-            'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
-        sec.append(wd.HTML(
-            "<div class='mm-note'>"
-            "<b>Tenores:</b> o paper da Nomura usa <b>0DTE</b> (daily rolled, T=1d). "
-            "Adicionamos tambem a versao <b>30d monthly</b> (T=21d) pra comparacao — "
-            "vol premium embutido nos strikes cresce com √T, entao as magnitudes "
-            "sao muito maiores. Valores em % do spot, 2 casas."
-            "</div>"))
-
-        # --- 0DTE ---
-        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 0DTE "
-                             "(T=1 dia, rolado diariamente)</div>"))
-        sec.append(go.FigureWidget(n['figs']['options_pnl_0dte']))
-        if 'strategies_equity_0dte' in n['figs']:
-            sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 0DTE — "
-                                 "performance cumulativa de cada estrategia</div>"))
-            sec.append(go.FigureWidget(n['figs']['strategies_equity_0dte']))
-        if 'strategies_rolling_0dte' in n['figs']:
-            sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 0DTE — "
-                                 "em qual regime cada estrategia performa</div>"))
-            sec.append(go.FigureWidget(n['figs']['strategies_rolling_0dte']))
-        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Cumulative (%)</div>"))
-        sec.append(wd.HTML(_df_to_html_table(n.get('pnl_0dte_summary', n['pnl_summary']))))
-        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Sharpe Annualized</div>"))
-        sec.append(wd.HTML(_df_to_html_table(n.get('sharpe_0dte', n['sharpe']))))
-
-        # --- 30d Monthly ---
-        if 'options_pnl_30d' in n['figs']:
-            sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 30d Monthly "
-                                 "(T=21 dias uteis, ~1 mes)</div>"))
-            sec.append(go.FigureWidget(n['figs']['options_pnl_30d']))
-            if 'strategies_equity_30d' in n['figs']:
-                sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 30d — "
-                                     "performance cumulativa de cada estrategia</div>"))
-                sec.append(go.FigureWidget(n['figs']['strategies_equity_30d']))
-            if 'strategies_rolling_30d' in n['figs']:
-                sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 30d — "
-                                     "em qual regime cada estrategia performa</div>"))
-                sec.append(go.FigureWidget(n['figs']['strategies_rolling_30d']))
-            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Cumulative (%)</div>"))
-            sec.append(wd.HTML(_df_to_html_table(n['pnl_30d_summary'])))
-            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Sharpe Annualized</div>"))
-            sec.append(wd.HTML(_df_to_html_table(n['sharpe_30d'])))
-
-        sec.append(wd.HTML("<div class='mm-section-label'>Skew Percentiles — "
-                             "Nomura (ratio) + SpotGamma (normalized diff %)</div>"))
-        sec.append(go.FigureWidget(n['figs']['skew_pctiles']))
-
-        sec.append(wd.HTML("<div class='mm-section-label'>IV Rank + Skew Rank "
-                             "(estilo SpotGamma, 1y rolling)</div>"))
-        sec.append(go.FigureWidget(n['figs']['iv_rank']))
-
-        sec.append(wd.HTML("<div class='mm-section-label'>Vol Panic Proxy "
-                             "(estilo GS Vol Color — VIX+RV+DD+|z5d|, 0-10)</div>"))
-        sec.append(go.FigureWidget(n['figs']['vol_panic']))
-
-        sec.append(wd.HTML("<div class='mm-section-label'>Systematic Flows — "
-                             "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
-        sec.append(go.FigureWidget(n['figs']['flows']))
+            'Parte II — Regime Detection',
+            '5 dimensoes (trend/vol/session/direction/voldir) | 15d = pattern confirmado | forward returns historicos')))
+        sec.append(wd.HTML(_regime_card_html(r_data['snapshot'],
+                                                 r_data.get('similar'))))
+        sec.append(wd.HTML("<div class='mm-section-label'>Timeline — quando "
+                             "cada dimensao mudou</div>"))
+        sec.append(go.FigureWidget(r_data['figs']['timeline']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Forward 20d apos combo "
+                             "atual (historicamente)</div>"))
+        sec.append(go.FigureWidget(r_data['figs']['forward_hist']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Duracao tipica de cada "
+                             "regime (box plot)</div>"))
+        sec.append(go.FigureWidget(r_data['figs']['duration_dist']))
+        if r_data.get('duration_stats') is not None and len(r_data['duration_stats']) > 0:
+            sec.append(wd.HTML("<div class='mm-section-label'>Tabela — duracao "
+                                 "media/mediana/max por regime</div>"))
+            sec.append(wd.HTML(_df_to_html_table(r_data['duration_stats'])))
 
     # ====== PART III: STRUCTURAL MODELS (Passive Breaks) ======
     pb_data = result.get('passive_breaks') or {}
@@ -3901,6 +4346,71 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML("<div class='mm-section-label'>Factor Monitor table "
                              "(ordenado por YTD, %)</div>"))
         sec.append(wd.HTML(_df_to_html_table(gf['table'])))
+
+    # ====== PARTE V: NOMURA OPTIONS FRAMEWORK ======
+    if result.get('nomura'):
+        n = result['nomura']
+        sec.append(wd.HTML(_big_divider(
+            'Parte V — Nomura Options Framework',
+            'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
+        sec.append(wd.HTML(
+            "<div class='mm-note'>"
+            "<b>Tenores:</b> o paper da Nomura usa <b>0DTE</b> (daily rolled, T=1d). "
+            "Adicionamos tambem a versao <b>30d monthly</b> (T=21d) pra comparacao — "
+            "vol premium embutido nos strikes cresce com √T, entao as magnitudes "
+            "sao muito maiores. Valores em % do spot, 2 casas."
+            "</div>"))
+
+        # --- 0DTE ---
+        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 0DTE "
+                             "(T=1 dia, rolado diariamente)</div>"))
+        sec.append(go.FigureWidget(n['figs']['options_pnl_0dte']))
+        if 'strategies_equity_0dte' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 0DTE — "
+                                 "performance cumulativa de cada estrategia</div>"))
+            sec.append(go.FigureWidget(n['figs']['strategies_equity_0dte']))
+        if 'strategies_rolling_0dte' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 0DTE — "
+                                 "em qual regime cada estrategia performa</div>"))
+            sec.append(go.FigureWidget(n['figs']['strategies_rolling_0dte']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Cumulative (%)</div>"))
+        sec.append(wd.HTML(_df_to_html_table(n.get('pnl_0dte_summary', n['pnl_summary']))))
+        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Sharpe Annualized</div>"))
+        sec.append(wd.HTML(_df_to_html_table(n.get('sharpe_0dte', n['sharpe']))))
+
+        # --- 30d Monthly ---
+        if 'options_pnl_30d' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 30d Monthly "
+                                 "(T=21 dias uteis, ~1 mes)</div>"))
+            sec.append(go.FigureWidget(n['figs']['options_pnl_30d']))
+            if 'strategies_equity_30d' in n['figs']:
+                sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 30d — "
+                                     "performance cumulativa de cada estrategia</div>"))
+                sec.append(go.FigureWidget(n['figs']['strategies_equity_30d']))
+            if 'strategies_rolling_30d' in n['figs']:
+                sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 30d — "
+                                     "em qual regime cada estrategia performa</div>"))
+                sec.append(go.FigureWidget(n['figs']['strategies_rolling_30d']))
+            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Cumulative (%)</div>"))
+            sec.append(wd.HTML(_df_to_html_table(n['pnl_30d_summary'])))
+            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Sharpe Annualized</div>"))
+            sec.append(wd.HTML(_df_to_html_table(n['sharpe_30d'])))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Skew Percentiles — "
+                             "Nomura (ratio) + SpotGamma (normalized diff %)</div>"))
+        sec.append(go.FigureWidget(n['figs']['skew_pctiles']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>IV Rank + Skew Rank "
+                             "(estilo SpotGamma, 1y rolling)</div>"))
+        sec.append(go.FigureWidget(n['figs']['iv_rank']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Vol Panic Proxy "
+                             "(estilo GS Vol Color — VIX+RV+DD+|z5d|, 0-10)</div>"))
+        sec.append(go.FigureWidget(n['figs']['vol_panic']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Systematic Flows — "
+                             "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
+        sec.append(go.FigureWidget(n['figs']['flows']))
 
     sec.append(wd.HTML(
         "<div class='mm-note'>"
