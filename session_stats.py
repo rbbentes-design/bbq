@@ -6222,6 +6222,98 @@ def _eps_sensitivity_html(spx_spot: float = None,
     """
 
 
+def _gordon_sensitivity_html(spx_spot: float = None,
+                                eps_fy1: float = None,
+                                us10y: float = None,
+                                erp: float = 4.5) -> str:
+    """
+    Gordon Growth Model modificado — Fair P/E = 1/(k - g).
+    k = 10Y (live) + ERP (input default 4.5%).
+    Rows: EPS sensitivity -5% a +5% em steps de 0.5% (21 rows).
+    Cols: g = 2.5%, 3.0%, 3.5%, 4.0% (4 cenarios de crescimento).
+    Output: 2 tabelas — (A) SPX fair value, (B) % upside/downside vs spot.
+    """
+    if not eps_fy1 or not spx_spot:
+        return ("<div class='mm-card'><p class='mm-flag'>Gordon: precisa "
+                 "de EPS FY1 + SPX spot (BBG best_eps/px_last).</p></div>")
+
+    rf = (us10y / 100.0) if us10y else 0.0425   # default 4.25%
+    k = rf + (erp / 100.0)                         # required return
+    g_scenarios = [0.025, 0.030, 0.035, 0.040]
+
+    fair_pes = [(g, 1.0 / (k - g)) for g in g_scenarios if (k - g) > 0.005]
+    if not fair_pes:
+        return ("<div class='mm-card'><p class='mm-flag'>Gordon: k-g muito "
+                 "proximo de zero (explosao). Ajuste ERP/RF.</p></div>")
+
+    # EPS sensitivity: -5% a +5% em 0.5% steps = 21 rows
+    deltas = [round(i * 0.005, 4) for i in range(-10, 11)]
+
+    header = ('<tr><th>ΔEPS</th><th>EPS ($)</th>' + ''.join(
+        f'<th>g={g*100:.1f}%<br/>'
+        f'<span style="font-size:10px;color:#8b949e;font-weight:400;">'
+        f'PE={pe:.1f}x</span></th>'
+        for g, pe in fair_pes) + '</tr>')
+
+    rows_abs, rows_pct = [], []
+    for d in deltas:
+        eps_s = eps_fy1 * (1 + d)
+        d_col = '#7ae582' if d > 0 else '#ff6b6b' if d < 0 else '#cce8ff'
+        lead = (f'<td style="color:{d_col};font-weight:700;">{d*100:+.1f}%</td>'
+                f'<td>${eps_s:.1f}</td>')
+        cA = [lead]
+        cB = [lead]
+        for _, pe in fair_pes:
+            fair = pe * eps_s
+            pct = (fair / spx_spot - 1) * 100
+            col = '#7ae582' if pct > 2 else '#ff6b6b' if pct < -2 else '#cce8ff'
+            cA.append(f'<td style="text-align:center;color:#cce8ff;'
+                       f'font-weight:700;">{fair:,.0f}</td>')
+            cB.append(f'<td style="text-align:center;color:{col};'
+                       f'font-weight:700;">{pct:+.1f}%</td>')
+        rows_abs.append('<tr>' + ''.join(cA) + '</tr>')
+        rows_pct.append('<tr>' + ''.join(cB) + '</tr>')
+
+    param_line = (
+        f"<b>k</b> = rf + ERP = <b style='color:#cce8ff;'>{rf*100:.2f}%</b> + "
+        f"<b style='color:#cce8ff;'>{erp:.2f}%</b> = "
+        f"<b style='color:#7ae582;'>{k*100:.2f}%</b> &nbsp;|&nbsp; "
+        f"<b>Fair P/E</b> = 1 / (k - g) &nbsp;|&nbsp; "
+        f"EPS base (FY1) = <b style='color:#7ae582;'>${eps_fy1:.1f}</b> &nbsp;|&nbsp; "
+        f"SPX spot = <b style='color:#cce8ff;'>{spx_spot:,.0f}</b>"
+    )
+
+    return f"""
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:6px;'>
+        GORDON GROWTH MODEL — Tabela A: Fair SPX Value
+      </div>
+      <div style='color:#cce8ff; font-size:11px; margin-bottom:10px;'>
+        {param_line}
+      </div>
+      <table class='mm-table' style='font-size:11px;'>
+        {header}
+        {''.join(rows_abs)}
+      </table>
+    </div>
+
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:6px;'>
+        GORDON GROWTH MODEL — Tabela B: % Upside/Downside vs spot {spx_spot:,.0f}
+      </div>
+      <table class='mm-table' style='font-size:11px;'>
+        {header}
+        {''.join(rows_pct)}
+      </table>
+      <div style='color:#8b949e; font-size:10px; margin-top:8px;'>
+        Verde = upside &gt; +2% | Vermelho = downside &lt; -2% |
+        ERP padrao 4.5% (editavel via slider — TODO). rf vem do BBG 10Y live
+        (fallback 4.25% se ausente).
+      </div>
+    </div>
+    """
+
+
 def _ms_snapshot_html(spx_spot: float = None,
                         eps_fy1: float = None,
                         eps_fy2: float = None) -> str:
@@ -6514,6 +6606,7 @@ def compute_macro_charts(years: int = 10) -> dict:
 
     # SPX spot atual
     spx_spot = float(series['spx'].iloc[-1]) if 'spx' in series else None
+    us10y_now = float(series['us10y'].iloc[-1]) if 'us10y' in series else None
     # Sector P/E (current snapshot via pe_ratio)
     for etf in SECTOR_ETFS:
         try:
@@ -6910,7 +7003,8 @@ def compute_macro_charts(years: int = 10) -> dict:
     return {'series': series, 'figs': figs, 'n_series': len(series),
              'n_figs': len(figs),
              'spx_spot': spx_spot, 'eps_fy1': eps_fy1,
-             'eps_fy2': eps_fy2, 'eps_ntm': eps_ntm}
+             'eps_fy2': eps_fy2, 'eps_ntm': eps_ntm,
+             'us10y': us10y_now}
 
 
 # =============================================================================
@@ -7875,6 +7969,11 @@ def build_section_widgets(result: dict) -> list:
             eps_fy1=macro_data.get('eps_fy1'),
             eps_fy2=macro_data.get('eps_fy2'),
             eps_ntm=macro_data.get('eps_ntm'))))
+        # Gordon Growth Model — EPS sensitivity 0.5% + fair SPX + % upside
+        sec.append(wd.HTML(_gordon_sensitivity_html(
+            spx_spot=macro_data.get('spx_spot'),
+            eps_fy1=macro_data.get('eps_fy1'),
+            us10y=macro_data.get('us10y'))))
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
