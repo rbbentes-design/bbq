@@ -1016,6 +1016,132 @@ def fig_nomura_strategies_equity(pnl: pd.DataFrame,
     return fig
 
 
+def compute_nomura_weekday_stats(pnl: pd.DataFrame) -> dict:
+    """
+    Para cada horizonte, retorno medio por weekday × estrategia.
+    Retorna dict: {horizon_name: DataFrame (rows=strategy, cols=weekday)}.
+    """
+    horizons = {
+        '1W': 5, '2W': 10, '1M': 21, '3M': 63, '6M': 126, '1Y': 252,
+    }
+    strat_cols = [c for c in STRATEGY_LABELS if c in pnl.columns]
+    if len(pnl) == 0 or not strat_cols:
+        return {}
+
+    out = {}
+    for h_name, n in horizons.items():
+        if n > len(pnl):
+            continue
+        sub = pnl.tail(n).copy()
+        if len(sub) < 3:
+            continue
+        sub['_wd'] = sub.index.strftime('%A')
+        m = pd.DataFrame(index=strat_cols,
+                          columns=[w for w in WEEKDAY_ORDER if w in sub['_wd'].unique()])
+        for strat in strat_cols:
+            for wd in m.columns:
+                vals = sub.loc[sub['_wd'] == wd, strat]
+                m.loc[strat, wd] = (vals.mean() * 100) if len(vals) else np.nan
+        m = m.astype(float).round(3)
+        out[h_name] = m
+    return out
+
+
+def fig_nomura_weekday_multi(stats: dict, tenor_label: str = '0DTE (T=1d)') -> go.Figure:
+    """
+    Grid de heatmaps: uma linha por horizonte. Strategy (y) × Weekday (x).
+    Cor = PnL medio diario %. Pra achar o melhor weekday de cada estrategia
+    em cada horizonte.
+    """
+    horizons_order = ['1W', '2W', '1M', '3M', '6M', '1Y']
+    horizons_avail = [h for h in horizons_order if h in stats]
+    if not horizons_avail:
+        return go.Figure().update_layout(title='Nomura Weekday — sem dados',
+                                            **_FIG_LAYOUT)
+
+    def _short(label):
+        rep = {
+            'Selling Daily ATM Straddle': 'Sell ATM Strd',
+            'Selling Daily ATM Call': 'Sell ATM Call',
+            'Selling Daily ATM Put': 'Sell ATM Put',
+            'Selling Daily Strangle': 'Sell 25d Strg',
+            'Selling Daily 25d Call': 'Sell 25dC',
+            'Selling Daily 25d Put': 'Sell 25dP',
+            'Selling Daily Straddle, Long Strangle': 'Sell Strd/Lg Strg',
+            'Sell 25d Put, Buy 25d Call': 'Sell25dP/Buy25dC',
+            'Sell 25d Call, Buy 25d Put': 'Sell25dC/Buy25dP',
+            'Stock (Long)': 'Stock Long',
+        }
+        return rep.get(label, label)
+
+    fig = make_subplots(
+        rows=len(horizons_avail), cols=1,
+        subplot_titles=[f'{h}' for h in horizons_avail],
+        vertical_spacing=0.04, shared_xaxes=True)
+
+    # Global vmax pra cor consistente entre subplots
+    all_vals = []
+    for h in horizons_avail:
+        v = stats[h].values.astype(float)
+        all_vals.append(v[~np.isnan(v)])
+    all_vals = np.concatenate(all_vals) if all_vals else np.array([1.0])
+    vmax = np.nanpercentile(np.abs(all_vals), 95) if len(all_vals) > 0 else 1
+
+    for i, h in enumerate(horizons_avail):
+        pv = stats[h].copy()
+        pv.index = [_short(s) for s in pv.index]
+        z = pv.values.astype(float)
+        fig.add_trace(go.Heatmap(
+            z=z, x=list(pv.columns), y=list(pv.index),
+            colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
+            zmin=-vmax, zmax=vmax, showscale=(i == 0),
+            text=[[f'{v:+.2f}' if pd.notna(v) else '' for v in row] for row in z],
+            texttemplate='%{text}',
+            textfont=dict(size=9, color='#cce8ff'),
+            hovertemplate=(f'<b>{h}</b><br>%{{y}}<br>%{{x}}: %{{z:.3f}}%<extra></extra>'),
+            colorbar=dict(title='PnL %', tickfont=dict(size=9))
+            if i == 0 else None,
+        ), row=i + 1, col=1)
+
+    fig.update_layout(
+        title=f'Nomura — Weekday × Estrategia × Horizonte ({tenor_label})',
+        **{**_FIG_LAYOUT, 'height': max(500, len(horizons_avail) * 180),
+           'margin': dict(l=180, r=60, t=55, b=40)})
+    return fig
+
+
+def nomura_best_weekday_summary(stats: dict) -> pd.DataFrame:
+    """
+    Tabela: rows = strategy, cols = horizon.
+    Cada celula = 'Mon (+0.23)' = melhor weekday + PnL medio %.
+    Reading: 'pra vender ATM straddle, segunda foi o melhor dia no 1M'.
+    """
+    if not stats:
+        return pd.DataFrame()
+    horizons_order = ['1W', '2W', '1M', '3M', '6M', '1Y']
+    horizons_avail = [h for h in horizons_order if h in stats]
+    first = stats[horizons_avail[0]]
+    rows = []
+    for strat in first.index:
+        row = {'Strategy': strat}
+        for h in horizons_avail:
+            pv = stats[h]
+            if strat not in pv.index:
+                row[h] = '-'
+                continue
+            series = pv.loc[strat].astype(float).dropna()
+            if len(series) == 0:
+                row[h] = '-'
+                continue
+            best_wd = series.idxmax()
+            best_val = series.max()
+            worst_wd = series.idxmin()
+            worst_val = series.min()
+            row[h] = f'{best_wd[:3]} {best_val:+.2f} / {worst_wd[:3]} {worst_val:+.2f}'
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def fig_nomura_strategies_rolling(pnl: pd.DataFrame, window: int = 60,
                                      tenor_label: str = '0DTE (T=1d)') -> go.Figure:
     """
@@ -4580,6 +4706,11 @@ def compute_session_stats(ticker: str, years: int = 5,
 
             sp = skew_percentiles_multi(iv)       # 3 convencoes
             flows = compute_dynamic_flows(nd)
+            # Weekday stats por horizonte pra cada tenor
+            wd_stats_0dte = compute_nomura_weekday_stats(pnl_0dte)
+            wd_stats_30d = compute_nomura_weekday_stats(pnl_30d)
+            best_wd_0dte = nomura_best_weekday_summary(wd_stats_0dte)
+            best_wd_30d = nomura_best_weekday_summary(wd_stats_30d)
             nomura = {
                 # Default pnl refere-se ao 0DTE (compat com CSVs antigos)
                 'pnl_daily': pnl_0dte, 'pnl_summary': summary_0dte, 'sharpe': sharpe_0dte,
@@ -4588,6 +4719,10 @@ def compute_session_stats(ticker: str, years: int = 5,
                 'sharpe_0dte': sharpe_0dte,
                 'pnl_30d_daily': pnl_30d, 'pnl_30d_summary': summary_30d,
                 'sharpe_30d': sharpe_30d,
+                'weekday_stats_0dte': wd_stats_0dte,
+                'weekday_stats_30d': wd_stats_30d,
+                'best_weekday_0dte': best_wd_0dte,
+                'best_weekday_30d': best_wd_30d,
                 'skew_pctiles': sp, 'flows': flows, 'vol_indices': vol,
                 'figs': {}
             }
@@ -4605,6 +4740,10 @@ def compute_session_stats(ticker: str, years: int = 5,
                     pnl_0dte, window=60, tenor_label='0DTE (T=1d)')),
                 ('strategies_rolling_30d', lambda: fig_nomura_strategies_rolling(
                     pnl_30d, window=60, tenor_label='30d Monthly (T=21d)')),
+                ('weekday_multi_0dte', lambda: fig_nomura_weekday_multi(
+                    wd_stats_0dte, tenor_label='0DTE (T=1d)')),
+                ('weekday_multi_30d', lambda: fig_nomura_weekday_multi(
+                    wd_stats_30d, tenor_label='30d Monthly (T=21d)')),
                 ('skew_pctiles', lambda: fig_skew_multi(sp)),
                 ('iv_rank', lambda: fig_iv_rank(vol)),
                 ('flows', lambda: fig_systematic_flows(flows)),
@@ -5171,6 +5310,18 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Sharpe Annualized</div>"))
         sec.append(wd.HTML(_df_to_html_table(n.get('sharpe_0dte', n['sharpe']))))
 
+        # Weekday × Horizonte 0DTE
+        if 'weekday_multi_0dte' in n['figs']:
+            sec.append(wd.HTML(
+                "<div class='mm-section-label'>Weekday × Estrategia × Horizonte 0DTE — "
+                "melhor dia de semana pra vender vol</div>"))
+            sec.append(go.FigureWidget(n['figs']['weekday_multi_0dte']))
+            if n.get('best_weekday_0dte') is not None and len(n['best_weekday_0dte']) > 0:
+                sec.append(wd.HTML(
+                    "<div class='mm-section-label'>Tabela resumo 0DTE — "
+                    "melhor / pior weekday por horizonte (PnL medio %)</div>"))
+                sec.append(wd.HTML(_df_to_html_table(n['best_weekday_0dte'])))
+
         # --- 30d Monthly ---
         if 'options_pnl_30d' in n['figs']:
             sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 30d Monthly "
@@ -5188,6 +5339,18 @@ def build_section_widgets(result: dict) -> list:
             sec.append(wd.HTML(_df_to_html_table(n['pnl_30d_summary'])))
             sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Sharpe Annualized</div>"))
             sec.append(wd.HTML(_df_to_html_table(n['sharpe_30d'])))
+
+            # Weekday × Horizonte 30d
+            if 'weekday_multi_30d' in n['figs']:
+                sec.append(wd.HTML(
+                    "<div class='mm-section-label'>Weekday × Estrategia × Horizonte 30d — "
+                    "melhor dia de semana pra vender vol (mensal)</div>"))
+                sec.append(go.FigureWidget(n['figs']['weekday_multi_30d']))
+                if n.get('best_weekday_30d') is not None and len(n['best_weekday_30d']) > 0:
+                    sec.append(wd.HTML(
+                        "<div class='mm-section-label'>Tabela resumo 30d — "
+                        "melhor / pior weekday por horizonte (PnL medio %)</div>"))
+                    sec.append(wd.HTML(_df_to_html_table(n['best_weekday_30d'])))
 
         sec.append(wd.HTML("<div class='mm-section-label'>Skew Percentiles — "
                              "Nomura (ratio) + SpotGamma (normalized diff %)</div>"))
