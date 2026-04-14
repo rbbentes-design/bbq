@@ -154,16 +154,35 @@ YF_TO_BBG = {
 
 
 def _bql_ts(response_item, col_name='Value'):
-    """Extrai serie temporal de um bql response item (padrao greeks_dashboard)."""
+    """
+    Extrai serie temporal de um bql response item.
+
+    Em BQL o df retornado tem o ticker como INDEX e as datas numa coluna
+    'DATE' quando a query usa dates=range. Precisa re-indexar por DATE
+    antes de converter pra datetime (senao pd.to_datetime quebra com
+    'Unknown string format: SPX Index').
+    """
     df = response_item.df()
+    # Re-indexa por DATE se existir
+    for date_col in ('DATE', 'date', 'Date'):
+        if date_col in df.columns:
+            df = df.reset_index(drop=True).set_index(date_col)
+            break
+    # Extrai valor
     if col_name in df.columns:
         s = df[col_name]
     elif response_item.name in df.columns:
         s = df[response_item.name]
+    elif 'VALUE' in df.columns:
+        s = df['VALUE']
     else:
-        # ultima coluna numerica
-        s = df.select_dtypes(include=[np.number]).iloc[:, -1]
-    s.index = pd.to_datetime(s.index)
+        # ultima coluna numerica como fallback
+        num = df.select_dtypes(include=[np.number])
+        if len(num.columns) == 0:
+            raise ValueError(f"Sem coluna numerica no response: {df.columns.tolist()}")
+        s = num.iloc[:, -1]
+    s.index = pd.to_datetime(s.index, errors='coerce')
+    s = s[s.index.notna()]
     return s
 
 
