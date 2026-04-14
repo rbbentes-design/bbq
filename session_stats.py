@@ -5615,6 +5615,168 @@ def payoff_at_expiry(legs: list, spot_range: np.ndarray) -> np.ndarray:
     return pnl
 
 
+def svg_structure_payoff(name: str, legs: list, spot: float, iv: float,
+                            width: int = 900, height: int = 420) -> str:
+    """
+    Gera SVG inline do payoff — bypass total do Plotly. SVG e renderizado
+    nativamente por qualquer navegador, wd.HTML nao sanitiza SVG.
+    """
+    try:
+        if not legs:
+            return (f"<div class='mm-card'><p class='mm-flag'>"
+                     f"{name} — estrutura nao mapeada</p></div>")
+        spot_f = float(spot)
+        x_arr = np.linspace(spot_f * 0.80, spot_f * 1.20, 200)
+        y_arr = payoff_at_expiry(legs, x_arr)
+        x_min, x_max = float(x_arr[0]), float(x_arr[-1])
+        y_max_val = float(np.nanmax(y_arr))
+        y_min_val = float(np.nanmin(y_arr))
+        y_pad = max(abs(y_max_val), abs(y_min_val)) * 0.15 + 1
+        y_lo = y_min_val - y_pad
+        y_hi = y_max_val + y_pad
+
+        # Coordenadas SVG (padding pra labels)
+        pad_left, pad_right = 70, 30
+        pad_top, pad_bottom = 80, 50
+        plot_w = width - pad_left - pad_right
+        plot_h = height - pad_top - pad_bottom
+
+        def sx(xv): return pad_left + (xv - x_min) / (x_max - x_min) * plot_w
+        def sy(yv): return pad_top + (1 - (yv - y_lo) / (y_hi - y_lo)) * plot_h
+
+        # Path do P&L
+        path_pts = [(sx(x_arr[i]), sy(y_arr[i])) for i in range(len(x_arr))]
+        path_d = 'M ' + ' L '.join(f'{px:.1f},{py:.1f}' for px, py in path_pts)
+        # Area fechada (pro fill)
+        zero_sy = sy(0)
+        area_d = (f'M {path_pts[0][0]:.1f},{zero_sy:.1f} '
+                   + 'L ' + ' L '.join(f'{px:.1f},{py:.1f}' for px, py in path_pts)
+                   + f' L {path_pts[-1][0]:.1f},{zero_sy:.1f} Z')
+
+        # Zona verde/vermelha de fundo
+        zero_y_px = sy(0)
+        spot_x_px = sx(spot_f)
+
+        # Strike lines
+        strike_lines = ''
+        strike_labels = ''
+        for kind, qty, strike, _ in legs:
+            if kind == 'S' or strike == 0: continue
+            if strike < x_min or strike > x_max: continue
+            sx_px = sx(float(strike))
+            color = '#58a6ff' if qty > 0 else '#ffd32a'
+            strike_lines += (
+                f'<line x1="{sx_px:.1f}" y1="{pad_top}" '
+                f'x2="{sx_px:.1f}" y2="{height - pad_bottom}" '
+                f'stroke="{color}" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>')
+            label = f"{'L' if qty > 0 else 'S'}{kind}{int(strike)}"
+            strike_labels += (
+                f'<text x="{sx_px:.1f}" y="{pad_top - 6}" '
+                f'fill="{color}" font-size="10" font-family="Arial" '
+                f'text-anchor="middle">{label}</text>')
+
+        # Grid horizontal — eixo Y
+        y_ticks = np.linspace(y_lo, y_hi, 5)
+        y_grid = ''
+        for yt in y_ticks:
+            yp = sy(yt)
+            y_grid += (
+                f'<line x1="{pad_left}" y1="{yp:.1f}" '
+                f'x2="{width - pad_right}" y2="{yp:.1f}" '
+                f'stroke="#1a2433" stroke-width="0.6"/>'
+                f'<text x="{pad_left - 8}" y="{yp + 4:.1f}" '
+                f'fill="#8b9ab5" font-size="10" text-anchor="end" '
+                f'font-family="Arial">{yt:+.1f}</text>')
+
+        # Grid vertical — eixo X
+        x_ticks = np.linspace(x_min, x_max, 6)
+        x_grid = ''
+        for xt in x_ticks:
+            xp = sx(xt)
+            x_grid += (
+                f'<line x1="{xp:.1f}" y1="{pad_top}" '
+                f'x2="{xp:.1f}" y2="{height - pad_bottom}" '
+                f'stroke="#1a2433" stroke-width="0.6"/>'
+                f'<text x="{xp:.1f}" y="{height - pad_bottom + 18}" '
+                f'fill="#8b9ab5" font-size="10" text-anchor="middle" '
+                f'font-family="Arial">{xt:.0f}</text>')
+
+        net_cost = sum(qty * premium for kind, qty, _, premium in legs if kind != 'S')
+        cost_label = ('DEBIT' if net_cost > 0 else 'CREDIT') + f' ${abs(net_cost):.2f}'
+
+        # Break-evens
+        bes = []
+        for i in range(1, len(y_arr)):
+            if (y_arr[i - 1] <= 0 < y_arr[i]) or (y_arr[i - 1] >= 0 > y_arr[i]):
+                be = x_arr[i - 1] + (x_arr[i] - x_arr[i - 1]) * (0 - y_arr[i - 1]) / (y_arr[i] - y_arr[i - 1])
+                bes.append(float(be))
+        be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE'
+
+        svg = f'''
+        <div style="background:#010810; border:1px solid #1f2937; border-radius:4px;
+                    padding:10px; margin:8px 0;">
+          <div style="color:#ff8c00; font-family:Arial; font-size:14px;
+                      font-weight:700; padding:0 8px 6px 8px;">
+            {name} — Payoff @ expiry (T=21d) | spot ${spot_f:.2f} | IV {iv*100:.1f}%
+          </div>
+          <div style="color:#8b9ab5; font-family:Arial; font-size:11px;
+                      padding:0 8px 8px 8px;">
+            {cost_label} · max profit ${y_max_val:+.2f} · max loss ${y_min_val:+.2f} · BE: {be_str}
+          </div>
+          <svg width="{width}" height="{height}"
+               style="display:block; background:#020d1f;" viewBox="0 0 {width} {height}">
+            <!-- Zona verde acima do zero -->
+            <rect x="{pad_left}" y="{pad_top}"
+                  width="{plot_w}" height="{zero_y_px - pad_top:.1f}"
+                  fill="rgba(63,185,80,0.06)"/>
+            <!-- Zona vermelha abaixo do zero -->
+            <rect x="{pad_left}" y="{zero_y_px:.1f}"
+                  width="{plot_w}" height="{height - pad_bottom - zero_y_px:.1f}"
+                  fill="rgba(248,81,73,0.06)"/>
+            <!-- Grid -->
+            {y_grid}
+            {x_grid}
+            <!-- Linha zero -->
+            <line x1="{pad_left}" y1="{zero_y_px:.1f}" x2="{width - pad_right}"
+                  y2="{zero_y_px:.1f}" stroke="#8b9ab5" stroke-width="1"/>
+            <!-- Linha spot -->
+            <line x1="{spot_x_px:.1f}" y1="{pad_top}" x2="{spot_x_px:.1f}"
+                  y2="{height - pad_bottom}" stroke="#ff8c00" stroke-width="2"
+                  stroke-dasharray="3,3"/>
+            <text x="{spot_x_px:.1f}" y="{pad_top - 20}"
+                  fill="#ff8c00" font-size="11" text-anchor="middle"
+                  font-family="Arial" font-weight="700">
+              spot ${spot_f:.0f}
+            </text>
+            <!-- Strikes -->
+            {strike_lines}
+            {strike_labels}
+            <!-- Area (fill abaixo da curva) -->
+            <path d="{area_d}" fill="rgba(88,166,255,0.20)"/>
+            <!-- Linha P&L -->
+            <path d="{path_d}" stroke="#58a6ff" stroke-width="2.5" fill="none"/>
+            <!-- Label Y -->
+            <text x="20" y="{pad_top + plot_h / 2}" fill="#8b9ab5"
+                  font-size="11" font-family="Arial"
+                  transform="rotate(-90, 20, {pad_top + plot_h / 2:.1f})"
+                  text-anchor="middle">P&L ($)</text>
+            <!-- Label X -->
+            <text x="{pad_left + plot_w / 2}" y="{height - 8}"
+                  fill="#8b9ab5" font-size="11" font-family="Arial"
+                  text-anchor="middle">spot at expiry</text>
+          </svg>
+        </div>
+        '''
+        return svg
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()[:800].replace('\n', '<br>')
+        return (f"<div class='mm-card'>"
+                f"<p class='mm-flag'>Erro payoff {name}: {e}</p>"
+                f"<pre style='color:#8b949e;font-size:10px'>{tb}</pre></div>")
+
+
 def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Figure:
     """
     Versao minimalista — sem shapes, sem fill, sem template customizado.
@@ -6769,20 +6931,12 @@ def build_section_widgets(result: dict) -> list:
                     f"<div class='mm-metric-lbl' style='margin-bottom:8px;'>"
                     f"Estrutura (spot ${op['spot']:.2f}, IV {op['iv']*100:.1f}%, "
                     f"T=21d)</div>{_legs_html(op['legs'])}</div>"))
-                # Payoff: usa wd.Output + display() porque wd.HTML sanitiza
-                # os <script> do Plotly. go.FigureWidget estava falhando tambem.
-                try:
-                    payoff_out = wd.Output()
-                    with payoff_out:
-                        display(op['payoff_fig'])
-                    sec.append(payoff_out)
-                except Exception as pe:
-                    import traceback
-                    sec.append(wd.HTML(
-                        f"<div class='mm-card'><p class='mm-flag'>"
-                        f"❌ Falha ao renderizar payoff de {op['name']}: {pe}</p>"
-                        f"<pre style='color:#8b949e;font-size:10px'>"
-                        f"{traceback.format_exc()[:600]}</pre></div>"))
+                # Payoff: renderiza como SVG inline (Plotly falhou em todas as
+                # tentativas — FigureWidget, wd.HTML, wd.Output+display).
+                # SVG puro funciona em qualquer lugar.
+                svg_html = svg_structure_payoff(op['name'], op['legs'],
+                                                    op['spot'], op['iv'])
+                sec.append(wd.HTML(svg_html))
 
                 if len(op.get('backtest', [])) > 0:
                     try:
