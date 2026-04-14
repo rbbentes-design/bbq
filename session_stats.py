@@ -692,8 +692,12 @@ STRATEGY_LABELS = [
 ]
 
 
-def compute_daily_options_pnl(spot_df, iv_df, r=0.04):
-    T = 1 / 252.0
+def compute_daily_options_pnl(spot_df, iv_df, tenor_days: int = 1, r: float = 0.04):
+    """
+    tenor_days=1  -> 0DTE (daily rolado, T=1d uteil)
+    tenor_days=21 -> 30d monthly (~1 mes corrido)
+    """
+    T = tenor_days / 252.0
     d = spot_df[['open', 'close']].join(iv_df, how='inner').dropna()
     rows = []
     for dt, row in d.iterrows():
@@ -2532,13 +2536,18 @@ def compute_factor_weekday_stats(history: pd.DataFrame) -> pd.DataFrame:
     """
     if len(history) == 0:
         return pd.DataFrame()
-    ret = history.pct_change()
-    ret = ret.assign(weekday=ret.index.strftime('%A'))
-    ret_melt = ret.reset_index().melt(id_vars=['date', 'weekday'],
-                                         var_name='ticker', value_name='ret')
-    ret_melt = ret_melt.dropna(subset=['ret'])
-    pv = ret_melt.pivot_table(index='ticker', columns='weekday',
-                                values='ret', aggfunc='mean') * 100
+    # Normaliza nome do index pra 'date' (BQL retorna sem nome ou 'DATE')
+    h = history.copy()
+    h.index.name = 'date'
+    ret = h.pct_change()
+    weekday = ret.index.strftime('%A')
+    # Stack tickers e adiciona weekday
+    ret_stacked = ret.stack(dropna=False).reset_index()
+    ret_stacked.columns = ['date', 'ticker', 'ret']
+    ret_stacked['weekday'] = ret_stacked['date'].dt.strftime('%A')
+    ret_stacked = ret_stacked.dropna(subset=['ret'])
+    pv = ret_stacked.pivot_table(index='ticker', columns='weekday',
+                                    values='ret', aggfunc='mean') * 100
     order = [d for d in WEEKDAY_ORDER if d in pv.columns]
     pv = pv[order]
     return pv.round(3)
