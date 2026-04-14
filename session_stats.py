@@ -1680,6 +1680,314 @@ def fig_iv_rank(vol_df: pd.DataFrame) -> go.Figure:
 
 
 # =============================================================================
+# 7b. GS-STYLE INDICATORS (inspirado nos reports do Goldman Sachs)
+# =============================================================================
+
+def consecutive_days_streak_table(daily: pd.DataFrame, target_streak: int = None) -> pd.DataFrame:
+    """
+    Estilo Cullen Morgan / GS Vol Color:
+    Encontra no historico todos os momentos onde houve N dias consecutivos de alta
+    no fechamento, e calcula forward returns em varios horizontes.
+
+    Retorna tabela com uma linha por evento historico + linha agregada
+    (Average, Median, Max, Min, % Positive).
+    """
+    close = daily['close']
+    ret = close.pct_change()
+    # Flag dia positivo
+    up = (ret > 0).astype(int)
+    # Conta streak atual em cada ponto do tempo
+    streak = up * (up.groupby((up != up.shift()).cumsum()).cumcount() + 1)
+    # streak so conta o ultimo grupo positivo; se 0 (dia down), streak = 0
+    streak = streak.where(up == 1, 0)
+
+    # Target streak: se nao passado, usa o atual
+    if target_streak is None:
+        target_streak = int(streak.iloc[-1]) if streak.iloc[-1] > 0 else 6
+
+    # Encontra todas as datas com exatamente target_streak dias seguidos de alta
+    event_dates = streak[streak == target_streak].index
+
+    # Forward horizons em dias uteis
+    horizons = [('+1d', 1), ('+2d', 2), ('+3d', 3), ('+4d', 4),
+                 ('+1w', 5), ('+2w', 10), ('+1m', 21), ('+3m', 63), ('+6m', 126)]
+
+    rows = []
+    for dt in event_dates:
+        row = {'Date': dt.strftime('%Y-%m-%d') if hasattr(dt, 'strftime') else str(dt)}
+        try:
+            idx = close.index.get_loc(dt)
+        except Exception:
+            continue
+        for label, n in horizons:
+            future_idx = idx + n
+            if future_idx < len(close):
+                fwd_ret = (close.iloc[future_idx] / close.iloc[idx] - 1) * 100
+                row[f'{label} Return'] = round(fwd_ret, 2)
+            else:
+                row[f'{label} Return'] = np.nan
+        rows.append(row)
+
+    if len(rows) == 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    # Linhas de agregacao
+    agg_rows = []
+    for stat_name, func in [('Average', np.nanmean), ('Median', np.nanmedian),
+                              ('Max', np.nanmax), ('Min', np.nanmin)]:
+        agg = {'Date': stat_name}
+        for label, _ in horizons:
+            col = f'{label} Return'
+            if col in df.columns:
+                vals = pd.to_numeric(df[col], errors='coerce').dropna()
+                agg[col] = round(func(vals), 2) if len(vals) else np.nan
+        agg_rows.append(agg)
+    # % Positive
+    pct_row = {'Date': '% Positive'}
+    for label, _ in horizons:
+        col = f'{label} Return'
+        if col in df.columns:
+            vals = pd.to_numeric(df[col], errors='coerce').dropna()
+            pct_row[col] = round((vals > 0).sum() / len(vals) * 100, 1) if len(vals) else np.nan
+    agg_rows.append(pct_row)
+
+    return pd.concat([df, pd.DataFrame([{'Date': '---'}]), pd.DataFrame(agg_rows)],
+                       ignore_index=True)
+
+
+def fig_consecutive_days_bar(streak_table: pd.DataFrame, ticker: str,
+                                target_streak: int) -> go.Figure:
+    """Grafico de barras com a estatistica agregada (Average/% Positive) por horizonte."""
+    if len(streak_table) == 0:
+        return go.Figure().update_layout(title='Consecutive days — sem dados', **_FIG_LAYOUT)
+
+    horizons = [c for c in streak_table.columns if 'Return' in c]
+    avg = streak_table[streak_table['Date'] == 'Average'].iloc[0]
+    pct = streak_table[streak_table['Date'] == '% Positive'].iloc[0]
+    n_events = len(streak_table) - 6  # subtracts header + 5 agg rows
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    colors = [_C['green'] if avg[h] > 0 else _C['red'] for h in horizons]
+    fig.add_trace(go.Bar(
+        x=[h.replace(' Return', '') for h in horizons],
+        y=[avg[h] for h in horizons],
+        name='Average Return %', marker_color=colors,
+        text=[f"{avg[h]:.2f}%" for h in horizons],
+        textposition='outside'), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=[h.replace(' Return', '') for h in horizons],
+        y=[pct[h] for h in horizons],
+        name='% Positive', mode='lines+markers',
+        line=dict(color=_C['yellow'], width=2),
+        marker=dict(size=12)), secondary_y=True)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(
+        title=f'{ticker} — Forward returns apos {target_streak} dias seguidos de alta '
+              f'(n={n_events} eventos historicos)',
+        **_FIG_LAYOUT)
+    fig.update_yaxes(title_text='Ret medio %', secondary_y=False)
+    fig.update_yaxes(title_text='% Positive', range=[0, 100], secondary_y=True)
+    return fig
+
+
+def fig_seasonality_by_year(daily: pd.DataFrame, ticker: str,
+                              max_years: int = 10) -> go.Figure:
+    """
+    Estilo Goldman (Soria): cada ano como linha separada, performance YTD cumulativa.
+    Mostra como o ano atual se compara com os anteriores.
+    """
+    df = daily.copy()
+    df['year'] = df.index.year
+    df['doy'] = df.index.dayofyear
+
+    years = sorted(df['year'].unique())[-max_years:]
+    current_year = years[-1] if years else None
+
+    fig = go.Figure()
+    # Paleta — ano atual destaque em vermelho, outros com transparencia
+    palette = ['#f85149', '#ff8c00', '#d29922', '#3fb950', '#00d4aa',
+                '#58a6ff', '#bc8cff', '#f778ba', '#8b949e', '#6e7681']
+
+    for i, y in enumerate(years):
+        sub = df[df['year'] == y].copy()
+        if len(sub) < 5:
+            continue
+        # Cumulative return normalized to 100 at start of year
+        sub['cum'] = ((1 + sub['close'].pct_change().fillna(0)).cumprod() * 100)
+        color = palette[i % len(palette)]
+        is_current = (y == current_year)
+        fig.add_trace(go.Scatter(
+            x=sub['doy'], y=sub['cum'],
+            name=str(y) + (' (atual)' if is_current else ''),
+            line=dict(color=color,
+                       width=2.4 if is_current else 1.0),
+            opacity=1.0 if is_current else 0.55,
+        ))
+    # Avg linha
+    pivot = df.pivot_table(index='doy', columns='year', values='close',
+                             aggfunc='first')
+    pivot = pivot.apply(lambda s: (1 + s.pct_change().fillna(0)).cumprod() * 100)
+    avg = pivot.mean(axis=1)
+    fig.add_trace(go.Scatter(
+        x=avg.index, y=avg.values, name='Avg',
+        line=dict(color='#ffffff', width=1.3, dash='dash')))
+
+    fig.add_hline(y=100, line_color=_C['text_muted'], line_width=0.5, line_dash='dot')
+    # X tick marks nos meses
+    tick_days = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    tick_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    fig.update_xaxes(tickmode='array', tickvals=tick_days, ticktext=tick_labels)
+    fig.update_layout(
+        title=f'{ticker} — Seasonality por ano (cada linha = 1 ano, ano atual destacado)',
+        yaxis_title='Performance YTD (norm=100)',
+        xaxis_title='Dia do ano',
+        **{**_FIG_LAYOUT, 'height': 540})
+    return fig
+
+
+def fig_rolling_sharpe(daily: pd.DataFrame, ticker: str) -> go.Figure:
+    """
+    3m / 6m / 12m rolling Sharpe (estilo GS factor report).
+    """
+    r = daily['close'].pct_change().dropna()
+    windows = [('3m', 63), ('6m', 126), ('12m', 252)]
+    fig = go.Figure()
+    colors = [_C['accent'], _C['orange'], _C['green']]
+    for (label, w), c in zip(windows, colors):
+        mean = r.rolling(w, min_periods=max(20, w // 3)).mean() * 252
+        std = r.rolling(w, min_periods=max(20, w // 3)).std() * math.sqrt(252)
+        sharpe = mean / std
+        fig.add_trace(go.Scatter(
+            x=sharpe.index, y=sharpe.values,
+            name=f'{label} Sharpe', line=dict(color=c, width=1.2)))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.add_hline(y=1, line_color=_C['green'], line_dash='dot', line_width=0.6,
+                   opacity=0.5)
+    fig.update_layout(
+        title=f'{ticker} — Rolling Sharpe 3m / 6m / 12m',
+        yaxis_title='Sharpe (anualizado)',
+        **_FIG_LAYOUT)
+    return fig
+
+
+def fig_rsi(daily: pd.DataFrame, ticker: str, period: int = 14) -> go.Figure:
+    """RSI com zonas overbought (70) e oversold (30)."""
+    close = daily['close']
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+    rs = gain / loss
+    rsi = 100 - 100 / (1 + rs)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=rsi.index, y=rsi.values,
+                              name=f'RSI({period})',
+                              line=dict(color=_C['accent'], width=1.1)))
+    fig.add_hline(y=70, line_color=_C['red'], line_dash='dash', line_width=0.8,
+                   annotation_text='Overbought')
+    fig.add_hline(y=30, line_color=_C['green'], line_dash='dash', line_width=0.8,
+                   annotation_text='Oversold')
+    fig.add_hline(y=50, line_color=_C['text_muted'], line_width=0.5, line_dash='dot')
+    fig.update_layout(
+        title=f'{ticker} — RSI({period}) com zonas overbought/oversold',
+        yaxis_title='RSI', yaxis_range=[0, 100],
+        **_FIG_LAYOUT)
+    return fig
+
+
+def fig_rolling_return_pctile(daily: pd.DataFrame, ticker: str,
+                                 window: int = 5) -> go.Figure:
+    """
+    Estilo Marquee PlotTool: retorno N-day com banda de 10/90 percentiles.
+    Mostra se o momento atual e extremo vs historico.
+    """
+    close = daily['close']
+    roll = close.pct_change(window) * 100
+    p10 = roll.rolling(252, min_periods=60).quantile(0.10)
+    p90 = roll.rolling(252, min_periods=60).quantile(0.90)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=p90.index, y=p90.values,
+                              line=dict(color=_C['red'], width=0.8, dash='dash'),
+                              name='90th %ile'))
+    fig.add_trace(go.Scatter(x=p10.index, y=p10.values,
+                              line=dict(color=_C['green'], width=0.8, dash='dash'),
+                              name='10th %ile',
+                              fill='tonexty', fillcolor='rgba(139,148,158,0.08)'))
+    fig.add_trace(go.Scatter(x=roll.index, y=roll.values,
+                              line=dict(color=_C['accent'], width=1.3),
+                              name=f'{window}d Return %'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(
+        title=f'{ticker} — {window}d % change vs historical band (10/90 %ile rolling 1y)',
+        yaxis_title=f'{window}d return %',
+        **_FIG_LAYOUT)
+    return fig
+
+
+def fig_vol_panic_proxy(daily: pd.DataFrame, vol_indices: pd.DataFrame,
+                          ticker: str) -> go.Figure:
+    """
+    Proxy do GS Vol Panic Index (0-10):
+      componente 1: VIX percentil 252d     (0 baixo, 10 alto)
+      componente 2: realized vol percentil  (0 baixo, 10 alto)
+      componente 3: drawdown 20d            (0 sem, 10 profundo)
+      componente 4: z-score retorno 5d      (0 calmo, 10 extremo)
+    Indice = media simples, re-escalado 0-10.
+    """
+    close = daily['close']
+    r = close.pct_change().fillna(0)
+
+    # VIX percentil
+    vix_pct = pd.Series(index=daily.index, dtype=float)
+    if vol_indices is not None and 'vix' in vol_indices.columns:
+        vix = vol_indices['vix'].reindex(daily.index).ffill()
+        vix_pct = vix.rolling(252, min_periods=60).apply(
+            lambda x: x.rank(pct=True).iloc[-1] * 10, raw=False)
+
+    # RV percentil
+    rv = r.rolling(21, min_periods=10).std() * math.sqrt(252)
+    rv_pct = rv.rolling(252, min_periods=60).apply(
+        lambda x: x.rank(pct=True).iloc[-1] * 10, raw=False)
+
+    # Drawdown 20d
+    peak = close.rolling(20, min_periods=5).max()
+    dd = (close / peak - 1)
+    dd_score = (-dd * 100).clip(0, 10)  # 10% DD → score 10
+
+    # Z-score 5d return
+    ret5 = close.pct_change(5) * 100
+    z5 = (ret5 - ret5.rolling(60, min_periods=20).mean()) / \
+         ret5.rolling(60, min_periods=20).std()
+    z_score = (z5.abs().clip(0, 3) / 3) * 10  # |z|=3 → 10
+
+    panic = pd.concat([vix_pct, rv_pct, dd_score, z_score], axis=1).mean(axis=1)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                         row_heights=[0.35, 0.65],
+                         subplot_titles=(
+                             f'{ticker} Close',
+                             'Vol Panic Proxy (0=calmo, 10=panico) | Avg(VIX%, RV%, DD20d, |z5d|)'))
+    fig.add_trace(go.Scatter(x=close.index, y=close.values,
+                              line=dict(color=_C['accent'], width=1.2),
+                              name='Close', showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=panic.index, y=panic.values,
+                              line=dict(color=_C['red'], width=1.2),
+                              fill='tozeroy', fillcolor='rgba(248,81,73,0.15)',
+                              name='Panic score', showlegend=False), row=2, col=1)
+    fig.add_hline(y=8, line_color=_C['red'], line_dash='dash', line_width=0.8,
+                   row=2, col=1)
+    fig.add_hline(y=5, line_color=_C['yellow'], line_dash='dot', line_width=0.6,
+                   row=2, col=1)
+    fig.update_yaxes(title_text='USD', row=1, col=1)
+    fig.update_yaxes(title_text='Panic (0-10)', range=[0, 10], row=2, col=1)
+    fig.update_layout(**{**_FIG_LAYOUT, 'height': 560})
+    return fig
+
+
+# =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
 
@@ -1718,6 +2026,15 @@ def compute_session_stats(ticker: str, years: int = 5,
     tables['rth_vs_eth_summary'] = rth_vs_eth_summary(bt, bt_eth, df)
     bottom_line = rth_eth_bottom_line(bt, bt_eth, initial=10000.0)
 
+    # GS-style streak analysis: usa o streak atual como target
+    up_flags = (daily['close'].pct_change() > 0).astype(int)
+    cur_up_streak = 0
+    for v in reversed(up_flags.values):
+        if v == 1: cur_up_streak += 1
+        else: break
+    streak_tgt = max(cur_up_streak, 3)   # se menor que 3, usa 3 como default
+    tables['consecutive_days_streak'] = consecutive_days_streak_table(daily, streak_tgt)
+
     figs = {
         'weekday_bars_rth': fig_weekday_bars(tables['weekday_stats_rth'], f'{ticker} RTH'),
         'weekday_bars_eth': fig_eth_weekday_bars(tables['weekday_stats_eth'], ticker),
@@ -1739,6 +2056,14 @@ def compute_session_stats(ticker: str, years: int = 5,
         'regime': fig_regime(tables['regime'], ticker),
         'gap': fig_gap(tables['gap_stats'], ticker),
         'monthly': fig_monthly(tables['monthly_stats'], ticker),
+        # GS-style charts
+        'consecutive_days_bar': fig_consecutive_days_bar(
+            tables['consecutive_days_streak'], ticker, streak_tgt),
+        'seasonality_by_year': fig_seasonality_by_year(daily, ticker),
+        'rolling_sharpe': fig_rolling_sharpe(daily, ticker),
+        'rsi': fig_rsi(daily, ticker),
+        'rolling_return_5d': fig_rolling_return_pctile(daily, ticker, window=5),
+        'rolling_return_20d': fig_rolling_return_pctile(daily, ticker, window=20),
     }
 
     nomura = {}
@@ -1760,6 +2085,7 @@ def compute_session_stats(ticker: str, years: int = 5,
                     'skew_pctiles': fig_skew_multi(sp),     # 4 paineis
                     'iv_rank': fig_iv_rank(vol),            # IV + Skew rank
                     'flows': fig_systematic_flows(flows),
+                    'vol_panic': fig_vol_panic_proxy(daily, vol, ticker),
                 }
             }
         except Exception as e:
@@ -1911,6 +2237,31 @@ def build_section_widgets(result: dict) -> list:
     sec.append(wd.HTML(_df_to_html_table(result['tables']['monthly_stats'])))
     sec.append(go.FigureWidget(result['figs']['monthly']))
 
+    # --- GS-style indicators (inspirado nos reports da Goldman Sachs) ---
+    sec.append(wd.HTML(
+        "<div class='mm-section-label'>GS-Style Indicators — Momentum, Sazonalidade, Vol Regime</div>"))
+
+    sec.append(wd.HTML(
+        "<div class='mm-section-label'>Forward returns apos N dias seguidos de alta "
+        "(estilo Cullen Morgan / GS Vol Color)</div>"))
+    sec.append(go.FigureWidget(result['figs']['consecutive_days_bar']))
+    sec.append(wd.HTML(_df_to_html_table(result['tables']['consecutive_days_streak'])))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Seasonality por Ano "
+                         "(cada linha = 1 ano, ano atual em destaque)</div>"))
+    sec.append(go.FigureWidget(result['figs']['seasonality_by_year']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Rolling Sharpe 3m / 6m / 12m</div>"))
+    sec.append(go.FigureWidget(result['figs']['rolling_sharpe']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>RSI(14) com zonas overbought/oversold</div>"))
+    sec.append(go.FigureWidget(result['figs']['rsi']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Rolling 5d e 20d return vs "
+                         "band historica (p10/p90)</div>"))
+    sec.append(go.FigureWidget(result['figs']['rolling_return_5d']))
+    sec.append(go.FigureWidget(result['figs']['rolling_return_20d']))
+
     if result.get('nomura'):
         n = result['nomura']
         sec.append(wd.HTML("<div class='mm-section-label'>Nomura — Options PnL Summary "
@@ -1928,6 +2279,10 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML("<div class='mm-section-label'>IV Rank + Skew Rank "
                              "(estilo SpotGamma, 1y rolling)</div>"))
         sec.append(go.FigureWidget(n['figs']['iv_rank']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Vol Panic Proxy "
+                             "(estilo GS Vol Color — VIX+RV+DD+|z5d|, 0-10)</div>"))
+        sec.append(go.FigureWidget(n['figs']['vol_panic']))
 
         sec.append(wd.HTML("<div class='mm-section-label'>Systematic Flows — "
                              "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
