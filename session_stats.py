@@ -4691,7 +4691,7 @@ TRADING_LENSES = [
             '(nao 50-delta) capta premium inflado; aguarde reversao de '
             'backwardation pra long directional.'),
         'structures': ['Put Spread Credit (25d/10d)', 'Long 3-6m Calls escalonado',
-                         'Cash pra reentrar no 'all-clear''],
+                         'Cash pra reentrar no all-clear'],
         'contrarian': 'Todos querem sair; o edge vem de comprar quando o medo esta no topo.',
         'confidence_boost': 3,
     },
