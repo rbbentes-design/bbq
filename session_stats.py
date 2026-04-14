@@ -5599,17 +5599,25 @@ def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Fi
                    else f'CREDIT (recebe ${abs(net_cost):.2f})')
 
     fig = go.Figure()
-    # Area positiva/negativa
-    pos_mask = y >= 0
-    neg_mask = y < 0
+    # Fill verde ACIMA de zero (y_pos zera onde y<0 — nao deixa fill invadir perda)
+    y_pos = np.where(y >= 0, y, 0)
+    y_neg = np.where(y < 0, y, 0)
     fig.add_trace(go.Scatter(
-        x=x[pos_mask], y=y[pos_mask], fill='tozeroy',
-        fillcolor='rgba(63,185,80,0.25)', line=dict(color=_C['green'], width=1.8),
-        name='profit', showlegend=False))
+        x=x, y=y_pos, mode='lines',
+        line=dict(color='rgba(0,0,0,0)'),
+        fill='tozeroy', fillcolor='rgba(63,185,80,0.30)',
+        name='profit', showlegend=False, hoverinfo='skip'))
     fig.add_trace(go.Scatter(
-        x=x[neg_mask], y=y[neg_mask], fill='tozeroy',
-        fillcolor='rgba(248,81,73,0.25)', line=dict(color=_C['red'], width=1.8),
-        name='loss', showlegend=False))
+        x=x, y=y_neg, mode='lines',
+        line=dict(color='rgba(0,0,0,0)'),
+        fill='tozeroy', fillcolor='rgba(248,81,73,0.30)',
+        name='loss', showlegend=False, hoverinfo='skip'))
+    # Linha principal do P&L por cima
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='lines',
+        line=dict(color=_C['accent'], width=2.2),
+        name='P&L', showlegend=False,
+        hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>'))
     # Spot atual
     fig.add_vline(x=spot, line_color=_C['orange'], line_dash='dot', line_width=1.6,
                    annotation_text=f'spot ${spot:.2f}', annotation_font_color=_C['orange'])
@@ -6067,6 +6075,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'tables': tables, 'figs': figs, 'nomura': nomura,
         'gs_factors': gs_factors,
         'passive_breaks': passive_breaks,
+        'vix_vrs': vix_vrs,
         'trading': trading,
     }
 
@@ -6633,6 +6642,42 @@ def build_section_widgets(result: dict) -> list:
             trading_data['context'],
             trading_data['scorecard'],
             trading_data['active_lenses'])))
+
+        # VIX × VRS Quadrant (Krishnamurthy JOTA 71)
+        vix_vrs_data = result.get('vix_vrs') or {}
+        if vix_vrs_data.get('error'):
+            sec.append(wd.HTML(
+                f"<div class='mm-card'>"
+                f"<p class='mm-flag'>⚠ VIX×VRS Quadrant nao disponivel:</p>"
+                f"<p style='color:#8b949e; font-size:11px;'>{vix_vrs_data['error']}</p>"
+                f"<p style='color:#8b949e; font-size:10px; font-style:italic;'>"
+                f"Requer BQL com acesso a VIX Index + VIX3M Index (ou VIX6M).</p></div>"))
+        elif vix_vrs_data.get('figs'):
+            sec.append(wd.HTML(
+                "<div class='mm-section-label'>VIX × VRS Quadrant "
+                "(Krishnamurthy CMT JOTA 71) — 4 regimes</div>"))
+            # Summary card
+            col = vix_vrs_data.get('current_regime_color', _C['text_muted'])
+            sec.append(wd.HTML(
+                f"<div class='mm-card' style='padding:14px 18px; "
+                f"border-left:3px solid {col};'>"
+                f"<div style='display:flex; gap:18px; flex-wrap:wrap;'>"
+                f"<div><div class='mm-metric-lbl'>VIX atual</div>"
+                f"<div style='font-size:20px; color:#cce8ff; font-weight:700;'>"
+                f"{vix_vrs_data.get('current_vix', 'N/A')}</div></div>"
+                f"<div><div class='mm-metric-lbl'>VRS atual</div>"
+                f"<div style='font-size:20px; color:#cce8ff; font-weight:700;'>"
+                f"{vix_vrs_data.get('current_vrs', 'N/A')}</div></div>"
+                f"<div><div class='mm-metric-lbl'>Regime</div>"
+                f"<div style='font-size:16px; color:{col}; font-weight:700;'>"
+                f"{vix_vrs_data.get('current_regime_label', 'N/A')}</div></div>"
+                f"<div><div class='mm-metric-lbl'>Horizonte spread</div>"
+                f"<div style='font-size:14px; color:#8b949e;'>"
+                f"{vix_vrs_data.get('horizon_label', '')} | VIX thr "
+                f"{vix_vrs_data.get('vix_threshold', 'N/A')}</div></div>"
+                f"</div></div>"))
+            sec.append(go.FigureWidget(vix_vrs_data['figs']['quadrant']))
+            sec.append(go.FigureWidget(vix_vrs_data['figs']['timeseries']))
 
         # Operations: payoff + mini backtest das estruturas sugeridas
         ops = trading_data.get('operations', [])
