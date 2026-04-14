@@ -5599,48 +5599,55 @@ def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Fi
                    else f'CREDIT (recebe ${abs(net_cost):.2f})')
 
     fig = go.Figure()
-    # Fill das zonas usando mode='none' (so fill, sem linha)
-    y_pos = np.where(y > 0, y, 0)
-    y_neg = np.where(y < 0, y, 0)
+
+    # Linha P&L com fill simples (uma so trace — render garantido)
     fig.add_trace(go.Scatter(
-        x=x, y=y_pos, mode='none',
-        fill='tozeroy', fillcolor='rgba(63,185,80,0.30)',
-        name='profit zone', showlegend=False, hoverinfo='skip'))
-    fig.add_trace(go.Scatter(
-        x=x, y=y_neg, mode='none',
-        fill='tozeroy', fillcolor='rgba(248,81,73,0.30)',
-        name='loss zone', showlegend=False, hoverinfo='skip'))
-    # Linha principal do P&L — visivel SEMPRE (mesmo se fill falhar)
-    fig.add_trace(go.Scatter(
-        x=x, y=y, mode='lines',
-        line=dict(color=_C['accent'], width=2.5),
+        x=list(x), y=list(y), mode='lines',
+        line=dict(color='#58a6ff', width=3),
+        fill='tozeroy',
+        fillcolor='rgba(88,166,255,0.18)',
         name='P&L @ expiry', showlegend=False,
         hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>'))
-    # Spot atual
-    fig.add_vline(x=spot, line_color=_C['orange'], line_dash='dot', line_width=1.6,
-                   annotation_text=f'spot ${spot:.2f}', annotation_font_color=_C['orange'])
-    # Strikes
+
+    # Zonas verde (profit) e vermelho (loss) via shapes retangulares
+    # Cobre apenas o intervalo onde P&L e positivo/negativo
+    y_max_fill = float(np.nanmax(y))
+    y_min_fill = float(np.nanmin(y))
+    if y_max_fill > 0:
+        # Shape retangular verde cobrindo a zona acima de 0
+        # (visualmente marca "profit zone" no fundo)
+        fig.add_hrect(y0=0, y1=y_max_fill * 1.05,
+                       fillcolor='rgba(63,185,80,0.06)', line_width=0,
+                       layer='below')
+    if y_min_fill < 0:
+        fig.add_hrect(y0=y_min_fill * 1.05, y1=0,
+                       fillcolor='rgba(248,81,73,0.06)', line_width=0,
+                       layer='below')
+    # Spot atual — linha sem annotation flutuante
+    fig.add_vline(x=spot, line_color='#ff8c00', line_dash='dot', line_width=1.8)
+    # Strikes — apenas vlines, sem annotations flutuantes (listadas no subtitle)
     for kind, qty, strike, _ in legs:
         if kind == 'S' or strike == 0: continue
         color = _C['accent'] if qty > 0 else _C['yellow']
-        symbol = ('▲' if qty > 0 else '▼') + kind
-        fig.add_vline(x=strike, line_color=color, line_dash='dash', line_width=0.8,
-                       annotation_text=f'{symbol} {strike:.0f}',
-                       annotation_font_size=9, annotation_font_color=color,
-                       annotation_position='top')
-    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
+        fig.add_vline(x=strike, line_color=color, line_dash='dash', line_width=0.9)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.8)
 
     be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE no range'
     # Padding no y pra nao cortar o topo/fundo
-    y_pad = (max_profit - max_loss) * 0.15 if (max_profit - max_loss) > 0 else 1
+    y_pad = max(abs(max_profit), abs(max_loss)) * 0.15 + 1
+    strikes_str = ' · '.join(
+        [f"{('▲' if q > 0 else '▼')}{k}{int(s)}"
+         for kk, q, s, _ in legs if kk != 'S' and s > 0
+         for k in [kk]])
     fig.update_layout(
-        title=(f'{name} — Payoff @ expiry (T=21d)<br>'
+        title=(f'{name} — Payoff @ expiry (T=21d) · spot ${spot:.2f}<br>'
                f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
-               f'max loss ${max_loss:.2f} · BE {be_str}</sub>'),
+               f'max loss ${max_loss:.2f} · BE {be_str}<br>'
+               f'Strikes: {strikes_str}</sub>'),
         xaxis_title='spot price at expiry', yaxis_title='P&L ($)',
         xaxis=dict(range=[float(x[0]), float(x[-1])]),
-        yaxis=dict(range=[max_loss - y_pad, max_profit + y_pad]),
-        **{**_FIG_LAYOUT, 'height': 420})
+        yaxis=dict(range=[float(max_loss - y_pad), float(max_profit + y_pad)]),
+        **{**_FIG_LAYOUT, 'height': 450})
     return fig
 
 
