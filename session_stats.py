@@ -5616,79 +5616,116 @@ def payoff_at_expiry(legs: list, spot_range: np.ndarray) -> np.ndarray:
 
 
 def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Figure:
-    """Payoff at expiry + zone de breakeven + strikes marcados."""
-    if not legs:
-        return go.Figure().update_layout(title=f'{name} — estrutura nao mapeada',
-                                            **_FIG_LAYOUT)
-    x = np.linspace(spot * 0.80, spot * 1.20, 250)
-    y = payoff_at_expiry(legs, x)
+    """
+    Payoff at expiry. Evita add_vline/add_hline/add_hrect (podem quebrar
+    em plotly < 4.12 ou FigureWidget). Usa shapes= via update_layout.
+    """
+    try:
+        if not legs:
+            return go.Figure().update_layout(
+                title=f'{name} — estrutura nao mapeada',
+                **_FIG_LAYOUT)
+        x = np.linspace(spot * 0.80, spot * 1.20, 250)
+        y = payoff_at_expiry(legs, x)
+        x_list = [float(v) for v in x]
+        y_list = [float(v) for v in y]
 
-    # Max profit / max loss
-    max_profit = float(np.nanmax(y))
-    max_loss = float(np.nanmin(y))
-    # Break-evens (onde cruza 0)
-    bes = []
-    for i in range(1, len(y)):
-        if (y[i - 1] <= 0 < y[i]) or (y[i - 1] >= 0 > y[i]):
-            # Interpolacao linear
-            be = x[i - 1] + (x[i] - x[i - 1]) * (0 - y[i - 1]) / (y[i] - y[i - 1])
-            bes.append(be)
+        max_profit = float(np.nanmax(y))
+        max_loss = float(np.nanmin(y))
+        bes = []
+        for i in range(1, len(y)):
+            if (y[i - 1] <= 0 < y[i]) or (y[i - 1] >= 0 > y[i]):
+                be = x[i - 1] + (x[i] - x[i - 1]) * (0 - y[i - 1]) / (y[i] - y[i - 1])
+                bes.append(float(be))
 
-    net_cost = sum(qty * premium for kind, qty, _, premium in legs if kind != 'S')
-    cost_label = (f'DEBIT (paga ${abs(net_cost):.2f})' if net_cost > 0
-                   else f'CREDIT (recebe ${abs(net_cost):.2f})')
+        net_cost = sum(qty * premium for kind, qty, _, premium in legs if kind != 'S')
+        cost_label = (f'DEBIT ${abs(net_cost):.2f}' if net_cost > 0
+                       else f'CREDIT ${abs(net_cost):.2f}')
+        be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE'
 
-    fig = go.Figure()
+        y_pad = max(abs(max_profit), abs(max_loss)) * 0.15 + 1
+        y_low = float(max_loss - y_pad)
+        y_high = float(max_profit + y_pad)
 
-    # Linha P&L com fill simples (uma so trace — render garantido)
-    fig.add_trace(go.Scatter(
-        x=list(x), y=list(y), mode='lines',
-        line=dict(color='#58a6ff', width=3),
-        fill='tozeroy',
-        fillcolor='rgba(88,166,255,0.18)',
-        name='P&L @ expiry', showlegend=False,
-        hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>'))
+        fig = go.Figure()
+        # Trace UNICA: P&L line + fill (compat universal)
+        fig.add_trace(go.Scatter(
+            x=x_list, y=y_list,
+            mode='lines',
+            line=dict(color='#58a6ff', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(88,166,255,0.20)',
+            name='P&L',
+            showlegend=False,
+            hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>',
+        ))
 
-    # Zonas verde (profit) e vermelho (loss) via shapes retangulares
-    # Cobre apenas o intervalo onde P&L e positivo/negativo
-    y_max_fill = float(np.nanmax(y))
-    y_min_fill = float(np.nanmin(y))
-    if y_max_fill > 0:
-        # Shape retangular verde cobrindo a zona acima de 0
-        # (visualmente marca "profit zone" no fundo)
-        fig.add_hrect(y0=0, y1=y_max_fill * 1.05,
-                       fillcolor='rgba(63,185,80,0.06)', line_width=0,
-                       layer='below')
-    if y_min_fill < 0:
-        fig.add_hrect(y0=y_min_fill * 1.05, y1=0,
-                       fillcolor='rgba(248,81,73,0.06)', line_width=0,
-                       layer='below')
-    # Spot atual — linha sem annotation flutuante
-    fig.add_vline(x=spot, line_color='#ff8c00', line_dash='dot', line_width=1.8)
-    # Strikes — apenas vlines, sem annotations flutuantes (listadas no subtitle)
-    for kind, qty, strike, _ in legs:
-        if kind == 'S' or strike == 0: continue
-        color = _C['accent'] if qty > 0 else _C['yellow']
-        fig.add_vline(x=strike, line_color=color, line_dash='dash', line_width=0.9)
-    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.8)
+        # Shapes — retangulos de zona + linhas de strike/spot/zero
+        shapes = [
+            # Zona verde (acima do zero)
+            dict(type='rect', xref='paper', yref='y',
+                 x0=0, x1=1, y0=0, y1=y_high,
+                 fillcolor='rgba(63,185,80,0.07)', line=dict(width=0),
+                 layer='below'),
+            # Zona vermelha (abaixo do zero)
+            dict(type='rect', xref='paper', yref='y',
+                 x0=0, x1=1, y0=y_low, y1=0,
+                 fillcolor='rgba(248,81,73,0.07)', line=dict(width=0),
+                 layer='below'),
+            # Linha y=0
+            dict(type='line', xref='x', yref='y',
+                 x0=x_list[0], x1=x_list[-1], y0=0, y1=0,
+                 line=dict(color='#8b9ab5', width=0.8)),
+            # Spot vertical (laranja dotted)
+            dict(type='line', xref='x', yref='y',
+                 x0=float(spot), x1=float(spot), y0=y_low, y1=y_high,
+                 line=dict(color='#ff8c00', width=2, dash='dot')),
+        ]
+        for kind, qty, strike, _ in legs:
+            if kind == 'S' or strike == 0: continue
+            color = '#58a6ff' if qty > 0 else '#ffd32a'
+            shapes.append(dict(
+                type='line', xref='x', yref='y',
+                x0=float(strike), x1=float(strike),
+                y0=y_low, y1=y_high,
+                line=dict(color=color, width=0.9, dash='dash'),
+            ))
 
-    be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE no range'
-    # Padding no y pra nao cortar o topo/fundo
-    y_pad = max(abs(max_profit), abs(max_loss)) * 0.15 + 1
-    strikes_str = ' · '.join(
-        [f"{('▲' if q > 0 else '▼')}{k}{int(s)}"
-         for kk, q, s, _ in legs if kk != 'S' and s > 0
-         for k in [kk]])
-    fig.update_layout(
-        title=(f'{name} — Payoff @ expiry (T=21d) · spot ${spot:.2f}<br>'
-               f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
-               f'max loss ${max_loss:.2f} · BE {be_str}<br>'
-               f'Strikes: {strikes_str}</sub>'),
-        xaxis_title='spot price at expiry', yaxis_title='P&L ($)',
-        xaxis=dict(range=[float(x[0]), float(x[-1])]),
-        yaxis=dict(range=[float(max_loss - y_pad), float(max_profit + y_pad)]),
-        **{**_FIG_LAYOUT, 'height': 450})
-    return fig
+        strikes_str = ' · '.join(
+            [f"{('L' if q > 0 else 'S')}{k}{int(s)}"
+             for kk, q, s, _ in legs if kk != 'S' and s > 0
+             for k in [kk]])
+
+        fig.update_layout(
+            title=(f'{name} — Payoff @ expiry · spot ${spot:.2f} · IV {iv*100:.1f}%<br>'
+                   f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
+                   f'max loss ${max_loss:.2f} · BE {be_str}<br>'
+                   f'Legs: {strikes_str}</sub>'),
+            xaxis=dict(title='spot at expiry', range=[x_list[0], x_list[-1]]),
+            yaxis=dict(title='P&L ($)', range=[y_low, y_high]),
+            shapes=shapes,
+            **{**_FIG_LAYOUT, 'height': 460})
+        return fig
+
+    except Exception as e:
+        # Em vez de silenciar, mostra o erro no chart
+        import traceback
+        tb = traceback.format_exc()
+        log.warning(f'fig_structure_payoff({name}) erro: {e}')
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 0], mode='lines',
+            line=dict(color='#f85149', width=2), showlegend=False))
+        fig.update_layout(
+            title=f'{name} — ERRO no render: {type(e).__name__}',
+            annotations=[dict(
+                text=f'<b>{e}</b><br><br>'
+                     f'<span style="font-size:10px">{tb[:500].replace(chr(10), "<br>")}</span>',
+                xref='paper', yref='paper', x=0.02, y=0.95,
+                xanchor='left', yanchor='top', showarrow=False,
+                align='left', font=dict(size=11, color='#f85149'))],
+            **{**_FIG_LAYOUT, 'height': 420})
+        return fig
 
 
 def mini_backtest_structure(name: str, spot_history: pd.Series,
