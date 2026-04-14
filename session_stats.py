@@ -8142,9 +8142,10 @@ def build_section_widgets(result: dict) -> list:
             description='g real %:',
             layout=wd.Layout(width='340px'),
             readout_format='.2f')
-        # Real ERP slider (usado apenas no modo real)
+        # Real ERP slider — default 4.5% pra targetar PE hist ~21x
+        # (TIPS ~1.9% + ERP 4.5% - g 2% = 4.4% -> PE = 22.7x)
         erp_real_sl = wd.FloatSlider(
-            value=3.0, min=1.0, max=6.0, step=0.25,
+            value=4.5, min=2.0, max=7.0, step=0.25,
             description='ERP real %:',
             layout=wd.Layout(width='340px'),
             readout_format='.2f')
@@ -8154,21 +8155,66 @@ def build_section_widgets(result: dict) -> list:
                 clear_output(wait=True)
                 if mode_tog.value == 'real' and macro_data.get('us10y_real'):
                     # Real: rf = TIPS, ERP real, g real
+                    # Compute real EPS via CPI deflator (se BBG trouxe CPI level)
+                    cpi_series = macro_data.get('series', {}).get('cpi_lvl')
+                    eps_real_now = eps1_w.value
+                    if cpi_series is not None and len(cpi_series) > 0:
+                        cpi = cpi_series.dropna()
+                        # Deflaciona pra base da serie (equivale a "em $ de X anos atras")
+                        cpi_now = float(cpi.iloc[-1])
+                        cpi_base = float(cpi.iloc[0])
+                        eps_real_now = eps1_w.value * (cpi_base / cpi_now)
+
+                    # Center em g_real slider, gera 4 cenarios
+                    g_center = g_real_sl.value / 100.0
+                    g_list = [g_center - 0.005, g_center,
+                               g_center + 0.005, g_center + 0.010]
+                    g_list = [g for g in g_list if g > 0]
+
+                    k_real = (macro_data.get('us10y_real') / 100.0
+                               + erp_real_sl.value / 100.0)
+                    implied_pe = (1.0 / (k_real - g_center)
+                                    if k_real - g_center > 0.005 else 0)
+
                     display(wd.HTML(_gordon_sensitivity_html(
                         spx_spot=spot_w.value, eps_fy1=eps1_w.value,
                         us10y=macro_data.get('us10y_real'),
                         erp=erp_real_sl.value,
                         step_pct=step_sl.value, range_pct=range_sl.value,
-                        g_scenarios=[g_real_sl.value / 100.0,
-                                      (g_real_sl.value + 0.5) / 100.0,
-                                      (g_real_sl.value + 1.0) / 100.0,
-                                      (g_real_sl.value + 1.5) / 100.0])))
+                        g_scenarios=g_list)))
+
+                    # Hint historico + decomposicao detalhada
+                    hist_msg = ""
+                    if implied_pe > 30:
+                        hist_msg = ("<span style='color:#ff6b6b;'>⚠ PE implicito "
+                                     f"<b>{implied_pe:.1f}x</b> acima do hist avg "
+                                     f"~21x. Spread k-g muito apertado — "
+                                     f"suba ERP real ou abaixe g.</span>")
+                    elif implied_pe < 15:
+                        hist_msg = ("<span style='color:#ffb84d;'>PE implicito "
+                                     f"<b>{implied_pe:.1f}x</b> abaixo do hist "
+                                     f"avg ~21x (bear/conservador).</span>")
+                    else:
+                        hist_msg = (f"<span style='color:#7ae582;'>PE implicito "
+                                     f"<b>{implied_pe:.1f}x</b> consistente com "
+                                     f"hist avg ~21x.</span>")
+
                     display(wd.HTML(
-                        f"<div class='mm-note'>Modo REAL: rf = TIPS 10Y "
-                        f"<b>{macro_data.get('us10y_real'):.2f}%</b> | "
-                        f"ERP real <b>{erp_real_sl.value:.2f}%</b> | "
-                        f"g real em torno de <b>{g_real_sl.value:.2f}%</b>. "
-                        f"EPS nominal (PE real × EPS nominal = SPX nominal fair).</div>"))
+                        f"<div class='mm-note'>"
+                        f"<b>Modo REAL</b> (Fisher decomposition): "
+                        f"k_real = TIPS <b style='color:#cce8ff;'>"
+                        f"{macro_data.get('us10y_real'):.2f}%</b> + "
+                        f"ERP real <b style='color:#cce8ff;'>"
+                        f"{erp_real_sl.value:.2f}%</b> = "
+                        f"<b style='color:#7ae582;'>{k_real*100:.2f}%</b> | "
+                        f"g real (centro) <b style='color:#cce8ff;'>"
+                        f"{g_real_sl.value:.2f}%</b><br/>"
+                        f"EPS nominal (input): <b style='color:#cce8ff;'>"
+                        f"${eps1_w.value:.1f}</b> | "
+                        f"EPS real (deflacionado p/ base): "
+                        f"<b style='color:#7ae582;'>${eps_real_now:.1f}</b><br/>"
+                        f"<b>SPX hist avg PE ≈ 21x</b> | {hist_msg}"
+                        f"</div>"))
                 else:
                     # Nominal (default)
                     display(wd.HTML(_gordon_sensitivity_html(
