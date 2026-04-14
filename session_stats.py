@@ -1425,6 +1425,154 @@ def fig_rth_vs_eth_scatter(df: pd.DataFrame, ticker: str) -> go.Figure:
     return fig
 
 
+def rth_eth_bottom_line(bt_rth: BacktestResult, bt_eth: BacktestResult,
+                          initial: float = 10000.0) -> dict:
+    """Retorna o bottom-line: quanto $initial vira em cada estrategia."""
+    rth_r = bt_rth.equity.pct_change().fillna(0)
+    eth_r = bt_eth.equity.pct_change().fillna(0)
+    bh_eq = ((1 + rth_r) * (1 + eth_r)).cumprod()
+    n_days = len(bt_rth.equity)
+    years = n_days / 252 if n_days else 0
+    start = bt_rth.equity.index[0].strftime('%Y-%m-%d') if n_days else 'N/A'
+    end = bt_rth.equity.index[-1].strftime('%Y-%m-%d') if n_days else 'N/A'
+    return {
+        'initial_usd': initial,
+        'period_start': start, 'period_end': end,
+        'n_days': n_days, 'years': round(years, 2),
+        'rth_final_usd': round(initial * float(bt_rth.equity.iloc[-1]), 2),
+        'rth_return_pct': bt_rth.metrics.get('total_return_pct'),
+        'rth_cagr_pct': bt_rth.metrics.get('cagr_pct'),
+        'rth_sharpe': bt_rth.metrics.get('sharpe'),
+        'eth_final_usd': round(initial * float(bt_eth.equity.iloc[-1]), 2),
+        'eth_return_pct': bt_eth.metrics.get('total_return_pct'),
+        'eth_cagr_pct': bt_eth.metrics.get('cagr_pct'),
+        'eth_sharpe': bt_eth.metrics.get('sharpe'),
+        'bh_final_usd': round(initial * float(bh_eq.iloc[-1]), 2),
+        'bh_return_pct': _pct(bh_eq.iloc[-1] - 1),
+    }
+
+
+def fig_rth_eth_simple(bt_rth: BacktestResult, bt_eth: BacktestResult,
+                        ticker: str, initial: float = 10000.0) -> go.Figure:
+    """
+    Grafico simples de 1 painel so: $initial virou quanto em cada estrategia.
+    Eixo Y em dolares absolutos, nao normalizado. Facil de ler.
+    """
+    rth_r = bt_rth.equity.pct_change().fillna(0)
+    eth_r = bt_eth.equity.pct_change().fillna(0)
+    bh_eq = ((1 + rth_r) * (1 + eth_r)).cumprod()
+
+    rth_usd = bt_rth.equity * initial
+    eth_usd = bt_eth.equity * initial
+    bh_usd = bh_eq * initial
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=rth_usd.index, y=rth_usd.values,
+        name=f'RTH — final ${rth_usd.iloc[-1]:,.0f}',
+        line=dict(color=_C['accent'], width=2.2),
+        fill='tozeroy', fillcolor='rgba(88,166,255,0.06)',
+        hovertemplate='%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra>RTH</extra>'))
+    fig.add_trace(go.Scatter(
+        x=eth_usd.index, y=eth_usd.values,
+        name=f'ETH — final ${eth_usd.iloc[-1]:,.0f}',
+        line=dict(color=_C['orange'], width=2.2),
+        hovertemplate='%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra>ETH</extra>'))
+    fig.add_trace(go.Scatter(
+        x=bh_usd.index, y=bh_usd.values,
+        name=f'Buy & Hold 24/7 — final ${bh_usd.iloc[-1]:,.0f}',
+        line=dict(color=_C['text_muted'], width=1.3, dash='dash'),
+        hovertemplate='%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra>B&H</extra>'))
+    fig.add_hline(y=initial, line_color=_C['text_muted'], line_width=0.6,
+                   line_dash='dot',
+                   annotation_text=f'inicial ${initial:,.0f}',
+                   annotation_font_size=9,
+                   annotation_position='right')
+    fig.update_layout(
+        title=f'{ticker} — ${initial:,.0f} investido viraram quanto?  RTH vs ETH vs B&H',
+        yaxis_title='USD',
+        yaxis_tickformat='$,.0f',
+        **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
+def _bottom_line_html(bl: dict, ticker: str) -> str:
+    """Card grande com o bottom line — aparece no topo do relatorio."""
+    def _fmt_usd(v): return f"${v:,.0f}" if pd.notna(v) else '—'
+    def _fmt_pct(v, sign=True):
+        if pd.isna(v):
+            return '—'
+        s = f"{'+' if sign and v > 0 else ''}{v:.2f}%"
+        return s
+    def _color(v):
+        return _C['green'] if v and v > 0 else _C['red']
+
+    rth_color = _color(bl['rth_return_pct'])
+    eth_color = _color(bl['eth_return_pct'])
+    bh_color = _color(bl['bh_return_pct'])
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:20px 24px'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:4px;'>
+          Bottom line — {ticker}
+        </div>
+        <div style='font-size:13px; color:#cce8ff; margin-bottom:18px;'>
+          Se voce investisse <b style='color:#ff8c00'>{_fmt_usd(bl['initial_usd'])}</b>
+          em <b>{bl['period_start']}</b> ({bl['years']}y, {bl['n_days']} dias uteis)
+          e zerasse no final de <b>{bl['period_end']}</b>:
+        </div>
+        <table style='width:100%; border-collapse:collapse;'>
+          <tr>
+            <td style='padding:12px 14px; border-left:3px solid {_C["accent"]};
+                       background:rgba(88,166,255,0.04);'>
+              <div style='font-size:10px; color:#8b949e; text-transform:uppercase;
+                          letter-spacing:1.5px;'>RTH (open → close)</div>
+              <div style='font-size:24px; color:{_C["accent"]}; font-weight:700;
+                          margin:4px 0;'>{_fmt_usd(bl['rth_final_usd'])}</div>
+              <div style='font-size:13px; color:{rth_color}; font-weight:600;'>
+                {_fmt_pct(bl['rth_return_pct'])} total
+              </div>
+              <div style='font-size:10px; color:#8b949e; margin-top:6px;'>
+                CAGR {_fmt_pct(bl['rth_cagr_pct'])} &nbsp;|&nbsp;
+                Sharpe {bl['rth_sharpe']}
+              </div>
+            </td>
+            <td style='padding:12px 14px; border-left:3px solid {_C["orange"]};
+                       background:rgba(240,136,62,0.04);'>
+              <div style='font-size:10px; color:#8b949e; text-transform:uppercase;
+                          letter-spacing:1.5px;'>ETH (close → open)</div>
+              <div style='font-size:24px; color:{_C["orange"]}; font-weight:700;
+                          margin:4px 0;'>{_fmt_usd(bl['eth_final_usd'])}</div>
+              <div style='font-size:13px; color:{eth_color}; font-weight:600;'>
+                {_fmt_pct(bl['eth_return_pct'])} total
+              </div>
+              <div style='font-size:10px; color:#8b949e; margin-top:6px;'>
+                CAGR {_fmt_pct(bl['eth_cagr_pct'])} &nbsp;|&nbsp;
+                Sharpe {bl['eth_sharpe']}
+              </div>
+            </td>
+            <td style='padding:12px 14px; border-left:3px solid {_C["text_muted"]};
+                       background:rgba(139,148,158,0.04);'>
+              <div style='font-size:10px; color:#8b949e; text-transform:uppercase;
+                          letter-spacing:1.5px;'>Buy & Hold 24/7</div>
+              <div style='font-size:24px; color:{_C["text_muted"]}; font-weight:700;
+                          margin:4px 0;'>{_fmt_usd(bl['bh_final_usd'])}</div>
+              <div style='font-size:13px; color:{bh_color}; font-weight:600;'>
+                {_fmt_pct(bl['bh_return_pct'])} total
+              </div>
+              <div style='font-size:10px; color:#8b949e; margin-top:6px;'>
+                = (1+RTH) × (1+ETH) compondo
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    """
+
+
 def rth_vs_eth_summary(bt_rth: BacktestResult, bt_eth: BacktestResult,
                         df: pd.DataFrame) -> pd.DataFrame:
     """Tabela comparativa RTH x ETH lado a lado."""
@@ -1534,6 +1682,7 @@ def compute_session_stats(ticker: str, years: int = 5,
     tables['equity_curve_eth'] = bt_eth.equity.to_frame('equity')
     tables['drawdown_curve_eth'] = bt_eth.drawdown.to_frame('drawdown')
     tables['rth_vs_eth_summary'] = rth_vs_eth_summary(bt, bt_eth, df)
+    bottom_line = rth_eth_bottom_line(bt, bt_eth, initial=10000.0)
 
     figs = {
         'weekday_bars_rth': fig_weekday_bars(tables['weekday_stats_rth'], f'{ticker} RTH'),
@@ -1542,6 +1691,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'updown_weekday': fig_updown_weekday(tables['updown_by_weekday'], ticker),
         'equity_dd_rth': fig_equity_dd(bt, f'{ticker} RTH'),
         'equity_dd_eth': fig_equity_dd(bt_eth, f'{ticker} ETH'),
+        'rth_eth_simple': fig_rth_eth_simple(bt, bt_eth, ticker),
         'rth_vs_eth': fig_rth_vs_eth_equity(bt, bt_eth, ticker),
         'rth_vs_eth_scatter': fig_rth_vs_eth_scatter(df, ticker),
         'histogram': fig_histogram(df, ticker),
@@ -1586,6 +1736,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'ticker': ticker, 'years': years,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'bt': bt, 'bt_eth': bt_eth,
+        'bottom_line': bottom_line,
         'tables': tables, 'figs': figs, 'nomura': nomura,
     }
 
@@ -1632,6 +1783,12 @@ def build_section_widgets(result: dict) -> list:
     ticker = result['ticker']
     sec.append(wd.HTML(f"<div class='mm-section-label'>Session Stats — {ticker}"
                          f" ({result['years']}y) — {result['ts']}</div>"))
+
+    # --- BOTTOM LINE bem no topo (direto ao ponto: $10k virou quanto?) ---
+    if result.get('bottom_line'):
+        sec.append(wd.HTML(_bottom_line_html(result['bottom_line'], ticker)))
+    sec.append(go.FigureWidget(result['figs']['rth_eth_simple']))
+
     # Header com metricas RTH e ETH lado a lado
     rth_m = {f'RTH {k}': v for k, v in result['bt'].metrics.items()}
     eth_m = {f'ETH {k}': v for k, v in result['bt_eth'].metrics.items()}
