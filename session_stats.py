@@ -83,9 +83,10 @@ DASH_TEMPLATE = go.layout.Template()
 DASH_TEMPLATE.layout = go.Layout(
     paper_bgcolor='#010810',
     plot_bgcolor='#020d1f',
-    font=dict(family="'Orbitron','Courier New',monospace", size=11, color='#cce8ff'),
-    title=dict(font=dict(size=13, color='#ff8c00',
-                          family="'Orbitron','Courier New',monospace")),
+    font=dict(family='Arial, Helvetica, "Liberation Sans", sans-serif',
+              size=12, color='#e6edf3'),
+    title=dict(font=dict(size=14, color='#ff8c00',
+                          family='Arial, Helvetica, sans-serif')),
     xaxis=dict(gridcolor='rgba(0,200,255,0.08)',
                 zerolinecolor='rgba(0,200,255,0.2)',
                 linecolor='rgba(0,200,255,0.15)',
@@ -106,54 +107,93 @@ DASH_TEMPLATE.layout = go.Layout(
 )
 
 DASH_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&display=swap');
-.mm-dash { font-family:'Orbitron','Courier New',monospace; color:#cce8ff; }
-.mm-card { background:linear-gradient(145deg,rgba(1,8,20,0.97),rgba(2,13,31,0.95));
-           border:1px solid rgba(0,200,255,0.15); padding:12px 14px;
-           border-radius:4px; margin:8px 0; }
-.mm-section-label { font-size:10px; font-weight:700; letter-spacing:2.5px;
-                    text-transform:uppercase; color:rgba(0,212,255,0.7);
-                    margin:14px 0 6px 0; }
-.mm-loading { color:#ff8c00; padding:16px; font-size:13px; letter-spacing:1.5px; }
-.mm-metric { display:inline-block; margin:0 18px 8px 0; vertical-align:top; }
-.mm-metric-lbl { color:#8b949e; font-size:9px; text-transform:uppercase;
-                 letter-spacing:1.5px; display:block; }
-.mm-metric-val { color:#ff8c00; font-weight:700; font-size:15px; }
+.mm-dash {
+  font-family: Arial, Helvetica, 'Liberation Sans', sans-serif;
+  color: #e6edf3;
+  font-size: 13px;
+}
+.mm-card {
+  background: #0d1421;
+  border: 1px solid #1f2937;
+  padding: 14px 16px;
+  border-radius: 4px;
+  margin: 10px 0;
+}
+.mm-section-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ff8c00;
+  margin: 18px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #2a3950;
+  letter-spacing: 0.5px;
+}
+.mm-loading { color:#ff8c00; padding:16px; font-size:14px; }
+.mm-metric { display:inline-block; margin:0 22px 10px 0; vertical-align:top; }
+.mm-metric-lbl {
+  color: #8b9ab5;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 3px;
+}
+.mm-metric-val {
+  color: #ff8c00;
+  font-weight: 700;
+  font-size: 17px;
+  font-family: Arial, Helvetica, sans-serif;
+}
 .mm-metric-val.up { color:#3fb950; }
 .mm-metric-val.down { color:#f85149; }
-.mm-table { border-collapse:collapse; width:100%; font-size:11px; }
-.mm-table th { background:rgba(0,200,255,0.08); color:#cce8ff; padding:6px 10px;
-               text-align:left; border-bottom:1px solid rgba(0,200,255,0.25);
-               font-weight:600; text-transform:uppercase; letter-spacing:1px; }
-.mm-table td { padding:5px 10px; border-bottom:1px solid rgba(0,200,255,0.08);
-               color:#cce8ff; }
-.mm-table tr:hover td { background:rgba(0,200,255,0.05); }
-.mm-note { color:#8b949e; font-size:10px; font-style:italic; margin-top:6px; }
-.mm-flag { color:#ff8c00; font-weight:600; }
 
+/* Tabelas estilo Bloomberg Terminal */
+.mm-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.mm-table th {
+  background: #1a2433;
+  color: #ff8c00;
+  padding: 7px 12px;
+  text-align: left;
+  border-bottom: 1px solid #2a3950;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.mm-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #1a2433;
+  color: #e6edf3;
+}
+.mm-table tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+.mm-table tr:hover td { background: #1a2433; }
+
+.mm-note { color:#8b9ab5; font-size:11px; margin-top:8px; }
+.mm-flag { color:#ff8c00; font-weight:700; }
+
+/* Dividers entre partes */
 .mm-divider {
-  margin: 40px 0 24px 0;
-  padding: 18px 24px;
-  background: linear-gradient(90deg, rgba(0,200,255,0.04), rgba(0,200,255,0.08), rgba(0,200,255,0.04));
-  border-top: 2px solid rgba(0,200,255,0.35);
-  border-bottom: 2px solid rgba(0,200,255,0.35);
-  text-align: center;
+  margin: 36px 0 20px 0;
+  padding: 14px 20px;
+  background: #1a2433;
+  border-left: 4px solid #ff8c00;
+  border-radius: 2px;
 }
 .mm-divider-title {
-  font-family: 'Orbitron', monospace;
-  font-size: 18px;
-  font-weight: 900;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
   color: #ff8c00;
-  letter-spacing: 4px;
-  text-transform: uppercase;
-  text-shadow: 0 0 12px rgba(255,140,0,0.4);
+  letter-spacing: 0.5px;
 }
 .mm-divider-subtitle {
-  color: #cce8ff;
+  color: #8b9ab5;
   font-size: 11px;
-  letter-spacing: 2px;
-  margin-top: 6px;
-  opacity: 0.75;
+  margin-top: 4px;
 }
 </style>"""
 
@@ -164,7 +204,7 @@ def _big_divider(title: str, subtitle: str = '') -> str:
     return f"""
     <div class='mm-dash'>
       <div class='mm-divider'>
-        <div class='mm-divider-title'>◆ ◆ ◆ &nbsp; {title} &nbsp; ◆ ◆ ◆</div>
+        <div class='mm-divider-title'>&nbsp; {title} &nbsp;</div>
         {sub_html}
       </div>
     </div>
@@ -6169,8 +6209,8 @@ def _split_sections_into_tabs(sections: list) -> 'wd.Tab':
             # Salva aba corrente
             if current_widgets:
                 tabs_data.append((current_title, current_widgets))
-            # Extrai titulo do divider
-            m = re.search(r'◆ ◆ ◆\s*&nbsp;\s*(.*?)\s*&nbsp;\s*◆ ◆ ◆', w.value)
+            # Extrai titulo do divider (capture dentro de <div class='mm-divider-title'>)
+            m = re.search(r"mm-divider-title[^>]*>\s*&nbsp;\s*(.*?)\s*&nbsp;\s*</div>", w.value)
             if m:
                 current_title = _shorten_tab_title(m.group(1))
             else:
