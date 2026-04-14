@@ -1636,6 +1636,43 @@ def rth_vs_eth_summary(bt_rth: BacktestResult, bt_eth: BacktestResult,
     return pd.DataFrame(rows)
 
 
+def fig_histogram_eth(df: pd.DataFrame, ticker: str) -> go.Figure:
+    """Histograma dos retornos ETH (close -> open)."""
+    r = (df['eth_return'] * 100).dropna()
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=r, nbinsx=60, marker_color=_C['orange'],
+                                 marker_line_color=_C['border'], opacity=0.85,
+                                 showlegend=False))
+    fig.add_vline(x=r.mean(), line_color=_C['yellow'], line_dash='dash',
+                   annotation_text=f'mean={r.mean():.2f}%')
+    fig.add_vline(x=r.median(), line_color=_C['green'], line_dash='dash',
+                   annotation_text=f'median={r.median():.2f}%')
+    fig.update_layout(title=f'{ticker} — Distribuicao retorno ETH (close→open, %)',
+                       xaxis_title='Retorno %', yaxis_title='Frequencia', **_FIG_LAYOUT)
+    return fig
+
+
+def fig_histogram_rth_vs_eth(df: pd.DataFrame, ticker: str) -> go.Figure:
+    """
+    Overlay dos histogramas RTH e ETH no mesmo painel pra comparar
+    distribuicao (skew, kurtosis, fat tails, etc).
+    """
+    rth = (df['rth_return'] * 100).dropna()
+    eth = (df['eth_return'] * 100).dropna()
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=rth, nbinsx=60, name=f'RTH (μ={rth.mean():.2f}%, σ={rth.std():.2f}%)',
+                                 marker_color=_C['accent'], opacity=0.55,
+                                 histnorm='probability'))
+    fig.add_trace(go.Histogram(x=eth, nbinsx=60, name=f'ETH (μ={eth.mean():.2f}%, σ={eth.std():.2f}%)',
+                                 marker_color=_C['orange'], opacity=0.55,
+                                 histnorm='probability'))
+    fig.add_vline(x=0, line_color=_C['text_muted'], line_width=0.6, line_dash='dash')
+    fig.update_layout(title=f'{ticker} — Distribuicao RTH vs ETH (normalizado em probabilidade)',
+                       xaxis_title='Retorno %', yaxis_title='Probabilidade',
+                       barmode='overlay', **_FIG_LAYOUT)
+    return fig
+
+
 def fig_eth_weekday_bars(wstats_eth: pd.DataFrame, ticker: str) -> go.Figure:
     d = wstats_eth.set_index('weekday').reindex([x for x in WEEKDAY_ORDER if x in wstats_eth['weekday'].values])
     colors = [_C['green'] if v > 0 else _C['red'] for v in d['mean_pct']]
@@ -2047,6 +2084,8 @@ def compute_session_stats(ticker: str, years: int = 5,
         'rth_vs_eth': fig_rth_vs_eth_equity(bt, bt_eth, ticker),
         'rth_vs_eth_scatter': fig_rth_vs_eth_scatter(df, ticker),
         'histogram': fig_histogram(df, ticker),
+        'histogram_eth': fig_histogram_eth(df, ticker),
+        'histogram_rth_vs_eth': fig_histogram_rth_vs_eth(df, ticker),
         'ma_residency': fig_ma_residency(tables['ma_residency'], ticker),
         'heatmap_wkd_month': fig_heatmap_wkd_month(df, ticker),
         'streak_distribution': fig_streak_distribution(df, ticker),
@@ -2206,8 +2245,10 @@ def build_section_widgets(result: dict) -> list:
     sec.append(go.FigureWidget(result['figs']['equity_dd_rth']))
     sec.append(go.FigureWidget(result['figs']['equity_dd_eth']))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Distribuicao Retornos RTH (%)</div>"))
+    sec.append(wd.HTML("<div class='mm-section-label'>Distribuicao Retornos — RTH vs ETH (%)</div>"))
+    sec.append(go.FigureWidget(result['figs']['histogram_rth_vs_eth']))
     sec.append(go.FigureWidget(result['figs']['histogram']))
+    sec.append(go.FigureWidget(result['figs']['histogram_eth']))
 
     sec.append(wd.HTML("<div class='mm-section-label'>Heatmap Weekday x Mes (%)</div>"))
     sec.append(go.FigureWidget(result['figs']['heatmap_wkd_month']))
