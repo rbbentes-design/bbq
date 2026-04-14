@@ -132,14 +132,21 @@ DASH_CSS = """<style>
 .mm-flag { color:#ff8c00; font-weight:600; }
 </style>"""
 
-# Layout comum pros gráficos (mesma dimensão/margin em todos)
+# Layout comum pros gráficos.
+# Altura default aumentada de 380 -> 460 pra melhor legibilidade.
+# Margens maiores pra nao cortar labels. Legenda com mais espaco.
 _FIG_LAYOUT = dict(
     template=DASH_TEMPLATE,
-    height=380,
-    margin=dict(l=50, r=40, t=45, b=40),
-    legend=dict(orientation='h', yanchor='bottom', y=-0.25,
-                 xanchor='center', x=0.5, font=dict(size=9)),
+    height=460,
+    margin=dict(l=70, r=50, t=55, b=55),
+    legend=dict(orientation='h', yanchor='bottom', y=-0.22,
+                 xanchor='center', x=0.5, font=dict(size=10)),
+    hoverlabel=dict(font_size=12),
 )
+
+# Layouts especificos pra charts que precisam de mais altura
+_FIG_LAYOUT_TALL = {**_FIG_LAYOUT, 'height': 560}
+_FIG_LAYOUT_XTALL = {**_FIG_LAYOUT, 'height': 680}
 
 
 # =============================================================================
@@ -826,7 +833,7 @@ def fig_equity_dd(bt: BacktestResult, ticker: str) -> go.Figure:
     m = bt.metrics
     title = (f'{ticker} — Equity RTH | Sharpe={m["sharpe"]} '
              f'CAGR={m["cagr_pct"]}% MaxDD={m["max_drawdown_pct"]}%')
-    fig.update_layout(title=title, **{**_FIG_LAYOUT, 'height': 480})
+    fig.update_layout(title=title, **{**_FIG_LAYOUT, 'height': 520})
     fig.update_yaxes(title_text='Equity', row=1, col=1)
     fig.update_yaxes(title_text='DD %', row=2, col=1)
     return fig
@@ -932,8 +939,8 @@ def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame) -> go.F
             hovertemplate='%{y} | %{x}<br>value: %{z:.2f}<extra></extra>',
         ), row=idx + 1, col=1)
     fig.update_layout(title='Nomura — SPX Daily Options PnL Summary',
-                       **{**_FIG_LAYOUT, 'height': 720,
-                          'margin': dict(l=200, r=40, t=55, b=40)})
+                       **{**_FIG_LAYOUT, 'height': 820,
+                          'margin': dict(l=220, r=50, t=60, b=50)})
     return fig
 
 
@@ -1002,7 +1009,7 @@ def fig_systematic_flows(flows: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text='USD bn', row=2, col=1)
     fig.update_yaxes(title_text='%', row=3, col=1)
     fig.update_layout(title='Nomura — US Equities Systematic Flows',
-                       **{**_FIG_LAYOUT, 'height': 620})
+                       **{**_FIG_LAYOUT, 'height': 760})
     return fig
 
 
@@ -1228,7 +1235,7 @@ def fig_skew_multi(sp: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text='%', row=3, col=1)
     fig.update_yaxes(title_text='%', row=4, col=1)
     fig.update_layout(title='Skew — convencoes Nomura + SpotGamma (na duvida)',
-                       **{**_FIG_LAYOUT, 'height': 780})
+                       **{**_FIG_LAYOUT, 'height': 900})
     return fig
 
 
@@ -1270,21 +1277,181 @@ def backtest_eth(df: pd.DataFrame) -> BacktestResult:
 
 def fig_rth_vs_eth_equity(bt_rth: BacktestResult, bt_eth: BacktestResult,
                             ticker: str) -> go.Figure:
-    """Compara equity RTH (open->close) vs ETH (close->open) no mesmo ativo."""
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=bt_rth.equity.index, y=bt_rth.equity.values,
-                              name=f'RTH (Sharpe={bt_rth.metrics["sharpe"]})',
-                              line=dict(color=_C['accent'], width=1.4),
-                              fill='tozeroy', fillcolor='rgba(88,166,255,0.04)'))
-    fig.add_trace(go.Scatter(x=bt_eth.equity.index, y=bt_eth.equity.values,
-                              name=f'ETH (Sharpe={bt_eth.metrics["sharpe"]})',
-                              line=dict(color=_C['orange'], width=1.4)))
-    fig.add_hline(y=1.0, line_color=_C['text_muted'], line_dash='dash', line_width=0.6)
+    """
+    3 paineis empilhados comparando RTH vs ETH vs Buy&Hold:
+      1. Equity normalizada (norm=1) — quanto rendeu $1 em cada estrategia
+      2. Drawdown das duas estrategias
+      3. Rolling 60d return — mostra em qual regime cada uma performa
+    """
+    # Buy & Hold = manter 24/7 = (1 + rth) * (1 + eth) compondo
+    rth_r = bt_rth.equity.pct_change().fillna(0)
+    eth_r = bt_eth.equity.pct_change().fillna(0)
+    bh_eq = ((1 + rth_r) * (1 + eth_r)).cumprod()
+
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                         row_heights=[0.50, 0.22, 0.28],
+                         subplot_titles=(
+                             f'{ticker} — Equity RTH vs ETH vs Buy & Hold (norm=1)',
+                             'Drawdown (%)',
+                             'Rolling 60d cumulative return (%)'))
+
+    # 1. Equity
+    fig.add_trace(go.Scatter(
+        x=bt_rth.equity.index, y=bt_rth.equity.values,
+        name=f'RTH open→close (Sharpe={bt_rth.metrics["sharpe"]}, '
+             f'CAGR={bt_rth.metrics["cagr_pct"]}%)',
+        line=dict(color=_C['accent'], width=1.6),
+        fill='tozeroy', fillcolor='rgba(88,166,255,0.05)',
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=bt_eth.equity.index, y=bt_eth.equity.values,
+        name=f'ETH close→open (Sharpe={bt_eth.metrics["sharpe"]}, '
+             f'CAGR={bt_eth.metrics["cagr_pct"]}%)',
+        line=dict(color=_C['orange'], width=1.6),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=bh_eq.index, y=bh_eq.values,
+        name='Buy & Hold 24/7 (close→close)',
+        line=dict(color=_C['text_muted'], width=1.2, dash='dash'),
+    ), row=1, col=1)
+    fig.add_hline(y=1.0, line_color=_C['text_muted'], line_width=0.5, row=1, col=1)
+
+    # 2. Drawdown
+    fig.add_trace(go.Scatter(
+        x=bt_rth.drawdown.index, y=bt_rth.drawdown.values * 100,
+        name='RTH DD', line=dict(color=_C['accent'], width=1),
+        fill='tozeroy', fillcolor='rgba(88,166,255,0.2)',
+        showlegend=False,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=bt_eth.drawdown.index, y=bt_eth.drawdown.values * 100,
+        name='ETH DD', line=dict(color=_C['orange'], width=1),
+        showlegend=False,
+    ), row=2, col=1)
+
+    # 3. Rolling 60d return (%)
+    win = 60
+    rth_roll = ((1 + rth_r).rolling(win).apply(lambda x: x.prod(), raw=True) - 1) * 100
+    eth_roll = ((1 + eth_r).rolling(win).apply(lambda x: x.prod(), raw=True) - 1) * 100
+    fig.add_trace(go.Scatter(
+        x=rth_roll.index, y=rth_roll.values,
+        name='RTH 60d', line=dict(color=_C['accent'], width=1),
+        showlegend=False,
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=eth_roll.index, y=eth_roll.values,
+        name='ETH 60d', line=dict(color=_C['orange'], width=1),
+        showlegend=False,
+    ), row=3, col=1)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5, row=3, col=1)
+
+    fig.update_yaxes(title_text='Equity', row=1, col=1)
+    fig.update_yaxes(title_text='DD %', row=2, col=1)
+    fig.update_yaxes(title_text='Ret 60d %', row=3, col=1)
     fig.update_layout(
-        title=f'{ticker} — Equity RTH vs ETH (qual sessao paga mais?)',
-        yaxis_title='Equity (norm=1)',
-        **{**_FIG_LAYOUT, 'height': 440})
+        **{**_FIG_LAYOUT, 'height': 780,
+           'legend': dict(orientation='h', yanchor='bottom', y=1.02,
+                           xanchor='center', x=0.5, font=dict(size=10))})
     return fig
+
+
+def fig_rth_vs_eth_scatter(df: pd.DataFrame, ticker: str) -> go.Figure:
+    """
+    Scatter RTH x ETH dia-a-dia.
+      - x = retorno RTH (%)
+      - y = retorno ETH (%)
+      - cor = sinal combinado (RTH+ETH)
+      - linhas de referencia em x=0 e y=0 dividem em 4 quadrantes
+    """
+    d = df[['rth_return', 'eth_return']].dropna() * 100
+    if len(d) == 0:
+        return go.Figure().update_layout(title='Scatter RTH x ETH — sem dados',
+                                            **_FIG_LAYOUT)
+
+    corr = d.corr().iloc[0, 1]
+    # Contagem por quadrante
+    q1 = ((d['rth_return'] > 0) & (d['eth_return'] > 0)).sum()  # ambos up
+    q2 = ((d['rth_return'] < 0) & (d['eth_return'] > 0)).sum()  # RTH- ETH+
+    q3 = ((d['rth_return'] < 0) & (d['eth_return'] < 0)).sum()  # ambos down
+    q4 = ((d['rth_return'] > 0) & (d['eth_return'] < 0)).sum()  # RTH+ ETH-
+    total = len(d)
+
+    # Cores pontos por quadrante
+    colors = np.where((d['rth_return'] > 0) & (d['eth_return'] > 0), _C['green'],
+              np.where((d['rth_return'] < 0) & (d['eth_return'] < 0), _C['red'],
+                        _C['yellow']))
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=d['rth_return'], y=d['eth_return'],
+        mode='markers',
+        marker=dict(color=colors, size=4, opacity=0.55,
+                     line=dict(width=0.3, color=_C['border'])),
+        name='dia', showlegend=False,
+        hovertemplate='RTH=%{x:.2f}%<br>ETH=%{y:.2f}%<extra></extra>'))
+    # Linhas de referencia nos eixos
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
+    fig.add_vline(x=0, line_color=_C['text_muted'], line_width=0.6)
+    # Linha de regressao (ajuste linear simples)
+    if len(d) > 5:
+        b, a = np.polyfit(d['rth_return'].values, d['eth_return'].values, 1)
+        xs = np.array([d['rth_return'].min(), d['rth_return'].max()])
+        fig.add_trace(go.Scatter(x=xs, y=a + b * xs, mode='lines',
+                                   line=dict(color=_C['accent'], width=1.3, dash='dot'),
+                                   name=f'fit: y={a:+.2f}{b:+.3f}x', showlegend=True))
+    # Anotacoes de quadrantes
+    xmax = d['rth_return'].max(); xmin = d['rth_return'].min()
+    ymax = d['eth_return'].max(); ymin = d['eth_return'].min()
+    annotations = [
+        dict(x=xmax * 0.75, y=ymax * 0.85, showarrow=False,
+             text=f"Ambos UP<br>{q1} ({100*q1/total:.1f}%)",
+             font=dict(color=_C['green'], size=10)),
+        dict(x=xmin * 0.75, y=ymax * 0.85, showarrow=False,
+             text=f"RTH-<br>ETH+<br>{q2} ({100*q2/total:.1f}%)",
+             font=dict(color=_C['yellow'], size=10)),
+        dict(x=xmin * 0.75, y=ymin * 0.85, showarrow=False,
+             text=f"Ambos DOWN<br>{q3} ({100*q3/total:.1f}%)",
+             font=dict(color=_C['red'], size=10)),
+        dict(x=xmax * 0.75, y=ymin * 0.85, showarrow=False,
+             text=f"RTH+<br>ETH-<br>{q4} ({100*q4/total:.1f}%)",
+             font=dict(color=_C['yellow'], size=10)),
+    ]
+    fig.update_layout(
+        title=f'{ticker} — RTH vs ETH daily scatter (corr={corr:.3f}, n={total})',
+        xaxis_title='RTH return %  (open→close)',
+        yaxis_title='ETH return %  (close→open)',
+        annotations=annotations,
+        **{**_FIG_LAYOUT, 'height': 620})
+    return fig
+
+
+def rth_vs_eth_summary(bt_rth: BacktestResult, bt_eth: BacktestResult,
+                        df: pd.DataFrame) -> pd.DataFrame:
+    """Tabela comparativa RTH x ETH lado a lado."""
+    d = df[['rth_return', 'eth_return']].dropna()
+    corr = d.corr().iloc[0, 1] if len(d) else np.nan
+    rows = []
+    keys = [('n_days', 'n'), ('total_return_pct', 'total_return_pct'),
+            ('cagr_pct', 'cagr_pct'), ('ann_vol_pct', 'ann_vol_pct'),
+            ('sharpe', 'sharpe'), ('sortino', 'sortino'),
+            ('calmar', 'calmar'), ('max_drawdown_pct', 'max_drawdown_pct'),
+            ('hit_rate_pct', 'hit_rate_pct'),
+            ('best_day_pct', 'best_day_pct'),
+            ('worst_day_pct', 'worst_day_pct'),
+            ('profit_factor', 'profit_factor')]
+    for label, key in keys:
+        rows.append({
+            'metric': label,
+            'RTH (open→close)': bt_rth.metrics.get(key, np.nan),
+            'ETH (close→open)': bt_eth.metrics.get(key, np.nan),
+        })
+    # Adiciona correlacao no fim
+    rows.append({
+        'metric': 'correlation_rth_eth',
+        'RTH (open→close)': _round2(corr),
+        'ETH (close→open)': _round2(corr),
+    })
+    return pd.DataFrame(rows)
 
 
 def fig_eth_weekday_bars(wstats_eth: pd.DataFrame, ticker: str) -> go.Figure:
@@ -1326,7 +1493,7 @@ def fig_iv_rank(vol_df: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(range=[0, 100], title_text='rank', row=1, col=1)
     fig.update_yaxes(range=[0, 100], title_text='rank', row=2, col=1)
     fig.update_layout(title='Market-Wide IV & Skew Ranks (estilo SpotGamma)',
-                       **{**_FIG_LAYOUT, 'height': 500})
+                       **{**_FIG_LAYOUT, 'height': 600})
     return fig
 
 
@@ -1366,6 +1533,7 @@ def compute_session_stats(ticker: str, years: int = 5,
     tables['drawdown_curve_rth'] = bt.drawdown.to_frame('drawdown')
     tables['equity_curve_eth'] = bt_eth.equity.to_frame('equity')
     tables['drawdown_curve_eth'] = bt_eth.drawdown.to_frame('drawdown')
+    tables['rth_vs_eth_summary'] = rth_vs_eth_summary(bt, bt_eth, df)
 
     figs = {
         'weekday_bars_rth': fig_weekday_bars(tables['weekday_stats_rth'], f'{ticker} RTH'),
@@ -1375,6 +1543,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'equity_dd_rth': fig_equity_dd(bt, f'{ticker} RTH'),
         'equity_dd_eth': fig_equity_dd(bt_eth, f'{ticker} ETH'),
         'rth_vs_eth': fig_rth_vs_eth_equity(bt, bt_eth, ticker),
+        'rth_vs_eth_scatter': fig_rth_vs_eth_scatter(df, ticker),
         'histogram': fig_histogram(df, ticker),
         'ma_residency': fig_ma_residency(tables['ma_residency'], ticker),
         'heatmap_wkd_month': fig_heatmap_wkd_month(df, ticker),
@@ -1503,8 +1672,16 @@ def build_section_widgets(result: dict) -> list:
     sec.append(go.FigureWidget(result['figs']['updown_weekday']))
 
     # --- Backtests ---
-    sec.append(wd.HTML("<div class='mm-section-label'>Backtest Equity + Drawdown — RTH vs ETH</div>"))
+    sec.append(wd.HTML("<div class='mm-section-label'>Comparacao RTH vs ETH — Equity, DD, Rolling 60d</div>"))
     sec.append(go.FigureWidget(result['figs']['rth_vs_eth']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Tabela comparativa RTH vs ETH (metricas lado a lado)</div>"))
+    sec.append(wd.HTML(_df_to_html_table(result['tables']['rth_vs_eth_summary'])))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Scatter RTH x ETH dia-a-dia (correlacao + quadrantes)</div>"))
+    sec.append(go.FigureWidget(result['figs']['rth_vs_eth_scatter']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Equity + Drawdown individual</div>"))
     sec.append(go.FigureWidget(result['figs']['equity_dd_rth']))
     sec.append(go.FigureWidget(result['figs']['equity_dd_eth']))
 
