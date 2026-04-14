@@ -6382,6 +6382,16 @@ def compute_macro_charts(years: int = 10) -> dict:
     for etf in SECTOR_ETFS:
         _try(f'sec_{etf}', f'{etf} US Equity')
 
+    # Macro / Labor / Consumer
+    _try('usp_priv', 'USPRIV Index')      # Private nonfarm payrolls
+    _try('usp_gov',  'USGOVT Index')      # Government payrolls
+    _try('usp_fed',  'USEMPFDT Index')    # Federal employees
+    _try('umich',    'CONSSENT Index')    # U Mich sentiment
+    _try('umich_cur', 'CONCCONF Index')   # U Mich current conditions
+    _try('conf_board', 'CONCCONF Index')  # Conference Board (may alias)
+    _try('ppi_yoy', 'PPI YOY Index')
+    _try('cpi_yoy', 'CPI YOY Index')
+
     # Valuation (SPX + sectors)
     for tk, key in [('SPX Index', 'spx_pe')]:
         try:
@@ -6635,6 +6645,155 @@ def compute_macro_charts(years: int = 10) -> dict:
         figs['intl_rebased'] = _fig_macro(intl,
                                                'International Equity — rebased 100',
                                                'index')
+
+    # --- G. LABOR & CONSUMER ---
+    # Payrolls: private vs government
+    if 'usp_priv' in series and 'usp_gov' in series:
+        priv, gov = series['usp_priv'].align(series['usp_gov'], join='inner')
+        figs['payrolls'] = _fig_macro(
+            {'Private Payrolls': priv, 'Government Payrolls': gov},
+            'US Payrolls: Private vs Government', 'thousands',
+            colors=['#00d4ff', '#ffb84d'])
+    elif 'usp_priv' in series:
+        figs['payrolls'] = _fig_macro({'Private Payrolls': series['usp_priv']},
+                                           'US Private Nonfarm Payrolls', 'thousands',
+                                           colors=['#00d4ff'])
+    # Federal employees
+    if 'usp_fed' in series:
+        figs['fed_employees'] = _fig_macro(
+            {'Federal Govt Employees': series['usp_fed']},
+            'Total Federal Government Employees', 'thousands',
+            colors=['#c77dff'])
+    # Consumer confidence
+    cc = {}
+    if 'umich' in series:
+        cc['U Mich Sentiment'] = series['umich']
+    if 'umich_cur' in series:
+        cc['U Mich Current Conditions'] = series['umich_cur']
+    if cc:
+        figs['consumer_conf'] = _fig_macro(cc,
+                                               'Consumer Confidence (U Mich)',
+                                               'index')
+    # Inflation: CPI + PPI Y/Y
+    infl = {}
+    if 'cpi_yoy' in series:
+        infl['CPI Y/Y %'] = series['cpi_yoy']
+    if 'ppi_yoy' in series:
+        infl['PPI Y/Y %'] = series['ppi_yoy']
+    if infl:
+        figs['inflation'] = _fig_macro(infl,
+                                            'US Inflation: CPI + PPI Y/Y',
+                                            '%', colors=['#ff6b6b', '#ffb84d'])
+
+    # --- H. ADDITIONAL RATIOS & Y/Y CHARTS ---
+    # SPX/Gold Y/Y %
+    if 'spx' in series and 'gold' in series:
+        sp, g = series['spx'].align(series['gold'], join='inner')
+        ratio_yoy = (sp / g).pct_change(252) * 100
+        figs['spx_gold_yoy'] = _fig_macro(
+            {'SPX/Gold Y/Y %': ratio_yoy.dropna()},
+            '"Real" SPX Y/Y % Change (leading indicator)',
+            '%', colors=['#7ae582'])
+
+    # SPX level + NTM EPS dual
+    if 'spx' in series and 'spx_best_eps' in series:
+        figs['spx_eps_vs_level'] = _fig_macro_dual(
+            series['spx_best_eps'], series['spx'],
+            'SPX NTM EPS ($)', 'SPX Level',
+            'S&P 500 NTM EPS vs Total Return Level')
+
+    # --- I. HARDCODED BAR CHARTS (from MS report values) ---
+    # 2026 EPS growth by sector
+    sector_eps_2026 = [
+        ('Info Tech', 40), ('Energy', 37), ('Materials', 29),
+        ('S&P 500', 18), ('Cons. Disc.', 12), ('Comm. Svcs', 10),
+        ('Financials', 9), ('Health Care', 6), ('Industrials', 6),
+        ('Cons. Staples', 6), ('Utilities', 5), ('REITS', 5),
+    ]
+    bar26 = go.Figure(go.Bar(
+        x=[s for s, _ in sector_eps_2026],
+        y=[v for _, v in sector_eps_2026],
+        marker_color=['#7ae582' if s == 'S&P 500' else '#00d4ff'
+                       for s, _ in sector_eps_2026],
+        text=[f'{v}%' for _, v in sector_eps_2026],
+        textposition='outside'))
+    bar26.update_layout(template=DASH_TEMPLATE,
+                         title='2026 EPS Growth by Sector (consensus)',
+                         yaxis_title='Y/Y %', height=380,
+                         margin=dict(l=50, r=20, t=50, b=100))
+    figs['sector_eps_2026'] = bar26
+
+    # 2027 EPS growth by sector
+    sector_eps_2027 = [
+        ('Info Tech', 24), ('Industrials', 18), ('Cons. Disc.', 17),
+        ('S&P 500', 16), ('Comm. Svcs', 16), ('Health Care', 14),
+        ('Materials', 14), ('Financials', 12), ('Utilities', 9),
+        ('Cons. Staples', 8), ('REITS', 7), ('Energy', 0),
+    ]
+    bar27 = go.Figure(go.Bar(
+        x=[s for s, _ in sector_eps_2027],
+        y=[v for _, v in sector_eps_2027],
+        marker_color=['#7ae582' if s == 'S&P 500' else '#00d4ff'
+                       for s, _ in sector_eps_2027],
+        text=[f'{v}%' for _, v in sector_eps_2027],
+        textposition='outside'))
+    bar27.update_layout(template=DASH_TEMPLATE,
+                         title='2027 EPS Growth by Sector (consensus)',
+                         yaxis_title='Y/Y %', height=380,
+                         margin=dict(l=50, r=20, t=50, b=100))
+    figs['sector_eps_2027'] = bar27
+
+    # SPX Consensus EPS by quarter
+    quarters = ['1Q24','2Q24','3Q24','4Q24','1Q25','2Q25','3Q25','4Q25',
+                 '1Q26E','2Q26E','3Q26E','4Q26E']
+    eps_levels = [56.4, 60.5, 62.8, 65.8, 63.7, 68.7, 71.0, 74.2,
+                   71.3, 79.7, 85.3, 88.4]
+    eps_yoy_bar = [5.8, 11.0, 6.7, 18.3, 12.8, 13.6, 12.9, 12.8,
+                    11.9, 15.9, 20.2, 19.1]
+    bar_eps = go.Figure()
+    bar_eps.add_trace(go.Bar(x=quarters, y=eps_levels, name='EPS ($)',
+                               marker_color='#00d4ff',
+                               text=[f'{v:.1f}' for v in eps_levels],
+                               textposition='outside'))
+    bar_eps.update_layout(template=DASH_TEMPLATE,
+                           title='SPX Consensus EPS by Quarter',
+                           yaxis_title='$ per share', height=380,
+                           margin=dict(l=50, r=20, t=50, b=60))
+    figs['spx_eps_quarters'] = bar_eps
+
+    bar_yoy = go.Figure(go.Bar(
+        x=quarters, y=eps_yoy_bar,
+        marker_color=['#ffb84d' if 'E' in q else '#00d4ff' for q in quarters],
+        text=[f'{v:.1f}%' for v in eps_yoy_bar],
+        textposition='outside'))
+    bar_yoy.update_layout(template=DASH_TEMPLATE,
+                           title='SPX Consensus EPS Y/Y % by Quarter',
+                           yaxis_title='Y/Y %', height=380,
+                           margin=dict(l=50, r=20, t=50, b=60))
+    figs['spx_eps_yoy_quarters'] = bar_yoy
+
+    # Reporting season calendar (1Q26)
+    weeks = ['Wk Apr 13', 'Wk Apr 20', 'Wk Apr 27', 'Wk May 4',
+              'Wk May 11', 'Wk May 18', 'Wk May 25']
+    earn_pct = [8.4, 15.6, 45.5, 11.1, 1.4, 11.7, 1.7]
+    comp_cnt = [29, 93, 181, 109, 9, 18, 13]
+    rep_fig = go.Figure()
+    rep_fig.add_trace(go.Bar(x=weeks, y=earn_pct, name='% of Earnings',
+                               marker_color='#00d4ff',
+                               text=[f'{v}%' for v in earn_pct],
+                               textposition='outside', yaxis='y'))
+    rep_fig.add_trace(go.Scatter(x=weeks, y=comp_cnt, name='# Companies',
+                                   mode='lines+markers',
+                                   line=dict(color='#ffb84d', width=2),
+                                   yaxis='y2'))
+    rep_fig.update_layout(template=DASH_TEMPLATE,
+                           title='1Q26 Reporting Season Calendar',
+                           yaxis=dict(title='% of SPX earnings'),
+                           yaxis2=dict(title='# companies', overlaying='y',
+                                        side='right'),
+                           height=380, margin=dict(l=50, r=60, t=50, b=60),
+                           legend=dict(orientation='h', y=-0.15))
+    figs['reporting_season'] = rep_fig
 
     return {'series': series, 'figs': figs, 'n_series': len(series),
              'n_figs': len(figs)}
@@ -7613,8 +7772,22 @@ def build_section_widgets(result: dict) -> list:
         _add_figs(['spx_ma', 'spx_dd'])
 
         sec.append(wd.HTML("<div class='mm-section-label'>E · Internacional & Style "
-                             "— SPX/Gold, Russell/SPX, Mid/SPX, NDX/SPX, MSCI World+EM</div>"))
-        _add_figs(['spx_gold', 'rty_rel', 'mid_rel', 'ndx_rel', 'intl_rebased'])
+                             "— SPX/Gold, SPX/Gold Y/Y, Russell/SPX, Mid/SPX, NDX/SPX, MSCI World+EM</div>"))
+        _add_figs(['spx_gold', 'spx_gold_yoy', 'rty_rel', 'mid_rel',
+                    'ndx_rel', 'intl_rebased'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>F · Labor & Consumer "
+                             "— Payrolls (private vs govt), Federal employees, U Mich, inflation</div>"))
+        _add_figs(['payrolls', 'fed_employees', 'consumer_conf', 'inflation'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>G · Consensus EPS "
+                             "— SPX EPS por trimestre + NTM vs total return + sector growth</div>"))
+        _add_figs(['spx_eps_quarters', 'spx_eps_yoy_quarters',
+                    'spx_eps_vs_level', 'sector_eps_2026', 'sector_eps_2027'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>H · Reporting Season "
+                             "— calendario 1Q26 (% earnings por semana + # companies)</div>"))
+        _add_figs(['reporting_season'])
 
         # ----- PARTE VIII: SETORIAL -----
         sec.append(wd.HTML(_big_divider(
@@ -7639,13 +7812,6 @@ def build_section_widgets(result: dict) -> list:
             if key in figs_m:
                 sec.append(go.FigureWidget(figs_m[key]))
 
-        sec.append(wd.HTML(
-            "<div class='mm-note' style='margin-top:12px;'>"
-            "<b>Macro+Setorial:</b> ~35 graficos replicando MS Weekly Warm-up. "
-            "Dados via BQL (cap 20y). P/E via ETFs setoriais (proxy), breakeven "
-            "10Y = USGGBE10, NFCI = Chicago Fed. ERP = earnings yield - 10Y. "
-            "Rel charts = ETF/SPY rebased 100 no 1o dia."
-            "</div>"))
     elif macro_data.get('error'):
         sec.append(wd.HTML(_big_divider('Parte VII — Macro Economico', 'Erro')))
         sec.append(wd.HTML(
