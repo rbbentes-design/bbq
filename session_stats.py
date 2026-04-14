@@ -942,6 +942,112 @@ def fig_streak_distribution(df: pd.DataFrame, ticker: str) -> go.Figure:
     return fig
 
 
+def fig_nomura_strategies_equity(pnl: pd.DataFrame,
+                                    tenor_label: str = '0DTE (T=1d)') -> go.Figure:
+    """
+    Curvas de PnL cumulativo de cada estrategia Nomura ao longo do tempo.
+    10 linhas num so painel — o mesmo tipo de plot que gera os numeros
+    da tabela, mas agora mostrando a evolucao temporal.
+    """
+    if len(pnl) == 0:
+        return go.Figure().update_layout(title='Nomura Strategies — sem dados',
+                                           **_FIG_LAYOUT)
+    # Abrevia os nomes longos
+    def _short(label):
+        rep = {
+            'Selling Daily ATM Straddle': 'Sell ATM Strd',
+            'Selling Daily ATM Call': 'Sell ATM Call',
+            'Selling Daily ATM Put': 'Sell ATM Put',
+            'Selling Daily Strangle': 'Sell 25d Strg',
+            'Selling Daily 25d Call': 'Sell 25dC',
+            'Selling Daily 25d Put': 'Sell 25dP',
+            'Selling Daily Straddle, Long Strangle': 'Sell Strd/Lg Strg',
+            'Sell 25d Put, Buy 25d Call': 'Sell25dP/Buy25dC',
+            'Sell 25d Call, Buy 25d Put': 'Sell25dC/Buy25dP',
+            'Stock (Long)': 'Stock Long',
+        }
+        return rep.get(label, label)
+
+    strat_cols = [c for c in STRATEGY_LABELS if c in pnl.columns]
+    # Cumulative return em % (sum do daily PnL em % do spot)
+    cum = (pnl[strat_cols].cumsum() * 100)
+
+    # Paleta distintiva
+    palette = ['#00c8ff', '#ff8c00', '#00ff88', '#ff4757', '#b44aff',
+                '#ffd32a', '#ff6b9d', '#7efff5', '#3fb950', '#cce8ff']
+
+    fig = go.Figure()
+    # Ordena por retorno final (maior em cima na legenda)
+    final_sorted = cum.iloc[-1].sort_values(ascending=False)
+    for i, strat in enumerate(final_sorted.index):
+        final_val = cum[strat].iloc[-1]
+        color = palette[i % len(palette)]
+        fig.add_trace(go.Scatter(
+            x=cum.index, y=cum[strat].values,
+            name=f'{_short(strat)}: {final_val:+.1f}%',
+            line=dict(color=color, width=1.4),
+            hovertemplate=f'<b>{_short(strat)}</b><br>%{{x|%Y-%m-%d}}: %{{y:.2f}}%<extra></extra>'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6, line_dash='dot')
+    fig.update_layout(
+        title=f'Nomura — Cumulative PnL por Estrategia ({tenor_label})',
+        yaxis_title='% cumulativo do spot', yaxis_ticksuffix='%',
+        **{**_FIG_LAYOUT, 'height': 560,
+           'legend': dict(orientation='v', yanchor='middle', y=0.5,
+                           xanchor='left', x=1.02, font=dict(size=9.5)),
+           'margin': dict(l=60, r=240, t=55, b=50)})
+    return fig
+
+
+def fig_nomura_strategies_rolling(pnl: pd.DataFrame, window: int = 60,
+                                     tenor_label: str = '0DTE (T=1d)') -> go.Figure:
+    """
+    Rolling N-day return de cada estrategia — mostra quando cada uma esta
+    performando e quando nao. Util pra ver regimes.
+    """
+    if len(pnl) == 0:
+        return go.Figure().update_layout(title='Rolling — sem dados', **_FIG_LAYOUT)
+
+    def _short(label):
+        rep = {
+            'Selling Daily ATM Straddle': 'Sell ATM Strd',
+            'Selling Daily ATM Call': 'Sell ATM Call',
+            'Selling Daily ATM Put': 'Sell ATM Put',
+            'Selling Daily Strangle': 'Sell 25d Strg',
+            'Selling Daily 25d Call': 'Sell 25dC',
+            'Selling Daily 25d Put': 'Sell 25dP',
+            'Selling Daily Straddle, Long Strangle': 'Sell Strd/Lg Strg',
+            'Sell 25d Put, Buy 25d Call': 'Sell25dP/Buy25dC',
+            'Sell 25d Call, Buy 25d Put': 'Sell25dC/Buy25dP',
+            'Stock (Long)': 'Stock Long',
+        }
+        return rep.get(label, label)
+
+    strat_cols = [c for c in STRATEGY_LABELS if c in pnl.columns]
+    # Rolling sum (N-day cumulative return em pts absolutos do spot) em %
+    rolling = (pnl[strat_cols].rolling(window).sum() * 100)
+
+    palette = ['#00c8ff', '#ff8c00', '#00ff88', '#ff4757', '#b44aff',
+                '#ffd32a', '#ff6b9d', '#7efff5', '#3fb950', '#cce8ff']
+
+    fig = go.Figure()
+    for i, strat in enumerate(strat_cols):
+        color = palette[i % len(palette)]
+        fig.add_trace(go.Scatter(
+            x=rolling.index, y=rolling[strat].values,
+            name=_short(strat),
+            line=dict(color=color, width=1.1),
+            hovertemplate=f'<b>{_short(strat)}</b><br>%{{x|%Y-%m-%d}}: %{{y:.2f}}%<extra></extra>'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6, line_dash='dot')
+    fig.update_layout(
+        title=f'Nomura — Rolling {window}-day PnL ({tenor_label})',
+        yaxis_title=f'% ultimos {window} dias',
+        **{**_FIG_LAYOUT, 'height': 500,
+           'legend': dict(orientation='v', yanchor='middle', y=0.5,
+                           xanchor='left', x=1.02, font=dict(size=9)),
+           'margin': dict(l=60, r=240, t=55, b=50)})
+    return fig
+
+
 def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame,
                                tenor_label: str = '0DTE (T=1d)') -> go.Figure:
     """Dois heatmaps empilhados (um em cima do outro) — evita label overflow."""
@@ -2358,14 +2464,16 @@ def fig_factor_category_avg(table: pd.DataFrame) -> go.Figure:
                   '1M_pct': _C['yellow'], 'YTD_pct': _C['green'],
                   '1Y_pct': _C['purple']}
     for col in grp.columns:
+        hz_label = col.replace('_pct', '')
         fig.add_trace(go.Bar(
-            x=grp.index, y=grp[col], name=col.replace('_pct', ''),
+            x=grp.index, y=grp[col], name=hz_label,
             marker_color=hz_colors.get(col, _C['accent']),
-            text=[f'{v:+.2f}%' for v in grp[col]],
-            textposition='outside'))
+            text=[f'{hz_label}: {v:+.2f}%' for v in grp[col]],
+            textposition='outside', textfont=dict(size=10),
+            hovertemplate=f'<b>%{{x}}</b><br>{hz_label}: %{{y:.2f}}%<extra></extra>'))
     fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
     fig.update_layout(
-        title='GS Factor Monitor — Media por Categoria',
+        title='GS Factor Monitor — Media por Categoria e Horizonte',
         barmode='group', yaxis_title='%',
         **{**_FIG_LAYOUT, 'height': 500})
     return fig
@@ -3405,6 +3513,14 @@ def compute_session_stats(ticker: str, years: int = 5,
                         summary_0dte, sharpe_0dte, tenor_label='0DTE (T=1d, daily rolado)'),
                     'options_pnl_30d': fig_options_pnl_heatmap(
                         summary_30d, sharpe_30d, tenor_label='30d Monthly (T=21d, mensal)'),
+                    'strategies_equity_0dte': fig_nomura_strategies_equity(
+                        pnl_0dte, tenor_label='0DTE (T=1d)'),
+                    'strategies_equity_30d': fig_nomura_strategies_equity(
+                        pnl_30d, tenor_label='30d Monthly (T=21d)'),
+                    'strategies_rolling_0dte': fig_nomura_strategies_rolling(
+                        pnl_0dte, window=60, tenor_label='0DTE (T=1d)'),
+                    'strategies_rolling_30d': fig_nomura_strategies_rolling(
+                        pnl_30d, window=60, tenor_label='30d Monthly (T=21d)'),
                     'skew_pctiles': fig_skew_multi(sp),
                     'iv_rank': fig_iv_rank(vol),
                     'flows': fig_systematic_flows(flows),
@@ -3649,18 +3765,36 @@ def build_section_widgets(result: dict) -> list:
             "sao muito maiores. Valores em % do spot, 2 casas."
             "</div>"))
 
+        # --- 0DTE ---
         sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 0DTE "
                              "(T=1 dia, rolado diariamente)</div>"))
         sec.append(go.FigureWidget(n['figs']['options_pnl_0dte']))
+        if 'strategies_equity_0dte' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 0DTE — "
+                                 "performance cumulativa de cada estrategia</div>"))
+            sec.append(go.FigureWidget(n['figs']['strategies_equity_0dte']))
+        if 'strategies_rolling_0dte' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 0DTE — "
+                                 "em qual regime cada estrategia performa</div>"))
+            sec.append(go.FigureWidget(n['figs']['strategies_rolling_0dte']))
         sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Cumulative (%)</div>"))
         sec.append(wd.HTML(_df_to_html_table(n.get('pnl_0dte_summary', n['pnl_summary']))))
         sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Sharpe Annualized</div>"))
         sec.append(wd.HTML(_df_to_html_table(n.get('sharpe_0dte', n['sharpe']))))
 
+        # --- 30d Monthly ---
         if 'options_pnl_30d' in n['figs']:
             sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 30d Monthly "
                                  "(T=21 dias uteis, ~1 mes)</div>"))
             sec.append(go.FigureWidget(n['figs']['options_pnl_30d']))
+            if 'strategies_equity_30d' in n['figs']:
+                sec.append(wd.HTML("<div class='mm-section-label'>Equity curves 30d — "
+                                     "performance cumulativa de cada estrategia</div>"))
+                sec.append(go.FigureWidget(n['figs']['strategies_equity_30d']))
+            if 'strategies_rolling_30d' in n['figs']:
+                sec.append(wd.HTML("<div class='mm-section-label'>Rolling 60d 30d — "
+                                     "em qual regime cada estrategia performa</div>"))
+                sec.append(go.FigureWidget(n['figs']['strategies_rolling_30d']))
             sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Cumulative (%)</div>"))
             sec.append(wd.HTML(_df_to_html_table(n['pnl_30d_summary'])))
             sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Sharpe Annualized</div>"))
