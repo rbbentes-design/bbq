@@ -2492,6 +2492,16 @@ def calibrate_passive_breaks(close: pd.Series, r_override: float = None) -> Pass
     resid = y - kappa * x
     sigma = float(np.std(resid) / math.sqrt(dt))
 
+    # Sanity checks: se parametros absurdos, cai em defaults do paper
+    if not (0.01 < kappa < 1.0):
+        log.warning(f'[passive_breaks] kappa calibrado {kappa:.4f} fora do razoavel, '
+                     f'usando default 0.0909')
+        kappa = 0.0909
+    if not (0.01 < sigma < 1.0):
+        log.warning(f'[passive_breaks] sigma calibrado {sigma:.4f} fora do razoavel, '
+                     f'usando default 0.1247')
+        sigma = 0.1247
+
     log.info(f'[passive_breaks] calibrado: kappa={kappa:.4f} sigma={sigma:.4f} r={r:.4f} '
               f'(T={T_years:.1f}y, n={n})')
 
@@ -2500,13 +2510,14 @@ def calibrate_passive_breaks(close: pd.Series, r_override: float = None) -> Pass
 
 def simulate_passive_breaks(S0: float, F0: float, cfg: PassiveBreaksConfig,
                               n_paths: int = 100, horizon_years: float = 20.0,
-                              steps_per_year: int = 252,
+                              steps_per_year: int = 52,
                               p_fn=None, include_haddad: bool = True,
                               seed: int = 42) -> np.ndarray:
     """
     Monte Carlo da equacao (2) do paper.
 
     p_fn(t_year) -> retorna p(t). Se None, usa logistica default do cfg.
+    steps_per_year=52 (semanal) pra balancear velocidade e precisao.
 
     Retorna array shape (n_paths, n_steps+1).
     """
@@ -2514,25 +2525,35 @@ def simulate_passive_breaks(S0: float, F0: float, cfg: PassiveBreaksConfig,
     n_steps = int(horizon_years * steps_per_year)
     dt = 1.0 / steps_per_year
     sqrt_dt = math.sqrt(dt)
-    t0_year = cfg.t0 - (horizon_years / 2)  # arbitrario — vai ser mascarado
+    t0_year = cfg.t0 - (horizon_years / 2)
 
-    paths = np.zeros((n_paths, n_steps + 1))
+    # Pre-calcula passive share e F ao longo do tempo (vetorizado)
+    t_arr = np.arange(n_steps) * dt
+    years = t0_year + t_arr
+    if p_fn is None:
+        p_raw_arr = np.array([passive_share(y, cfg.alpha, cfg.t0) for y in years])
+    else:
+        p_raw_arr = np.array([p_fn(y) for y in years])
+    if include_haddad:
+        p_eff_arr = p_raw_arr / (1.0 + cfg.chi * (1.0 - p_raw_arr))
+    else:
+        p_eff_arr = p_raw_arr
+    F_arr = F0 * np.exp(cfg.r * t_arr)
+
+    paths = np.zeros((n_paths, n_steps + 1), dtype=np.float64)
     paths[:, 0] = S0
 
-    for i in range(n_steps):
-        t = i * dt
-        t_year = t0_year + t
-        if p_fn is None:
-            p_raw = passive_share(t_year, cfg.alpha, cfg.t0)
-        else:
-            p_raw = p_fn(t_year)
-        p_eff = haddad_effective_share(p_raw, cfg.chi) if include_haddad else p_raw
+    # Gera TODOS os randoms de uma vez
+    rnd = np.random.randn(n_paths, n_steps)
 
-        F_t = F0 * math.exp(cfg.r * t)
-        drift = cfg.kappa * (1.0 - p_eff) * (F_t - paths[:, i]) * dt
-        S_safe = np.maximum(paths[:, i], 1e-6)
-        diffusion = cfg.sigma * np.sqrt(F_t * S_safe) * sqrt_dt * np.random.randn(n_paths)
-        paths[:, i + 1] = np.maximum(paths[:, i] + drift + diffusion, 0.0)
+    for i in range(n_steps):
+        p_eff = p_eff_arr[i]
+        F_t = F_arr[i]
+        S_prev = paths[:, i]
+        S_safe = np.maximum(S_prev, 1e-6)
+        drift = cfg.kappa * (1.0 - p_eff) * (F_t - S_prev) * dt
+        diffusion = cfg.sigma * np.sqrt(F_t * S_safe) * sqrt_dt * rnd[:, i]
+        paths[:, i + 1] = np.maximum(S_prev + drift + diffusion, 0.0)
 
     return paths
 
@@ -3028,16 +3049,24 @@ def compute_session_stats(ticker: str, years: int = 5,
     passive_breaks = {}
     if include_passive_breaks:
         try:
-            # Pra passive breaks, quanto mais historia melhor.
-            # Tenta carregar ate 30y do mesmo ticker pra calibrar kappa/sigma.
             pb_years = max(years, 15)
+            log.info(f'[passive_breaks] carregando {pb_years}y de {ticker}...')
             pb_daily = load_daily(ticker, pb_years) if pb_years > years else daily
+            if pb_daily is None or len(pb_daily) < 500:
+                raise ValueError(
+                    f'Historico insuficiente: {len(pb_daily) if pb_daily is not None else 0} '
+                    f'dias. Passive Breaks precisa de 500+ dias (2y+) pra calibracao.')
+            log.info(f'[passive_breaks] simulando com {len(pb_daily)} dias...')
             passive_breaks = run_passive_breaks_section(
                 pb_daily['close'], ticker=ticker, horizon_years=20, n_paths=100)
+            log.info('[passive_breaks] OK')
         except Exception as e:
-            log.warning(f'Passive Breaks falhou: {e}')
             import traceback
-            log.warning(traceback.format_exc())
+            err_trace = traceback.format_exc()
+            log.warning(f'Passive Breaks falhou: {e}')
+            log.warning(err_trace)
+            # Guarda erro pra UI exibir (nao silenciar)
+            passive_breaks = {'error': str(e), 'traceback': err_trace}
 
     return {
         'ticker': ticker, 'years': years,
@@ -3239,8 +3268,17 @@ def build_section_widgets(result: dict) -> list:
         sec.append(go.FigureWidget(n['figs']['flows']))
 
     # --- Passive Breaks Model ---
-    if result.get('passive_breaks') and result['passive_breaks'].get('state'):
-        pb = result['passive_breaks']
+    pb_data = result.get('passive_breaks') or {}
+    if pb_data.get('error'):
+        sec.append(wd.HTML(
+            f"<div class='mm-section-label'>Passive Breaks Model — ERRO</div>"
+            f"<div class='mm-card'>"
+            f"<p class='mm-flag'>❌ Falhou: {pb_data['error']}</p>"
+            f"<pre style='color:#8b949e;font-size:10px;max-height:200px;overflow:auto'>"
+            f"{pb_data.get('traceback', '')}</pre>"
+            f"</div>"))
+    elif pb_data.get('state'):
+        pb = pb_data
         sec.append(wd.HTML(
             "<div class='mm-section-label'>Passive Breaks the Market "
             "(Green/Krishnan/Sturm SSRN 2025)</div>"))
