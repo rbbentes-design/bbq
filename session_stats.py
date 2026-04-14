@@ -5599,24 +5599,22 @@ def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Fi
                    else f'CREDIT (recebe ${abs(net_cost):.2f})')
 
     fig = go.Figure()
-    # Fill verde ACIMA de zero (y_pos zera onde y<0 — nao deixa fill invadir perda)
-    y_pos = np.where(y >= 0, y, 0)
+    # Fill das zonas usando mode='none' (so fill, sem linha)
+    y_pos = np.where(y > 0, y, 0)
     y_neg = np.where(y < 0, y, 0)
     fig.add_trace(go.Scatter(
-        x=x, y=y_pos, mode='lines',
-        line=dict(color='rgba(0,0,0,0)'),
+        x=x, y=y_pos, mode='none',
         fill='tozeroy', fillcolor='rgba(63,185,80,0.30)',
-        name='profit', showlegend=False, hoverinfo='skip'))
+        name='profit zone', showlegend=False, hoverinfo='skip'))
     fig.add_trace(go.Scatter(
-        x=x, y=y_neg, mode='lines',
-        line=dict(color='rgba(0,0,0,0)'),
+        x=x, y=y_neg, mode='none',
         fill='tozeroy', fillcolor='rgba(248,81,73,0.30)',
-        name='loss', showlegend=False, hoverinfo='skip'))
-    # Linha principal do P&L por cima
+        name='loss zone', showlegend=False, hoverinfo='skip'))
+    # Linha principal do P&L — visivel SEMPRE (mesmo se fill falhar)
     fig.add_trace(go.Scatter(
         x=x, y=y, mode='lines',
-        line=dict(color=_C['accent'], width=2.2),
-        name='P&L', showlegend=False,
+        line=dict(color=_C['accent'], width=2.5),
+        name='P&L @ expiry', showlegend=False,
         hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>'))
     # Spot atual
     fig.add_vline(x=spot, line_color=_C['orange'], line_dash='dot', line_width=1.6,
@@ -5633,12 +5631,16 @@ def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Fi
     fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
 
     be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE no range'
+    # Padding no y pra nao cortar o topo/fundo
+    y_pad = (max_profit - max_loss) * 0.15 if (max_profit - max_loss) > 0 else 1
     fig.update_layout(
         title=(f'{name} — Payoff @ expiry (T=21d)<br>'
                f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
                f'max loss ${max_loss:.2f} · BE {be_str}</sub>'),
         xaxis_title='spot price at expiry', yaxis_title='P&L ($)',
-        **{**_FIG_LAYOUT, 'height': 380})
+        xaxis=dict(range=[float(x[0]), float(x[-1])]),
+        yaxis=dict(range=[max_loss - y_pad, max_profit + y_pad]),
+        **{**_FIG_LAYOUT, 'height': 420})
     return fig
 
 
