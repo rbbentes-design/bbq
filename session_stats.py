@@ -1024,7 +1024,14 @@ def _df_to_html_table(df, max_rows=None) -> str:
     if df is None or len(df) == 0:
         return "<div class='mm-card'>(sem dados)</div>"
     d = df.head(max_rows) if max_rows else df
-    html = d.to_html(classes='mm-table', border=0, index=True, float_format='%.3f')
+    # float_format como callable (string quebra em alguns pandas quando
+    # coluna e object com numpy floats / np.nan misturado)
+    try:
+        html = d.to_html(classes='mm-table', border=0, index=True,
+                          float_format=lambda x: f'{x:.3f}' if pd.notna(x) else '')
+    except Exception:
+        # fallback: sem float_format
+        html = d.to_html(classes='mm-table', border=0, index=True, na_rep='')
     return f"<div class='mm-card' style='overflow-x:auto'>{html}</div>"
 
 
