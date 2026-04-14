@@ -153,32 +153,57 @@ YF_TO_BBG = {
 }
 
 
-def _bql_ts(response_item, col_name='value'):
+def _bql_ts(response_item, col_name='Value'):
     """Extrai serie temporal de um bql response item (padrao greeks_dashboard)."""
     df = response_item.df()
     if col_name in df.columns:
         s = df[col_name]
-    else:
+    elif response_item.name in df.columns:
         s = df[response_item.name]
+    else:
+        # ultima coluna numerica
+        s = df.select_dtypes(include=[np.number]).iloc[:, -1]
     s.index = pd.to_datetime(s.index)
     return s
 
 
+def _bql_one_field(ticker: str, bq_field, period: str = '-5Y') -> pd.Series:
+    """Executa uma request de 1 field (padrao exato do greeks_dashboard.fetch_historical)."""
+    req = bql.Request(ticker, {'Value': bq_field(
+        dates=bq.func.range(period, '0D'), fill='PREV')})
+    s = _bql_ts(bq.execute(req)[0], 'Value')
+    s = pd.to_numeric(s, errors='coerce').dropna()
+    return s
+
+
 def load_daily_bql(ticker: str, years: int = 5) -> pd.DataFrame:
-    """OHLCV diario via BQL — padrao bq.data.px_* com bq.func.range + fill='PREV'."""
-    dr = bq.func.range(f'-{years}Y', '0D')
-    req = bql.Request(ticker, {
-        'open':   bq.data.px_open(dates=dr, fill='PREV'),
-        'high':   bq.data.px_high(dates=dr, fill='PREV'),
-        'low':    bq.data.px_low(dates=dr, fill='PREV'),
-        'close':  bq.data.px_last(dates=dr, fill='PREV'),
-        'volume': bq.data.px_volume(dates=dr, fill='PREV'),
-    })
-    res = bq.execute(req)
-    frames = {item.name: _bql_ts(item, item.name) for item in res}
-    out = pd.DataFrame(frames).dropna(how='all').astype(float)
-    out.index.name = 'date'
-    return out[['open', 'high', 'low', 'close', 'volume']]
+    """
+    OHLCV diario via BQL. Faz 1 request por field (padrao do greeks_dashboard).
+    Se open/high/low falharem (comum em indices puros como SPX Index),
+    degrada graciosamente: usa close como proxy e desabilita features que
+    dependem de OHLC completo (range, gap).
+    """
+    period = f'-{years}Y'
+    out = {}
+    # Close e volume sao obrigatorios
+    out['close'] = _bql_one_field(ticker, bq.data.px_last, period)
+    try:
+        out['volume'] = _bql_one_field(ticker, bq.data.px_volume, period)
+    except Exception as e:
+        log.warning(f"[{ticker}] volume falhou: {e} — usando 0")
+        out['volume'] = pd.Series(0.0, index=out['close'].index)
+    # OHLC best-effort. Alguns indices/tickers nao tem.
+    for name, field in [('open', bq.data.px_open),
+                         ('high', bq.data.px_high),
+                         ('low', bq.data.px_low)]:
+        try:
+            out[name] = _bql_one_field(ticker, field, period)
+        except Exception as e:
+            log.warning(f"[{ticker}] {name} falhou ({e}) — fallback close")
+            out[name] = out['close'].copy()
+    df = pd.DataFrame(out).dropna(subset=['close']).astype(float)
+    df.index.name = 'date'
+    return df[['open', 'high', 'low', 'close', 'volume']]
 
 
 def load_daily_yf(ticker: str, years: int = 5) -> pd.DataFrame:
