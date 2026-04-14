@@ -6111,12 +6111,21 @@ def run_trading_section(result: dict, ticker: str = None,
 # 7h. MACRO CHARTS (Morgan Stanley style — valuation, rates/vol, commodities)
 # =============================================================================
 
+def _clean_series(s):
+    """Remove inf/-inf/NaN pra Plotly serializar em JSON."""
+    if s is None:
+        return None
+    s = pd.Series(s).replace([np.inf, -np.inf], np.nan).dropna()
+    return s
+
+
 def _fig_macro(series_dict: dict, title: str, yaxis_title: str = '',
                 colors: list = None) -> go.Figure:
     """Fig Plotly simples pra macro charts — multi-serie, dark theme."""
     fig = go.Figure()
     palette = colors or ['#00d4ff', '#ffb84d', '#ff6b6b', '#7ae582', '#c77dff']
     for i, (name, s) in enumerate(series_dict.items()):
+        s = _clean_series(s)
         if s is None or len(s) == 0:
             continue
         fig.add_trace(go.Scatter(x=s.index, y=s.values, mode='lines',
@@ -6132,12 +6141,16 @@ def _fig_macro_dual(s1: pd.Series, s2: pd.Series, name1: str, name2: str,
                       title: str, invert_s2: bool = False) -> go.Figure:
     """Dual axis pra MOVE vs SPX PE, etc."""
     from plotly.subplots import make_subplots
+    s1 = _clean_series(s1)
+    s2 = _clean_series(s2)
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=s1.index, y=s1.values, mode='lines', name=name1,
-                                line=dict(color='#00d4ff', width=1.8)), secondary_y=False)
-    y2 = -s2.values if invert_s2 else s2.values
-    fig.add_trace(go.Scatter(x=s2.index, y=y2, mode='lines', name=name2,
-                                line=dict(color='#ffb84d', width=1.8)), secondary_y=True)
+    if s1 is not None and len(s1) > 0:
+        fig.add_trace(go.Scatter(x=s1.index, y=s1.values, mode='lines', name=name1,
+                                    line=dict(color='#00d4ff', width=1.8)), secondary_y=False)
+    if s2 is not None and len(s2) > 0:
+        y2 = -s2.values if invert_s2 else s2.values
+        fig.add_trace(go.Scatter(x=s2.index, y=y2, mode='lines', name=name2,
+                                    line=dict(color='#ffb84d', width=1.8)), secondary_y=True)
     fig.update_layout(template=DASH_TEMPLATE, title=title, height=360,
                        margin=dict(l=50, r=50, t=50, b=40),
                        legend=dict(orientation='h', y=-0.15))
