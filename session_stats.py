@@ -5617,114 +5617,98 @@ def payoff_at_expiry(legs: list, spot_range: np.ndarray) -> np.ndarray:
 
 def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Figure:
     """
-    Payoff at expiry. Evita add_vline/add_hline/add_hrect (podem quebrar
-    em plotly < 4.12 ou FigureWidget). Usa shapes= via update_layout.
+    Versao minimalista — sem shapes, sem fill, sem template customizado.
+    So plot o que o backtest fig faz (que ja funciona).
     """
     try:
         if not legs:
-            return go.Figure().update_layout(
-                title=f'{name} — estrutura nao mapeada',
-                **_FIG_LAYOUT)
-        x = np.linspace(spot * 0.80, spot * 1.20, 250)
-        y = payoff_at_expiry(legs, x)
-        x_list = [float(v) for v in x]
-        y_list = [float(v) for v in y]
+            fig = go.Figure()
+            fig.update_layout(title=f'{name} — sem legs')
+            return fig
 
-        max_profit = float(np.nanmax(y))
-        max_loss = float(np.nanmin(y))
-        bes = []
-        for i in range(1, len(y)):
-            if (y[i - 1] <= 0 < y[i]) or (y[i - 1] >= 0 > y[i]):
-                be = x[i - 1] + (x[i] - x[i - 1]) * (0 - y[i - 1]) / (y[i] - y[i - 1])
-                bes.append(float(be))
-
+        spot_f = float(spot)
+        x_arr = np.linspace(spot_f * 0.80, spot_f * 1.20, 200)
+        y_arr = payoff_at_expiry(legs, x_arr)
+        x = [float(v) for v in x_arr]
+        y = [float(v) for v in y_arr]
+        max_profit = float(np.nanmax(y_arr))
+        max_loss = float(np.nanmin(y_arr))
         net_cost = sum(qty * premium for kind, qty, _, premium in legs if kind != 'S')
-        cost_label = (f'DEBIT ${abs(net_cost):.2f}' if net_cost > 0
-                       else f'CREDIT ${abs(net_cost):.2f}')
-        be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE'
+        cost_label = 'DEBIT' if net_cost > 0 else 'CREDIT'
 
-        y_pad = max(abs(max_profit), abs(max_loss)) * 0.15 + 1
-        y_low = float(max_loss - y_pad)
-        y_high = float(max_profit + y_pad)
-
-        fig = go.Figure()
-        # Trace UNICA: P&L line + fill (compat universal)
-        fig.add_trace(go.Scatter(
-            x=x_list, y=y_list,
-            mode='lines',
-            line=dict(color='#58a6ff', width=3),
-            fill='tozeroy',
-            fillcolor='rgba(88,166,255,0.20)',
-            name='P&L',
-            showlegend=False,
-            hovertemplate='spot %{x:.2f}<br>P&L %{y:+.2f}<extra></extra>',
-        ))
-
-        # Shapes — retangulos de zona + linhas de strike/spot/zero
-        shapes = [
-            # Zona verde (acima do zero)
-            dict(type='rect', xref='paper', yref='y',
-                 x0=0, x1=1, y0=0, y1=y_high,
-                 fillcolor='rgba(63,185,80,0.07)', line=dict(width=0),
-                 layer='below'),
-            # Zona vermelha (abaixo do zero)
-            dict(type='rect', xref='paper', yref='y',
-                 x0=0, x1=1, y0=y_low, y1=0,
-                 fillcolor='rgba(248,81,73,0.07)', line=dict(width=0),
-                 layer='below'),
-            # Linha y=0
-            dict(type='line', xref='x', yref='y',
-                 x0=x_list[0], x1=x_list[-1], y0=0, y1=0,
-                 line=dict(color='#8b9ab5', width=0.8)),
-            # Spot vertical (laranja dotted)
-            dict(type='line', xref='x', yref='y',
-                 x0=float(spot), x1=float(spot), y0=y_low, y1=y_high,
-                 line=dict(color='#ff8c00', width=2, dash='dot')),
-        ]
+        # Serie separada p/ marcar strikes como pontos
+        strike_xs = []
+        strike_ys = []
+        strike_labels = []
         for kind, qty, strike, _ in legs:
             if kind == 'S' or strike == 0: continue
-            color = '#58a6ff' if qty > 0 else '#ffd32a'
-            shapes.append(dict(
-                type='line', xref='x', yref='y',
-                x0=float(strike), x1=float(strike),
-                y0=y_low, y1=y_high,
-                line=dict(color=color, width=0.9, dash='dash'),
+            strike_xs.append(float(strike))
+            strike_ys.append(0.0)
+            strike_labels.append(f"{'L' if qty > 0 else 'S'}{kind}{int(strike)}")
+
+        fig = go.Figure()
+        # Principal: P&L line
+        fig.add_trace(go.Scatter(
+            x=x, y=y,
+            mode='lines',
+            line=dict(color='#58a6ff', width=3),
+            name='P&L',
+        ))
+        # Zero line
+        fig.add_trace(go.Scatter(
+            x=[x[0], x[-1]], y=[0, 0],
+            mode='lines',
+            line=dict(color='#8b9ab5', width=1, dash='dash'),
+            name='zero', showlegend=False,
+        ))
+        # Spot atual
+        fig.add_trace(go.Scatter(
+            x=[spot_f, spot_f], y=[max_loss, max_profit],
+            mode='lines',
+            line=dict(color='#ff8c00', width=2, dash='dot'),
+            name=f'spot {spot_f:.2f}', showlegend=False,
+        ))
+        # Strikes (markers na linha do zero)
+        if strike_xs:
+            fig.add_trace(go.Scatter(
+                x=strike_xs, y=strike_ys,
+                mode='markers+text',
+                marker=dict(size=10, color='#ffd32a',
+                            symbol='diamond',
+                            line=dict(color='#fff', width=1)),
+                text=strike_labels, textposition='top center',
+                textfont=dict(size=10, color='#ffd32a'),
+                name='strikes', showlegend=False,
             ))
 
-        strikes_str = ' · '.join(
-            [f"{('L' if q > 0 else 'S')}{k}{int(s)}"
-             for kk, q, s, _ in legs if kk != 'S' and s > 0
-             for k in [kk]])
-
         fig.update_layout(
-            title=(f'{name} — Payoff @ expiry · spot ${spot:.2f} · IV {iv*100:.1f}%<br>'
-                   f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
-                   f'max loss ${max_loss:.2f} · BE {be_str}<br>'
-                   f'Legs: {strikes_str}</sub>'),
-            xaxis=dict(title='spot at expiry', range=[x_list[0], x_list[-1]]),
-            yaxis=dict(title='P&L ($)', range=[y_low, y_high]),
-            shapes=shapes,
-            **{**_FIG_LAYOUT, 'height': 460})
+            title=(f'{name} — Payoff @ expiry (T=21d) | spot ${spot_f:.2f} | '
+                   f'IV {iv*100:.1f}%<br>'
+                   f'<sub>{cost_label} ${abs(net_cost):.2f} · '
+                   f'max profit ${max_profit:.2f} · max loss ${max_loss:.2f}</sub>'),
+            xaxis_title='spot at expiry',
+            yaxis_title='P&L ($)',
+            height=460,
+            paper_bgcolor='#010810',
+            plot_bgcolor='#020d1f',
+            font=dict(family='Arial, Helvetica, sans-serif', color='#e6edf3', size=12),
+            xaxis=dict(gridcolor='#1a2433', zerolinecolor='#1a2433'),
+            yaxis=dict(gridcolor='#1a2433', zerolinecolor='#8b9ab5'),
+            margin=dict(l=60, r=40, t=70, b=50),
+            showlegend=False,
+        )
         return fig
 
     except Exception as e:
-        # Em vez de silenciar, mostra o erro no chart
         import traceback
         tb = traceback.format_exc()
         log.warning(f'fig_structure_payoff({name}) erro: {e}')
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=[0, 1], y=[0, 0], mode='lines',
-            line=dict(color='#f85149', width=2), showlegend=False))
-        fig.update_layout(
-            title=f'{name} — ERRO no render: {type(e).__name__}',
-            annotations=[dict(
-                text=f'<b>{e}</b><br><br>'
-                     f'<span style="font-size:10px">{tb[:500].replace(chr(10), "<br>")}</span>',
-                xref='paper', yref='paper', x=0.02, y=0.95,
-                xanchor='left', yanchor='top', showarrow=False,
-                align='left', font=dict(size=11, color='#f85149'))],
-            **{**_FIG_LAYOUT, 'height': 420})
+        fig.add_trace(go.Scatter(x=[0], y=[0], mode='text',
+                                   text=[f'ERRO: {e}'],
+                                   textfont=dict(color='#f85149', size=14)))
+        fig.update_layout(title=f'{name} — ERRO', height=300,
+                           paper_bgcolor='#010810')
         return fig
 
 
