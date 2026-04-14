@@ -8099,40 +8099,7 @@ def build_section_widgets(result: dict) -> list:
         sens_out = wd.Output()
         gordon_out = wd.Output()
 
-        def _redraw_sens(*_):
-            with sens_out:
-                clear_output(wait=True)
-                display(wd.HTML(_eps_sensitivity_html(
-                    spx_spot=spot_w.value, eps_fy1=eps1_w.value,
-                    eps_fy2=eps2_w.value, eps_ntm=ntm_w.value)))
-
-        def _redraw_gordon(*_):
-            with gordon_out:
-                clear_output(wait=True)
-                display(wd.HTML(_gordon_sensitivity_html(
-                    spx_spot=spot_w.value, eps_fy1=eps1_w.value,
-                    us10y=_gy, erp=erp_sl.value,
-                    step_pct=step_sl.value, range_pct=range_sl.value)))
-
-        _redraw_sens()
-        _redraw_gordon()
-        for w in (spot_w, eps1_w, eps2_w, ntm_w):
-            w.observe(_redraw_sens, names='value')
-            w.observe(_redraw_gordon, names='value')
-        for w in (erp_sl, step_sl, range_sl):
-            w.observe(_redraw_gordon, names='value')
-
-        sec.append(wd.HTML(
-            "<div class='mm-section-label' style='margin-top:8px;'>"
-            "Inputs (editaveis — override live BBG)</div>"))
-        sec.append(wd.HBox([spot_w, ntm_w, eps1_w, eps2_w]))
-        sec.append(sens_out)
-
-        sec.append(wd.HTML(
-            "<div class='mm-section-label' style='margin-top:8px;'>"
-            "Gordon Growth Model — Nominal vs Real (TIPS) (live)</div>"))
-
-        # Toggle Real/Nominal + sliders
+        # Toggle Real/Nominal + sliders adicionais
         mode_tog = wd.ToggleButtons(
             options=[('Nominal', 'nominal'), ('Real (TIPS)', 'real')],
             value='nominal', description='Modo:',
@@ -8142,15 +8109,41 @@ def build_section_widgets(result: dict) -> list:
             description='g real %:',
             layout=wd.Layout(width='340px'),
             readout_format='.2f')
-        # Real ERP slider — default 4.5% pra targetar PE hist ~21x
-        # (TIPS ~1.9% + ERP 4.5% - g 2% = 4.4% -> PE = 22.7x)
         erp_real_sl = wd.FloatSlider(
             value=4.5, min=2.0, max=7.0, step=0.25,
             description='ERP real %:',
             layout=wd.Layout(width='340px'),
             readout_format='.2f')
 
+        def _redraw_sens(*_):
+            try:
+                with sens_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(_eps_sensitivity_html(
+                        spx_spot=spot_w.value, eps_fy1=eps1_w.value,
+                        eps_fy2=eps2_w.value, eps_ntm=ntm_w.value)))
+            except Exception as e:
+                import traceback
+                with sens_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(
+                        f"<div class='mm-card'><p class='mm-flag'>"
+                        f"Sens fail: {e}</p><pre style='font-size:10px;'>"
+                        f"{traceback.format_exc()}</pre></div>"))
+
         def _redraw_gordon(*_):
+            try:
+                _do_render_gordon()
+            except Exception as e:
+                import traceback
+                with gordon_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(
+                        f"<div class='mm-card'><p class='mm-flag'>"
+                        f"Gordon fail: {e}</p><pre style='font-size:10px;'>"
+                        f"{traceback.format_exc()}</pre></div>"))
+
+        def _do_render_gordon():
             with gordon_out:
                 clear_output(wait=True)
                 if mode_tog.value == 'real' and macro_data.get('us10y_real'):
@@ -8222,10 +8215,27 @@ def build_section_widgets(result: dict) -> list:
                         us10y=_gy, erp=erp_sl.value,
                         step_pct=step_sl.value, range_pct=range_sl.value)))
 
-        for w in (mode_tog, g_real_sl, erp_real_sl):
+        # Bind todos observers e renderiza inicial
+        for w in (spot_w, eps1_w, eps2_w, ntm_w):
+            w.observe(_redraw_sens, names='value')
             w.observe(_redraw_gordon, names='value')
+        for w in (erp_sl, step_sl, range_sl,
+                    mode_tog, g_real_sl, erp_real_sl):
+            w.observe(_redraw_gordon, names='value')
+        _redraw_sens()
         _redraw_gordon()
 
+        # Layout final — inputs + sensitivity
+        sec.append(wd.HTML(
+            "<div class='mm-section-label' style='margin-top:8px;'>"
+            "Inputs (editaveis — override live BBG)</div>"))
+        sec.append(wd.HBox([spot_w, ntm_w, eps1_w, eps2_w]))
+        sec.append(sens_out)
+
+        # Gordon Growth Model
+        sec.append(wd.HTML(
+            "<div class='mm-section-label' style='margin-top:8px;'>"
+            "Gordon Growth Model — Nominal vs Real (TIPS) (live)</div>"))
         sec.append(wd.HBox([mode_tog, erp_sl, erp_real_sl]))
         sec.append(wd.HBox([step_sl, range_sl, g_real_sl]))
         sec.append(gordon_out)
