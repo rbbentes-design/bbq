@@ -8097,23 +8097,50 @@ def build_section_widgets(result: dict) -> list:
                                     readout_format='.0f')
 
         sens_out = wd.Output()
-        gordon_out = wd.Output()
+        gordon_nom_out = wd.Output()
+        gordon_real_out = wd.Output()
 
-        # Toggle Real/Nominal + sliders adicionais
-        mode_tog = wd.ToggleButtons(
-            options=[('Nominal', 'nominal'), ('Real (TIPS)', 'real')],
-            value='nominal', description='Modo:',
-            layout=wd.Layout(width='320px'))
-        g_real_sl = wd.FloatSlider(
-            value=2.0, min=0.5, max=4.0, step=0.25,
-            description='g real %:',
-            layout=wd.Layout(width='340px'),
-            readout_format='.2f')
-        erp_real_sl = wd.FloatSlider(
-            value=4.5, min=2.0, max=7.0, step=0.25,
-            description='ERP real %:',
-            layout=wd.Layout(width='340px'),
-            readout_format='.2f')
+        # CPI deflator pra EPS real (nominal -> real em base-year dollars)
+        # Deflator = CPI_base / CPI_now -> se CPI subiu, EPS real < EPS nominal
+        cpi_series = macro_data.get('series', {}).get('cpi_lvl')
+        deflator = 1.0
+        cpi_now_val, cpi_base_val = None, None
+        if cpi_series is not None and len(cpi_series) > 0:
+            cpi = cpi_series.dropna()
+            if len(cpi) >= 2:
+                cpi_now_val = float(cpi.iloc[-1])
+                cpi_base_val = float(cpi.iloc[0])
+                deflator = cpi_base_val / cpi_now_val
+
+        # Targets pra centro em PE = 21x:
+        #   spread_needed = 1/21 ≈ 4.76%
+        #   g_center = rf + ERP - 4.76%
+        _us10y = _gy if _gy else 4.25  # fallback
+        _tips = macro_data.get('us10y_real') or 1.9
+        _g_nom_target = max(0.5, round(_us10y + 4.5 - (100.0/21.0), 2))
+        _g_real_target = max(0.5, round(_tips + 4.5 - (100.0/21.0), 2))
+
+        # --- NOMINAL widgets ---
+        erp_nom_sl = wd.FloatSlider(value=4.5, min=2.0, max=8.0, step=0.25,
+                                       description='ERP nom %:',
+                                       layout=wd.Layout(width='320px'),
+                                       readout_format='.2f')
+        g_nom_sl = wd.FloatSlider(value=_g_nom_target,
+                                     min=1.0, max=7.0, step=0.25,
+                                     description='g nom %:',
+                                     layout=wd.Layout(width='320px'),
+                                     readout_format='.2f')
+
+        # --- REAL widgets ---
+        erp_real_sl = wd.FloatSlider(value=4.5, min=2.0, max=7.0, step=0.25,
+                                        description='ERP real %:',
+                                        layout=wd.Layout(width='320px'),
+                                        readout_format='.2f')
+        g_real_sl = wd.FloatSlider(value=_g_real_target,
+                                      min=0.5, max=4.0, step=0.25,
+                                      description='g real %:',
+                                      layout=wd.Layout(width='320px'),
+                                      readout_format='.2f')
 
         def _redraw_sens(*_):
             try:
@@ -8131,114 +8158,134 @@ def build_section_widgets(result: dict) -> list:
                         f"Sens fail: {e}</p><pre style='font-size:10px;'>"
                         f"{traceback.format_exc()}</pre></div>"))
 
-        def _redraw_gordon(*_):
+        def _render_one(out_widget, is_real: bool):
+            # Parametros
+            if is_real:
+                rf_pct = _tips
+                erp_pct = erp_real_sl.value
+                g_ctr = g_real_sl.value
+                # Em real terms, TUDO deflacionado (base-year dollars):
+                # - EPS real = EPS nominal × deflator
+                # - SPX real = SPX spot × deflator (comparacao consistente)
+                eps_used = eps1_w.value * deflator
+                spot_used = spot_w.value * deflator
+                label = 'REAL (TIPS + EPS e SPX deflacionados em base-year $)'
+                rf_name = 'TIPS 10Y'
+            else:
+                rf_pct = _us10y
+                erp_pct = erp_nom_sl.value
+                g_ctr = g_nom_sl.value
+                eps_used = eps1_w.value
+                spot_used = spot_w.value
+                label = 'NOMINAL (10Y Treasury + EPS e SPX em $ de hoje)'
+                rf_name = '10Y Treasury'
+
+            k = (rf_pct + erp_pct) / 100.0
+            # 4 cenarios simetricos em torno de g_ctr
+            g_list = [(g_ctr - 0.50)/100, (g_ctr - 0.25)/100,
+                       g_ctr/100, (g_ctr + 0.25)/100]
+            g_list = [g for g in g_list if g > 0 and (k - g) > 0.005]
+            implied_pe_center = (1.0 / (k - g_ctr/100)
+                                   if (k - g_ctr/100) > 0.005 else 0)
+
+            # Hint
+            if implied_pe_center > 28:
+                hint = f"<span style='color:#ff6b6b;'>⚠ PE {implied_pe_center:.1f}x acima do hist ~21x</span>"
+            elif implied_pe_center < 15:
+                hint = f"<span style='color:#ffb84d;'>PE {implied_pe_center:.1f}x abaixo do hist ~21x</span>"
+            else:
+                hint = f"<span style='color:#7ae582;'>PE {implied_pe_center:.1f}x ~= hist avg 21x ✓</span>"
+
+            if is_real and cpi_now_val:
+                eps_line = (f"EPS nom ${eps1_w.value:.1f} × deflator "
+                             f"<b style='color:#cce8ff;'>{deflator:.3f}</b> "
+                             f"(CPI base {cpi_base_val:.1f} / now {cpi_now_val:.1f}) "
+                             f"= <b style='color:#7ae582;'>${eps_used:.1f}</b> real | "
+                             f"SPX spot {spot_w.value:,.0f} × deflator = "
+                             f"<b style='color:#7ae582;'>{spot_used:,.0f}</b> real")
+            else:
+                eps_line = (f"EPS <b style='color:#cce8ff;'>${eps_used:.1f}</b> "
+                             f"| SPX spot <b style='color:#cce8ff;'>{spot_used:,.0f}</b>")
+
+            with out_widget:
+                clear_output(wait=True)
+                display(wd.HTML(_gordon_sensitivity_html(
+                    spx_spot=spot_used, eps_fy1=eps_used,
+                    us10y=rf_pct, erp=erp_pct,
+                    step_pct=step_sl.value, range_pct=range_sl.value,
+                    g_scenarios=g_list)))
+                display(wd.HTML(
+                    f"<div class='mm-note'>"
+                    f"<b>{label}</b>: k = {rf_name} <b style='color:#cce8ff;'>"
+                    f"{rf_pct:.2f}%</b> + ERP <b style='color:#cce8ff;'>"
+                    f"{erp_pct:.2f}%</b> = <b style='color:#7ae582;'>{k*100:.2f}%</b> | "
+                    f"g centro <b style='color:#cce8ff;'>{g_ctr:.2f}%</b><br/>"
+                    f"{eps_line} | {hint}</div>"))
+
+        def _redraw_gordon_nom(*_):
             try:
-                _do_render_gordon()
+                _render_one(gordon_nom_out, is_real=False)
             except Exception as e:
                 import traceback
-                with gordon_out:
+                with gordon_nom_out:
                     clear_output(wait=True)
                     display(wd.HTML(
                         f"<div class='mm-card'><p class='mm-flag'>"
-                        f"Gordon fail: {e}</p><pre style='font-size:10px;'>"
+                        f"Nominal fail: {e}</p><pre style='font-size:10px;'>"
                         f"{traceback.format_exc()}</pre></div>"))
 
-        def _do_render_gordon():
-            with gordon_out:
-                clear_output(wait=True)
-                if mode_tog.value == 'real' and macro_data.get('us10y_real'):
-                    # Real: rf = TIPS, ERP real, g real
-                    # Compute real EPS via CPI deflator (se BBG trouxe CPI level)
-                    cpi_series = macro_data.get('series', {}).get('cpi_lvl')
-                    eps_real_now = eps1_w.value
-                    if cpi_series is not None and len(cpi_series) > 0:
-                        cpi = cpi_series.dropna()
-                        # Deflaciona pra base da serie (equivale a "em $ de X anos atras")
-                        cpi_now = float(cpi.iloc[-1])
-                        cpi_base = float(cpi.iloc[0])
-                        eps_real_now = eps1_w.value * (cpi_base / cpi_now)
-
-                    # Center em g_real slider, gera 4 cenarios
-                    g_center = g_real_sl.value / 100.0
-                    g_list = [g_center - 0.005, g_center,
-                               g_center + 0.005, g_center + 0.010]
-                    g_list = [g for g in g_list if g > 0]
-
-                    k_real = (macro_data.get('us10y_real') / 100.0
-                               + erp_real_sl.value / 100.0)
-                    implied_pe = (1.0 / (k_real - g_center)
-                                    if k_real - g_center > 0.005 else 0)
-
-                    display(wd.HTML(_gordon_sensitivity_html(
-                        spx_spot=spot_w.value, eps_fy1=eps1_w.value,
-                        us10y=macro_data.get('us10y_real'),
-                        erp=erp_real_sl.value,
-                        step_pct=step_sl.value, range_pct=range_sl.value,
-                        g_scenarios=g_list)))
-
-                    # Hint historico + decomposicao detalhada
-                    hist_msg = ""
-                    if implied_pe > 30:
-                        hist_msg = ("<span style='color:#ff6b6b;'>⚠ PE implicito "
-                                     f"<b>{implied_pe:.1f}x</b> acima do hist avg "
-                                     f"~21x. Spread k-g muito apertado — "
-                                     f"suba ERP real ou abaixe g.</span>")
-                    elif implied_pe < 15:
-                        hist_msg = ("<span style='color:#ffb84d;'>PE implicito "
-                                     f"<b>{implied_pe:.1f}x</b> abaixo do hist "
-                                     f"avg ~21x (bear/conservador).</span>")
-                    else:
-                        hist_msg = (f"<span style='color:#7ae582;'>PE implicito "
-                                     f"<b>{implied_pe:.1f}x</b> consistente com "
-                                     f"hist avg ~21x.</span>")
-
+        def _redraw_gordon_real(*_):
+            try:
+                _render_one(gordon_real_out, is_real=True)
+            except Exception as e:
+                import traceback
+                with gordon_real_out:
+                    clear_output(wait=True)
                     display(wd.HTML(
-                        f"<div class='mm-note'>"
-                        f"<b>Modo REAL</b> (Fisher decomposition): "
-                        f"k_real = TIPS <b style='color:#cce8ff;'>"
-                        f"{macro_data.get('us10y_real'):.2f}%</b> + "
-                        f"ERP real <b style='color:#cce8ff;'>"
-                        f"{erp_real_sl.value:.2f}%</b> = "
-                        f"<b style='color:#7ae582;'>{k_real*100:.2f}%</b> | "
-                        f"g real (centro) <b style='color:#cce8ff;'>"
-                        f"{g_real_sl.value:.2f}%</b><br/>"
-                        f"EPS nominal (input): <b style='color:#cce8ff;'>"
-                        f"${eps1_w.value:.1f}</b> | "
-                        f"EPS real (deflacionado p/ base): "
-                        f"<b style='color:#7ae582;'>${eps_real_now:.1f}</b><br/>"
-                        f"<b>SPX hist avg PE ≈ 21x</b> | {hist_msg}"
-                        f"</div>"))
-                else:
-                    # Nominal (default)
-                    display(wd.HTML(_gordon_sensitivity_html(
-                        spx_spot=spot_w.value, eps_fy1=eps1_w.value,
-                        us10y=_gy, erp=erp_sl.value,
-                        step_pct=step_sl.value, range_pct=range_sl.value)))
+                        f"<div class='mm-card'><p class='mm-flag'>"
+                        f"Real fail: {e}</p><pre style='font-size:10px;'>"
+                        f"{traceback.format_exc()}</pre></div>"))
 
-        # Bind todos observers e renderiza inicial
+        # Observers
         for w in (spot_w, eps1_w, eps2_w, ntm_w):
             w.observe(_redraw_sens, names='value')
-            w.observe(_redraw_gordon, names='value')
-        for w in (erp_sl, step_sl, range_sl,
-                    mode_tog, g_real_sl, erp_real_sl):
-            w.observe(_redraw_gordon, names='value')
+            w.observe(_redraw_gordon_nom, names='value')
+            w.observe(_redraw_gordon_real, names='value')
+        for w in (step_sl, range_sl):
+            w.observe(_redraw_gordon_nom, names='value')
+            w.observe(_redraw_gordon_real, names='value')
+        for w in (erp_nom_sl, g_nom_sl):
+            w.observe(_redraw_gordon_nom, names='value')
+        for w in (erp_real_sl, g_real_sl):
+            w.observe(_redraw_gordon_real, names='value')
+
         _redraw_sens()
-        _redraw_gordon()
+        _redraw_gordon_nom()
+        _redraw_gordon_real()
 
         # Layout final — inputs + sensitivity
         sec.append(wd.HTML(
             "<div class='mm-section-label' style='margin-top:8px;'>"
             "Inputs (editaveis — override live BBG)</div>"))
         sec.append(wd.HBox([spot_w, ntm_w, eps1_w, eps2_w]))
+        sec.append(wd.HBox([step_sl, range_sl]))
         sec.append(sens_out)
 
-        # Gordon Growth Model
+        # Gordon NOMINAL
         sec.append(wd.HTML(
             "<div class='mm-section-label' style='margin-top:8px;'>"
-            "Gordon Growth Model — Nominal vs Real (TIPS) (live)</div>"))
-        sec.append(wd.HBox([mode_tog, erp_sl, erp_real_sl]))
-        sec.append(wd.HBox([step_sl, range_sl, g_real_sl]))
-        sec.append(gordon_out)
+            "Gordon NOMINAL — rf = 10Y Treasury, EPS nominal (defaults "
+            "centrados em PE ~21x)</div>"))
+        sec.append(wd.HBox([erp_nom_sl, g_nom_sl]))
+        sec.append(gordon_nom_out)
+
+        # Gordon REAL
+        sec.append(wd.HTML(
+            "<div class='mm-section-label' style='margin-top:8px;'>"
+            "Gordon REAL — rf = TIPS 10Y, EPS deflacionado via CPI "
+            "(defaults centrados em PE ~21x)</div>"))
+        sec.append(wd.HBox([erp_real_sl, g_real_sl]))
+        sec.append(gordon_real_out)
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
