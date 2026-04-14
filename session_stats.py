@@ -256,16 +256,29 @@ def load_vol_indices(years: int = 5) -> pd.DataFrame:
 # =============================================================================
 
 def build_session_frame(daily: pd.DataFrame) -> pd.DataFrame:
-    """Monta DataFrame dia-a-dia com returns RTH, overnight, weekday, etc."""
+    """
+    Monta DataFrame dia-a-dia com separacao explicita:
+      rth_return = open[t] -> close[t]           (regular trading hours, 9:30-16:00 NY)
+      eth_return = close[t] -> open[t+1]         (extended hours = AH + overnight + pre)
+                   atribuido ao dia t (quem entra no close do dia t e sai no open do dia t+1)
+      total_return = close[t-1] -> close[t]      (dia cheio)
+    """
     df = daily.copy()
     # Retorno RTH (open -> close do mesmo dia)
     df['rth_return'] = (df['close'] - df['open']) / df['open']
     df['rth_return_pct'] = df['rth_return'] * 100
     df['rth_return_pts'] = df['close'] - df['open']
-    # Overnight / AH: close anterior -> open do dia
+    # ETH: close do dia atual -> open do proximo dia. Atribuimos ao dia atual.
+    next_open = df['open'].shift(-1)
+    df['eth_return'] = (next_open - df['close']) / df['close']
+    df['eth_return_pct'] = df['eth_return'] * 100
+    # Total daily return (close-to-close) pra comparacao
+    df['total_return'] = df['close'].pct_change()
+    df['total_return_pct'] = df['total_return'] * 100
+    # Overnight/AH (mantido como alias — ponto de vista de quem entrou ontem no close)
     prev_close = df['close'].shift(1)
     df['overnight_return'] = (df['open'] - prev_close) / prev_close
-    df['ah_return'] = df['overnight_return']  # alias
+    df['ah_return'] = df['overnight_return']  # alias legado
     # Range
     df['range'] = df['high'] - df['low']
     df['range_pct'] = df['range'] / df['open']
@@ -325,9 +338,24 @@ WEEKDAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 
 
 def _pct(x):
+    """Converte fracao em pct (2 casas decimais). NaN-safe."""
     if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
         return np.nan
-    return round(float(x) * 100, 3)
+    return round(float(x) * 100, 2)
+
+
+def _round2(x):
+    """Arredonda pra 2 casas (NaN-safe)."""
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return np.nan
+    return round(float(x), 2)
+
+
+def _usd_bn(x):
+    """Formata valor em USD bn (2 casas)."""
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return np.nan
+    return round(float(x) / 1e9, 2)
 
 
 def weekday_stats(df: pd.DataFrame, col: str = 'rth_return') -> pd.DataFrame:
@@ -361,11 +389,11 @@ def weekday_stats(df: pd.DataFrame, col: str = 'rth_return') -> pd.DataFrame:
             'worst_pct': _pct(s.min()),
             'avg_win_pct': _pct(wins.mean()) if len(wins) else np.nan,
             'avg_loss_pct': _pct(losses.mean()) if len(losses) else np.nan,
-            'payoff': round(payoff, 3) if pd.notna(payoff) else np.nan,
-            'profit_factor': round(pf, 3) if pd.notna(pf) else np.nan,
+            'payoff': round(payoff, 2) if pd.notna(payoff) else np.nan,
+            'profit_factor': round(pf, 2) if pd.notna(pf) else np.nan,
             'expectancy_pct': _pct(exp_),
-            'skew': round(skew, 3) if pd.notna(skew) else np.nan,
-            'kurtosis': round(kurt, 3) if pd.notna(kurt) else np.nan,
+            'skew': round(skew, 2) if pd.notna(skew) else np.nan,
+            'kurtosis': round(kurt, 2) if pd.notna(kurt) else np.nan,
             'cum_return_pct': _pct((1 + s).prod() - 1),
         })
     return pd.DataFrame(rows)
@@ -507,12 +535,12 @@ def backtest_rth(df: pd.DataFrame) -> BacktestResult:
         'total_return_pct': _pct(equity.iloc[-1] - 1) if n else np.nan,
         'cagr_pct': _pct(cagr),
         'ann_vol_pct': _pct(vol),
-        'sharpe': round(sharpe, 3) if pd.notna(sharpe) else np.nan,
-        'sortino': round(sortino, 3) if pd.notna(sortino) else np.nan,
-        'calmar': round(calmar, 3) if pd.notna(calmar) else np.nan,
+        'sharpe': round(sharpe, 2) if pd.notna(sharpe) else np.nan,
+        'sortino': round(sortino, 2) if pd.notna(sortino) else np.nan,
+        'calmar': round(calmar, 2) if pd.notna(calmar) else np.nan,
         'max_drawdown_pct': _pct(max_dd),
         'recovery_days': rec_days,
-        'profit_factor': round(pf, 3) if pd.notna(pf) else np.nan,
+        'profit_factor': round(pf, 2) if pd.notna(pf) else np.nan,
         'hit_rate_pct': _pct((r > 0).sum() / n) if n else np.nan,
         'best_day_pct': _pct(r.max()),
         'worst_day_pct': _pct(r.min()),
@@ -557,8 +585,8 @@ def monthly_stats(df: pd.DataFrame):
     d['month'] = d.index.month
     by_month = d.groupby('month')['rth_return'].agg(['count', 'mean', 'std']).reset_index()
     by_month.columns = ['month', 'n', 'mean_pct', 'std_pct']
-    by_month['mean_pct'] = (by_month['mean_pct'] * 100).round(3)
-    by_month['std_pct'] = (by_month['std_pct'] * 100).round(3)
+    by_month['mean_pct'] = (by_month['mean_pct'] * 100).round(2)
+    by_month['std_pct'] = (by_month['std_pct'] * 100).round(2)
     by_month['hit_rate_pct'] = by_month['month'].map(
         lambda m: _pct((d[d['month'] == m]['rth_return'] > 0).mean()))
     return by_month
@@ -701,24 +729,30 @@ def compute_dynamic_flows(spot_df: pd.DataFrame, cfg: FlowConfig = None) -> pd.D
     cfg = cfg or FlowConfig()
     df = spot_df.copy()
     r = df['close'].pct_change().fillna(0)
-    rv = (r.rolling(21, min_periods=5).std() * math.sqrt(252)).fillna(method='ffill').fillna(0.15)
+    rv = (r.rolling(21, min_periods=5).std() * math.sqrt(252)).ffill().fillna(0.15)
+    # garantia anti-NaN
+    rv = rv.replace([np.inf, -np.inf], 0.15).fillna(0.15)
 
-    vc_exp = (cfg.vc_target_vol / rv).clip(lower=cfg.vc_floor, upper=cfg.vc_max_lev)
+    vc_exp = (cfg.vc_target_vol / rv).clip(lower=cfg.vc_floor, upper=cfg.vc_max_lev).fillna(1.0)
     # smooth (cap 25%/dia)
-    for i in range(1, len(vc_exp)):
-        delta = vc_exp.iloc[i] - vc_exp.iloc[i - 1]
+    vc_arr = vc_exp.values.copy()
+    for i in range(1, len(vc_arr)):
+        delta = vc_arr[i] - vc_arr[i - 1]
         if abs(delta) > 0.25:
-            vc_exp.iloc[i] = vc_exp.iloc[i - 1] + np.sign(delta) * 0.25
+            vc_arr[i] = vc_arr[i - 1] + np.sign(delta) * 0.25
+    vc_exp = pd.Series(vc_arr, index=vc_exp.index)
 
     cta = pd.Series(0.0, index=df.index)
     for s_w, l_w in [(5, 20), (10, 60), (20, 120), (50, 200)]:
         s = df['close'].rolling(s_w, min_periods=2).mean()
         l = df['close'].rolling(l_w, min_periods=2).mean()
         cta = cta + np.sign(s - l) / 4
-    cta_exp = (cta * (0.15 / rv)).clip(-2.0, 2.0)
+    cta_exp = (cta * (0.15 / rv)).clip(-2.0, 2.0).fillna(0.0)
 
     inv = 1.0 / rv
-    rp_exp = (cfg.rp_eq_weight * (inv / inv.rolling(60, min_periods=10).mean())).clip(0.3 * cfg.rp_eq_weight, 2.0 * cfg.rp_eq_weight)
+    inv_ma = inv.rolling(60, min_periods=10).mean().ffill().bfill()
+    rp_exp = (cfg.rp_eq_weight * (inv / inv_ma)).clip(
+        0.3 * cfg.rp_eq_weight, 2.0 * cfg.rp_eq_weight).fillna(cfg.rp_eq_weight)
 
     out = pd.DataFrame(index=df.index)
     out['vc_exposure'] = vc_exp
@@ -864,21 +898,42 @@ def fig_streak_distribution(df: pd.DataFrame, ticker: str) -> go.Figure:
 
 
 def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame) -> go.Figure:
-    fig = make_subplots(rows=1, cols=2, column_widths=[0.58, 0.42],
-                         subplot_titles=('SPX Daily Options PnL (%)', 'Sharpe Ratio'),
-                         horizontal_spacing=0.12)
-    for idx, (data, showscale) in enumerate([(summary, True), (sharpe, False)]):
+    """Dois heatmaps empilhados (um em cima do outro) — evita label overflow."""
+    # Abrevia labels longos pra nao invadir adjacente
+    def _short(label):
+        rep = {
+            'Selling Daily ATM Straddle': 'Sell ATM Straddle',
+            'Selling Daily ATM Call': 'Sell ATM Call',
+            'Selling Daily ATM Put': 'Sell ATM Put',
+            'Selling Daily Strangle': 'Sell 25d Strangle',
+            'Selling Daily 25d Call': 'Sell 25d Call',
+            'Selling Daily 25d Put': 'Sell 25d Put',
+            'Selling Daily Straddle, Long Strangle': 'Sell Strd / Long Strg',
+            'Sell 25d Put, Buy 25d Call': 'Sell 25dP / Buy 25dC',
+            'Sell 25d Call, Buy 25d Put': 'Sell 25dC / Buy 25dP',
+            'Stock (Long)': 'Stock (Long)',
+        }
+        return rep.get(label, label)
+    summary = summary.rename(index=_short)
+    sharpe = sharpe.rename(index=_short)
+    fig = make_subplots(rows=2, cols=1, row_heights=[0.55, 0.45],
+                         vertical_spacing=0.12,
+                         subplot_titles=('SPX Daily Options PnL — Cumulative (%)',
+                                          'Sharpe Ratio Annualized'))
+    for idx, data in enumerate([summary, sharpe]):
         v = data.values.astype(float)
         vmax = np.nanmax(np.abs(v)) if v.size else 1
         fig.add_trace(go.Heatmap(
             z=v, x=list(data.columns), y=list(data.index),
             colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
-            zmin=-vmax, zmax=vmax, showscale=showscale,
+            zmin=-vmax, zmax=vmax, showscale=False,
             text=[[f'{x:.1f}' if pd.notna(x) else '' for x in row] for row in v],
-            texttemplate='%{text}', textfont=dict(size=9, color='#cce8ff'),
-        ), row=1, col=idx + 1)
+            texttemplate='%{text}', textfont=dict(size=10, color='#cce8ff'),
+            hovertemplate='%{y} | %{x}<br>value: %{z:.2f}<extra></extra>',
+        ), row=idx + 1, col=1)
     fig.update_layout(title='Nomura — SPX Daily Options PnL Summary',
-                       **{**_FIG_LAYOUT, 'height': 460})
+                       **{**_FIG_LAYOUT, 'height': 720,
+                          'margin': dict(l=200, r=40, t=55, b=40)})
     return fig
 
 
@@ -906,7 +961,11 @@ def fig_skew_percentiles(sp: pd.DataFrame) -> go.Figure:
 
 
 def fig_systematic_flows(flows: pd.DataFrame) -> go.Figure:
-    f = flows.dropna()
+    # NAO fazer dropna agressivo — um NaN em qualquer coluna apagava tudo.
+    # Remove so os primeiros dias onde flow_total e inicializado em 0.
+    f = flows.copy()
+    # Mascara dias em que AUM ainda nao comecou a evoluir
+    f = f[f.index >= f.index[min(30, len(f) - 1)]]
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
                          row_heights=[0.42, 0.28, 0.30],
                          subplot_titles=(
@@ -947,6 +1006,330 @@ def fig_systematic_flows(flows: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ---- graficos adicionais (tudo que era so tabela agora tem chart) ----
+
+def fig_updown_weekday(updown: pd.DataFrame, ticker: str) -> go.Figure:
+    """Barras empilhadas up/down por weekday com retorno medio como linha."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=updown['weekday'], y=updown['pct_up'],
+                          name='% up', marker_color=_C['green']),
+                   secondary_y=False)
+    fig.add_trace(go.Bar(x=updown['weekday'], y=updown['pct_down'],
+                          name='% down', marker_color=_C['red']),
+                   secondary_y=False)
+    fig.add_trace(go.Scatter(x=updown['weekday'], y=updown['avg_up_pct'],
+                              name='avg up %', mode='lines+markers',
+                              line=dict(color=_C['teal'], width=2, dash='dot')),
+                   secondary_y=True)
+    fig.add_trace(go.Scatter(x=updown['weekday'], y=updown['avg_down_pct'],
+                              name='avg down %', mode='lines+markers',
+                              line=dict(color=_C['orange'], width=2, dash='dot')),
+                   secondary_y=True)
+    fig.update_layout(title=f'{ticker} — Subiu / Caiu por weekday (barra=%, linha=ret medio)',
+                       barmode='group', **_FIG_LAYOUT)
+    fig.update_yaxes(title_text='% dos dias', secondary_y=False)
+    fig.update_yaxes(title_text='retorno medio %', secondary_y=True)
+    return fig
+
+
+def fig_streaks(streaks: pd.DataFrame, ticker: str) -> go.Figure:
+    """Estado atual + max historico de sequencias."""
+    if len(streaks) == 0:
+        return go.Figure().update_layout(title='Sequencias — sem dados', **_FIG_LAYOUT)
+    x = streaks['serie']
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x, y=streaks['max_streak_up'], name='max up',
+                          marker_color=_C['green']))
+    fig.add_trace(go.Bar(x=x, y=streaks['max_streak_down'], name='max down',
+                          marker_color=_C['red']))
+    fig.add_trace(go.Bar(x=x, y=streaks['current_streak_signed'],
+                          name='atual (signed)', marker_color=_C['accent']))
+    fig.update_layout(title=f'{ticker} — Sequencias RTH e Vol',
+                       barmode='group', yaxis_title='dias', **_FIG_LAYOUT)
+    return fig
+
+
+def fig_conditional_after_streaks(cond: pd.DataFrame, ticker: str) -> go.Figure:
+    """Retorno RTH medio apos N dias seguidos de alta/queda."""
+    if len(cond) == 0:
+        return go.Figure().update_layout(title='Conditional — sem dados', **_FIG_LAYOUT)
+    x = cond['k_days'].astype(str)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x, y=cond['rth_after_up_pct'],
+                          name='RTH apos N alta (%)', marker_color=_C['green'],
+                          text=[f"n={n}" for n in cond['n_after_up']],
+                          textposition='outside'))
+    fig.add_trace(go.Bar(x=x, y=cond['rth_after_down_pct'],
+                          name='RTH apos N queda (%)', marker_color=_C['red'],
+                          text=[f"n={n}" for n in cond['n_after_down']],
+                          textposition='outside'))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(title=f'{ticker} — Retorno RTH apos N dias seguidos',
+                       barmode='group', xaxis_title='N dias',
+                       yaxis_title='retorno medio %', **_FIG_LAYOUT)
+    return fig
+
+
+def fig_regime(regime: pd.DataFrame, ticker: str) -> go.Figure:
+    """Bars por regime: n, mean return, hit rate."""
+    if len(regime) == 0:
+        return go.Figure().update_layout(title='Regime — sem dados', **_FIG_LAYOUT)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    colors = {'uptrend': _C['green'], 'downtrend': _C['red'], 'sideways': _C['neutral'] if 'neutral' in _C else _C['text_muted']}
+    bar_colors = [colors.get(r, _C['accent']) for r in regime['regime']]
+    fig.add_trace(go.Bar(x=regime['regime'], y=regime['mean_pct'],
+                          name='Ret medio %', marker_color=bar_colors,
+                          text=[f"n={n}" for n in regime['n']],
+                          textposition='outside'),
+                   secondary_y=False)
+    fig.add_trace(go.Scatter(x=regime['regime'], y=regime['hit_rate_pct'],
+                              name='Hit rate %', mode='lines+markers',
+                              line=dict(color=_C['yellow'], width=2),
+                              marker=dict(size=12)),
+                   secondary_y=True)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(title=f'{ticker} — Regime (uptrend/sideways/downtrend)',
+                       **_FIG_LAYOUT)
+    fig.update_yaxes(title_text='Ret medio RTH %', secondary_y=False)
+    fig.update_yaxes(title_text='Hit rate %', range=[0, 100], secondary_y=True)
+    return fig
+
+
+def fig_gap(gaps: pd.DataFrame, ticker: str) -> go.Figure:
+    """Gap analysis: retorno + hit + fechamento do gap."""
+    if len(gaps) == 0:
+        return go.Figure().update_layout(title='Gap — sem dados', **_FIG_LAYOUT)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    colors = {'up': _C['green'], 'down': _C['red'], 'flat': _C['text_muted']}
+    bar_colors = [colors.get(g, _C['accent']) for g in gaps['gap_type']]
+    fig.add_trace(go.Bar(x=gaps['gap_type'], y=gaps['rth_mean_pct'],
+                          name='RTH mean %', marker_color=bar_colors,
+                          text=[f"n={n}" for n in gaps['n']],
+                          textposition='outside'),
+                   secondary_y=False)
+    fig.add_trace(go.Scatter(x=gaps['gap_type'], y=gaps['rth_hit_pct'],
+                              name='Hit %', mode='lines+markers',
+                              line=dict(color=_C['yellow'], width=2)),
+                   secondary_y=True)
+    fig.add_trace(go.Scatter(x=gaps['gap_type'], y=gaps['gap_close_rate_pct'],
+                              name='Gap close rate %', mode='lines+markers',
+                              line=dict(color=_C['purple'], width=2, dash='dash')),
+                   secondary_y=True)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(title=f'{ticker} — Gap analysis', **_FIG_LAYOUT)
+    fig.update_yaxes(title_text='Ret medio RTH %', secondary_y=False)
+    fig.update_yaxes(title_text='%', range=[0, 100], secondary_y=True)
+    return fig
+
+
+def fig_monthly(by_month: pd.DataFrame, ticker: str) -> go.Figure:
+    """Sazonalidade mes-a-mes."""
+    if len(by_month) == 0:
+        return go.Figure().update_layout(title='Monthly — sem dados', **_FIG_LAYOUT)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    xs = [month_names[m - 1] for m in by_month['month']]
+    bar_colors = [_C['green'] if v > 0 else _C['red'] for v in by_month['mean_pct']]
+    fig.add_trace(go.Bar(x=xs, y=by_month['mean_pct'], name='Ret medio %',
+                          marker_color=bar_colors,
+                          text=[f"n={n}" for n in by_month['n']],
+                          textposition='outside'),
+                   secondary_y=False)
+    fig.add_trace(go.Scatter(x=xs, y=by_month['hit_rate_pct'],
+                              name='Hit rate %', mode='lines+markers',
+                              line=dict(color=_C['yellow'], width=2)),
+                   secondary_y=True)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5)
+    fig.update_layout(title=f'{ticker} — Sazonalidade por mes', **_FIG_LAYOUT)
+    fig.update_yaxes(title_text='Ret medio RTH %', secondary_y=False)
+    fig.update_yaxes(title_text='Hit rate %', range=[0, 100], secondary_y=True)
+    return fig
+
+
+def skew_percentiles_multi(iv_df: pd.DataFrame, window: int = 252) -> pd.DataFrame:
+    """
+    Calcula skew percentiles em TRES convencoes (na duvida, coloca todas):
+
+      Nomura (ratio):
+        left_tail_ratio = iv_25dP / iv_25dC    -> alto = put caro vs call
+        right_tail_ratio = iv_25dC / atm_iv    -> alto = call caro vs atm
+
+      Normalized diff (academico):
+        put_skew_norm = (iv_25dP - atm_iv) / atm_iv   -> positivo = put caro
+        call_skew_norm = (iv_25dC - atm_iv) / atm_iv  -> negativo = call desconta
+
+      Absoluto (simples):
+        skew_abs = iv_25dP - iv_25dC           -> diferenca pura em pts de vol
+
+    Todas com percentil rolling 1y.
+    """
+    out = iv_df.copy()
+    out['left_tail_ratio'] = out['iv_25dP'] / out['iv_25dC']
+    out['right_tail_ratio'] = out['iv_25dC'] / out['atm_iv']
+    out['put_skew_norm'] = (out['iv_25dP'] - out['atm_iv']) / out['atm_iv']
+    out['call_skew_norm'] = (out['iv_25dC'] - out['atm_iv']) / out['atm_iv']
+    out['skew_abs'] = out['iv_25dP'] - out['iv_25dC']
+    for c in ['left_tail_ratio', 'right_tail_ratio', 'put_skew_norm',
+              'call_skew_norm', 'skew_abs', 'atm_iv']:
+        out[f'{c}_pctile'] = out[c].rolling(window, min_periods=60).apply(
+            lambda x: x.rank(pct=True).iloc[-1] * 100, raw=False)
+    last = out.dropna().iloc[-1] if len(out.dropna()) else None
+    if last is not None:
+        ltp = last['left_tail_ratio_pctile']
+        rtp = last['right_tail_ratio_pctile']
+        out.attrs['left_tail'] = ('OVERHEDGED FOR LEFT-TAIL' if ltp >= 80
+                                    else 'UNDERHEDGED FOR LEFT-TAIL' if ltp <= 20
+                                    else 'NEUTRAL LEFT-TAIL')
+        out.attrs['right_tail'] = ('UNDERHEDGED FOR RIGHT-TAIL' if rtp <= 20
+                                     else 'OVERHEDGED FOR RIGHT-TAIL' if rtp >= 80
+                                     else 'NEUTRAL RIGHT-TAIL')
+    return out
+
+
+def fig_skew_multi(sp: pd.DataFrame) -> go.Figure:
+    """
+    4 paineis com todas as convencoes de skew.
+    Deixa o usuario ver qual faz mais sentido.
+    """
+    d = sp.dropna(subset=['atm_iv'])
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                         subplot_titles=(
+                             f'Nomura — 3M Skew 25dP/25dC (percentile) — {sp.attrs.get("left_tail", "")}',
+                             f'Nomura — 3M Call Skew 25dC/ATM (percentile) — {sp.attrs.get("right_tail", "")}',
+                             'SpotGamma-style — Put skew (25dP - ATM) / ATM (raw %)',
+                             'SpotGamma-style — Call skew (25dC - ATM) / ATM (raw %)'))
+    # 1. Nomura left tail
+    fig.add_trace(go.Scatter(x=d.index, y=d['left_tail_ratio_pctile'],
+                              line=dict(color=_C['accent'], width=1),
+                              showlegend=False), row=1, col=1)
+    fig.add_hline(y=80, line_color=_C['red'], line_dash='dash', line_width=0.7, row=1, col=1)
+    fig.add_hline(y=20, line_color=_C['green'], line_dash='dash', line_width=0.7, row=1, col=1)
+    # 2. Nomura right tail
+    fig.add_trace(go.Scatter(x=d.index, y=d['right_tail_ratio_pctile'],
+                              line=dict(color=_C['orange'], width=1),
+                              showlegend=False), row=2, col=1)
+    fig.add_hline(y=80, line_color=_C['red'], line_dash='dash', line_width=0.7, row=2, col=1)
+    fig.add_hline(y=20, line_color=_C['green'], line_dash='dash', line_width=0.7, row=2, col=1)
+    # 3. Put skew normalized (raw)
+    fig.add_trace(go.Scatter(x=d.index, y=d['put_skew_norm'] * 100,
+                              line=dict(color=_C['yellow'], width=1),
+                              showlegend=False, fill='tozeroy',
+                              fillcolor='rgba(210,153,34,0.12)'), row=3, col=1)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5, row=3, col=1)
+    # 4. Call skew normalized (raw)
+    fig.add_trace(go.Scatter(x=d.index, y=d['call_skew_norm'] * 100,
+                              line=dict(color=_C['teal'], width=1),
+                              showlegend=False, fill='tozeroy',
+                              fillcolor='rgba(0,212,170,0.12)'), row=4, col=1)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.5, row=4, col=1)
+    fig.update_yaxes(range=[0, 100], title_text='pctile', row=1, col=1)
+    fig.update_yaxes(range=[0, 100], title_text='pctile', row=2, col=1)
+    fig.update_yaxes(title_text='%', row=3, col=1)
+    fig.update_yaxes(title_text='%', row=4, col=1)
+    fig.update_layout(title='Skew — convencoes Nomura + SpotGamma (na duvida)',
+                       **{**_FIG_LAYOUT, 'height': 780})
+    return fig
+
+
+def backtest_eth(df: pd.DataFrame) -> BacktestResult:
+    """
+    Estrategia ETH: entra no close de t, sai no open de t+1.
+    Reutiliza mesma mecanica do backtest_rth, so troca a serie de retorno.
+    """
+    r = df['eth_return'].fillna(0.0)
+    equity = (1 + r).cumprod()
+    peak = equity.cummax()
+    dd = equity / peak - 1
+    n = len(r); years = n / 252 if n else 0
+    cagr = equity.iloc[-1] ** (1 / years) - 1 if years > 0 else np.nan
+    vol = r.std() * math.sqrt(252) if n > 1 else np.nan
+    sharpe = (r.mean() * 252) / vol if vol and vol > 0 else np.nan
+    dn = r[r < 0].std() * math.sqrt(252)
+    sortino = (r.mean() * 252) / dn if dn and dn > 0 else np.nan
+    max_dd = dd.min() if len(dd) else np.nan
+    calmar = cagr / abs(max_dd) if max_dd and max_dd != 0 else np.nan
+    wins = r[r > 0]; losses = r[r < 0]
+    pf = wins.sum() / abs(losses.sum()) if losses.sum() != 0 else np.nan
+    metrics = {
+        'n_days': n,
+        'total_return_pct': _pct(equity.iloc[-1] - 1) if n else np.nan,
+        'cagr_pct': _pct(cagr),
+        'ann_vol_pct': _pct(vol),
+        'sharpe': _round2(sharpe),
+        'sortino': _round2(sortino),
+        'calmar': _round2(calmar),
+        'max_drawdown_pct': _pct(max_dd),
+        'profit_factor': _round2(pf),
+        'hit_rate_pct': _pct((r > 0).sum() / n) if n else np.nan,
+        'best_day_pct': _pct(r.max()),
+        'worst_day_pct': _pct(r.min()),
+    }
+    return BacktestResult(equity=equity, drawdown=dd, metrics=metrics)
+
+
+def fig_rth_vs_eth_equity(bt_rth: BacktestResult, bt_eth: BacktestResult,
+                            ticker: str) -> go.Figure:
+    """Compara equity RTH (open->close) vs ETH (close->open) no mesmo ativo."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=bt_rth.equity.index, y=bt_rth.equity.values,
+                              name=f'RTH (Sharpe={bt_rth.metrics["sharpe"]})',
+                              line=dict(color=_C['accent'], width=1.4),
+                              fill='tozeroy', fillcolor='rgba(88,166,255,0.04)'))
+    fig.add_trace(go.Scatter(x=bt_eth.equity.index, y=bt_eth.equity.values,
+                              name=f'ETH (Sharpe={bt_eth.metrics["sharpe"]})',
+                              line=dict(color=_C['orange'], width=1.4)))
+    fig.add_hline(y=1.0, line_color=_C['text_muted'], line_dash='dash', line_width=0.6)
+    fig.update_layout(
+        title=f'{ticker} — Equity RTH vs ETH (qual sessao paga mais?)',
+        yaxis_title='Equity (norm=1)',
+        **{**_FIG_LAYOUT, 'height': 440})
+    return fig
+
+
+def fig_eth_weekday_bars(wstats_eth: pd.DataFrame, ticker: str) -> go.Figure:
+    d = wstats_eth.set_index('weekday').reindex([x for x in WEEKDAY_ORDER if x in wstats_eth['weekday'].values])
+    colors = [_C['green'] if v > 0 else _C['red'] for v in d['mean_pct']]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=d.index, y=d['mean_pct'], marker_color=colors,
+                          text=[f"{v:.2f}%<br>n={int(n)}" for v, n in zip(d['mean_pct'], d['n'])],
+                          textposition='outside', showlegend=False))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
+    fig.update_layout(title=f'{ticker} — Retorno medio ETH (close→open) por weekday (%)',
+                       yaxis_title='% medio', **_FIG_LAYOUT)
+    return fig
+
+
+def fig_iv_rank(vol_df: pd.DataFrame) -> go.Figure:
+    """IV Rank + Skew Rank estilo SpotGamma — mas pro indice (VIX/SKEW)."""
+    if len(vol_df) == 0:
+        return go.Figure().update_layout(title='IV/Skew rank — sem dados', **_FIG_LAYOUT)
+    d = vol_df.copy()
+    d['vix_rank'] = d['vix'].rolling(252, min_periods=60).apply(
+        lambda x: x.rank(pct=True).iloc[-1] * 100, raw=False)
+    d['skew_rank'] = d['skew'].rolling(252, min_periods=60).apply(
+        lambda x: x.rank(pct=True).iloc[-1] * 100, raw=False)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
+                         subplot_titles=('IV Rank — VIX vs 1y history',
+                                          'Skew Rank — SKEW index vs 1y history'))
+    fig.add_trace(go.Scatter(x=d.index, y=d['vix_rank'],
+                              line=dict(color=_C['teal'], width=1),
+                              fill='tozeroy', fillcolor='rgba(0,212,170,0.15)',
+                              showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d['skew_rank'],
+                              line=dict(color=_C['pink'], width=1),
+                              fill='tozeroy', fillcolor='rgba(247,120,186,0.15)',
+                              showlegend=False), row=2, col=1)
+    for row in [1, 2]:
+        fig.add_hline(y=50, line_color=_C['text_muted'], line_dash='dash',
+                       line_width=0.6, row=row, col=1)
+    fig.update_yaxes(range=[0, 100], title_text='rank', row=1, col=1)
+    fig.update_yaxes(range=[0, 100], title_text='rank', row=2, col=1)
+    fig.update_layout(title='Market-Wide IV & Skew Ranks (estilo SpotGamma)',
+                       **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
 # =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
@@ -966,7 +1349,9 @@ def compute_session_stats(ticker: str, years: int = 5,
 
     tables = {
         'session_frame': df,
-        'weekday_stats': weekday_stats(df),
+        'weekday_stats_rth': weekday_stats(df, col='rth_return'),
+        'weekday_stats_eth': weekday_stats(df, col='eth_return'),
+        'weekday_stats': weekday_stats(df, col='rth_return'),  # alias default = RTH
         'updown_by_weekday': up_down_by_weekday(df),
         'ma_residency': ma_residency_stats(df),
         'streaks': streak_stats(df),
@@ -976,17 +1361,30 @@ def compute_session_stats(ticker: str, years: int = 5,
         'monthly_stats': monthly_stats(df),
     }
     bt = backtest_rth(df)
-    tables['equity_curve'] = bt.equity.to_frame('equity')
-    tables['drawdown_curve'] = bt.drawdown.to_frame('drawdown')
+    bt_eth = backtest_eth(df)
+    tables['equity_curve_rth'] = bt.equity.to_frame('equity')
+    tables['drawdown_curve_rth'] = bt.drawdown.to_frame('drawdown')
+    tables['equity_curve_eth'] = bt_eth.equity.to_frame('equity')
+    tables['drawdown_curve_eth'] = bt_eth.drawdown.to_frame('drawdown')
 
     figs = {
-        'weekday_bars': fig_weekday_bars(tables['weekday_stats'], ticker),
-        'weekday_hitrate': fig_weekday_hitrate(tables['weekday_stats'], ticker),
-        'equity_dd': fig_equity_dd(bt, ticker),
+        'weekday_bars_rth': fig_weekday_bars(tables['weekday_stats_rth'], f'{ticker} RTH'),
+        'weekday_bars_eth': fig_eth_weekday_bars(tables['weekday_stats_eth'], ticker),
+        'weekday_hitrate': fig_weekday_hitrate(tables['weekday_stats_rth'], ticker),
+        'updown_weekday': fig_updown_weekday(tables['updown_by_weekday'], ticker),
+        'equity_dd_rth': fig_equity_dd(bt, f'{ticker} RTH'),
+        'equity_dd_eth': fig_equity_dd(bt_eth, f'{ticker} ETH'),
+        'rth_vs_eth': fig_rth_vs_eth_equity(bt, bt_eth, ticker),
         'histogram': fig_histogram(df, ticker),
         'ma_residency': fig_ma_residency(tables['ma_residency'], ticker),
         'heatmap_wkd_month': fig_heatmap_wkd_month(df, ticker),
         'streak_distribution': fig_streak_distribution(df, ticker),
+        'streaks': fig_streaks(tables['streaks'], ticker),
+        'conditional_streaks': fig_conditional_after_streaks(
+            tables['conditional_streaks'], ticker),
+        'regime': fig_regime(tables['regime'], ticker),
+        'gap': fig_gap(tables['gap_stats'], ticker),
+        'monthly': fig_monthly(tables['monthly_stats'], ticker),
     }
 
     nomura = {}
@@ -998,24 +1396,28 @@ def compute_session_stats(ticker: str, years: int = 5,
             pnl = compute_daily_options_pnl(nd, iv)
             summary = options_pnl_summary(pnl)
             sharpe = options_sharpe(pnl)
-            sp = skew_percentiles(iv)
+            sp = skew_percentiles_multi(iv)       # agora com 3 convencoes
             flows = compute_dynamic_flows(nd)
             nomura = {
                 'pnl_daily': pnl, 'pnl_summary': summary, 'sharpe': sharpe,
-                'skew_pctiles': sp, 'flows': flows,
+                'skew_pctiles': sp, 'flows': flows, 'vol_indices': vol,
                 'figs': {
                     'options_pnl': fig_options_pnl_heatmap(summary, sharpe),
-                    'skew_pctiles': fig_skew_percentiles(sp),
+                    'skew_pctiles': fig_skew_multi(sp),     # 4 paineis
+                    'iv_rank': fig_iv_rank(vol),            # IV + Skew rank
                     'flows': fig_systematic_flows(flows),
                 }
             }
         except Exception as e:
             log.warning(f'Nomura section falhou: {e}')
+            import traceback
+            log.warning(traceback.format_exc())
 
     return {
         'ticker': ticker, 'years': years,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'bt': bt, 'tables': tables, 'figs': figs, 'nomura': nomura,
+        'bt': bt, 'bt_eth': bt_eth,
+        'tables': tables, 'figs': figs, 'nomura': nomura,
     }
 
 
@@ -1028,7 +1430,7 @@ def _df_to_html_table(df, max_rows=None) -> str:
     # coluna e object com numpy floats / np.nan misturado)
     try:
         html = d.to_html(classes='mm-table', border=0, index=True,
-                          float_format=lambda x: f'{x:.3f}' if pd.notna(x) else '')
+                          float_format=lambda x: f'{x:.2f}' if pd.notna(x) else '')
     except Exception:
         # fallback: sem float_format
         html = d.to_html(classes='mm-table', border=0, index=True, na_rep='')
@@ -1061,59 +1463,151 @@ def build_section_widgets(result: dict) -> list:
     ticker = result['ticker']
     sec.append(wd.HTML(f"<div class='mm-section-label'>Session Stats — {ticker}"
                          f" ({result['years']}y) — {result['ts']}</div>"))
-    sec.append(wd.HTML(_metrics_html(result['bt'].metrics)))
+    # Header com metricas RTH e ETH lado a lado
+    rth_m = {f'RTH {k}': v for k, v in result['bt'].metrics.items()}
+    eth_m = {f'ETH {k}': v for k, v in result['bt_eth'].metrics.items()}
+    # So os principais no header pra nao poluir
+    key_metrics = ['sharpe', 'cagr_pct', 'max_drawdown_pct', 'hit_rate_pct', 'n_days']
+    header = {}
+    for k in key_metrics:
+        header[f'RTH {k}'] = result['bt'].metrics.get(k, np.nan)
+    for k in key_metrics:
+        header[f'ETH {k}'] = result['bt_eth'].metrics.get(k, np.nan)
+    sec.append(wd.HTML(_metrics_html(header)))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Weekday Stats</div>"))
-    sec.append(wd.HTML(_df_to_html_table(result['tables']['weekday_stats'])))
+    # Legenda unica — deixa claro % vs $ vs ratio
+    sec.append(wd.HTML(
+        "<div class='mm-note'>"
+        "<b>Legenda unidades:</b> "
+        "colunas terminadas em <b>_pct</b> = percentual (%) &nbsp;|&nbsp; "
+        "<b>_bn</b> = USD bilhoes &nbsp;|&nbsp; "
+        "<b>ratio/signed/rank</b> = escalar puro &nbsp;|&nbsp; "
+        "<b>n</b> = numero de observacoes. "
+        "Todos os valores com 2 casas decimais."
+        "</div>"))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Subiu / Caiu por Weekday</div>"))
+    # --- RTH (Regular Trading Hours) ---
+    sec.append(wd.HTML("<div class='mm-section-label'>RTH — Weekday Stats (open→close, %)</div>"))
+    sec.append(wd.HTML(_df_to_html_table(result['tables']['weekday_stats_rth'])))
+    sec.append(go.FigureWidget(result['figs']['weekday_bars_rth']))
+    sec.append(go.FigureWidget(result['figs']['weekday_hitrate']))
+
+    # --- ETH (Extended Trading Hours) ---
+    sec.append(wd.HTML("<div class='mm-section-label'>ETH — Weekday Stats "
+                         "(close→open, overnight + pre + AH, %)</div>"))
+    sec.append(wd.HTML(_df_to_html_table(result['tables']['weekday_stats_eth'])))
+    sec.append(go.FigureWidget(result['figs']['weekday_bars_eth']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Subiu / Caiu por Weekday (RTH, %)</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['updown_by_weekday'])))
+    sec.append(go.FigureWidget(result['figs']['updown_weekday']))
 
-    for key in ['weekday_bars', 'weekday_hitrate', 'equity_dd', 'histogram',
-                 'ma_residency', 'heatmap_wkd_month', 'streak_distribution']:
-        sec.append(go.FigureWidget(result['figs'][key]))
+    # --- Backtests ---
+    sec.append(wd.HTML("<div class='mm-section-label'>Backtest Equity + Drawdown — RTH vs ETH</div>"))
+    sec.append(go.FigureWidget(result['figs']['rth_vs_eth']))
+    sec.append(go.FigureWidget(result['figs']['equity_dd_rth']))
+    sec.append(go.FigureWidget(result['figs']['equity_dd_eth']))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Permanencia Medias Moveis</div>"))
+    sec.append(wd.HTML("<div class='mm-section-label'>Distribuicao Retornos RTH (%)</div>"))
+    sec.append(go.FigureWidget(result['figs']['histogram']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Heatmap Weekday x Mes (%)</div>"))
+    sec.append(go.FigureWidget(result['figs']['heatmap_wkd_month']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Permanencia Medias Moveis (%)</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['ma_residency'])))
+    sec.append(go.FigureWidget(result['figs']['ma_residency']))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Sequencias</div>"))
+    sec.append(wd.HTML("<div class='mm-section-label'>Sequencias (dias consecutivos)</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['streaks'])))
-    sec.append(wd.HTML(_df_to_html_table(result['tables']['conditional_streaks'])))
+    sec.append(go.FigureWidget(result['figs']['streaks']))
+    sec.append(go.FigureWidget(result['figs']['streak_distribution']))
 
-    sec.append(wd.HTML("<div class='mm-section-label'>Regime / Gap / Mes</div>"))
+    sec.append(wd.HTML("<div class='mm-section-label'>Retorno RTH apos N dias seguidos</div>"))
+    sec.append(wd.HTML(_df_to_html_table(result['tables']['conditional_streaks'])))
+    sec.append(go.FigureWidget(result['figs']['conditional_streaks']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Regime de Tendencia</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['regime'])))
+    sec.append(go.FigureWidget(result['figs']['regime']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Gap Analysis (% open-to-open)</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['gap_stats'])))
+    sec.append(go.FigureWidget(result['figs']['gap']))
+
+    sec.append(wd.HTML("<div class='mm-section-label'>Sazonalidade por Mes (%)</div>"))
     sec.append(wd.HTML(_df_to_html_table(result['tables']['monthly_stats'])))
+    sec.append(go.FigureWidget(result['figs']['monthly']))
 
     if result.get('nomura'):
         n = result['nomura']
-        sec.append(wd.HTML("<div class='mm-section-label'>Nomura — Options PnL + Skew + Flows</div>"))
+        sec.append(wd.HTML("<div class='mm-section-label'>Nomura — Options PnL Summary "
+                             "(valores em % do spot, 2 casas)</div>"))
         sec.append(go.FigureWidget(n['figs']['options_pnl']))
-        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL Summary (%)</div>"))
+        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — Cumulative (%)</div>"))
         sec.append(wd.HTML(_df_to_html_table(n['pnl_summary'])))
-        sec.append(wd.HTML("<div class='mm-section-label'>Sharpe Ratio</div>"))
+        sec.append(wd.HTML("<div class='mm-section-label'>Sharpe Ratio Annualized</div>"))
         sec.append(wd.HTML(_df_to_html_table(n['sharpe'])))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Skew Percentiles — "
+                             "Nomura (ratio) + SpotGamma (normalized diff %)</div>"))
         sec.append(go.FigureWidget(n['figs']['skew_pctiles']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>IV Rank + Skew Rank "
+                             "(estilo SpotGamma, 1y rolling)</div>"))
+        sec.append(go.FigureWidget(n['figs']['iv_rank']))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Systematic Flows — "
+                             "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
         sec.append(go.FigureWidget(n['figs']['flows']))
 
     sec.append(wd.HTML(
-        "<div class='mm-note'>OBS: estatistica nao e edge automatico. "
-        "Linhas com n&lt;30 tem leitura fraca. 25d IVs aproximados via SKEW index — "
-        "plugar chain real (OVDV/OptionMetrics) pra precisao.</div>"))
+        "<div class='mm-note'>"
+        "<b>Obs:</b> estatistica nao e edge automatico. Linhas com n&lt;30 "
+        "tem leitura fraca. 25d IVs aproximados via SKEW index — plugar chain "
+        "real (OVDV/OptionMetrics) pra precisao total."
+        "</div>"))
     return sec
 
 
 def _snapshot_html() -> str:
-    """Monta HTML standalone com todas as figs do snapshot (pra embutir no ZIP)."""
+    """HTML standalone com todas as figs + tabelas do snapshot."""
     if not _snapshot.get('result'):
         return ""
     r = _snapshot['result']
-    parts = [DASH_CSS, f"<h1 class='mm-dash'>Session Stats — {r['ticker']} — {r['ts']}</h1>"]
-    parts.append(_metrics_html(r['bt'].metrics))
+    parts = [DASH_CSS,
+              f"<h1 class='mm-dash'>Session Stats — {r['ticker']} "
+              f"({r['years']}y) — {r['ts']}</h1>",
+              _metrics_html(r['bt'].metrics),
+              "<h2 class='mm-dash'>Tabelas principais</h2>"]
+    # Tabelas
+    table_labels = [
+        ('weekday_stats', 'Weekday Stats (%)'),
+        ('updown_by_weekday', 'Subiu / Caiu por Weekday (%)'),
+        ('ma_residency', 'Permanencia Medias Moveis (%)'),
+        ('streaks', 'Sequencias'),
+        ('conditional_streaks', 'Retorno RTH apos N dias seguidos (%)'),
+        ('regime', 'Regime de Tendencia (%)'),
+        ('gap_stats', 'Gap Analysis (%)'),
+        ('monthly_stats', 'Sazonalidade por Mes (%)'),
+    ]
+    for key, label in table_labels:
+        if key in r['tables']:
+            parts.append(f"<h3 class='mm-dash'>{label}</h3>")
+            parts.append(_df_to_html_table(r['tables'][key]))
+    # Figs principais
+    parts.append("<h2 class='mm-dash'>Graficos</h2>")
     for key, fig in r['figs'].items():
         parts.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+    # Nomura
     if r.get('nomura'):
-        for fig in r['nomura']['figs'].values():
+        n = r['nomura']
+        parts.append("<h2 class='mm-dash'>Nomura Framework</h2>")
+        parts.append("<h3 class='mm-dash'>Options PnL Summary (%)</h3>")
+        parts.append(_df_to_html_table(n['pnl_summary']))
+        parts.append("<h3 class='mm-dash'>Sharpe Ratio Annualized</h3>")
+        parts.append(_df_to_html_table(n['sharpe']))
+        for fig in n['figs'].values():
             parts.append(fig.to_html(full_html=False, include_plotlyjs=False))
     return "\n".join(parts)
 
