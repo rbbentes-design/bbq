@@ -6583,16 +6583,51 @@ def compute_macro_charts(years: int = 10) -> dict:
     _try('cpi_lvl', 'CPURNSA Index')      # CPI level (deflator pra real EPS)
     _try('us10y_real', 'USGGT10Y Index')  # 10Y TIPS (real yield)
 
-    # Valuation (SPX + sectors)
+    # Valuation (SPX + sectors) — tenta SPX Index primeiro, depois SPY US Equity
     for tk, key in [('SPX Index', 'spx_pe')]:
         try:
             _try(key, tk, bq.data.pe_ratio)
         except Exception as e:
             log.warning(f'[macro] pe_ratio({tk}) fail: {e}')
+    # Fallback: se PE no SPX falhou, tenta SPY (ETF tem field mais limpo)
+    if 'spx_pe' not in series:
+        try:
+            _try('spx_pe', 'SPY US Equity', bq.data.pe_ratio)
+            log.info('[macro] spx_pe fallback -> SPY PE')
+        except Exception as e:
+            log.warning(f'[macro] pe_ratio(SPY) fail: {e}')
+
     try:
         _try('spx_best_eps', 'SPX Index', bq.data.best_eps)
     except Exception as e:
-        log.warning(f'[macro] best_eps fail: {e}')
+        log.warning(f'[macro] best_eps(SPX) fail: {e}')
+    if 'spx_best_eps' not in series:
+        try:
+            _try('spx_best_eps', 'SPY US Equity', bq.data.best_eps)
+            log.info('[macro] spx_best_eps fallback -> SPY best_eps')
+        except Exception as e:
+            log.warning(f'[macro] best_eps(SPY) fail: {e}')
+
+    # Fallback final: deriva PE = SPX / EPS se so um dos dois existe
+    if 'spx_pe' not in series and 'spx' in series and 'spx_best_eps' in series:
+        try:
+            sp, ep = series['spx'].align(series['spx_best_eps'], join='inner')
+            derived_pe = (sp / ep).dropna()
+            if len(derived_pe) > 0:
+                series['spx_pe'] = derived_pe
+                log.info(f'[macro] spx_pe derivado de SPX/EPS: {len(derived_pe)} pts')
+        except Exception as e:
+            log.warning(f'[macro] derivacao PE fail: {e}')
+
+    if 'spx_best_eps' not in series and 'spx' in series and 'spx_pe' in series:
+        try:
+            sp, pe = series['spx'].align(series['spx_pe'], join='inner')
+            derived_eps = (sp / pe).dropna()
+            if len(derived_eps) > 0:
+                series['spx_best_eps'] = derived_eps
+                log.info(f'[macro] spx_best_eps derivado de SPX/PE: {len(derived_eps)} pts')
+        except Exception as e:
+            log.warning(f'[macro] derivacao EPS fail: {e}')
 
     # Forward EPS estimates (FY1/FY2) — one-shot snapshot pra sensitivity matrix
     eps_fy1, eps_fy2, eps_ntm = None, None, None
@@ -8364,7 +8399,20 @@ def build_section_widgets(result: dict) -> list:
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
-        _add_figs(['spx_pe', 'spx_eps_level', 'spx_eps_yoy', 'erp'])
+        _sec_a_keys = ['spx_pe', 'spx_eps_level', 'spx_eps_yoy', 'erp']
+        _sec_a_present = [k for k in _sec_a_keys if k in figs_m]
+        if _sec_a_present:
+            _add_figs(_sec_a_keys)
+        else:
+            sec.append(wd.HTML(
+                "<div class='mm-card'><p class='mm-flag'>"
+                "⚠ Valuation charts nao disponiveis:</p>"
+                "<p style='color:#cce8ff; font-size:12px;'>"
+                "BBG nao retornou <code>pe_ratio</code> nem <code>best_eps</code> "
+                "para SPX Index nem SPY US Equity. Pode ser falta de entitlement "
+                "a analyst estimates (best_eps) ou fields de valuation no indice. "
+                "Charts derivados (Gordon, sensitivity matrix) continuam funcionando "
+                "com os inputs editaveis nos widgets acima.</p></div>"))
 
         sec.append(wd.HTML("<div class='mm-section-label'>B · Rates, Vol & Credit "
                              "— VIX/MOVE, yield curve, breakeven, real rates (TIPS), real ERP, DXY, credit, NFCI</div>"))
