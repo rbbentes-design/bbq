@@ -2716,20 +2716,11 @@ def fig_rs_ratio_quadrant(history: pd.DataFrame, benchmark: pd.Series,
     if len(weekly_idx) < 2:
         weekly_idx = history.index[-tail_length:]
 
-    fig = go.Figure()
-    # Zonas sombreadas
-    fig.add_shape(type='rect', x0=100, x1=130, y0=100, y1=130,
-                   fillcolor='rgba(63,185,80,0.08)', line_width=0, layer='below')
-    fig.add_shape(type='rect', x0=70, x1=100, y0=100, y1=130,
-                   fillcolor='rgba(88,166,255,0.08)', line_width=0, layer='below')
-    fig.add_shape(type='rect', x0=70, x1=100, y0=70, y1=100,
-                   fillcolor='rgba(248,81,73,0.08)', line_width=0, layer='below')
-    fig.add_shape(type='rect', x0=100, x1=130, y0=70, y1=100,
-                   fillcolor='rgba(240,136,62,0.08)', line_width=0, layer='below')
-
     cat_colors = {'Barra Factors': _C['accent'], 'Momentum': _C['orange'],
                    'GS Themes': _C['purple'], 'BBG Themes': _C['teal']}
 
+    # 1ª passagem: coleta dados pra adaptive range + identificar "em compra"
+    points = []
     for tk in tickers:
         try:
             rs_df = compute_rs_ratio(history[tk].dropna(), benchmark)
@@ -2738,60 +2729,108 @@ def fig_rs_ratio_quadrant(history: pd.DataFrame, benchmark: pd.Series,
                 continue
         except Exception:
             continue
-
         name, cat = universe_meta.get(tk, (tk, 'Other'))
         color = cat_colors.get(cat, _C['text'])
-        # Trail: ultimas tail_length semanas
         trail = rs_df.iloc[-tail_length * 5::5] if len(rs_df) > tail_length * 5 else rs_df.tail(tail_length)
-        # Ponto atual
         cur = rs_df.iloc[-1]
+        # "em compra" = momentum acelerando (RS_Momentum > 100)
+        in_buy = cur['RS_Momentum'] > 100
+        points.append({
+            'tk': tk, 'name': name, 'cat': cat, 'color': color,
+            'trail': trail, 'cur': cur, 'in_buy': in_buy,
+        })
 
-        # Trail como linha tracejada com opacidade crescente
-        if len(trail) >= 2:
+    if not points:
+        return go.Figure().update_layout(title='RS-Ratio — sem dados validos',
+                                            **_FIG_LAYOUT)
+
+    # Adaptive range baseado nos dados (com padding)
+    all_x = [p['cur']['RS_Ratio'] for p in points]
+    all_y = [p['cur']['RS_Momentum'] for p in points]
+    pad_x = max(2.5, (max(all_x) - min(all_x)) * 0.15)
+    pad_y = max(2.5, (max(all_y) - min(all_y)) * 0.15)
+    x_min = min(min(all_x) - pad_x, 100 - pad_x)
+    x_max = max(max(all_x) + pad_x, 100 + pad_x)
+    y_min = min(min(all_y) - pad_y, 100 - pad_y)
+    y_max = max(max(all_y) + pad_y, 100 + pad_y)
+    # Forca simetria razoavel pra ver os 4 quadrantes
+    spread_x = max(x_max - 100, 100 - x_min)
+    spread_y = max(y_max - 100, 100 - y_min)
+    x_min, x_max = 100 - spread_x, 100 + spread_x
+    y_min, y_max = 100 - spread_y, 100 + spread_y
+
+    fig = go.Figure()
+    # Zonas sombreadas dimensionadas ao range real
+    fig.add_shape(type='rect', x0=100, x1=x_max, y0=100, y1=y_max,
+                   fillcolor='rgba(63,185,80,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=x_min, x1=100, y0=100, y1=y_max,
+                   fillcolor='rgba(88,166,255,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=x_min, x1=100, y0=y_min, y1=100,
+                   fillcolor='rgba(248,81,73,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=100, x1=x_max, y0=y_min, y1=100,
+                   fillcolor='rgba(240,136,62,0.08)', line_width=0, layer='below')
+
+    n_buy = sum(1 for p in points if p['in_buy'])
+
+    # 2ª passagem: desenha. Trail SO pros "em compra" (momentum > 100)
+    for p in points:
+        # Trail apenas se em compra
+        if p['in_buy'] and len(p['trail']) >= 2:
             fig.add_trace(go.Scatter(
-                x=trail['RS_Ratio'], y=trail['RS_Momentum'],
+                x=p['trail']['RS_Ratio'], y=p['trail']['RS_Momentum'],
                 mode='lines+markers',
-                line=dict(color=color, width=1, dash='dot'),
-                marker=dict(size=3, color=color),
-                showlegend=False, opacity=0.4, hoverinfo='skip'))
-
-        # Ponto atual com nome
+                line=dict(color=p['color'], width=1.4, dash='dot'),
+                marker=dict(size=4, color=p['color']),
+                showlegend=False, opacity=0.55, hoverinfo='skip'))
+        # Ponto atual
+        marker_size = 13 if p['in_buy'] else 8
+        marker_opacity = 1.0 if p['in_buy'] else 0.45
+        text_color = p['color'] if p['in_buy'] else 'rgba(139,148,158,0.55)'
+        text_size = 10 if p['in_buy'] else 8
         fig.add_trace(go.Scatter(
-            x=[cur['RS_Ratio']], y=[cur['RS_Momentum']],
+            x=[p['cur']['RS_Ratio']], y=[p['cur']['RS_Momentum']],
             mode='markers+text',
-            marker=dict(size=11, color=color,
-                         line=dict(color='#fff', width=1.2)),
-            text=[name[:14]], textposition='top center',
-            textfont=dict(size=9, color=color),
-            name=f'[{cat}] {name}',
+            marker=dict(size=marker_size, color=p['color'],
+                         line=dict(color='#fff', width=1.5 if p['in_buy'] else 0.6),
+                         opacity=marker_opacity),
+            text=[p['name'][:14]],
+            textposition='top center',
+            textfont=dict(size=text_size, color=text_color),
+            name=f'[{p["cat"]}] {p["name"]}',
             showlegend=False,
-            hovertemplate=f'<b>{name} ({tk})</b><br>'
+            hovertemplate=f'<b>{p["name"]} ({p["tk"]})</b><br>'
                            f'RS-Ratio: %{{x:.2f}}<br>'
                            f'RS-Momentum: %{{y:.2f}}<extra></extra>'))
 
-    # Linhas de eixo em 100
+    # Eixos em 100
     fig.add_hline(y=100, line_color=_C['text_muted'], line_width=0.7, line_dash='dash')
     fig.add_vline(x=100, line_color=_C['text_muted'], line_width=0.7, line_dash='dash')
-    # Quadrante labels
-    fig.add_annotation(x=125, y=128, text='<b>LEADING</b>',
-                        showarrow=False, font=dict(color=_C['green'], size=14),
+    # Labels dos quadrantes nos cantos do range adaptado
+    fig.add_annotation(x=x_max - pad_x * 0.3, y=y_max - pad_y * 0.3,
+                        text='<b>LEADING</b>',
+                        showarrow=False, font=dict(color=_C['green'], size=15),
                         xanchor='right')
-    fig.add_annotation(x=75, y=128, text='<b>IMPROVING</b>',
-                        showarrow=False, font=dict(color=_C['accent'], size=14),
+    fig.add_annotation(x=x_min + pad_x * 0.3, y=y_max - pad_y * 0.3,
+                        text='<b>IMPROVING</b>',
+                        showarrow=False, font=dict(color=_C['accent'], size=15),
                         xanchor='left')
-    fig.add_annotation(x=75, y=72, text='<b>LAGGING</b>',
-                        showarrow=False, font=dict(color=_C['red'], size=14),
+    fig.add_annotation(x=x_min + pad_x * 0.3, y=y_min + pad_y * 0.3,
+                        text='<b>LAGGING</b>',
+                        showarrow=False, font=dict(color=_C['red'], size=15),
                         xanchor='left')
-    fig.add_annotation(x=125, y=72, text='<b>WEAKENING</b>',
-                        showarrow=False, font=dict(color=_C['orange'], size=14),
+    fig.add_annotation(x=x_max - pad_x * 0.3, y=y_min + pad_y * 0.3,
+                        text='<b>WEAKENING</b>',
+                        showarrow=False, font=dict(color=_C['orange'], size=15),
                         xanchor='right')
 
     fig.update_layout(
-        title=f'RS-Ratio RRG vs benchmark — {len(tickers)} factors '
-              f'(trails = ultimas {tail_length}s semanais)',
-        xaxis=dict(title='RS-Ratio (>100 = outperforming)', range=[70, 130]),
-        yaxis=dict(title='RS-Momentum (>100 = RS acelerando)', range=[70, 130]),
-        **{**_FIG_LAYOUT, 'height': 680})
+        title=f'RS-Ratio RRG vs benchmark — {len(points)} factors | '
+              f'trails so dos {n_buy} em compra (momentum &gt; 100)',
+        xaxis=dict(title='RS-Ratio (&gt;100 = outperforming benchmark)',
+                    range=[x_min, x_max]),
+        yaxis=dict(title='RS-Momentum (&gt;100 = RS acelerando)',
+                    range=[y_min, y_max]),
+        **{**_FIG_LAYOUT, 'height': 700})
     return fig
 
 
