@@ -4659,16 +4659,19 @@ def _shorten_tab_title(full_title: str) -> str:
     if m:
         roman = m.group(1)
         rest = m.group(2).strip()
-        # Encurtar nomes longos
-        rest = rest.replace('Session Stats', 'Quant')
-        rest = rest.replace('Regime Detection + Pattern Miner', 'Regime+Pattern')
-        rest = rest.replace('Regime Detection', 'Regime')
-        rest = rest.replace('Structural Market Models', 'Structural')
-        rest = rest.replace('Cross-Sectional Factor Monitor', 'Factors')
-        rest = rest.replace('Nomura Options Framework', 'Nomura')
-        # Primeiras 2-3 palavras
-        parts = rest.split()
-        short = ' '.join(parts[:2]) if len(parts) > 2 else rest
+        # Mapeamento direto pra evitar duplicacao
+        mapping = {
+            'Quant Session Stats': 'Quant',
+            'Regime Detection + Pattern Miner': 'Regime+Pattern',
+            'Regime Detection': 'Regime',
+            'Structural Market Models': 'Structural',
+            'Cross-Sectional Factor Monitor': 'Factors',
+            'Nomura Options Framework': 'Nomura',
+        }
+        short = mapping.get(rest)
+        if short is None:
+            # Fallback: primeira palavra
+            short = rest.split()[0] if rest.split() else rest[:15]
         return f'{roman} · {short}'
     return full_title[:20]
 
@@ -4967,12 +4970,30 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML(_df_to_html_table(state_df)))
 
     # ====== PART IV: CROSS-SECTIONAL MONITOR (GS Factor Monitor) ======
-    if result.get('gs_factors') and result['gs_factors'].get('table') is not None \
-       and len(result['gs_factors']['table']) > 0:
-        gf = result['gs_factors']
-        sec.append(wd.HTML(_big_divider(
-            'Parte IV — Cross-Sectional Factor Monitor',
-            'GS Barra Pair Indices + Momentum + GS Themes + BBG Themes | scan 1D/5D/1M/YTD/1Y | rotacao de factors')))
+    # Sempre mostra o divider; conteudo varia se data presente ou nao
+    sec.append(wd.HTML(_big_divider(
+        'Parte IV — Cross-Sectional Factor Monitor',
+        'GS Barra Pair Indices + Momentum + GS Themes + BBG Themes | scan 1D/5D/1M/YTD/1Y | rotacao de factors')))
+    gs_factors_data = result.get('gs_factors') or {}
+    if not gs_factors_data:
+        sec.append(wd.HTML(
+            "<div class='mm-card'>"
+            "<p class='mm-flag'>⚠ Factor Monitor nao foi gerado.</p>"
+            "<p style='color:#8b949e; font-size:11px;'>"
+            "Possiveis causas: checkbox 'Incluir GS Factor Monitor' nao marcado, "
+            "BQL queries falharam (entitlements), ou erro durante fetch. "
+            "Confira logs com '[gs_factors]' prefix."
+            "</p></div>"))
+    elif gs_factors_data.get('table') is None or len(gs_factors_data.get('table', [])) == 0:
+        sec.append(wd.HTML(
+            "<div class='mm-card'>"
+            "<p class='mm-flag'>⚠ Factor Monitor retornou tabela vazia.</p>"
+            "<p style='color:#8b949e; font-size:11px;'>"
+            "Nenhum dos 98 tickers retornou dados via BQL. Verifique entitlements "
+            "BQuant pra GS basket indices (GSP*, GSXU*) e BBG themes (BAIAT, BNUAT, etc)."
+            "</p></div>"))
+    else:
+        gf = gs_factors_data
         sec.append(wd.HTML(
             "<div class='mm-section-label'>GS Factor Monitor — Barra Pair Indices + "
             "Momentum + Thematic Baskets (historico via BQL)</div>"))
@@ -5021,11 +5042,30 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML(_df_to_html_table(gf['table'])))
 
     # ====== PARTE V: NOMURA OPTIONS FRAMEWORK ======
-    if result.get('nomura'):
-        n = result['nomura']
-        sec.append(wd.HTML(_big_divider(
-            'Parte V — Nomura Options Framework',
-            'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
+    # Sempre mostra divider
+    sec.append(wd.HTML(_big_divider(
+        'Parte V — Nomura Options Framework',
+        'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
+    nomura_data = result.get('nomura') or {}
+    if not nomura_data:
+        sec.append(wd.HTML(
+            "<div class='mm-card'>"
+            "<p class='mm-flag'>⚠ Nomura nao foi gerado.</p>"
+            "<p style='color:#8b949e; font-size:11px;'>"
+            "Possiveis causas: checkbox 'Incluir Nomura' nao marcado, "
+            "ou falha ao baixar VIX Index / SKEW Index / spot via BQL. "
+            "Confira logs com '[nomura]' ou 'Nomura section falhou' prefix."
+            "</p></div>"))
+    elif not nomura_data.get('figs'):
+        sec.append(wd.HTML(
+            "<div class='mm-card'>"
+            "<p class='mm-flag'>⚠ Nomura inicializou mas sem figs.</p>"
+            "<p style='color:#8b949e; font-size:11px;'>"
+            "Todos os fig builders falharam individualmente. Confira logs.</p></div>"))
+    elif False:  # Placeholder pra fluxo abaixo continuar
+        n = nomura_data
+    else:
+        n = nomura_data
         sec.append(wd.HTML(
             "<div class='mm-note'>"
             "<b>Tenores:</b> o paper da Nomura usa <b>0DTE</b> (daily rolled, T=1d). "
