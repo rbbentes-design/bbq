@@ -6225,12 +6225,15 @@ def _eps_sensitivity_html(spx_spot: float = None,
 def _gordon_sensitivity_html(spx_spot: float = None,
                                 eps_fy1: float = None,
                                 us10y: float = None,
-                                erp: float = 4.5) -> str:
+                                erp: float = 4.5,
+                                step_pct: float = 0.5,
+                                range_pct: float = 5.0,
+                                g_scenarios: list = None) -> str:
     """
     Gordon Growth Model modificado — Fair P/E = 1/(k - g).
     k = 10Y (live) + ERP (input default 4.5%).
-    Rows: EPS sensitivity -5% a +5% em steps de 0.5% (21 rows).
-    Cols: g = 2.5%, 3.0%, 3.5%, 4.0% (4 cenarios de crescimento).
+    Rows: EPS sensitivity +/-range_pct em steps de step_pct.
+    Cols: g scenarios (default 2.5%, 3.0%, 3.5%, 4.0%).
     Output: 2 tabelas — (A) SPX fair value, (B) % upside/downside vs spot.
     """
     if not eps_fy1 or not spx_spot:
@@ -6239,15 +6242,19 @@ def _gordon_sensitivity_html(spx_spot: float = None,
 
     rf = (us10y / 100.0) if us10y else 0.0425   # default 4.25%
     k = rf + (erp / 100.0)                         # required return
-    g_scenarios = [0.025, 0.030, 0.035, 0.040]
+    if g_scenarios is None:
+        g_scenarios = [0.025, 0.030, 0.035, 0.040]
 
     fair_pes = [(g, 1.0 / (k - g)) for g in g_scenarios if (k - g) > 0.005]
     if not fair_pes:
         return ("<div class='mm-card'><p class='mm-flag'>Gordon: k-g muito "
                  "proximo de zero (explosao). Ajuste ERP/RF.</p></div>")
 
-    # EPS sensitivity: -5% a +5% em 0.5% steps = 21 rows
-    deltas = [round(i * 0.005, 4) for i in range(-10, 11)]
+    # EPS sensitivity grid dinamico
+    step = step_pct / 100.0
+    rng = range_pct / 100.0
+    n_steps = max(1, int(round(rng / step)))
+    deltas = [round(i * step, 5) for i in range(-n_steps, n_steps + 1)]
 
     header = ('<tr><th>ΔEPS</th><th>EPS ($)</th>' + ''.join(
         f'<th>g={g*100:.1f}%<br/>'
@@ -7969,11 +7976,45 @@ def build_section_widgets(result: dict) -> list:
             eps_fy1=macro_data.get('eps_fy1'),
             eps_fy2=macro_data.get('eps_fy2'),
             eps_ntm=macro_data.get('eps_ntm'))))
-        # Gordon Growth Model — EPS sensitivity 0.5% + fair SPX + % upside
-        sec.append(wd.HTML(_gordon_sensitivity_html(
-            spx_spot=macro_data.get('spx_spot'),
-            eps_fy1=macro_data.get('eps_fy1'),
-            us10y=macro_data.get('us10y'))))
+        # Gordon Growth Model — interativo (ERP + step sliders)
+        _gs = macro_data.get('spx_spot')
+        _ge = macro_data.get('eps_fy1')
+        _gy = macro_data.get('us10y')
+        if _gs and _ge:
+            erp_sl = wd.FloatSlider(value=4.5, min=2.0, max=8.0, step=0.25,
+                                      description='ERP %:',
+                                      layout=wd.Layout(width='340px'),
+                                      readout_format='.2f')
+            step_sl = wd.FloatSlider(value=0.5, min=0.25, max=2.0, step=0.25,
+                                       description='EPS step %:',
+                                       layout=wd.Layout(width='340px'),
+                                       readout_format='.2f')
+            range_sl = wd.FloatSlider(value=5.0, min=2.0, max=15.0, step=1.0,
+                                        description='EPS range +/-%:',
+                                        layout=wd.Layout(width='340px'),
+                                        readout_format='.0f')
+            gordon_out = wd.Output()
+
+            def _redraw_gordon(*_):
+                with gordon_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(_gordon_sensitivity_html(
+                        spx_spot=_gs, eps_fy1=_ge, us10y=_gy,
+                        erp=erp_sl.value,
+                        step_pct=step_sl.value,
+                        range_pct=range_sl.value)))
+            _redraw_gordon()
+            for w in (erp_sl, step_sl, range_sl):
+                w.observe(_redraw_gordon, names='value')
+
+            sec.append(wd.HTML(
+                "<div class='mm-section-label' style='margin-top:8px;'>"
+                "Gordon Growth Model — ajuste ERP/step/range (live)</div>"))
+            sec.append(wd.HBox([erp_sl, step_sl, range_sl]))
+            sec.append(gordon_out)
+        else:
+            sec.append(wd.HTML(_gordon_sensitivity_html(
+                spx_spot=_gs, eps_fy1=_ge, us10y=_gy)))
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
