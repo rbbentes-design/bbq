@@ -4652,6 +4652,77 @@ def _metrics_html(metrics: dict) -> str:
 _snapshot = {}
 
 
+def _shorten_tab_title(full_title: str) -> str:
+    """'Parte I — Quant Session Stats' -> 'I · Quant'."""
+    import re
+    m = re.match(r'Parte\s+([IVX]+)\s*[—-]\s*(.+)', full_title, re.I)
+    if m:
+        roman = m.group(1)
+        rest = m.group(2).strip()
+        # Encurtar nomes longos
+        rest = rest.replace('Session Stats', 'Quant')
+        rest = rest.replace('Regime Detection + Pattern Miner', 'Regime+Pattern')
+        rest = rest.replace('Regime Detection', 'Regime')
+        rest = rest.replace('Structural Market Models', 'Structural')
+        rest = rest.replace('Cross-Sectional Factor Monitor', 'Factors')
+        rest = rest.replace('Nomura Options Framework', 'Nomura')
+        # Primeiras 2-3 palavras
+        parts = rest.split()
+        short = ' '.join(parts[:2]) if len(parts) > 2 else rest
+        return f'{roman} · {short}'
+    return full_title[:20]
+
+
+def _split_sections_into_tabs(sections: list) -> 'wd.Tab':
+    """
+    Divide a lista plana de widgets em ABAS usando os _big_divider como
+    marcadores. Cada divider inicia uma nova aba. Tudo antes do primeiro
+    divider vai pra aba 'Overview'.
+    """
+    import re
+    tabs_data = []
+    current_title = '📊 Overview'
+    current_widgets = []
+
+    for w in sections:
+        is_divider = False
+        if isinstance(w, wd.HTML):
+            html = w.value
+            if 'mm-divider' in html and 'mm-divider-title' in html:
+                is_divider = True
+
+        if is_divider:
+            # Salva aba corrente
+            if current_widgets:
+                tabs_data.append((current_title, current_widgets))
+            # Extrai titulo do divider
+            m = re.search(r'◆ ◆ ◆\s*&nbsp;\s*(.*?)\s*&nbsp;\s*◆ ◆ ◆', w.value)
+            if m:
+                current_title = _shorten_tab_title(m.group(1))
+            else:
+                current_title = 'Extra'
+            current_widgets = []
+            continue  # divider nao vai pra aba
+
+        current_widgets.append(w)
+
+    if current_widgets:
+        tabs_data.append((current_title, current_widgets))
+
+    if not tabs_data:
+        tabs_data = [('Empty', [wd.HTML("<div class='mm-card'>Sem dados</div>")])]
+
+    tabs = wd.Tab()
+    tabs.children = [wd.VBox(ws, layout=wd.Layout(overflow='auto',
+                                                       max_height='85vh'))
+                      for _, ws in tabs_data]
+    for i, (title, _) in enumerate(tabs_data):
+        tabs.set_title(i, title)
+    # Aba inicial = primeira
+    tabs.selected_index = 0
+    return tabs
+
+
 def build_section_widgets(result: dict) -> list:
     """
     Converte o resultado de compute_session_stats em lista de widgets/HTML
@@ -5135,8 +5206,9 @@ def _run_analysis(_):
                                              pb_ticker=pb_tk,
                                              benchmark_ticker=bench_tk)
 
-            loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets...</div></div>"
+            loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets em abas...</div></div>"
             sections = build_section_widgets(result)
+            tabs = _split_sections_into_tabs(sections)
 
             # Persiste snapshot pro Export ZIP
             _snapshot.clear()
@@ -5144,7 +5216,7 @@ def _run_analysis(_):
 
             clear_output(wait=True)
             display(wd.HTML(DASH_CSS))
-            display(wd.VBox(sections))
+            display(tabs)
 
         except Exception as e:
             import traceback
