@@ -6498,11 +6498,6 @@ def _ms_snapshot_html(spx_spot: float = None,
       </ul>
     </div>
 
-    <div class='mm-note' style='margin-top:8px;'>
-      <b>Fonte:</b> Morgan Stanley US Equity Strategy Weekly Warm-up
-      "The Market Waits for No One" (Apr 13, 2026). Dados parafraseados —
-      nao e recomendacao, apenas resumo das views reportadas.
-    </div>
     """
 
 
@@ -6627,6 +6622,21 @@ def compute_macro_charts(years: int = 10) -> dict:
     # SPX spot atual
     spx_spot = float(series['spx'].iloc[-1]) if 'spx' in series else None
     us10y_now = float(series['us10y'].iloc[-1]) if 'us10y' in series else None
+
+    # FALLBACK: se best_eps falhou, deriva via spot / trailing PE
+    if not eps_ntm and spx_spot and 'spx_pe' in series:
+        pe_now = series['spx_pe'].dropna()
+        if len(pe_now) > 0:
+            eps_ntm = spx_spot / float(pe_now.iloc[-1])
+            log.info(f'[macro] EPS NTM derivado: spot/PE = ${eps_ntm:.1f}')
+
+    # Se FY1/FY2 falharam mas temos NTM, aproxima FY1=NTM, FY2 = NTM*(1+growth)
+    if not eps_fy1 and eps_ntm:
+        eps_fy1 = eps_ntm
+        log.info(f'[macro] EPS FY1 fallback = NTM (${eps_fy1:.1f})')
+    if not eps_fy2 and eps_fy1:
+        eps_fy2 = eps_fy1 * 1.12  # assume ~12% growth
+        log.info(f'[macro] EPS FY2 fallback = FY1*1.12 (${eps_fy2:.1f})')
     # Sector P/E (current snapshot via pe_ratio)
     for etf in SECTOR_ETFS:
         try:
@@ -7983,51 +7993,71 @@ def build_section_widgets(result: dict) -> list:
             spx_spot=macro_data.get('spx_spot'),
             eps_fy1=macro_data.get('eps_fy1'),
             eps_fy2=macro_data.get('eps_fy2'))))
-        # Matriz de sensibilidade P/E x EPS
-        sec.append(wd.HTML(_eps_sensitivity_html(
-            spx_spot=macro_data.get('spx_spot'),
-            eps_fy1=macro_data.get('eps_fy1'),
-            eps_fy2=macro_data.get('eps_fy2'),
-            eps_ntm=macro_data.get('eps_ntm'))))
-        # Gordon Growth Model — interativo (ERP + step sliders)
-        _gs = macro_data.get('spx_spot')
-        _ge = macro_data.get('eps_fy1')
+        # Inputs EDITAVEIS pra spot + EPS (override dos valores BBG)
+        _spot_default = macro_data.get('spx_spot') or 6800.0
+        _eps1_default = macro_data.get('eps_fy1') or 322.0
+        _eps2_default = macro_data.get('eps_fy2') or 374.0
+        _ntm_default  = macro_data.get('eps_ntm') or _eps1_default
         _gy = macro_data.get('us10y')
-        if _gs and _ge:
-            erp_sl = wd.FloatSlider(value=4.5, min=2.0, max=8.0, step=0.25,
-                                      description='ERP %:',
-                                      layout=wd.Layout(width='340px'),
-                                      readout_format='.2f')
-            step_sl = wd.FloatSlider(value=0.5, min=0.25, max=2.0, step=0.25,
-                                       description='EPS step %:',
-                                       layout=wd.Layout(width='340px'),
-                                       readout_format='.2f')
-            range_sl = wd.FloatSlider(value=5.0, min=2.0, max=15.0, step=1.0,
-                                        description='EPS range +/-%:',
-                                        layout=wd.Layout(width='340px'),
-                                        readout_format='.0f')
-            gordon_out = wd.Output()
 
-            def _redraw_gordon(*_):
-                with gordon_out:
-                    clear_output(wait=True)
-                    display(wd.HTML(_gordon_sensitivity_html(
-                        spx_spot=_gs, eps_fy1=_ge, us10y=_gy,
-                        erp=erp_sl.value,
-                        step_pct=step_sl.value,
-                        range_pct=range_sl.value)))
-            _redraw_gordon()
-            for w in (erp_sl, step_sl, range_sl):
-                w.observe(_redraw_gordon, names='value')
+        spot_w = wd.FloatText(value=_spot_default, description='SPX spot:',
+                                layout=wd.Layout(width='240px'))
+        eps1_w = wd.FloatText(value=_eps1_default, description='EPS FY1 ($):',
+                                layout=wd.Layout(width='240px'))
+        eps2_w = wd.FloatText(value=_eps2_default, description='EPS FY2 ($):',
+                                layout=wd.Layout(width='240px'))
+        ntm_w  = wd.FloatText(value=_ntm_default, description='EPS NTM ($):',
+                                layout=wd.Layout(width='240px'))
+        erp_sl = wd.FloatSlider(value=4.5, min=2.0, max=8.0, step=0.25,
+                                  description='ERP %:',
+                                  layout=wd.Layout(width='340px'),
+                                  readout_format='.2f')
+        step_sl = wd.FloatSlider(value=0.5, min=0.25, max=2.0, step=0.25,
+                                   description='EPS step %:',
+                                   layout=wd.Layout(width='340px'),
+                                   readout_format='.2f')
+        range_sl = wd.FloatSlider(value=5.0, min=2.0, max=15.0, step=1.0,
+                                    description='EPS range +/-%:',
+                                    layout=wd.Layout(width='340px'),
+                                    readout_format='.0f')
 
-            sec.append(wd.HTML(
-                "<div class='mm-section-label' style='margin-top:8px;'>"
-                "Gordon Growth Model — ajuste ERP/step/range (live)</div>"))
-            sec.append(wd.HBox([erp_sl, step_sl, range_sl]))
-            sec.append(gordon_out)
-        else:
-            sec.append(wd.HTML(_gordon_sensitivity_html(
-                spx_spot=_gs, eps_fy1=_ge, us10y=_gy)))
+        sens_out = wd.Output()
+        gordon_out = wd.Output()
+
+        def _redraw_sens(*_):
+            with sens_out:
+                clear_output(wait=True)
+                display(wd.HTML(_eps_sensitivity_html(
+                    spx_spot=spot_w.value, eps_fy1=eps1_w.value,
+                    eps_fy2=eps2_w.value, eps_ntm=ntm_w.value)))
+
+        def _redraw_gordon(*_):
+            with gordon_out:
+                clear_output(wait=True)
+                display(wd.HTML(_gordon_sensitivity_html(
+                    spx_spot=spot_w.value, eps_fy1=eps1_w.value,
+                    us10y=_gy, erp=erp_sl.value,
+                    step_pct=step_sl.value, range_pct=range_sl.value)))
+
+        _redraw_sens()
+        _redraw_gordon()
+        for w in (spot_w, eps1_w, eps2_w, ntm_w):
+            w.observe(_redraw_sens, names='value')
+            w.observe(_redraw_gordon, names='value')
+        for w in (erp_sl, step_sl, range_sl):
+            w.observe(_redraw_gordon, names='value')
+
+        sec.append(wd.HTML(
+            "<div class='mm-section-label' style='margin-top:8px;'>"
+            "Inputs (editaveis — override live BBG)</div>"))
+        sec.append(wd.HBox([spot_w, ntm_w, eps1_w, eps2_w]))
+        sec.append(sens_out)
+
+        sec.append(wd.HTML(
+            "<div class='mm-section-label' style='margin-top:8px;'>"
+            "Gordon Growth Model — ajuste ERP/step/range (live)</div>"))
+        sec.append(wd.HBox([erp_sl, step_sl, range_sl]))
+        sec.append(gordon_out)
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
