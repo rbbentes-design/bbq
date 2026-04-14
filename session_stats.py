@@ -6785,9 +6785,28 @@ def build_section_widgets(result: dict) -> list:
                     f"<div class='mm-metric-lbl' style='margin-bottom:8px;'>"
                     f"Estrutura (spot ${op['spot']:.2f}, IV {op['iv']*100:.1f}%, "
                     f"T=21d)</div>{_legs_html(op['legs'])}</div>"))
-                sec.append(go.FigureWidget(op['payoff_fig']))
+                # Payoff chart: embed HTML (FigureWidget estava falhando silenciosamente)
+                try:
+                    payoff_html = op['payoff_fig'].to_html(
+                        full_html=False, include_plotlyjs='cdn',
+                        default_height='460px')
+                    sec.append(wd.HTML(f"<div style='margin:8px 0'>{payoff_html}</div>"))
+                except Exception as pe:
+                    import traceback
+                    sec.append(wd.HTML(
+                        f"<div class='mm-card'><p class='mm-flag'>"
+                        f"❌ Falha ao renderizar payoff de {op['name']}: {pe}</p>"
+                        f"<pre style='color:#8b949e;font-size:10px'>"
+                        f"{traceback.format_exc()[:600]}</pre></div>"))
+
                 if len(op.get('backtest', [])) > 0:
-                    sec.append(go.FigureWidget(op['backtest_fig']))
+                    try:
+                        bt_html = op['backtest_fig'].to_html(
+                            full_html=False, include_plotlyjs=False,
+                            default_height='340px')
+                        sec.append(wd.HTML(f"<div style='margin:8px 0'>{bt_html}</div>"))
+                    except Exception:
+                        sec.append(go.FigureWidget(op['backtest_fig']))
                     sec.append(wd.HTML(_df_to_html_table(op['backtest'])))
 
         # Detalhe das lentes ativas
