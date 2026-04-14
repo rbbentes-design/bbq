@@ -2511,22 +2511,370 @@ def fig_factor_rolling(history: pd.DataFrame, tickers: list = None,
     return fig
 
 
-def run_gs_factor_section(years: int = 2) -> dict:
+def compute_factor_weekday_stats(history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Para cada factor, retorno medio por weekday.
+    Retorna DataFrame wide: rows=factor, cols=weekday_name.
+    """
+    if len(history) == 0:
+        return pd.DataFrame()
+    ret = history.pct_change()
+    ret = ret.assign(weekday=ret.index.strftime('%A'))
+    ret_melt = ret.reset_index().melt(id_vars=['date', 'weekday'],
+                                         var_name='ticker', value_name='ret')
+    ret_melt = ret_melt.dropna(subset=['ret'])
+    pv = ret_melt.pivot_table(index='ticker', columns='weekday',
+                                values='ret', aggfunc='mean') * 100
+    order = [d for d in WEEKDAY_ORDER if d in pv.columns]
+    pv = pv[order]
+    return pv.round(3)
+
+
+def fig_factor_weekday_heatmap(pv: pd.DataFrame, universe_meta: dict) -> go.Figure:
+    """Heatmap Factor × Weekday (mean daily return %)."""
+    if len(pv) == 0:
+        return go.Figure().update_layout(title='Weekday — sem dados', **_FIG_LAYOUT)
+    # Ordena por YTD proxy (somar todos os dias)
+    pv = pv.loc[pv.sum(axis=1).sort_values(ascending=False).index]
+    # Labels curtos com categoria
+    def _label(tk):
+        name, cat = universe_meta.get(tk, (tk, 'Other'))
+        cat_abbr = {'Barra Factors': 'Barra', 'Momentum': 'Momo',
+                     'GS Themes': 'GS', 'BBG Themes': 'BBG'}.get(cat, cat[:4])
+        return f'[{cat_abbr}] {name}'
+    y_labels = [_label(tk) for tk in pv.index]
+
+    z = pv.values
+    vmax = np.nanpercentile(np.abs(z[~np.isnan(z)]), 95) if np.any(~np.isnan(z)) else 1
+    fig = go.Figure(go.Heatmap(
+        z=z, x=list(pv.columns), y=y_labels,
+        colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
+        zmin=-vmax, zmax=vmax,
+        text=[[f'{v:+.2f}%' if pd.notna(v) else '' for v in row] for row in z],
+        texttemplate='%{text}', textfont=dict(size=9, color='#cce8ff'),
+        colorbar=dict(title='%', tickfont=dict(size=9))))
+    fig.update_layout(
+        title=f'Factor Monitor — Weekday Effect (retorno medio diario %, {len(pv)} factors)',
+        **{**_FIG_LAYOUT, 'height': max(560, len(pv) * 18),
+           'margin': dict(l=230, r=60, t=55, b=40)})
+    return fig
+
+
+def fig_factor_weekday_best(pv: pd.DataFrame, universe_meta: dict,
+                                top_n: int = 20) -> go.Figure:
+    """Top N factors com maior spread entre melhor e pior weekday."""
+    if len(pv) == 0:
+        return go.Figure().update_layout(title='Best Weekday — sem dados', **_FIG_LAYOUT)
+    # Melhor dia e spread
+    best_day = pv.idxmax(axis=1)
+    best_val = pv.max(axis=1)
+    worst_val = pv.min(axis=1)
+    spread = best_val - worst_val
+    df = pd.DataFrame({
+        'best_day': best_day, 'best_val': best_val,
+        'worst_val': worst_val, 'spread': spread,
+    }).sort_values('spread', ascending=False).head(top_n)
+
+    def _label(tk):
+        name, cat = universe_meta.get(tk, (tk, 'Other'))
+        return f'{name} ({df.loc[tk, "best_day"][:3]} +{df.loc[tk, "best_val"]:.2f}%)'
+    labels = [_label(tk) for tk in df.index]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=df['spread'], y=labels, orientation='h',
+                          marker_color=_C['accent'],
+                          text=[f'spread {s:.2f}%' for s in df['spread']],
+                          textposition='outside', showlegend=False))
+    fig.update_layout(
+        title=f'Top {top_n} factors com maior spread entre melhor e pior weekday',
+        xaxis_title='best-worst spread %',
+        yaxis=dict(autorange='reversed'),
+        **{**_FIG_LAYOUT, 'height': max(500, top_n * 30 + 100),
+           'margin': dict(l=280, r=60, t=55, b=40)})
+    return fig
+
+
+def compute_breadth(history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Breadth do universo de factors:
+      - % positivos 1D, 5D, 1M, 3M, YTD, 1Y
+      - % acima da propria MA20, MA50, MA200
+    """
+    if len(history) == 0:
+        return pd.DataFrame()
+    close = history
+    last = close.iloc[-1]
+    rows = []
+    for label, n in [('1D', 1), ('5D', 5), ('1M', 21), ('3M', 63), ('6M', 126), ('1Y', 252)]:
+        if n >= len(close): continue
+        past = close.iloc[-n - 1]
+        chg = (last / past - 1) * 100
+        rows.append({'horizon': label,
+                      'pct_positive': round((chg > 0).sum() / chg.notna().sum() * 100, 2),
+                      'pct_negative': round((chg < 0).sum() / chg.notna().sum() * 100, 2),
+                      'avg_return_pct': round(chg.mean(), 2),
+                      'median_return_pct': round(chg.median(), 2),
+                      'n_factors': int(chg.notna().sum())})
+    # Acima das MAs
+    for w in [20, 50, 200]:
+        if w >= len(close): continue
+        ma = close.rolling(w, min_periods=max(5, w // 4)).mean().iloc[-1]
+        above = (last > ma).sum()
+        tot = ma.notna().sum()
+        rows.append({'horizon': f'>MA{w}',
+                      'pct_positive': round(above / tot * 100, 2) if tot else np.nan,
+                      'pct_negative': round((1 - above / tot) * 100, 2) if tot else np.nan,
+                      'avg_return_pct': np.nan, 'median_return_pct': np.nan,
+                      'n_factors': int(tot)})
+    return pd.DataFrame(rows)
+
+
+def fig_breadth(breadth_df: pd.DataFrame) -> go.Figure:
+    """Barras agrupadas: % positivos vs negativos por horizonte."""
+    if len(breadth_df) == 0:
+        return go.Figure().update_layout(title='Breadth — sem dados', **_FIG_LAYOUT)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=breadth_df['horizon'], y=breadth_df['pct_positive'],
+                          name='% positivos', marker_color=_C['green'],
+                          text=[f'{v:.0f}%' for v in breadth_df['pct_positive']],
+                          textposition='outside'))
+    fig.add_trace(go.Bar(x=breadth_df['horizon'], y=breadth_df['pct_negative'],
+                          name='% negativos', marker_color=_C['red'],
+                          text=[f'{v:.0f}%' for v in breadth_df['pct_negative']],
+                          textposition='outside'))
+    fig.add_hline(y=50, line_color=_C['text_muted'], line_dash='dash', line_width=0.7)
+    fig.update_layout(
+        title=f'Breadth — {int(breadth_df["n_factors"].max())} factors, '
+              f'distribuicao positivos/negativos por horizonte',
+        barmode='group', yaxis_title='%', yaxis_range=[0, 105],
+        **_FIG_LAYOUT)
+    return fig
+
+
+def compute_rs_ratio(price: pd.Series, benchmark: pd.Series,
+                       lookback: int = 63, momentum_period: int = 20) -> pd.DataFrame:
+    """
+    Simplified JdK RS-Ratio + RS-Momentum.
+    - RS = price/benchmark centralizado em 100 usando media de lookback dias
+    - Momentum = mudanca nos ultimos momentum_period dias
+    """
+    common_idx = price.index.intersection(benchmark.index)
+    p = price.reindex(common_idx).ffill()
+    b = benchmark.reindex(common_idx).ffill()
+    rel = p / b
+    rel_ma = rel.rolling(lookback, min_periods=max(10, lookback // 3)).mean()
+    rs_ratio = 100 + (rel / rel_ma - 1) * 100
+    rs_momentum = 100 + (rs_ratio - rs_ratio.shift(momentum_period))
+    return pd.DataFrame({'RS_Ratio': rs_ratio, 'RS_Momentum': rs_momentum},
+                          index=common_idx)
+
+
+def fig_rs_ratio_quadrant(history: pd.DataFrame, benchmark: pd.Series,
+                             universe_meta: dict, top_n: int = 30,
+                             tail_length: int = 10) -> go.Figure:
+    """
+    RRG-style chart:
+      x = RS-Ratio (100 = equal to benchmark)
+      y = RS-Momentum (100 = no change in RS-Ratio)
+    4 quadrantes:
+      Q1 (top-right): LEADING (RS>100, momentum up)
+      Q2 (top-left):  IMPROVING (RS<100, momentum up)
+      Q3 (bottom-left): LAGGING (RS<100, momentum down)
+      Q4 (bottom-right): WEAKENING (RS>100, momentum down)
+    Pontos = factors. Trails = ultimas tail_length semanas.
+    """
+    if len(history) == 0 or len(benchmark) == 0:
+        return go.Figure().update_layout(title='RS-Ratio — sem dados', **_FIG_LAYOUT)
+
+    # Seleciona top N mais liquidos/relevantes (todos se <top_n)
+    tickers = list(history.columns)[:top_n]
+    # Semanal (toda sexta ou ultimo do periodo)
+    weekly_idx = history.index[-tail_length * 5::5]  # aprox semanal
+    if len(weekly_idx) < 2:
+        weekly_idx = history.index[-tail_length:]
+
+    fig = go.Figure()
+    # Zonas sombreadas
+    fig.add_shape(type='rect', x0=100, x1=130, y0=100, y1=130,
+                   fillcolor='rgba(63,185,80,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=70, x1=100, y0=100, y1=130,
+                   fillcolor='rgba(88,166,255,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=70, x1=100, y0=70, y1=100,
+                   fillcolor='rgba(248,81,73,0.08)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=100, x1=130, y0=70, y1=100,
+                   fillcolor='rgba(240,136,62,0.08)', line_width=0, layer='below')
+
+    cat_colors = {'Barra Factors': _C['accent'], 'Momentum': _C['orange'],
+                   'GS Themes': _C['purple'], 'BBG Themes': _C['teal']}
+
+    for tk in tickers:
+        try:
+            rs_df = compute_rs_ratio(history[tk].dropna(), benchmark)
+            rs_df = rs_df.dropna()
+            if len(rs_df) < 5:
+                continue
+        except Exception:
+            continue
+
+        name, cat = universe_meta.get(tk, (tk, 'Other'))
+        color = cat_colors.get(cat, _C['text'])
+        # Trail: ultimas tail_length semanas
+        trail = rs_df.iloc[-tail_length * 5::5] if len(rs_df) > tail_length * 5 else rs_df.tail(tail_length)
+        # Ponto atual
+        cur = rs_df.iloc[-1]
+
+        # Trail como linha tracejada com opacidade crescente
+        if len(trail) >= 2:
+            fig.add_trace(go.Scatter(
+                x=trail['RS_Ratio'], y=trail['RS_Momentum'],
+                mode='lines+markers',
+                line=dict(color=color, width=1, dash='dot'),
+                marker=dict(size=3, color=color),
+                showlegend=False, opacity=0.4, hoverinfo='skip'))
+
+        # Ponto atual com nome
+        fig.add_trace(go.Scatter(
+            x=[cur['RS_Ratio']], y=[cur['RS_Momentum']],
+            mode='markers+text',
+            marker=dict(size=11, color=color,
+                         line=dict(color='#fff', width=1.2)),
+            text=[name[:14]], textposition='top center',
+            textfont=dict(size=9, color=color),
+            name=f'[{cat}] {name}',
+            showlegend=False,
+            hovertemplate=f'<b>{name} ({tk})</b><br>'
+                           f'RS-Ratio: %{{x:.2f}}<br>'
+                           f'RS-Momentum: %{{y:.2f}}<extra></extra>'))
+
+    # Linhas de eixo em 100
+    fig.add_hline(y=100, line_color=_C['text_muted'], line_width=0.7, line_dash='dash')
+    fig.add_vline(x=100, line_color=_C['text_muted'], line_width=0.7, line_dash='dash')
+    # Quadrante labels
+    fig.add_annotation(x=125, y=128, text='<b>LEADING</b>',
+                        showarrow=False, font=dict(color=_C['green'], size=14),
+                        xanchor='right')
+    fig.add_annotation(x=75, y=128, text='<b>IMPROVING</b>',
+                        showarrow=False, font=dict(color=_C['accent'], size=14),
+                        xanchor='left')
+    fig.add_annotation(x=75, y=72, text='<b>LAGGING</b>',
+                        showarrow=False, font=dict(color=_C['red'], size=14),
+                        xanchor='left')
+    fig.add_annotation(x=125, y=72, text='<b>WEAKENING</b>',
+                        showarrow=False, font=dict(color=_C['orange'], size=14),
+                        xanchor='right')
+
+    fig.update_layout(
+        title=f'RS-Ratio RRG vs benchmark — {len(tickers)} factors '
+              f'(trails = ultimas {tail_length}s semanais)',
+        xaxis=dict(title='RS-Ratio (>100 = outperforming)', range=[70, 130]),
+        yaxis=dict(title='RS-Momentum (>100 = RS acelerando)', range=[70, 130]),
+        **{**_FIG_LAYOUT, 'height': 680})
+    return fig
+
+
+def fig_regime_weekday_matrix(df: pd.DataFrame, regime_df: pd.DataFrame,
+                                 dim: str = 'trend') -> go.Figure:
+    """
+    Heatmap: weekday × regime_state, celula = RTH retorno medio %.
+    Mostra que weekday funciona dentro de cada regime state.
+    """
+    if regime_df is None or len(regime_df) == 0:
+        return go.Figure().update_layout(title=f'Regime×Weekday — sem dados',
+                                           **_FIG_LAYOUT)
+    col = f'{dim}_regime'
+    if col not in regime_df.columns or 'rth_return' not in df.columns:
+        return go.Figure().update_layout(title=f'Regime×Weekday — sem dados',
+                                           **_FIG_LAYOUT)
+    m = pd.DataFrame({
+        'rth': df['rth_return'].reindex(regime_df.index),
+        'weekday': df.index.strftime('%A'),
+        'regime': regime_df[col],
+    }).dropna()
+    pv = m.pivot_table(index='regime', columns='weekday',
+                        values='rth', aggfunc='mean') * 100
+    order = [d for d in WEEKDAY_ORDER if d in pv.columns]
+    pv = pv[order]
+    n_pv = m.pivot_table(index='regime', columns='weekday',
+                           values='rth', aggfunc='count')[order]
+
+    z = pv.values
+    vmax = np.nanpercentile(np.abs(z[~np.isnan(z)]), 95) if np.any(~np.isnan(z)) else 1
+    text = [[f'{v:+.2f}%<br>n={int(n_pv.iloc[i, j]) if pd.notna(n_pv.iloc[i, j]) else 0}'
+             if pd.notna(v) else '' for j, v in enumerate(row)]
+            for i, row in enumerate(z)]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=list(pv.columns), y=list(pv.index),
+        colorscale=[[0, _C['red']], [0.5, '#0d1117'], [1, _C['green']]],
+        zmin=-vmax, zmax=vmax,
+        text=text, texttemplate='%{text}',
+        textfont=dict(size=11, color='#cce8ff'),
+        colorbar=dict(title='RTH %')))
+    fig.update_layout(
+        title=f'Regime × Weekday — retorno medio RTH por {dim} × dia da semana (%)',
+        **{**_FIG_LAYOUT, 'height': 400})
+    return fig
+
+
+def run_gs_factor_section(years: int = 2, benchmark_ticker: str = 'SPY US Equity',
+                             session_frame: pd.DataFrame = None,
+                             regime_df: pd.DataFrame = None) -> dict:
     """Pipeline completo da secao GS Factors. Retorna dict com tabela + figs."""
     history = fetch_gs_factors(years=years)
     if len(history) == 0:
         return {}
     table = factor_monitor_table(history)
+
+    # Meta pra labels
+    universe_meta = {}
+    for cat, items in GS_FACTOR_UNIVERSE.items():
+        for tk, name in items:
+            universe_meta[tk] = (name, cat)
+
+    # Weekday stats
+    wd_stats = compute_factor_weekday_stats(history)
+
+    # Breadth
+    breadth = compute_breadth(history)
+
+    # RS-Ratio — baixa benchmark separado
+    bench_series = None
+    try:
+        bench_bundle = load_daily(benchmark_ticker, years=max(years, 2))
+        bench_series = bench_bundle['close'] if bench_bundle is not None else None
+    except Exception as e:
+        log.warning(f'[gs_factors] benchmark {benchmark_ticker} falhou: {e}')
+
+    figs = {
+        'heatmap': fig_factor_heatmap(table),
+        'leaderboard_ytd': fig_factor_leaderboard(table, 'YTD_pct'),
+        'leaderboard_1m': fig_factor_leaderboard(table, '1M_pct'),
+        'category_avg': fig_factor_category_avg(table),
+        'rolling_top': fig_factor_rolling(history, max_lines=8),
+        'weekday_heatmap': fig_factor_weekday_heatmap(wd_stats, universe_meta),
+        'weekday_best': fig_factor_weekday_best(wd_stats, universe_meta),
+        'breadth': fig_breadth(breadth),
+    }
+    if bench_series is not None and len(bench_series) > 50:
+        figs['rs_ratio_rrg'] = fig_rs_ratio_quadrant(
+            history, bench_series, universe_meta, top_n=30, tail_length=10)
+
+    # Regime × Weekday (se tiver os dados)
+    if session_frame is not None and regime_df is not None:
+        for dim in ['trend', 'vol', 'voldir']:
+            try:
+                figs[f'regime_wd_{dim}'] = fig_regime_weekday_matrix(
+                    session_frame, regime_df, dim=dim)
+            except Exception as e:
+                log.warning(f'regime_wd {dim} falhou: {e}')
+
     return {
         'history': history,
         'table': table,
-        'figs': {
-            'heatmap': fig_factor_heatmap(table),
-            'leaderboard_ytd': fig_factor_leaderboard(table, 'YTD_pct'),
-            'leaderboard_1m': fig_factor_leaderboard(table, '1M_pct'),
-            'category_avg': fig_factor_category_avg(table),
-            'rolling_top': fig_factor_rolling(history, max_lines=8),
-        }
+        'weekday_stats': wd_stats,
+        'breadth': breadth,
+        'benchmark_ticker': benchmark_ticker,
+        'universe_meta': universe_meta,
+        'figs': figs,
     }
 
 
@@ -3886,7 +4234,8 @@ def compute_session_stats(ticker: str, years: int = 5,
                             include_gs_factors: bool = False,
                             include_passive_breaks: bool = False,
                             pb_years: int = 30,
-                            pb_ticker: str = None) -> dict:
+                            pb_ticker: str = None,
+                            benchmark_ticker: str = 'SPY US Equity') -> dict:
     """
     Computa TUDO e retorna dict com tabelas + figs + metrics.
     Isso e o que sera importado pelo greeks_dashboard no futuro.
@@ -4021,7 +4370,11 @@ def compute_session_stats(ticker: str, years: int = 5,
     gs_factors = {}
     if include_gs_factors:
         try:
-            gs_factors = run_gs_factor_section(years=max(2, min(years, 5)))
+            gs_factors = run_gs_factor_section(
+                years=max(2, min(years, 5)),
+                benchmark_ticker=benchmark_ticker,
+                session_frame=df,
+                regime_df=regime.get('regime_df') if regime else None)
         except Exception as e:
             log.warning(f'GS Factor section falhou: {e}')
             import traceback
@@ -4343,6 +4696,41 @@ def build_section_widgets(result: dict) -> list:
         sec.append(go.FigureWidget(gf['figs']['leaderboard_1m']))
         sec.append(go.FigureWidget(gf['figs']['heatmap']))
         sec.append(go.FigureWidget(gf['figs']['rolling_top']))
+
+        # Breadth
+        if 'breadth' in gf['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Breadth do universo — "
+                                 "% de factors positivos/negativos por horizonte</div>"))
+            sec.append(go.FigureWidget(gf['figs']['breadth']))
+            if gf.get('breadth') is not None and len(gf['breadth']) > 0:
+                sec.append(wd.HTML(_df_to_html_table(gf['breadth'])))
+
+        # RS-Ratio RRG
+        if 'rs_ratio_rrg' in gf['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>RS-Ratio RRG (JdK-style) — "
+                                 f"factors vs {gf.get('benchmark_ticker', 'benchmark')} | "
+                                 "Leading/Improving/Lagging/Weakening</div>"))
+            sec.append(go.FigureWidget(gf['figs']['rs_ratio_rrg']))
+
+        # Weekday effect por factor
+        if 'weekday_heatmap' in gf['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Weekday Effect — "
+                                 "retorno medio diario por factor × dia da semana</div>"))
+            sec.append(go.FigureWidget(gf['figs']['weekday_heatmap']))
+        if 'weekday_best' in gf['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Top 20 factors com "
+                                 "maior spread best-worst weekday</div>"))
+            sec.append(go.FigureWidget(gf['figs']['weekday_best']))
+
+        # Regime × Weekday
+        for dim, label in [('trend', 'Trend'), ('vol', 'Volatility'),
+                             ('voldir', 'Vol Direction')]:
+            fkey = f'regime_wd_{dim}'
+            if fkey in gf['figs']:
+                sec.append(wd.HTML(f"<div class='mm-section-label'>Regime × Weekday — "
+                                     f"{label} regime vs weekday (RTH %)</div>"))
+                sec.append(go.FigureWidget(gf['figs'][fkey]))
+
         sec.append(wd.HTML("<div class='mm-section-label'>Factor Monitor table "
                              "(ordenado por YTD, %)</div>"))
         sec.append(wd.HTML(_df_to_html_table(gf['table'])))
@@ -4480,6 +4868,9 @@ nomura_chk_w = wd.Checkbox(value=True,
 gs_factors_chk_w = wd.Checkbox(value=False,
                                   description='Incluir GS Factor Monitor (lento: ~50 BQL queries)',
                                   layout=wd.Layout(width='400px'))
+benchmark_w = wd.Text(value='SPY US Equity', description='Benchmark:',
+                         layout=wd.Layout(width='280px'),
+                         tooltip='Benchmark pro RS-Ratio (default SPY US Equity)')
 passive_breaks_chk_w = wd.Checkbox(value=False,
                                       description='Incluir Passive Breaks Model (Green/Krishnan 2025)',
                                       layout=wd.Layout(width='450px'))
@@ -4514,6 +4905,7 @@ def _run_analysis(_):
             nom_tk = nomura_ticker_w.value.strip() or 'SPY US Equity'
             pb_tk = pb_ticker_w.value.strip() or 'SPY US Equity'
             pb_yrs = int(pb_years_w.value)
+            bench_tk = benchmark_w.value.strip() or 'SPY US Equity'
 
             loading.value = DASH_CSS + ("<div class='mm-dash'><div class='mm-card mm-loading'>"
                                            "Processando... (BQL: 1 query spot + VIX/SKEW + "
@@ -4526,7 +4918,8 @@ def _run_analysis(_):
                                              include_gs_factors=include_gs,
                                              include_passive_breaks=include_pb,
                                              pb_years=pb_yrs,
-                                             pb_ticker=pb_tk)
+                                             pb_ticker=pb_tk,
+                                             benchmark_ticker=bench_tk)
 
             loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets...</div></div>"
             sections = build_section_widgets(result)
@@ -4643,7 +5036,7 @@ def launch():
         wd.VBox([
             wd.HBox([ticker_w, years_w]),
             wd.HBox([nomura_ticker_w, nomura_chk_w]),
-            wd.HBox([gs_factors_chk_w]),
+            wd.HBox([gs_factors_chk_w, benchmark_w]),
             wd.HBox([passive_breaks_chk_w, pb_ticker_w, pb_years_w]),
             wd.HBox([run_btn, zip_btn]),
         ]),
