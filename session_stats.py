@@ -5292,17 +5292,20 @@ def build_trading_scorecard(context: dict, active_lenses: list) -> dict:
              or 'sideways')
     direction = 'BULL' if trend == 'uptrend' else ('BEAR' if trend == 'downtrend' else 'NEUTRAL')
 
-    # Suggested structure combo
+    # Suggested structure combo — ate 4 por cenario pra dar variedade
     combo_map = {
-        ('LOW', 'BULL'): ['Bull Call Debit Spread', 'Long Call 2-3m'],
-        ('LOW', 'BEAR'): ['Bear Put Debit Spread', 'Long Put 2-3m'],
-        ('LOW', 'NEUTRAL'): ['Long Straddle ATM', 'Long Calendar Spread'],
-        ('MEDIUM', 'BULL'): ['Bull Call Diagonal', 'Ratio Backspread (calls)'],
-        ('MEDIUM', 'BEAR'): ['Bear Put Diagonal', 'Ratio Backspread (puts)'],
-        ('MEDIUM', 'NEUTRAL'): ['Iron Butterfly', 'Short Straddle + Wings'],
-        ('HIGH', 'BULL'): ['Bull Put Credit Spread', 'Short Put + Long OTM put'],
-        ('HIGH', 'BEAR'): ['Bear Call Credit Spread', 'Short Call + Long OTM call'],
-        ('HIGH', 'NEUTRAL'): ['Iron Condor', 'Short Strangle com Wings (long gamma proteccao)'],
+        ('LOW', 'BULL'): ['Bull Call Debit Spread', 'Long Call 2-3m', 'Ratio Backspread (calls)'],
+        ('LOW', 'BEAR'): ['Bear Put Debit Spread', 'Long Put 2-3m', 'Ratio Backspread (puts)'],
+        ('LOW', 'NEUTRAL'): ['Long Straddle ATM', 'Long Strangle', 'Long Calendar Spread'],
+        ('MEDIUM', 'BULL'): ['Bull Call Debit Spread', 'Bull Put Credit Spread',
+                              'Ratio Backspread (calls)'],
+        ('MEDIUM', 'BEAR'): ['Bear Put Debit Spread', 'Bear Call Credit Spread',
+                              'Ratio Backspread (puts)'],
+        ('MEDIUM', 'NEUTRAL'): ['Iron Condor', 'Iron Butterfly', 'Short Straddle + Wings'],
+        ('HIGH', 'BULL'): ['Bull Put Credit Spread', 'Iron Condor', 'Short Put + Long OTM put'],
+        ('HIGH', 'BEAR'): ['Bear Call Credit Spread', 'Iron Condor',
+                            'Short Call + Long OTM call'],
+        ('HIGH', 'NEUTRAL'): ['Iron Condor', 'Iron Butterfly', 'Short Strangle com Wings'],
     }
     suggested = combo_map.get((iv_regime, direction), ['Aguarde — sinal ambiguo'])
 
@@ -5553,15 +5556,29 @@ def build_structure_legs(name: str, spot: float, iv: float,
         return bs_price(spot, K, T_years, r, iv, kind)
 
     n = name.lower()
-    if 'iron butterfly' in n or ('straddle' in n and 'wing' in n):
+    # Iron Butterfly: ATM short + 10d wings FAR (max profit concentrado no ATM)
+    if 'iron butterfly' in n:
         return [
-            ('C', -1, atm, p(atm, 'C')), ('P', -1, atm, p(atm, 'P')),
-            ('C', +1, k25c, p(k25c, 'C')), ('P', +1, k25p, p(k25p, 'P')),
+            ('C', -1, atm, p(atm, 'C')),
+            ('P', -1, atm, p(atm, 'P')),
+            ('C', +1, k10c, p(k10c, 'C')),  # 10d call (bem OTM)
+            ('P', +1, k10p, p(k10p, 'P')),  # 10d put (bem OTM)
         ]
+    # Short Straddle + Wings: ATM short + 25d wings (medio — mais credito que butterfly)
+    if ('straddle' in n and 'wing' in n):
+        return [
+            ('C', -1, atm, p(atm, 'C')),
+            ('P', -1, atm, p(atm, 'P')),
+            ('C', +1, k25c, p(k25c, 'C')),  # 25d call (OTM medio)
+            ('P', +1, k25p, p(k25p, 'P')),  # 25d put (OTM medio)
+        ]
+    # Iron Condor: sem ATM, 25d short + 10d long (banda de lucro larga)
     if 'iron condor' in n:
         return [
-            ('P', -1, k25p, p(k25p, 'P')), ('P', +1, k10p, p(k10p, 'P')),
-            ('C', -1, k25c, p(k25c, 'C')), ('C', +1, k10c, p(k10c, 'C')),
+            ('P', -1, k25p, p(k25p, 'P')),
+            ('P', +1, k10p, p(k10p, 'P')),
+            ('C', -1, k25c, p(k25c, 'C')),
+            ('C', +1, k10c, p(k10c, 'C')),
         ]
     if 'butterfly' in n:
         # Call butterfly 25d wings
