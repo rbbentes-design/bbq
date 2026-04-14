@@ -5891,18 +5891,35 @@ def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Fi
         return fig
 
 
-def mini_backtest_structure(name: str, spot_history: pd.Series,
-                               iv_series: pd.Series, n_days: int = 5,
+def mini_backtest_structure(name: str, daily_df, iv_series: pd.Series,
+                               n_days: int = 5,
                                T_years: float = 21 / 252, r: float = 0.04) -> pd.DataFrame:
     """
-    Simula abrir a estrutura em cada um dos ultimos n_days e marca-to-market
-    ate hoje. Retorna tabela com entry_date, cost, current_value, P&L.
+    Backtest realista: entrada no OPEN, marcacao/saida no CLOSE.
+
+    Para 0DTE (T <= 2 dias uteis):
+      - Entrada no open do dia
+      - Zerada/expiracao no close do MESMO dia (intrinsic payoff)
+      - Cada linha e self-contained (P&L independente por dia)
+
+    Para multi-day (T > 2 dias):
+      - Entrada no open do dia T-N
+      - Marcacao no CLOSE de hoje com BS (T_remaining < T_entry)
+      - Ultima linha = posicao aberta ha 1 dia marcada hoje
     """
-    close = spot_history.dropna()
+    # Aceita DataFrame (com open/close) ou Series (so close)
+    if isinstance(daily_df, pd.Series):
+        close = daily_df.dropna()
+        open_s = close  # fallback
+    else:
+        close = daily_df['close'].dropna()
+        open_s = daily_df['open'].reindex(close.index).fillna(close) if 'open' in daily_df else close
+
     iv = iv_series.reindex(close.index).ffill() if iv_series is not None else None
     if len(close) < n_days + 1:
         return pd.DataFrame()
 
+    is_0dte = (T_years * 252) <= 2
     today_idx = len(close) - 1
     current_spot = float(close.iloc[today_idx])
     current_iv = float(iv.iloc[today_idx]) / 100 if iv is not None else 0.20
@@ -5911,36 +5928,62 @@ def mini_backtest_structure(name: str, spot_history: pd.Series,
     for back in range(n_days, 0, -1):
         entry_idx = today_idx - back
         if entry_idx < 0: continue
-        entry_spot = float(close.iloc[entry_idx])
+
+        # Entrada sempre no OPEN (realistico: abre posicao no leilao de abertura)
+        entry_spot = float(open_s.iloc[entry_idx])
+        entry_close_same_day = float(close.iloc[entry_idx])
         entry_iv = float(iv.iloc[entry_idx]) / 100 if iv is not None else 0.20
         legs = build_structure_legs(name, entry_spot, entry_iv, T_years, r)
         if not legs: continue
 
-        # Custo liquido na entrada (positivo = debit, negativo = credit)
         entry_cost = sum(qty * prem for kind, qty, _, prem in legs if kind != 'S')
+        day_move_pct = (entry_close_same_day / entry_spot - 1) * 100
 
-        # Mark-to-market hoje
-        T_remaining = max(T_years - (back / 252), 0.001)
-        mtm = 0.0
-        for kind, qty, strike, _ in legs:
-            if kind == 'S':
-                mtm += qty * current_spot
-            elif kind in ('C', 'P'):
-                mtm += qty * bs_price(current_spot, strike, T_remaining, r, current_iv, kind)
-
-        pnl = mtm - entry_cost
         entry_date = close.index[entry_idx]
-        rows.append({
+        base_row = {
             'days_ago': back,
-            'entry_date': entry_date.strftime('%Y-%m-%d') if hasattr(entry_date, 'strftime') else str(entry_date),
-            'entry_spot': round(entry_spot, 2),
+            'entry_date': (entry_date.strftime('%Y-%m-%d')
+                            if hasattr(entry_date, 'strftime') else str(entry_date)),
+            'entry_spot_OPEN': round(entry_spot, 2),
+            'entry_iv_pct': round(entry_iv * 100, 2),
             'entry_cost_usd': round(entry_cost, 2),
-            'current_spot': round(current_spot, 2),
-            'mtm_value_usd': round(mtm, 2),
-            'pnl_usd': round(pnl, 2),
-            'pnl_pct_of_cost': (round(pnl / abs(entry_cost) * 100, 2)
-                                  if entry_cost != 0 else np.nan),
-        })
+            'day_close': round(entry_close_same_day, 2),
+            'day_move_pct': round(day_move_pct, 2),
+        }
+
+        if is_0dte:
+            # Expira no CLOSE do mesmo dia — payoff intrinsico
+            payoff_close = float(payoff_at_expiry(
+                legs, np.array([entry_close_same_day]))[0])
+            # payoff_at_expiry ja incorpora entry_cost (qty*(intrinsic - premium))
+            pnl = payoff_close
+            base_row.update({
+                'exit_type': '0DTE (CLOSE same day)',
+                'exit_spot': round(entry_close_same_day, 2),
+                'pnl_usd': round(pnl, 2),
+                'pnl_pct_of_cost': (round(pnl / abs(entry_cost) * 100, 2)
+                                      if entry_cost != 0 else np.nan),
+            })
+        else:
+            # Multi-day: MtM no CLOSE de hoje
+            T_remaining = max(T_years - (back / 252), 0.001)
+            mtm = 0.0
+            for kind, qty, strike, _ in legs:
+                if kind == 'S':
+                    mtm += qty * current_spot
+                elif kind in ('C', 'P'):
+                    mtm += qty * bs_price(current_spot, strike, T_remaining,
+                                            r, current_iv, kind)
+            pnl = mtm - entry_cost
+            base_row.update({
+                'exit_type': f'MtM today (T_rem {T_remaining*252:.0f}d)',
+                'mtm_spot_today': round(current_spot, 2),
+                'mtm_value_usd': round(mtm, 2),
+                'pnl_usd': round(pnl, 2),
+                'pnl_pct_of_cost': (round(pnl / abs(entry_cost) * 100, 2)
+                                      if entry_cost != 0 else np.nan),
+            })
+        rows.append(base_row)
     return pd.DataFrame(rows)
 
 
@@ -5968,36 +6011,42 @@ def fig_structure_backtest(backtest_df: pd.DataFrame, name: str) -> go.Figure:
 
 def build_trading_operations(scorecard: dict, ticker: str, daily: pd.DataFrame,
                                 vol_indices: pd.DataFrame = None,
-                                top_n: int = 3) -> list:
+                                top_n: int = 3,
+                                default_tenor_days: int = 21) -> list:
     """
-    Pra cada uma das top_n estruturas sugeridas, monta legs + payoff + backtest 5d.
-    Retorna lista de dicts.
+    Pra cada uma das top_n estruturas sugeridas, monta legs + payoff + backtest.
+
+    default_tenor_days=21 (1 mes). Pra 0DTE analysis, passar 1.
     """
     if daily is None or len(daily) < 10:
         return []
     close = daily['close']
     current_spot = float(close.iloc[-1])
-    # IV series: usa VIX como proxy do ATM IV anualizado (em %)
     iv_series = None
     if vol_indices is not None and 'vix' in vol_indices.columns:
         iv_series = vol_indices['vix'].reindex(close.index).ffill()
     current_iv = (float(iv_series.iloc[-1]) / 100 if iv_series is not None
                    else 0.20)
 
+    T_years = default_tenor_days / 252.0
     operations = []
     for struct_name in scorecard.get('suggested_structures', [])[:top_n]:
-        legs = build_structure_legs(struct_name, current_spot, current_iv)
+        legs = build_structure_legs(struct_name, current_spot, current_iv,
+                                       T_years=T_years)
         if not legs:
             operations.append({
                 'name': struct_name, 'mapped': False, 'legs': [],
             })
             continue
         payoff_fig = fig_structure_payoff(struct_name, legs, current_spot, current_iv)
-        backtest = mini_backtest_structure(struct_name, close, iv_series, n_days=5)
+        # Passa o daily DF inteiro (mini_backtest usa open + close)
+        backtest = mini_backtest_structure(struct_name, daily, iv_series,
+                                              n_days=5, T_years=T_years)
         bt_fig = fig_structure_backtest(backtest, struct_name)
         operations.append({
             'name': struct_name, 'mapped': True,
             'legs': legs, 'spot': current_spot, 'iv': current_iv,
+            'tenor_days': default_tenor_days,
             'payoff_fig': payoff_fig,
             'backtest': backtest, 'backtest_fig': bt_fig,
         })
