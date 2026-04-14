@@ -2851,27 +2851,36 @@ def fig_mc_forward_histogram(paths: np.ndarray, horizon_years: float,
 def fig_critical_vs_r(cfg: PassiveBreaksConfig) -> go.Figure:
     """
     Figure 6 do paper: thresholds criticos (Lyapunov e Feller) como funcao de r.
-    Mostra quao sensivel o modelo e ao growth rate assumido.
+    Aqui modelamos recalibracao: assume que para cada r, kappa e sigma
+    mudam ligeiramente pra manter E[S(T)]=S(T) com F(T)=S(T).
+
+    No paper, thresholds sao concavos em r porque a recalibracao captura
+    efeitos compostos. Pra simplificar, mantemos kappa/sigma constantes
+    e plotamos os thresholds (que nao mudam com r isoladamente) — o grafico
+    e uma visualizacao da faixa r in [8%, 12%] anualizado.
     """
-    r_range = np.linspace(0.05, 0.12, 50)
-    lyaps = []; fellers = []
-    for r in r_range:
-        # kappa e sigma sao recalibrados se r muda (aprox): usar cfg base
-        # (paper mostra que thresholds dependem so de kappa e sigma, nao de r
-        # diretamente — mas simula shift da relacao)
-        thr = critical_thresholds(cfg.kappa, cfg.sigma)
-        lyaps.append(thr['lyapunov_threshold'] * 100)
-        fellers.append(thr['feller_threshold'] * 100)
+    r_range = np.linspace(0.05, 0.12, 15)
+    # Nesse modelo simplificado, thresholds sao funcao apenas de kappa/sigma.
+    # Plot mostra valor constante com anotacao do r calibrado.
+    thr = critical_thresholds(cfg.kappa, cfg.sigma)
+    lyap_pct = thr['lyapunov_threshold'] * 100
+    feller_pct = thr['feller_threshold'] * 100
+    r_labels = [f'{r*100:.1f}%' for r in r_range]
 
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=[f'{r*100:.2f}%' for r in r_range], y=lyaps,
-                          name='Lyapunov', marker_color=_C['yellow'], opacity=0.8))
-    fig.add_trace(go.Bar(x=[f'{r*100:.2f}%' for r in r_range], y=fellers,
-                          name='Feller', marker_color=_C['red'], opacity=0.8))
-    fig.add_vline(x=f'{cfg.r*100:.2f}%', line_color='#fff', line_width=2,
-                   annotation_text=f'calibrado r={cfg.r*100:.2f}%')
+    fig.add_trace(go.Bar(x=r_labels, y=[lyap_pct] * len(r_range),
+                          name=f'Lyapunov ({lyap_pct:.1f}%)',
+                          marker_color=_C['yellow'], opacity=0.7))
+    fig.add_trace(go.Bar(x=r_labels, y=[feller_pct] * len(r_range),
+                          name=f'Feller ({feller_pct:.1f}%)',
+                          marker_color=_C['red'], opacity=0.7))
+    # Highlight da barra do r calibrado (usando index, nao string, pra add_vline)
+    r_idx = int(np.argmin(np.abs(r_range - cfg.r)))
+    fig.add_vline(x=r_idx, line_color='#fff', line_width=2.5,
+                   annotation_text=f'r={cfg.r*100:.2f}%',
+                   annotation_font_color='#fff')
     fig.update_layout(
-        title='Thresholds criticos vs growth rate r (estilo Figura 6)',
+        title=f'Thresholds criticos (Figura 6) | kappa={cfg.kappa}, sigma={cfg.sigma}',
         xaxis_title='r (growth de F, %)', yaxis_title='threshold passive share %',
         barmode='group', yaxis_range=[0, 100],
         **{**_FIG_LAYOUT, 'height': 460})
@@ -2995,7 +3004,9 @@ def compute_session_stats(ticker: str, years: int = 5,
                             include_nomura: bool = True,
                             nomura_ticker: str = 'SPY US Equity',
                             include_gs_factors: bool = False,
-                            include_passive_breaks: bool = False) -> dict:
+                            include_passive_breaks: bool = False,
+                            pb_years: int = 30,
+                            pb_ticker: str = None) -> dict:
     """
     Computa TUDO e retorna dict com tabelas + figs + metrics.
     Isso e o que sera importado pelo greeks_dashboard no futuro.
@@ -3109,16 +3120,28 @@ def compute_session_stats(ticker: str, years: int = 5,
     passive_breaks = {}
     if include_passive_breaks:
         try:
-            # Com parametros fixos do paper, nao precisa de historia longa.
-            # Usa o daily que ja foi carregado (years do usuario) pra visualizacao.
-            log.info(f'[passive_breaks] inicializando com {len(daily)} dias de {ticker}...')
-            if daily is None or len(daily) < 50:
+            # Passive Breaks usa janela propria — tipicamente 25y pra ver o
+            # S vs F de longa duracao (paper usa 1926-1994 pra calibracao, mas
+            # pra visualizacao atual 25-30y do ticker ja e o suficiente).
+            pb_tk = pb_ticker if pb_ticker else ticker
+            log.info(f'[passive_breaks] carregando {pb_years}y de {pb_tk}...')
+            if pb_tk == ticker and pb_years <= years:
+                pb_daily = daily  # reusa dado ja carregado
+            else:
+                pb_daily = load_daily(pb_tk, pb_years)
+            if pb_daily is None or len(pb_daily) < 50:
                 raise ValueError(
-                    f'Historico muito curto: {len(daily) if daily is not None else 0} dias. '
-                    f'Precisa de 50+ dias pra visualizacao.')
+                    f'Historico muito curto: {len(pb_daily) if pb_daily is not None else 0} dias. '
+                    f'Precisa de 50+ dias pra visualizacao. Aumente "PB Years" ou troque de ticker.')
+            log.info(f'[passive_breaks] simulando com {len(pb_daily)} dias de {pb_tk}...')
             passive_breaks = run_passive_breaks_section(
-                daily['close'], ticker=ticker, horizon_years=20, n_paths=100,
+                pb_daily['close'], ticker=pb_tk, horizon_years=20, n_paths=100,
                 use_paper_defaults=True)
+            passive_breaks['window_info'] = {
+                'ticker': pb_tk, 'years': pb_years, 'n_days': len(pb_daily),
+                'start': pb_daily.index[0].strftime('%Y-%m-%d'),
+                'end': pb_daily.index[-1].strftime('%Y-%m-%d'),
+            }
             log.info('[passive_breaks] OK')
         except Exception as e:
             import traceback
@@ -3351,6 +3374,17 @@ def build_section_widgets(result: dict) -> list:
             f"</div>"))
     elif pb_data.get('state'):
         pb = pb_data
+        # Info da janela usada
+        if pb.get('window_info'):
+            wi = pb['window_info']
+            sec.append(wd.HTML(
+                f"<div class='mm-note'>"
+                f"Janela Passive Breaks: <b>{wi['ticker']}</b> "
+                f"({wi['years']}y, {wi['n_days']} dias, "
+                f"{wi['start']} → {wi['end']}) | "
+                f"parametros <b>fixos do paper (1926-1994)</b>: "
+                f"kappa=0.0909, sigma=0.1247, r=0.0917"
+                f"</div>"))
         sec.append(wd.HTML(
             "<div class='mm-section-label'>Passive Breaks the Market "
             "(Green/Krishnan/Sturm SSRN 2025)</div>"))
@@ -3460,8 +3494,14 @@ gs_factors_chk_w = wd.Checkbox(value=False,
                                   description='Incluir GS Factor Monitor (lento: ~50 BQL queries)',
                                   layout=wd.Layout(width='400px'))
 passive_breaks_chk_w = wd.Checkbox(value=False,
-                                      description='Incluir Passive Breaks Model (Green/Krishnan 2025 — 15y+ history)',
-                                      layout=wd.Layout(width='500px'))
+                                      description='Incluir Passive Breaks Model (Green/Krishnan 2025)',
+                                      layout=wd.Layout(width='450px'))
+pb_ticker_w = wd.Text(value='SPY US Equity', description='PB spot:',
+                         layout=wd.Layout(width='280px'))
+pb_years_w = wd.IntSlider(value=30, min=10, max=50, step=5,
+                             description='PB Years:',
+                             layout=wd.Layout(width='320px'),
+                             tooltip='Janela de historia pro Passive Breaks (longo: 25-30y+)')
 
 run_btn = wd.Button(description='▶ Iniciar Analise', button_style='success',
                      icon='play', layout=wd.Layout(width='180px'))
@@ -3485,6 +3525,8 @@ def _run_analysis(_):
             include_gs = bool(gs_factors_chk_w.value)
             include_pb = bool(passive_breaks_chk_w.value)
             nom_tk = nomura_ticker_w.value.strip() or 'SPY US Equity'
+            pb_tk = pb_ticker_w.value.strip() or 'SPY US Equity'
+            pb_yrs = int(pb_years_w.value)
 
             loading.value = DASH_CSS + ("<div class='mm-dash'><div class='mm-card mm-loading'>"
                                            "Processando... (BQL: 1 query spot + VIX/SKEW + "
@@ -3495,7 +3537,9 @@ def _run_analysis(_):
                                              include_nomura=include_n,
                                              nomura_ticker=nom_tk,
                                              include_gs_factors=include_gs,
-                                             include_passive_breaks=include_pb)
+                                             include_passive_breaks=include_pb,
+                                             pb_years=pb_yrs,
+                                             pb_ticker=pb_tk)
 
             loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets...</div></div>"
             sections = build_section_widgets(result)
@@ -3604,7 +3648,7 @@ def launch():
             wd.HBox([ticker_w, years_w]),
             wd.HBox([nomura_ticker_w, nomura_chk_w]),
             wd.HBox([gs_factors_chk_w]),
-            wd.HBox([passive_breaks_chk_w]),
+            wd.HBox([passive_breaks_chk_w, pb_ticker_w, pb_years_w]),
             wd.HBox([run_btn, zip_btn]),
         ]),
         out_zip,
