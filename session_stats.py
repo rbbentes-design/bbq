@@ -4597,6 +4597,572 @@ def run_regime_section(df: pd.DataFrame, ticker: str,
 
 
 # =============================================================================
+# 7h. TRADING LENS ENGINE (Passarelli + Fontanills + Sinclair + Cottle + JOTA)
+# =============================================================================
+#
+# Sintetiza TUDO do relatorio em recomendacoes acionaveis aplicando lentes
+# de 5 livros/papers. Cada lente tem:
+#   trigger   — condicao que ativa a lente (funcao do contexto)
+#   action    — o que fazer se ativada
+#   structure — estrutura de opcoes recomendada
+#   contrarian — o que o mercado acha vs o que a lente diz
+#
+# Motor: scan_active_lenses(ctx) retorna lentes ativas.
+# Scorecard combina as lentes em regime + confianca + trades sugeridos.
+# =============================================================================
+
+TRADING_LENSES = [
+    # ---- IV Regime (Passarelli/Fontanills/Sinclair) ----
+    {
+        'id': 'iv_high_sell_premium',
+        'source': 'Fontanills/Sinclair',
+        'name': 'IV Alta — Vender Premium Com Asas Protetoras',
+        'trigger': lambda c: c.get('iv_rank_pct') is not None and c['iv_rank_pct'] >= 70,
+        'interpretation': (
+            'IV no 70o+ percentil. Mercado pagando caro por protecao. '
+            'Seguradora ganha quando todos querem seguro.'),
+        'action': (
+            'Vender premium com asas. NUNCA naked — vega explode nas pontas '
+            'se IV ficar mais alta. Defina max loss no credit spread.'),
+        'structures': ['Iron Condor (asas largas)', 'Bull Put Spread se bullish',
+                         'Bear Call Spread se bearish', 'Butterfly se definir strike'],
+        'contrarian': 'IV alta frequentemente coincide com queda — desconforto de estar vendido contra panico.',
+        'confidence_boost': 2,
+    },
+    {
+        'id': 'iv_low_buy_vol',
+        'source': 'Fontanills/Passarelli',
+        'name': 'IV Baixa — Comprar Volatilidade Barata',
+        'trigger': lambda c: c.get('iv_rank_pct') is not None and c['iv_rank_pct'] <= 30,
+        'interpretation': (
+            'IV no 30o- percentil. Mercado complacente. Volatilidade tem memoria — '
+            'tende a reverter a media de medio prazo.'),
+        'action': (
+            'Comprar vol barata antes da expansao. Long straddle se esperar '
+            'movimento grande; calendar se esperar aumento de IV sem direcao.'),
+        'structures': ['Long Straddle', 'Long Strangle', 'Long Calendar',
+                         'Ratio Backspread'],
+        'contrarian': 'Parece seguro ficar em cash; mas quem compra vol barata ganha no breakout.',
+        'confidence_boost': 2,
+    },
+    # ---- Skew (Passarelli/Cottle/JOTA) ----
+    {
+        'id': 'left_tail_overhedged',
+        'source': 'Nomura',
+        'name': 'Left-Tail Overhedged — Vender Puts Ou Put Spreads',
+        'trigger': lambda c: c.get('skew_left_tail_status') == 'OVERHEDGED FOR LEFT-TAIL',
+        'interpretation': (
+            'Skew 25dP/25dC no percentil >=80 (1y). Puts absurdamente caras '
+            'relativo ao historico. Consenso sobre-protegido.'),
+        'action': (
+            'Vender puts ou put spreads captando o premio inflado. Perigo: '
+            'pode ser justamente quando os puts sao justos (evento real).'),
+        'structures': ['Cash-Secured Short Put', 'Bull Put Credit Spread',
+                         'Risk Reversal (sell 25dP / buy 25dC)'],
+        'contrarian': 'Comprar 25dC descontado quando todos compram puts — asymmetric upside.',
+        'confidence_boost': 2,
+    },
+    {
+        'id': 'right_tail_underhedged',
+        'source': 'Nomura',
+        'name': 'Right-Tail Underhedged — Comprar Upside Barato',
+        'trigger': lambda c: c.get('skew_right_tail_status') == 'UNDERHEDGED FOR RIGHT-TAIL',
+        'interpretation': (
+            'Skew 25dC/ATM no percentil <=20 (1y). Call skew comprimido. '
+            'Upside nao precificado corretamente.'),
+        'action': (
+            'Comprar 25dC ou 25dC spreads pra upside barato. Melhor ratio '
+            'risk/reward em melt-up scenarios.'),
+        'structures': ['Long 25dC', 'Call Spread 25d/15d', 'Call Ratio Backspread'],
+        'contrarian': 'Mercado acha que sem upside; compre upside quando e barato.',
+        'confidence_boost': 2,
+    },
+    # ---- Vol Panic + Term Structure (JOTA 71) ----
+    {
+        'id': 'vol_panic_extreme',
+        'source': 'JOTA 71 / Sinclair',
+        'name': 'Vol Panic Index Extremo — Capitulacao Proxima',
+        'trigger': lambda c: c.get('vol_panic_score') is not None and c['vol_panic_score'] >= 8,
+        'interpretation': (
+            'Vol Panic >= 8/10. VIX + RV + drawdown + z-score 5d combinados '
+            'em extremo. Historicamente coincide com capitulacao.'),
+        'action': (
+            'Prepare compra gradual. Vender puts spreads com delta pequeno '
+            '(nao 50-delta) capta premium inflado; aguarde reversao de '
+            'backwardation pra long directional.'),
+        'structures': ['Put Spread Credit (25d/10d)', 'Long 3-6m Calls escalonado',
+                         'Cash pra reentrar no 'all-clear''],
+        'contrarian': 'Todos querem sair; o edge vem de comprar quando o medo esta no topo.',
+        'confidence_boost': 3,
+    },
+    {
+        'id': 'vol_panic_calm',
+        'source': 'Passarelli',
+        'name': 'Vol Panic Calmo — Cuidado Com Complacencia',
+        'trigger': lambda c: c.get('vol_panic_score') is not None and c['vol_panic_score'] <= 2,
+        'interpretation': (
+            'Vol Panic <= 2/10. Complacencia extrema. Tail hedges estao '
+            'historicamente baratos.'),
+        'action': (
+            'Adicionar hedges otm baratos. Nao carregar short gamma naked. '
+            'Momento pra long theta via asas protetoras (ratio backspread).'),
+        'structures': ['Long OTM Puts 3-6m', 'Put Ratio Backspread',
+                         'VIX calls calendar (se tiver acesso)'],
+        'contrarian': 'Parece o momento de short premium (vol historica baixa); e o melhor momento pra comprar seguro.',
+        'confidence_boost': 1,
+    },
+    # ---- Regime Detection ----
+    {
+        'id': 'regime_entrenched',
+        'source': 'Pattern Miner',
+        'name': 'Regime Entrenched — Risco de Reversao Alto',
+        'trigger': lambda c: any(
+            dim.get('status') == 'entrenched' for dim in (c.get('regime_snapshot', {}) or {}).values()
+            if isinstance(dim, dict)),
+        'interpretation': (
+            'Uma ou mais dimensoes de regime esta no estado ha 45+ dias. '
+            'Historicamente isso precede mean-reversion.'),
+        'action': (
+            'Reduzir alavancagem direcional. Se estava long beta, migrar pra '
+            'low-beta/quality. Considerar tail hedges.'),
+        'structures': ['Covered Call se long', 'Collar (long put + short call)',
+                         'Mudanca pra defensive baskets'],
+        'contrarian': 'Tendencia longa parece sempre vai continuar; historicamente e onde reversoes comecam.',
+        'confidence_boost': 1,
+    },
+    {
+        'id': 'regime_forming_up',
+        'source': 'Pattern Miner',
+        'name': 'Pattern Forming Up — Esperar Confirmacao',
+        'trigger': lambda c: (c.get('regime_snapshot', {}).get('trend', {}).get('state') == 'uptrend'
+                               and c.get('regime_snapshot', {}).get('trend', {}).get('status') == 'forming'),
+        'interpretation': (
+            'Uptrend em formacao (<15 dias). Ainda nao e pattern confirmado. '
+            'Mercado pode reverter com pouco esforco.'),
+        'action': (
+            'Esperar o 15o dia. Se confirmar, entrar com debit spreads '
+            '(limite de risco). Nao bet the house antes da confirmacao.'),
+        'structures': ['Bull Call Debit Spread', 'Long Call com delta 0.5-0.6'],
+        'contrarian': 'Fomo pressiona a entrar cedo; disciplina de pattern diz esperar.',
+        'confidence_boost': 1,
+    },
+    # ---- Sequencias (Passive Breaks + Patterns) ----
+    {
+        'id': 'streak_extended_up',
+        'source': 'Cullen Morgan / GS',
+        'name': 'Streak Muito Longa — Mean Reversion Proximo',
+        'trigger': lambda c: (c.get('regime_snapshot', {}).get('direction', {}).get('state') == 'up_month'
+                               and c.get('regime_snapshot', {}).get('direction', {}).get('duration_days', 0) >= 30),
+        'interpretation': (
+            'Mercado em up_month ha 30+ dias. Historicamente 7 dias seguidos '
+            'de alta ja precede consolidacao; 30 dias e zona de exaustao.'),
+        'action': (
+            'Lock gains. Vender covered calls. Aguardar pullback tactico '
+            'pra reentrar.'),
+        'structures': ['Covered Call', 'Vertical Call Spread (short bias)',
+                         'Put Ratio Backspread pra hedge barato'],
+        'contrarian': 'Todos acham que vai continuar subindo; a distribuicao historica nao favorece.',
+        'confidence_boost': 2,
+    },
+    # ---- Pattern Miner alinhamento ----
+    {
+        'id': 'pattern_strong_weekday',
+        'source': 'Pattern Miner',
+        'name': 'Weekday Pattern Forte Detectado',
+        'trigger': lambda c: (c.get('top_pattern') is not None
+                                and c['top_pattern'].get('hit_rate_pct', 0) >= 80),
+        'interpretation': (
+            'Pattern com hit rate >=80% em janela recente. Timing edge '
+            'identificado.'),
+        'action': (
+            'Alinhe entrada/saida com o pattern. Se pattern diz "quinta '
+            'cai", short vol ate quarta + long vol na quinta.'),
+        'structures': ['Timing intraday de entries', 'Short theta nos dias favoraveis'],
+        'contrarian': 'Se e obvio, outros ja estao fazendo; mas ate virar arbitragem, edge existe.',
+        'confidence_boost': 1,
+    },
+    # ---- Passive Breaks ----
+    {
+        'id': 'passive_approaching_lyapunov',
+        'source': 'Green/Krishnan/Sturm',
+        'name': 'Passive Share Proximo ao Lyapunov — Vol Explodira',
+        'trigger': lambda c: (c.get('passive_distance_lyapunov_pp') is not None
+                                and c['passive_distance_lyapunov_pp'] <= 10),
+        'interpretation': (
+            'Passive share a <=10pp do threshold Lyapunov. Pos-cruzamento, '
+            'vol cresce em velocidade cubica (paper SSRN 2025).'),
+        'action': (
+            'Long vega estrutural (3-6m calls/puts). Short gamma nao compensa '
+            'o risco cubico. Prepare-se pra aumentar long theta de asas.'),
+        'structures': ['Long 6m Straddle SPX', 'VIX 6m Calls',
+                         'Disposicao progressiva de exposure direcional'],
+        'contrarian': 'Consenso acha vol baixa = nova normal; modelo matematico discorda.',
+        'confidence_boost': 3,
+    },
+    # ---- Pinning (Sinclair) ----
+    {
+        'id': 'near_expiry_high_oi',
+        'source': 'Sinclair',
+        'name': 'Perto do Vencimento Com Alto OI — Possible Pin',
+        'trigger': lambda c: c.get('days_to_friday') is not None and c['days_to_friday'] <= 2,
+        'interpretation': (
+            'Vencimento sexta. Proximo aos strikes com alto OI, pinning pode '
+            'puxar o ativo — hedge dinamico dos MMs.'),
+        'action': (
+            'Se posicao short straddle/butterfly centrada no strike, aguarde '
+            'expiracao no bolso. Se long gamma, monetize scalping.'),
+        'structures': ['Short Straddle no strike atm (defensive)',
+                         'Butterfly no strike alvo'],
+        'contrarian': 'Mercado move-se "por motivos"; pinning mostra que e mecanico.',
+        'confidence_boost': 1,
+    },
+    # ---- RTH vs ETH ----
+    {
+        'id': 'eth_dominating',
+        'source': 'Session Analysis',
+        'name': 'ETH Dominando — Edge Nocturno Ativo',
+        'trigger': lambda c: (c.get('regime_snapshot', {}).get('session', {}).get('state') == 'eth_led'
+                               and c.get('regime_snapshot', {}).get('session', {}).get('duration_days', 0) >= 15),
+        'interpretation': (
+            'ETH (close->open) entregando maior parte dos retornos ha 15+ '
+            'dias. Noticias macro/micro sendo precificadas overnight.'),
+        'action': (
+            'Estrutura long overnight: comprar no close, zerar no open. '
+            'Short gamma intraday (theta positivo) — menor risk overnight.'),
+        'structures': ['Long equity close->open', 'Short intraday straddle rolled daily'],
+        'contrarian': 'Maior parte dos traders foca em daytrading; edge esta no overnight.',
+        'confidence_boost': 1,
+    },
+]
+
+
+def build_trading_context(result: dict) -> dict:
+    """Extrai o estado atual num dict unico pra avaliar os triggers."""
+    ctx = {}
+
+    # Regime
+    regime_data = result.get('regime') or {}
+    ctx['regime_snapshot'] = regime_data.get('snapshot', {})
+    patterns = regime_data.get('patterns')
+    if patterns is not None and len(patterns) > 0:
+        ctx['top_pattern'] = patterns.iloc[0].to_dict()
+    else:
+        ctx['top_pattern'] = None
+
+    # Nomura — skew
+    nomura = result.get('nomura') or {}
+    sp = nomura.get('skew_pctiles')
+    if sp is not None and len(sp) > 0 and hasattr(sp, 'attrs'):
+        ctx['skew_left_tail_status'] = sp.attrs.get('left_tail')
+        ctx['skew_right_tail_status'] = sp.attrs.get('right_tail')
+        # IV rank do ATM
+        last = sp.dropna().iloc[-1] if len(sp.dropna()) else None
+        if last is not None:
+            ctx['iv_rank_pct'] = last.get('atm_iv_pctile')
+            ctx['skew_left_pctile'] = last.get('left_tail_ratio_pctile')
+            ctx['skew_right_pctile'] = last.get('right_tail_ratio_pctile')
+    # Vol panic
+    vol_indices = nomura.get('vol_indices')
+    if vol_indices is not None and 'vix' in vol_indices.columns:
+        vix_last = vol_indices['vix'].iloc[-1]
+        ctx['vix_level'] = round(vix_last, 2)
+
+    # Passive Breaks
+    pb = result.get('passive_breaks') or {}
+    if pb.get('state'):
+        ctx['passive_share_pct'] = pb['state'].get('p_raw_pct')
+        ctx['passive_distance_lyapunov_pp'] = pb['state'].get('distance_to_lyapunov_pct')
+        ctx['passive_distance_feller_pp'] = pb['state'].get('distance_to_feller_pct')
+
+    # Dias ate sexta (proxy pra vencimento)
+    today = datetime.now()
+    days_to_friday = (4 - today.weekday()) % 7
+    ctx['days_to_friday'] = days_to_friday
+
+    # Vol panic score (se foi computado — nao guardamos separadamente, aproximar)
+    # Via vix percentile + realized vol percentile
+    ctx['vol_panic_score'] = None
+    if ctx.get('iv_rank_pct') is not None:
+        # Proxy simples
+        ctx['vol_panic_score'] = round(ctx['iv_rank_pct'] / 10, 1)
+
+    # Regime metrics
+    bt_metrics = result.get('bt', {}).metrics if result.get('bt') else {}
+    ctx['current_sharpe'] = bt_metrics.get('sharpe') if bt_metrics else None
+
+    return ctx
+
+
+def scan_active_lenses(context: dict) -> list:
+    """Roda os triggers; retorna lentes ativas."""
+    active = []
+    for lens in TRADING_LENSES:
+        try:
+            if lens['trigger'](context):
+                active.append(lens)
+        except Exception as e:
+            continue
+    return active
+
+
+def build_trading_scorecard(context: dict, active_lenses: list) -> dict:
+    """Sintetiza regime + confianca + sugestoes."""
+    # Regime summary
+    iv_r = context.get('iv_rank_pct') or 50
+    iv_regime = 'HIGH' if iv_r >= 70 else ('LOW' if iv_r <= 30 else 'MEDIUM')
+
+    trend = (context.get('regime_snapshot', {}).get('trend', {}).get('state')
+             or 'sideways')
+    direction = 'BULL' if trend == 'uptrend' else ('BEAR' if trend == 'downtrend' else 'NEUTRAL')
+
+    # Suggested structure combo
+    combo_map = {
+        ('LOW', 'BULL'): ['Bull Call Debit Spread', 'Long Call 2-3m'],
+        ('LOW', 'BEAR'): ['Bear Put Debit Spread', 'Long Put 2-3m'],
+        ('LOW', 'NEUTRAL'): ['Long Straddle ATM', 'Long Calendar Spread'],
+        ('MEDIUM', 'BULL'): ['Bull Call Diagonal', 'Ratio Backspread (calls)'],
+        ('MEDIUM', 'BEAR'): ['Bear Put Diagonal', 'Ratio Backspread (puts)'],
+        ('MEDIUM', 'NEUTRAL'): ['Iron Butterfly', 'Short Straddle + Wings'],
+        ('HIGH', 'BULL'): ['Bull Put Credit Spread', 'Short Put + Long OTM put'],
+        ('HIGH', 'BEAR'): ['Bear Call Credit Spread', 'Short Call + Long OTM call'],
+        ('HIGH', 'NEUTRAL'): ['Iron Condor', 'Short Strangle com Wings (long gamma proteccao)'],
+    }
+    suggested = combo_map.get((iv_regime, direction), ['Aguarde — sinal ambiguo'])
+
+    # Confidence = soma dos confidence_boost das lentes ativas
+    confidence_raw = sum(l.get('confidence_boost', 1) for l in active_lenses)
+    # Normaliza: 0-3 = LOW, 4-6 = MEDIUM, 7+ = HIGH
+    if confidence_raw >= 7:
+        conf_label = 'HIGH'
+        conf_color = _C['green']
+    elif confidence_raw >= 4:
+        conf_label = 'MEDIUM'
+        conf_color = _C['yellow']
+    else:
+        conf_label = 'LOW'
+        conf_color = _C['red']
+
+    # Bias direcional das lentes (vol long vs vol short)
+    long_vol_signals = sum(1 for l in active_lenses
+                             if 'straddle' in ' '.join(l.get('structures', [])).lower()
+                             or 'backspread' in ' '.join(l.get('structures', [])).lower()
+                             or 'long calls' in ' '.join(l.get('structures', [])).lower())
+    short_vol_signals = sum(1 for l in active_lenses
+                              if 'credit spread' in ' '.join(l.get('structures', [])).lower()
+                              or 'condor' in ' '.join(l.get('structures', [])).lower()
+                              or 'butterfly' in ' '.join(l.get('structures', [])).lower())
+    if long_vol_signals > short_vol_signals:
+        vol_bias = 'LONG VOL'
+    elif short_vol_signals > long_vol_signals:
+        vol_bias = 'SHORT VOL'
+    else:
+        vol_bias = 'NEUTRAL VOL'
+
+    return {
+        'iv_regime': iv_regime,
+        'direction': direction,
+        'vol_bias': vol_bias,
+        'suggested_structures': suggested,
+        'active_lens_count': len(active_lenses),
+        'confidence_raw': confidence_raw,
+        'confidence_label': conf_label,
+        'confidence_color': conf_color,
+    }
+
+
+def _trading_card_html(context: dict, scorecard: dict, active_lenses: list) -> str:
+    """Card HUD principal: regime, confianca, acao sugerida."""
+    iv_r = context.get('iv_rank_pct')
+    iv_str = f'{iv_r:.0f}%' if iv_r is not None else 'N/A'
+    structures_html = ''.join(
+        f"<li style='margin:3px 0;'>{s}</li>" for s in scorecard['suggested_structures']
+    )
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:22px 26px;
+                                    border-left:4px solid {scorecard["confidence_color"]};'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:3px;
+                    text-transform:uppercase; margin-bottom:10px;'>
+          🎯 Trading Desk — Sintese
+        </div>
+
+        <div style='display:flex; gap:22px; flex-wrap:wrap; margin-bottom:18px;'>
+          <div>
+            <div class='mm-metric-lbl'>IV Regime</div>
+            <div style='font-size:22px; color:{_C["accent"]}; font-weight:700;'>
+              {scorecard["iv_regime"]}
+            </div>
+            <div style='font-size:10px; color:#8b949e;'>(pctile {iv_str})</div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Direcao</div>
+            <div style='font-size:22px; color:{_C["orange"]}; font-weight:700;'>
+              {scorecard["direction"]}
+            </div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Vol Bias</div>
+            <div style='font-size:22px; color:{_C["purple"]}; font-weight:700;'>
+              {scorecard["vol_bias"]}
+            </div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Confianca</div>
+            <div style='font-size:22px; color:{scorecard["confidence_color"]}; font-weight:700;'>
+              {scorecard["confidence_label"]}
+            </div>
+            <div style='font-size:10px; color:#8b949e;'>
+              {scorecard["active_lens_count"]} lentes ativas
+            </div>
+          </div>
+        </div>
+
+        <div style='border-top:1px solid rgba(0,200,255,0.15); padding-top:14px;'>
+          <div class='mm-metric-lbl' style='margin-bottom:6px;'>
+            Estruturas sugeridas — {scorecard["iv_regime"]} IV × {scorecard["direction"]}
+          </div>
+          <ul style='color:#cce8ff; font-size:13px; padding-left:20px;'>
+            {structures_html}
+          </ul>
+        </div>
+
+        <div style='margin-top:14px; font-size:10px; color:#8b949e;
+                    font-style:italic; line-height:1.5;'>
+          Sintese baseada em Passarelli + Fontanills + Sinclair + Cottle + JOTA 71
+          aplicando lentes sobre o estado atual de cada dimensao.
+          Isso NAO e recomendacao — e resumo de regimes historicamente
+          consistentes com cada estrutura.
+        </div>
+      </div>
+    </div>
+    """
+
+
+def _lenses_detail_html(active_lenses: list) -> str:
+    """Lista de lentes ativas com interpretacao + contrarian."""
+    if not active_lenses:
+        return (
+            "<div class='mm-dash'><div class='mm-card'>"
+            "<p class='mm-flag'>⚠ Nenhuma lente ativa no momento.</p>"
+            "<p style='color:#8b949e;'>Regime ambiguo — aguarde confirmacao de pattern "
+            "ou mudanca em IV/skew.</p></div></div>")
+
+    cards = ''
+    for lens in active_lenses:
+        structures_html = ' · '.join([f'<code style="color:#00c8ff">{s}</code>'
+                                        for s in lens.get('structures', [])])
+        cards += f"""
+        <div class='mm-card' style='margin:12px 0; padding:14px 18px;
+                                      border-left:3px solid {_C["accent"]};'>
+          <div style='font-size:10px; color:#8b949e; letter-spacing:2px;
+                      text-transform:uppercase; margin-bottom:4px;'>
+            🔍 {lens["source"]}
+          </div>
+          <div style='font-size:15px; color:{_C["orange"]}; font-weight:700;
+                      margin-bottom:10px;'>
+            {lens["name"]}
+          </div>
+
+          <div style='color:#cce8ff; font-size:12px; line-height:1.6; margin-bottom:8px;'>
+            <b style='color:{_C["yellow"]}'>▸ Interpretacao:</b> {lens["interpretation"]}
+          </div>
+          <div style='color:#cce8ff; font-size:12px; line-height:1.6; margin-bottom:8px;'>
+            <b style='color:{_C["green"]}'>▸ Acao:</b> {lens["action"]}
+          </div>
+          <div style='color:#cce8ff; font-size:12px; line-height:1.6; margin-bottom:8px;'>
+            <b style='color:{_C["accent"]}'>▸ Estruturas:</b> {structures_html}
+          </div>
+          <div style='color:#8b949e; font-size:11px; font-style:italic; line-height:1.5;'>
+            <b>Contrarian:</b> {lens["contrarian"]}
+          </div>
+        </div>
+        """
+    return f"<div class='mm-dash'>{cards}</div>"
+
+
+def _trading_context_html(context: dict) -> str:
+    """Tabela resumo do contexto usado nos triggers."""
+    rows = ''
+    items = [
+        ('IV Rank (%)', context.get('iv_rank_pct'), 'ATM IV percentil 1y'),
+        ('Skew Left-Tail pctile', context.get('skew_left_pctile'), '25dP/25dC rank'),
+        ('Skew Right-Tail pctile', context.get('skew_right_pctile'), '25dC/ATM rank'),
+        ('VIX level', context.get('vix_level'), 'atual'),
+        ('Vol Panic (proxy)', context.get('vol_panic_score'), '0-10 scale'),
+        ('Passive Share (%)', context.get('passive_share_pct'), 'Green/Krishnan'),
+        ('Dist Lyapunov (pp)', context.get('passive_distance_lyapunov_pp'), 'distancia pra threshold'),
+        ('Dist Feller (pp)', context.get('passive_distance_feller_pp'), 'distancia pra threshold'),
+        ('Days to Friday', context.get('days_to_friday'), 'proxy vencimento'),
+    ]
+    for label, val, ref in items:
+        if val is None:
+            val_str = '—'
+        elif isinstance(val, float):
+            val_str = f'{val:.2f}'
+        else:
+            val_str = str(val)
+        rows += f"""
+        <tr>
+          <td style='padding:6px 12px; color:#8b949e; font-size:10px;
+                     text-transform:uppercase; letter-spacing:1.5px;'>{label}</td>
+          <td style='padding:6px 12px; color:#cce8ff; font-weight:600;
+                     font-size:14px;'>{val_str}</td>
+          <td style='padding:6px 12px; color:#8b949e; font-size:10px;
+                     font-style:italic;'>{ref}</td>
+        </tr>
+        """
+    # Regime snapshot resumido
+    rs = context.get('regime_snapshot', {}) or {}
+    regime_lines = ''
+    for dim in ['trend', 'vol', 'session', 'direction', 'voldir']:
+        d = rs.get(dim, {})
+        if not d: continue
+        regime_lines += f"""
+        <tr>
+          <td style='padding:4px 12px; color:#8b949e; font-size:10px;'>{dim}</td>
+          <td style='padding:4px 12px; color:{d.get("color", "#cce8ff")};
+                     font-weight:600; font-size:12px;'>
+            {d.get("state", "").upper()}
+          </td>
+          <td style='padding:4px 12px; color:#cce8ff; font-size:11px;'>
+            {d.get("duration_days", 0)}d | {d.get("status", "")}
+          </td>
+        </tr>
+        """
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card'>
+        <div style='font-size:10px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:10px;'>
+          📊 Contexto usado nos triggers
+        </div>
+        <table style='width:100%; border-collapse:collapse;'>
+          {rows}
+        </table>
+        {"<div style='margin-top:12px; font-size:10px; color:#8b949e; "
+         "letter-spacing:2px; text-transform:uppercase;'>Regime snapshot</div>"
+         "<table style='width:100%; border-collapse:collapse;'>" + regime_lines + "</table>"
+         if regime_lines else ""}
+      </div>
+    </div>
+    """
+
+
+def run_trading_section(result: dict) -> dict:
+    """Pipeline completo da secao Trading."""
+    context = build_trading_context(result)
+    active_lenses = scan_active_lenses(context)
+    scorecard = build_trading_scorecard(context, active_lenses)
+    return {
+        'context': context,
+        'active_lenses': active_lenses,
+        'scorecard': scorecard,
+    }
+
+
+# =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
 
@@ -4814,6 +5380,19 @@ def compute_session_stats(ticker: str, years: int = 5,
             log.warning(err_trace)
             passive_breaks = {'error': str(e), 'traceback': err_trace}
 
+    # Trading Lens Engine — sempre roda no final (usa os outros resultados)
+    result_partial = {
+        'regime': regime, 'nomura': nomura,
+        'passive_breaks': passive_breaks, 'bt': bt,
+    }
+    try:
+        trading = run_trading_section(result_partial)
+    except Exception as e:
+        log.warning(f'Trading section falhou: {e}')
+        import traceback
+        log.warning(traceback.format_exc())
+        trading = {'error': str(e), 'traceback': traceback.format_exc()}
+
     return {
         'ticker': ticker, 'years': years,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -4823,6 +5402,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'tables': tables, 'figs': figs, 'nomura': nomura,
         'gs_factors': gs_factors,
         'passive_breaks': passive_breaks,
+        'trading': trading,
     }
 
 
@@ -4874,6 +5454,7 @@ def _shorten_tab_title(full_title: str) -> str:
             'Structural Market Models': 'Structural',
             'Cross-Sectional Factor Monitor': 'Factors',
             'Nomura Options Framework': 'Nomura',
+            'Trading Desk': '🎯 Trading',
         }
         short = mapping.get(rest)
         if short is None:
@@ -5368,12 +5949,44 @@ def build_section_widgets(result: dict) -> list:
                              "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
         sec.append(go.FigureWidget(n['figs']['flows']))
 
+    # ====== PARTE VI: TRADING DESK ======
+    sec.append(wd.HTML(_big_divider(
+        'Parte VI — Trading Desk',
+        'Lentes (Passarelli + Fontanills + Sinclair + Cottle + JOTA) aplicadas ao estado atual | recomendacao de regime + estruturas')))
+    trading_data = result.get('trading') or {}
+    if trading_data.get('error'):
+        sec.append(wd.HTML(
+            f"<div class='mm-card'>"
+            f"<p class='mm-flag'>❌ Trading engine falhou:</p>"
+            f"<p style='color:#cce8ff;'><b>{trading_data['error']}</b></p>"
+            f"<pre style='color:#8b949e;font-size:10px;max-height:300px;"
+            f"overflow:auto;background:rgba(0,0,0,0.3);padding:10px;'>"
+            f"{trading_data.get('traceback', '')}</pre></div>"))
+    elif trading_data.get('scorecard'):
+        # Card principal com regime/direcao/vol_bias/confianca + estruturas
+        sec.append(wd.HTML(_trading_card_html(
+            trading_data['context'],
+            trading_data['scorecard'],
+            trading_data['active_lenses'])))
+
+        # Detalhe das lentes ativas
+        sec.append(wd.HTML("<div class='mm-section-label'>Lentes Ativas — "
+                             "por que cada regime aponta pra essa acao</div>"))
+        sec.append(wd.HTML(_lenses_detail_html(trading_data['active_lenses'])))
+
+        # Contexto dos triggers (transparencia)
+        sec.append(wd.HTML("<div class='mm-section-label'>Contexto usado — "
+                             "inputs que alimentaram os triggers</div>"))
+        sec.append(wd.HTML(_trading_context_html(trading_data['context'])))
+
     sec.append(wd.HTML(
         "<div class='mm-note'>"
         "<b>Obs:</b> estatistica nao e edge automatico. Linhas com n&lt;30 "
         "tem leitura fraca. 25d IVs aproximados via SKEW index — plugar chain "
         "real (OVDV/OptionMetrics) pra precisao total. GS Factor Monitor usa "
-        "apenas o nivel (px_last) — a carteira interna nao e liberada."
+        "apenas o nivel (px_last) — a carteira interna nao e liberada. "
+        "<b>Trading Desk</b> combina as lentes dos livros citados — "
+        "<b>nao e recomendacao</b>, e sintese educacional do regime atual."
         "</div>"))
     return sec
 
