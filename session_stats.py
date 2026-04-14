@@ -2310,13 +2310,545 @@ def run_gs_factor_section(years: int = 2) -> dict:
 
 
 # =============================================================================
+# 7d. PASSIVE BREAKS THE MARKET (Green/Krishnan/Sturm SSRN 2025)
+# =============================================================================
+#
+# Implementacao do modelo:
+#
+#   dS(t) = kappa*(1-p(t))*(F(t) - S(t))*dt + sigma*sqrt(F(t)*S(t))*dW(t)
+#
+# com F(t) = F0*exp(r*t), p(t) logistica em (0,1), W brownian.
+#
+# Thresholds criticos (para kappa=0.0909, sigma=0.1247 calibrados por eles):
+#   Estavel:          p <= 1 - 3*sigma^2/(4*kappa) = 0.87
+#   Lyapunov (cubic): 0.87 < p <= 1 - sigma^2/(2*kappa) = 0.91  (vol explode)
+#   Feller (collapse): p > 0.91  (probabilidade positiva de S -> 0)
+#
+# Ajuste Haddad (HHL25): replace p com p_hat*p = p/(1 + chi*(1-p)), chi=3.
+# Equivale a shift de ln(1+chi)/alpha = 13.08 anos no tempo.
+#
+# Volatilidade instantanea: V(t) = sigma * sqrt(F(t)/S(t))
+# Vol estavel (regime 1):  V_stable = 2*sigma * sqrt((kappa*(1-p)+r)/(4*kappa*(1-p) - 3*sigma^2))
+# =============================================================================
+
+@dataclass
+class PassiveBreaksConfig:
+    """Parametros do modelo Green/Krishnan/Sturm (calibrados em 1926-1994 S&P 500)."""
+    kappa: float = 0.0909       # mean reversion speed (anualizado)
+    sigma: float = 0.1247       # vol parameter (anualizado)
+    r: float = 0.0917           # growth rate de F
+    alpha: float = 0.106        # logistic growth of passive share
+    t0: float = 2021.0          # ano onde p(t)=0.5 (inflection da logistica)
+    chi: float = 3.0            # Haddad strategic response (1/(1+chi*(1-p)))
+
+
+def passive_share(t_year: float, alpha: float = 0.106, t0: float = 2021.0) -> float:
+    """Logistic passive share at given year. Varia de 0 a 1."""
+    return 1.0 / (1.0 + math.exp(-alpha * (t_year - t0)))
+
+
+def haddad_effective_share(p: float, chi: float = 3.0) -> float:
+    """p_effetiva apos ajuste Haddad: p_hat * p, where p_hat = 1/(1 + chi*(1-p))."""
+    return p / (1.0 + chi * (1.0 - p))
+
+
+def critical_thresholds(kappa: float, sigma: float) -> dict:
+    """
+    Thresholds criticos para passive share:
+      - lyapunov: acima deste p, vol cresce em cubic speed
+      - feller: acima deste p, S(t) tem prob>0 de colapsar a 0
+    """
+    lyapunov = 1.0 - (3.0 * sigma * sigma) / (4.0 * kappa)
+    feller = 1.0 - (sigma * sigma) / (2.0 * kappa)
+    return {
+        'lyapunov_threshold': max(0, min(1, lyapunov)),
+        'feller_threshold': max(0, min(1, feller)),
+    }
+
+
+def stable_volatility(p: float, kappa: float, sigma: float, r: float) -> float:
+    """V_stable in regime estavel (p < lyapunov). NaN se fora."""
+    num = kappa * (1.0 - p) + r
+    den = 4.0 * kappa * (1.0 - p) - 3.0 * sigma * sigma
+    if den <= 0:
+        return np.nan
+    return 2.0 * sigma * math.sqrt(num / den)
+
+
+def calibrate_passive_breaks(close: pd.Series, r_override: float = None) -> PassiveBreaksConfig:
+    """
+    Calibra kappa, sigma, r do modelo usando serie diaria de close do indice.
+
+    Metodo do paper (eq 6): regressao com intercepto=0 de:
+        dS/sqrt(F*S)  =  kappa*dt * (F-S)/sqrt(F*S) + sigma*sqrt(dt)*eps
+
+    Assume r tal que F(T) = S(T) (boundary condition no final da janela).
+    Retorna PassiveBreaksConfig calibrado.
+    """
+    s = close.dropna().astype(float)
+    if len(s) < 500:
+        log.warning('[passive_breaks] dados insuficientes pra calibracao')
+        return PassiveBreaksConfig()
+
+    # tempo em anos (252 uteis/ano)
+    dt = 1.0 / 252.0
+    n = len(s)
+    T_years = (n - 1) * dt
+
+    # r: ajusta F0*exp(r*T) = S_final, com F0=S_inicial
+    S0, ST = float(s.iloc[0]), float(s.iloc[-1])
+    if r_override is not None:
+        r = r_override
+    else:
+        r = math.log(ST / S0) / T_years if T_years > 0 and S0 > 0 else 0.09
+
+    # F(t) pra cada ponto
+    t_arr = np.arange(n) * dt
+    F = S0 * np.exp(r * t_arr)
+    S = s.values
+
+    # Discreto (eq 6): y = kappa * dt * (F-S)/sqrt(F*S) + sigma*sqrt(dt)*eps
+    # y = dS / sqrt(F*S)
+    dS = np.diff(S)
+    sqrt_FS = np.sqrt(F[:-1] * S[:-1])
+    # filtra pontos ruins
+    mask = (sqrt_FS > 0) & np.isfinite(sqrt_FS)
+    y = dS[mask] / sqrt_FS[mask]
+    x = dt * (F[:-1][mask] - S[:-1][mask]) / sqrt_FS[mask]
+
+    # Regressao sem intercepto: kappa = (x'y)/(x'x)
+    if len(x) < 100:
+        return PassiveBreaksConfig(r=r)
+    kappa = float((x * y).sum() / (x * x).sum())
+    kappa = max(0.001, kappa)  # anti-negativo
+
+    # sigma dos residuos
+    resid = y - kappa * x
+    sigma = float(np.std(resid) / math.sqrt(dt))
+
+    log.info(f'[passive_breaks] calibrado: kappa={kappa:.4f} sigma={sigma:.4f} r={r:.4f} '
+              f'(T={T_years:.1f}y, n={n})')
+
+    return PassiveBreaksConfig(kappa=kappa, sigma=sigma, r=r)
+
+
+def simulate_passive_breaks(S0: float, F0: float, cfg: PassiveBreaksConfig,
+                              n_paths: int = 100, horizon_years: float = 20.0,
+                              steps_per_year: int = 252,
+                              p_fn=None, include_haddad: bool = True,
+                              seed: int = 42) -> np.ndarray:
+    """
+    Monte Carlo da equacao (2) do paper.
+
+    p_fn(t_year) -> retorna p(t). Se None, usa logistica default do cfg.
+
+    Retorna array shape (n_paths, n_steps+1).
+    """
+    np.random.seed(seed)
+    n_steps = int(horizon_years * steps_per_year)
+    dt = 1.0 / steps_per_year
+    sqrt_dt = math.sqrt(dt)
+    t0_year = cfg.t0 - (horizon_years / 2)  # arbitrario — vai ser mascarado
+
+    paths = np.zeros((n_paths, n_steps + 1))
+    paths[:, 0] = S0
+
+    for i in range(n_steps):
+        t = i * dt
+        t_year = t0_year + t
+        if p_fn is None:
+            p_raw = passive_share(t_year, cfg.alpha, cfg.t0)
+        else:
+            p_raw = p_fn(t_year)
+        p_eff = haddad_effective_share(p_raw, cfg.chi) if include_haddad else p_raw
+
+        F_t = F0 * math.exp(cfg.r * t)
+        drift = cfg.kappa * (1.0 - p_eff) * (F_t - paths[:, i]) * dt
+        S_safe = np.maximum(paths[:, i], 1e-6)
+        diffusion = cfg.sigma * np.sqrt(F_t * S_safe) * sqrt_dt * np.random.randn(n_paths)
+        paths[:, i + 1] = np.maximum(paths[:, i] + drift + diffusion, 0.0)
+
+    return paths
+
+
+def compute_passive_breaks_state(close: pd.Series, cfg: PassiveBreaksConfig,
+                                    current_year: float = None) -> dict:
+    """
+    Snapshot do estado atual do mercado no framework do paper.
+    Retorna dict com p_atual, thresholds, distancia, vol estavel, zona, etc.
+    """
+    if current_year is None:
+        current_year = datetime.now().year + (datetime.now().month - 1) / 12
+    p_now = passive_share(current_year, cfg.alpha, cfg.t0)
+    p_eff = haddad_effective_share(p_now, cfg.chi)
+    thr = critical_thresholds(cfg.kappa, cfg.sigma)
+    lyap, feller = thr['lyapunov_threshold'], thr['feller_threshold']
+
+    # Zona
+    if p_now < lyap:
+        zone = 'ESTAVEL'
+        zone_color = _C['green']
+    elif p_now < feller:
+        zone = 'LYAPUNOV (vol cresce em cubic speed)'
+        zone_color = _C['yellow']
+    else:
+        zone = 'FELLER (risco de colapso a 0)'
+        zone_color = _C['red']
+
+    # Vol estavel se aplicavel
+    V_stable = stable_volatility(p_now, cfg.kappa, cfg.sigma, cfg.r)
+
+    # F/S ratio atual (proxy: fit log-trend aos ultimos T anos)
+    s = close.dropna()
+    if len(s) > 500:
+        n = len(s)
+        t_arr = np.arange(n) / 252.0
+        # F: ajusta F(0)*exp(r*t) pelo primeiro ponto
+        F0 = float(s.iloc[0])
+        F_series = F0 * np.exp(cfg.r * t_arr)
+        F_now = float(F_series[-1])
+        S_now = float(s.iloc[-1])
+        fs_ratio = F_now / S_now
+        current_vol = cfg.sigma * math.sqrt(fs_ratio)
+    else:
+        F_now = np.nan; S_now = np.nan; fs_ratio = np.nan; current_vol = np.nan
+
+    return {
+        'current_year': round(current_year, 2),
+        'p_raw_pct': round(p_now * 100, 2),
+        'p_effective_haddad_pct': round(p_eff * 100, 2),
+        'lyapunov_threshold_pct': round(lyap * 100, 2),
+        'feller_threshold_pct': round(feller * 100, 2),
+        'distance_to_lyapunov_pct': round((lyap - p_now) * 100, 2),
+        'distance_to_feller_pct': round((feller - p_now) * 100, 2),
+        'zone': zone,
+        'zone_color': zone_color,
+        'V_stable_pct': round(V_stable * 100, 2) if pd.notna(V_stable) else np.nan,
+        'current_vol_pct': round(current_vol * 100, 2) if pd.notna(current_vol) else np.nan,
+        'F_current': round(F_now, 2) if pd.notna(F_now) else np.nan,
+        'S_current': round(S_now, 2) if pd.notna(S_now) else np.nan,
+        'F_over_S': round(fs_ratio, 3) if pd.notna(fs_ratio) else np.nan,
+        'kappa': round(cfg.kappa, 4),
+        'sigma': round(cfg.sigma, 4),
+        'r': round(cfg.r, 4),
+        'alpha': cfg.alpha,
+        't0': cfg.t0,
+    }
+
+
+# ---- Plotly figs ----
+
+def fig_passive_share_curve(cfg: PassiveBreaksConfig) -> go.Figure:
+    """Curva logistica da passive share + linhas de threshold + ponto atual."""
+    years = np.linspace(1990, 2050, 601)
+    p = np.array([passive_share(y, cfg.alpha, cfg.t0) for y in years]) * 100
+    thr = critical_thresholds(cfg.kappa, cfg.sigma)
+    lyap = thr['lyapunov_threshold'] * 100
+    feller = thr['feller_threshold'] * 100
+    current_year = datetime.now().year + (datetime.now().month - 1) / 12
+    p_now = passive_share(current_year, cfg.alpha, cfg.t0) * 100
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=years, y=p, name='Passive Share %',
+                              line=dict(color=_C['accent'], width=2),
+                              fill='tozeroy', fillcolor='rgba(88,166,255,0.08)'))
+    # Thresholds
+    fig.add_hline(y=lyap, line_color=_C['yellow'], line_dash='dash', line_width=1.2,
+                   annotation_text=f'Lyapunov {lyap:.1f}%',
+                   annotation_font_color=_C['yellow'])
+    fig.add_hline(y=feller, line_color=_C['red'], line_dash='dash', line_width=1.2,
+                   annotation_text=f'Feller {feller:.1f}%',
+                   annotation_font_color=_C['red'])
+    # Current point
+    fig.add_trace(go.Scatter(x=[current_year], y=[p_now],
+                              mode='markers+text',
+                              marker=dict(color=_C['orange'], size=16,
+                                          line=dict(color='#fff', width=2)),
+                              text=[f'ATUAL<br>{p_now:.1f}%'],
+                              textposition='top center',
+                              textfont=dict(color=_C['orange'], size=11),
+                              name='Atual', showlegend=False))
+    # Haddad effective
+    p_eff = np.array([haddad_effective_share(passive_share(y, cfg.alpha, cfg.t0), cfg.chi)
+                        for y in years]) * 100
+    fig.add_trace(go.Scatter(x=years, y=p_eff, name='Passive Share (Haddad-ajustada)',
+                              line=dict(color=_C['purple'], width=1.2, dash='dot')))
+
+    fig.update_layout(
+        title='Passive Share Logistica — distancia ate os thresholds criticos',
+        xaxis_title='Ano', yaxis_title='Passive Share %',
+        yaxis_range=[0, 100],
+        **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
+def fig_passive_state_gauge(state: dict) -> go.Figure:
+    """Gauge/bar mostrando onde o mercado esta entre 0% e thresholds."""
+    p = state['p_raw_pct']
+    lyap = state['lyapunov_threshold_pct']
+    feller = state['feller_threshold_pct']
+
+    fig = go.Figure()
+    # Zonas empilhadas
+    fig.add_trace(go.Bar(x=[lyap], y=['Estado'], orientation='h',
+                          marker_color=_C['green'], name=f'Estavel 0-{lyap:.1f}%',
+                          text=f'Estavel <{lyap:.1f}%', textposition='inside'))
+    fig.add_trace(go.Bar(x=[feller - lyap], y=['Estado'], orientation='h',
+                          marker_color=_C['yellow'],
+                          name=f'Lyapunov {lyap:.1f}-{feller:.1f}%',
+                          text=f'Lyapunov', textposition='inside'))
+    fig.add_trace(go.Bar(x=[100 - feller], y=['Estado'], orientation='h',
+                          marker_color=_C['red'],
+                          name=f'Feller >{feller:.1f}%',
+                          text=f'Feller', textposition='inside'))
+    # Current marker
+    fig.add_vline(x=p, line_color='#fff', line_width=3,
+                   annotation_text=f'ATUAL {p:.1f}%',
+                   annotation_font_color='#fff', annotation_font_size=13)
+    fig.update_layout(
+        title=f'Passive Breaks Zone — {state["zone"]}',
+        barmode='stack', xaxis=dict(range=[0, 100], title='Passive Share %'),
+        yaxis=dict(showticklabels=False),
+        **{**_FIG_LAYOUT, 'height': 220})
+    return fig
+
+
+def fig_s_vs_f(close: pd.Series, cfg: PassiveBreaksConfig, ticker: str) -> go.Figure:
+    """S(t) vs F(t) no estilo da Figura 2 do paper (log scale)."""
+    s = close.dropna()
+    if len(s) < 50:
+        return go.Figure().update_layout(title='S vs F — sem dados', **_FIG_LAYOUT)
+    n = len(s)
+    t_arr = np.arange(n) / 252.0
+    F0 = float(s.iloc[0])
+    F = F0 * np.exp(cfg.r * t_arr)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=s.index, y=s.values, name='S(t) market',
+                              line=dict(color=_C['accent'], width=1.3)))
+    fig.add_trace(go.Scatter(x=s.index, y=F, name=f'F(t) = F0·exp(r·t), r={cfg.r:.4f}',
+                              line=dict(color=_C['orange'], width=1.3, dash='dash')))
+    # Spread F/S em subplot
+    fig2 = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                          row_heights=[0.7, 0.3],
+                          subplot_titles=(f'{ticker} — S(t) vs F(t) (log scale)',
+                                           'F/S ratio (alto = subvalorizado)'))
+    fig2.add_trace(go.Scatter(x=s.index, y=s.values, name='S(t)',
+                                line=dict(color=_C['accent'], width=1.3)),
+                    row=1, col=1)
+    fig2.add_trace(go.Scatter(x=s.index, y=F, name='F(t)',
+                                line=dict(color=_C['orange'], width=1.3, dash='dash')),
+                    row=1, col=1)
+    fig2.update_yaxes(type='log', row=1, col=1)
+    fs = F / s.values
+    fig2.add_trace(go.Scatter(x=s.index, y=fs, name='F/S',
+                                line=dict(color=_C['yellow'], width=1),
+                                fill='tozeroy', fillcolor='rgba(210,153,34,0.15)',
+                                showlegend=False),
+                    row=2, col=1)
+    fig2.add_hline(y=1, line_color=_C['text_muted'], line_width=0.6, line_dash='dot',
+                    row=2, col=1)
+    fig2.update_layout(**{**_FIG_LAYOUT, 'height': 560})
+    return fig2
+
+
+def fig_passive_breaks_monte_carlo(paths: np.ndarray, horizon_years: float,
+                                      title_suffix: str = '') -> go.Figure:
+    """Plot 100 simulated paths Figure 3/4 do paper."""
+    n_paths, n_steps_plus = paths.shape
+    t_years = np.linspace(0, horizon_years, n_steps_plus)
+    fig = go.Figure()
+    # Plot all paths em cinza transparente
+    max_show = min(n_paths, 100)
+    for i in range(max_show):
+        fig.add_trace(go.Scatter(x=t_years, y=paths[i],
+                                    line=dict(color='rgba(0,200,255,0.15)', width=0.6),
+                                    showlegend=False, hoverinfo='skip'))
+    # Median + percentiles
+    median = np.median(paths, axis=0)
+    p10 = np.percentile(paths, 10, axis=0)
+    p90 = np.percentile(paths, 90, axis=0)
+    fig.add_trace(go.Scatter(x=t_years, y=p90, name='p90',
+                              line=dict(color=_C['red'], width=1.4, dash='dash')))
+    fig.add_trace(go.Scatter(x=t_years, y=median, name='mediana',
+                              line=dict(color=_C['orange'], width=2)))
+    fig.add_trace(go.Scatter(x=t_years, y=p10, name='p10',
+                              line=dict(color=_C['green'], width=1.4, dash='dash')))
+    fig.update_layout(
+        title=f'Monte Carlo — {n_paths} paths, horizonte {horizon_years:.0f}y {title_suffix}',
+        xaxis_title='anos', yaxis_title='S(t), S(0)=100',
+        **{**_FIG_LAYOUT, 'height': 500})
+    return fig
+
+
+def fig_mc_forward_histogram(paths: np.ndarray, horizon_years: float,
+                                horizon_target: float = 10) -> go.Figure:
+    """Histograma do valor em T=horizon_target (Figure 5/8 do paper)."""
+    steps_per_year = (paths.shape[1] - 1) / horizon_years
+    idx = int(horizon_target * steps_per_year)
+    if idx >= paths.shape[1]:
+        idx = paths.shape[1] - 1
+    vals = paths[:, idx]
+    median = np.median(vals)
+    q10, q90 = np.percentile(vals, [10, 90])
+    n_neg = int((vals < 100).sum())
+    n_collapsed = int((vals < 50).sum())
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=vals, nbinsx=40,
+                                 marker_color=_C['accent'],
+                                 marker_line_color=_C['border'],
+                                 opacity=0.85, showlegend=False))
+    fig.add_vline(x=100, line_color='#fff', line_dash='dash', line_width=1.2,
+                   annotation_text='S0=100')
+    fig.add_vline(x=median, line_color=_C['orange'], line_dash='dot',
+                   annotation_text=f'median {median:.0f}')
+    fig.update_layout(
+        title=f'Distribuicao S(T={horizon_target:.0f}y) — '
+              f'{n_neg}/{paths.shape[0]} abaixo de S0, '
+              f'{n_collapsed} quase colapso',
+        xaxis_title='Nivel do indice', yaxis_title='Frequencia',
+        **{**_FIG_LAYOUT, 'height': 460})
+    return fig
+
+
+def fig_critical_vs_r(cfg: PassiveBreaksConfig) -> go.Figure:
+    """
+    Figure 6 do paper: thresholds criticos (Lyapunov e Feller) como funcao de r.
+    Mostra quao sensivel o modelo e ao growth rate assumido.
+    """
+    r_range = np.linspace(0.05, 0.12, 50)
+    lyaps = []; fellers = []
+    for r in r_range:
+        # kappa e sigma sao recalibrados se r muda (aprox): usar cfg base
+        # (paper mostra que thresholds dependem so de kappa e sigma, nao de r
+        # diretamente — mas simula shift da relacao)
+        thr = critical_thresholds(cfg.kappa, cfg.sigma)
+        lyaps.append(thr['lyapunov_threshold'] * 100)
+        fellers.append(thr['feller_threshold'] * 100)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=[f'{r*100:.2f}%' for r in r_range], y=lyaps,
+                          name='Lyapunov', marker_color=_C['yellow'], opacity=0.8))
+    fig.add_trace(go.Bar(x=[f'{r*100:.2f}%' for r in r_range], y=fellers,
+                          name='Feller', marker_color=_C['red'], opacity=0.8))
+    fig.add_vline(x=f'{cfg.r*100:.2f}%', line_color='#fff', line_width=2,
+                   annotation_text=f'calibrado r={cfg.r*100:.2f}%')
+    fig.update_layout(
+        title='Thresholds criticos vs growth rate r (estilo Figura 6)',
+        xaxis_title='r (growth de F, %)', yaxis_title='threshold passive share %',
+        barmode='group', yaxis_range=[0, 100],
+        **{**_FIG_LAYOUT, 'height': 460})
+    return fig
+
+
+def run_passive_breaks_section(close: pd.Series, ticker: str = 'SPX Index',
+                                 horizon_years: float = 20,
+                                 n_paths: int = 100) -> dict:
+    """Pipeline completo da secao Passive Breaks."""
+    cfg = calibrate_passive_breaks(close)
+    state = compute_passive_breaks_state(close, cfg)
+
+    # Simula dois cenarios: (a) no passive share, (b) logistic passive share
+    S0 = 100.0; F0 = 100.0
+    paths_no_p = simulate_passive_breaks(
+        S0, F0, cfg, n_paths=n_paths, horizon_years=horizon_years,
+        p_fn=lambda t: 0.0, include_haddad=False)
+    paths_logistic = simulate_passive_breaks(
+        S0, F0, cfg, n_paths=n_paths, horizon_years=horizon_years,
+        p_fn=None, include_haddad=False)
+    paths_haddad = simulate_passive_breaks(
+        S0, F0, cfg, n_paths=n_paths, horizon_years=horizon_years,
+        p_fn=None, include_haddad=True)
+
+    return {
+        'config': cfg,
+        'state': state,
+        'paths_no_passive': paths_no_p,
+        'paths_logistic': paths_logistic,
+        'paths_haddad': paths_haddad,
+        'horizon_years': horizon_years,
+        'figs': {
+            'passive_curve': fig_passive_share_curve(cfg),
+            'state_gauge': fig_passive_state_gauge(state),
+            's_vs_f': fig_s_vs_f(close, cfg, ticker),
+            'mc_no_passive': fig_passive_breaks_monte_carlo(
+                paths_no_p, horizon_years, '(p=0 baseline)'),
+            'mc_logistic': fig_passive_breaks_monte_carlo(
+                paths_logistic, horizon_years, '(p logistica, SEM Haddad)'),
+            'mc_haddad': fig_passive_breaks_monte_carlo(
+                paths_haddad, horizon_years, '(p logistica + Haddad ajuste)'),
+            'hist_10y': fig_mc_forward_histogram(paths_logistic, horizon_years, 10),
+            'hist_20y': fig_mc_forward_histogram(paths_logistic, horizon_years,
+                                                    min(20, horizon_years)),
+            'critical_vs_r': fig_critical_vs_r(cfg),
+        }
+    }
+
+
+def _passive_state_card_html(state: dict) -> str:
+    """Card HUD com o estado atual — pra por no topo do relatorio."""
+    p = state['p_raw_pct']; lyap = state['lyapunov_threshold_pct']
+    feller = state['feller_threshold_pct']
+    dist_lyap = state['distance_to_lyapunov_pct']
+    dist_feller = state['distance_to_feller_pct']
+    zone = state['zone']
+    zone_color = state['zone_color']
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:18px 22px'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:6px;'>
+          Passive Breaks Model — Green/Krishnan/Sturm SSRN 2025
+        </div>
+        <div style='display:flex; gap:20px; flex-wrap:wrap;'>
+          <div>
+            <div class='mm-metric-lbl'>Passive Share atual (ano {state['current_year']})</div>
+            <div style='font-size:28px; color:{zone_color}; font-weight:700;'>
+              {p:.2f}%
+            </div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Zona</div>
+            <div style='font-size:16px; color:{zone_color}; font-weight:700;
+                        padding-top:6px;'>{zone}</div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Lyapunov threshold</div>
+            <div style='font-size:20px; color:{_C["yellow"]}; font-weight:700;'>
+              {lyap:.1f}% (dist: {dist_lyap:+.1f}pp)
+            </div>
+          </div>
+          <div>
+            <div class='mm-metric-lbl'>Feller threshold</div>
+            <div style='font-size:20px; color:{_C["red"]}; font-weight:700;'>
+              {feller:.1f}% (dist: {dist_feller:+.1f}pp)
+            </div>
+          </div>
+        </div>
+        <div style='margin-top:12px; display:flex; gap:18px; flex-wrap:wrap;
+                    font-size:11px; color:#8b949e;'>
+          <span>kappa = {state['kappa']}</span>
+          <span>sigma = {state['sigma']}</span>
+          <span>r = {state['r']}</span>
+          <span>alpha = {state['alpha']}</span>
+          <span>t0 = {state['t0']}</span>
+          <span>F/S = {state.get('F_over_S', 'N/A')}</span>
+          <span>V_stable = {state.get('V_stable_pct', 'N/A')}%</span>
+        </div>
+      </div>
+    </div>
+    """
+
+
+# =============================================================================
 # 8. ORQUESTRADOR + WIDGETS + EXPORT ZIP
 # =============================================================================
 
 def compute_session_stats(ticker: str, years: int = 5,
                             include_nomura: bool = True,
                             nomura_ticker: str = 'SPY US Equity',
-                            include_gs_factors: bool = False) -> dict:
+                            include_gs_factors: bool = False,
+                            include_passive_breaks: bool = False) -> dict:
     """
     Computa TUDO e retorna dict com tabelas + figs + metrics.
     Isso e o que sera importado pelo greeks_dashboard no futuro.
@@ -2427,6 +2959,20 @@ def compute_session_stats(ticker: str, years: int = 5,
             import traceback
             log.warning(traceback.format_exc())
 
+    passive_breaks = {}
+    if include_passive_breaks:
+        try:
+            # Pra passive breaks, quanto mais historia melhor.
+            # Tenta carregar ate 30y do mesmo ticker pra calibrar kappa/sigma.
+            pb_years = max(years, 15)
+            pb_daily = load_daily(ticker, pb_years) if pb_years > years else daily
+            passive_breaks = run_passive_breaks_section(
+                pb_daily['close'], ticker=ticker, horizon_years=20, n_paths=100)
+        except Exception as e:
+            log.warning(f'Passive Breaks falhou: {e}')
+            import traceback
+            log.warning(traceback.format_exc())
+
     return {
         'ticker': ticker, 'years': years,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -2434,6 +2980,7 @@ def compute_session_stats(ticker: str, years: int = 5,
         'bottom_line': bottom_line,
         'tables': tables, 'figs': figs, 'nomura': nomura,
         'gs_factors': gs_factors,
+        'passive_breaks': passive_breaks,
     }
 
 
@@ -2625,6 +3172,30 @@ def build_section_widgets(result: dict) -> list:
                              "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
         sec.append(go.FigureWidget(n['figs']['flows']))
 
+    # --- Passive Breaks Model ---
+    if result.get('passive_breaks') and result['passive_breaks'].get('state'):
+        pb = result['passive_breaks']
+        sec.append(wd.HTML(
+            "<div class='mm-section-label'>Passive Breaks the Market "
+            "(Green/Krishnan/Sturm SSRN 2025)</div>"))
+        sec.append(wd.HTML(_passive_state_card_html(pb['state'])))
+        sec.append(go.FigureWidget(pb['figs']['state_gauge']))
+        sec.append(go.FigureWidget(pb['figs']['passive_curve']))
+        sec.append(go.FigureWidget(pb['figs']['s_vs_f']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Monte Carlo — 3 cenarios</div>"))
+        sec.append(go.FigureWidget(pb['figs']['mc_no_passive']))
+        sec.append(go.FigureWidget(pb['figs']['mc_logistic']))
+        sec.append(go.FigureWidget(pb['figs']['mc_haddad']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Distribuicao forward</div>"))
+        sec.append(go.FigureWidget(pb['figs']['hist_10y']))
+        sec.append(go.FigureWidget(pb['figs']['hist_20y']))
+        sec.append(go.FigureWidget(pb['figs']['critical_vs_r']))
+        # Tabela do state
+        state_df = pd.DataFrame([pb['state']]).T
+        state_df.columns = ['value']
+        sec.append(wd.HTML("<div class='mm-section-label'>State snapshot (valores)</div>"))
+        sec.append(wd.HTML(_df_to_html_table(state_df)))
+
     # --- GS Factor Monitor ---
     if result.get('gs_factors') and result['gs_factors'].get('table') is not None \
        and len(result['gs_factors']['table']) > 0:
@@ -2709,6 +3280,9 @@ nomura_chk_w = wd.Checkbox(value=True,
 gs_factors_chk_w = wd.Checkbox(value=False,
                                   description='Incluir GS Factor Monitor (lento: ~50 BQL queries)',
                                   layout=wd.Layout(width='400px'))
+passive_breaks_chk_w = wd.Checkbox(value=False,
+                                      description='Incluir Passive Breaks Model (Green/Krishnan 2025 — 15y+ history)',
+                                      layout=wd.Layout(width='500px'))
 
 run_btn = wd.Button(description='▶ Iniciar Analise', button_style='success',
                      icon='play', layout=wd.Layout(width='180px'))
@@ -2730,6 +3304,7 @@ def _run_analysis(_):
             years = int(years_w.value)
             include_n = bool(nomura_chk_w.value)
             include_gs = bool(gs_factors_chk_w.value)
+            include_pb = bool(passive_breaks_chk_w.value)
             nom_tk = nomura_ticker_w.value.strip() or 'SPY US Equity'
 
             loading.value = DASH_CSS + ("<div class='mm-dash'><div class='mm-card mm-loading'>"
@@ -2740,7 +3315,8 @@ def _run_analysis(_):
             result = compute_session_stats(ticker, years,
                                              include_nomura=include_n,
                                              nomura_ticker=nom_tk,
-                                             include_gs_factors=include_gs)
+                                             include_gs_factors=include_gs,
+                                             include_passive_breaks=include_pb)
 
             loading.value = DASH_CSS + f"<div class='mm-dash'><div class='mm-card mm-loading'>Montando widgets...</div></div>"
             sections = build_section_widgets(result)
@@ -2849,6 +3425,7 @@ def launch():
             wd.HBox([ticker_w, years_w]),
             wd.HBox([nomura_ticker_w, nomura_chk_w]),
             wd.HBox([gs_factors_chk_w]),
+            wd.HBox([passive_breaks_chk_w]),
             wd.HBox([run_btn, zip_btn]),
         ]),
         out_zip,
