@@ -942,7 +942,8 @@ def fig_streak_distribution(df: pd.DataFrame, ticker: str) -> go.Figure:
     return fig
 
 
-def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame) -> go.Figure:
+def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame,
+                               tenor_label: str = '0DTE (T=1d)') -> go.Figure:
     """Dois heatmaps empilhados (um em cima do outro) — evita label overflow."""
     # Abrevia labels longos pra nao invadir adjacente
     def _short(label):
@@ -963,8 +964,9 @@ def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame) -> go.F
     sharpe = sharpe.rename(index=_short)
     fig = make_subplots(rows=2, cols=1, row_heights=[0.55, 0.45],
                          vertical_spacing=0.12,
-                         subplot_titles=('SPX Daily Options PnL — Cumulative (%)',
-                                          'Sharpe Ratio Annualized'))
+                         subplot_titles=(
+                             f'Options PnL Cumulative (%) — {tenor_label}',
+                             f'Sharpe Ratio Annualized — {tenor_label}'))
     for idx, data in enumerate([summary, sharpe]):
         v = data.values.astype(float)
         vmax = np.nanmax(np.abs(v)) if v.size else 1
@@ -976,7 +978,7 @@ def fig_options_pnl_heatmap(summary: pd.DataFrame, sharpe: pd.DataFrame) -> go.F
             texttemplate='%{text}', textfont=dict(size=10, color='#cce8ff'),
             hovertemplate='%{y} | %{x}<br>value: %{z:.2f}<extra></extra>',
         ), row=idx + 1, col=1)
-    fig.update_layout(title='Nomura — SPX Daily Options PnL Summary',
+    fig.update_layout(title=f'Nomura — SPX Options PnL Summary ({tenor_label})',
                        **{**_FIG_LAYOUT, 'height': 820,
                           'margin': dict(l=220, r=50, t=60, b=50)})
     return fig
@@ -3371,18 +3373,33 @@ def compute_session_stats(ticker: str, years: int = 5,
             nd = load_daily(nomura_ticker, years)
             vol = load_vol_indices(years)
             iv = approximate_25d_ivs(vol['vix'], vol['skew'])
-            pnl = compute_daily_options_pnl(nd, iv)
-            summary = options_pnl_summary(pnl)
-            sharpe = options_sharpe(pnl)
-            sp = skew_percentiles_multi(iv)       # agora com 3 convencoes
+
+            # Roda 2 tenores: 0DTE (T=1d) e 30d monthly
+            pnl_0dte = compute_daily_options_pnl(nd, iv, tenor_days=1)
+            pnl_30d = compute_daily_options_pnl(nd, iv, tenor_days=21)  # 21 uteis ~ 30 cal
+            summary_0dte = options_pnl_summary(pnl_0dte)
+            sharpe_0dte = options_sharpe(pnl_0dte)
+            summary_30d = options_pnl_summary(pnl_30d)
+            sharpe_30d = options_sharpe(pnl_30d)
+
+            sp = skew_percentiles_multi(iv)       # 3 convencoes
             flows = compute_dynamic_flows(nd)
             nomura = {
-                'pnl_daily': pnl, 'pnl_summary': summary, 'sharpe': sharpe,
+                # Default pnl refere-se ao 0DTE (compat com CSVs antigos)
+                'pnl_daily': pnl_0dte, 'pnl_summary': summary_0dte, 'sharpe': sharpe_0dte,
+                # Nova divisao tenor
+                'pnl_0dte_daily': pnl_0dte, 'pnl_0dte_summary': summary_0dte,
+                'sharpe_0dte': sharpe_0dte,
+                'pnl_30d_daily': pnl_30d, 'pnl_30d_summary': summary_30d,
+                'sharpe_30d': sharpe_30d,
                 'skew_pctiles': sp, 'flows': flows, 'vol_indices': vol,
                 'figs': {
-                    'options_pnl': fig_options_pnl_heatmap(summary, sharpe),
-                    'skew_pctiles': fig_skew_multi(sp),     # 4 paineis
-                    'iv_rank': fig_iv_rank(vol),            # IV + Skew rank
+                    'options_pnl_0dte': fig_options_pnl_heatmap(
+                        summary_0dte, sharpe_0dte, tenor_label='0DTE (T=1d, daily rolado)'),
+                    'options_pnl_30d': fig_options_pnl_heatmap(
+                        summary_30d, sharpe_30d, tenor_label='30d Monthly (T=21d, mensal)'),
+                    'skew_pctiles': fig_skew_multi(sp),
+                    'iv_rank': fig_iv_rank(vol),
                     'flows': fig_systematic_flows(flows),
                     'vol_panic': fig_vol_panic_proxy(daily, vol, ticker),
                 }
@@ -3617,13 +3634,30 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML(_big_divider(
             'Parte II — Nomura Options Framework',
             'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
-        sec.append(wd.HTML("<div class='mm-section-label'>Nomura — Options PnL Summary "
-                             "(valores em % do spot, 2 casas)</div>"))
-        sec.append(go.FigureWidget(n['figs']['options_pnl']))
-        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — Cumulative (%)</div>"))
-        sec.append(wd.HTML(_df_to_html_table(n['pnl_summary'])))
-        sec.append(wd.HTML("<div class='mm-section-label'>Sharpe Ratio Annualized</div>"))
-        sec.append(wd.HTML(_df_to_html_table(n['sharpe'])))
+        sec.append(wd.HTML(
+            "<div class='mm-note'>"
+            "<b>Tenores:</b> o paper da Nomura usa <b>0DTE</b> (daily rolled, T=1d). "
+            "Adicionamos tambem a versao <b>30d monthly</b> (T=21d) pra comparacao — "
+            "vol premium embutido nos strikes cresce com √T, entao as magnitudes "
+            "sao muito maiores. Valores em % do spot, 2 casas."
+            "</div>"))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 0DTE "
+                             "(T=1 dia, rolado diariamente)</div>"))
+        sec.append(go.FigureWidget(n['figs']['options_pnl_0dte']))
+        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Cumulative (%)</div>"))
+        sec.append(wd.HTML(_df_to_html_table(n.get('pnl_0dte_summary', n['pnl_summary']))))
+        sec.append(wd.HTML("<div class='mm-section-label'>Tabela 0DTE — Sharpe Annualized</div>"))
+        sec.append(wd.HTML(_df_to_html_table(n.get('sharpe_0dte', n['sharpe']))))
+
+        if 'options_pnl_30d' in n['figs']:
+            sec.append(wd.HTML("<div class='mm-section-label'>Options PnL — 30d Monthly "
+                                 "(T=21 dias uteis, ~1 mes)</div>"))
+            sec.append(go.FigureWidget(n['figs']['options_pnl_30d']))
+            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Cumulative (%)</div>"))
+            sec.append(wd.HTML(_df_to_html_table(n['pnl_30d_summary'])))
+            sec.append(wd.HTML("<div class='mm-section-label'>Tabela 30d — Sharpe Annualized</div>"))
+            sec.append(wd.HTML(_df_to_html_table(n['sharpe_30d'])))
 
         sec.append(wd.HTML("<div class='mm-section-label'>Skew Percentiles — "
                              "Nomura (ratio) + SpotGamma (normalized diff %)</div>"))
@@ -3900,11 +3934,20 @@ def _export_zip(_):
                     except Exception as ex:
                         log.warning(f'csv {name} skip: {ex}')
                 if r.get('nomura'):
-                    for name, df in [('options_pnl_daily', r['nomura']['pnl_daily']),
-                                       ('options_pnl_summary', r['nomura']['pnl_summary']),
-                                       ('options_sharpe', r['nomura']['sharpe']),
-                                       ('skew_pctiles', r['nomura']['skew_pctiles']),
-                                       ('systematic_flows', r['nomura']['flows'])]:
+                    nm = r['nomura']
+                    csv_list = [
+                        ('options_pnl_0dte_daily', nm.get('pnl_0dte_daily', nm.get('pnl_daily'))),
+                        ('options_pnl_0dte_summary', nm.get('pnl_0dte_summary', nm.get('pnl_summary'))),
+                        ('options_sharpe_0dte', nm.get('sharpe_0dte', nm.get('sharpe'))),
+                        ('options_pnl_30d_daily', nm.get('pnl_30d_daily')),
+                        ('options_pnl_30d_summary', nm.get('pnl_30d_summary')),
+                        ('options_sharpe_30d', nm.get('sharpe_30d')),
+                        ('skew_pctiles', nm.get('skew_pctiles')),
+                        ('systematic_flows', nm.get('flows')),
+                    ]
+                    for name, df in csv_list:
+                        if df is None:
+                            continue
                         try: zf.writestr(f'data/nomura_{name}.csv', df.to_csv())
                         except Exception as ex: log.warning(f'csv nomura {name} skip: {ex}')
                 if r.get('gs_factors') and r['gs_factors']:
