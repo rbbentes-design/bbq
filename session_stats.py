@@ -2675,6 +2675,128 @@ def compute_passive_breaks_state(close: pd.Series, cfg: PassiveBreaksConfig,
 
 # ---- Plotly figs ----
 
+def project_threshold_hit(cfg: PassiveBreaksConfig, target_p: float,
+                             alpha_sigma_pct: float = 15,
+                             us_equity_mktcap_usd: float = 60e12) -> pd.DataFrame:
+    """
+    Projeta quando passive share chega a target_p sob varios cenarios de alpha.
+
+    alpha_sigma_pct: desvio padrao do alpha em % (15% default, baseado na
+                      sensibilidade do fit logistico Haddad 1995-2019).
+    us_equity_mktcap_usd: total mkt cap US equities pra estimar AUM adicional.
+
+    Retorna DataFrame com 5 cenarios: -2sig, -1sig, base, +1sig, +2sig.
+    """
+    now_year = datetime.now().year + (datetime.now().month - 1) / 12
+    p_now = passive_share(now_year, cfg.alpha, cfg.t0)
+    aum_now = p_now * us_equity_mktcap_usd
+    aum_target = target_p * us_equity_mktcap_usd
+    aum_needed = aum_target - aum_now
+
+    rows = []
+    scenarios = [
+        ('-2σ (fluxo mais lento)', -2),
+        ('-1σ (fluxo mais lento)', -1),
+        ('Base (α calibrado)', 0),
+        ('+1σ (fluxo mais rapido)', 1),
+        ('+2σ (fluxo mais rapido)', 2),
+    ]
+    for label, mult in scenarios:
+        alpha_adj = cfg.alpha * (1 + mult * alpha_sigma_pct / 100)
+        if alpha_adj <= 0 or target_p <= p_now:
+            t_hit = float('inf')
+        else:
+            t_hit = cfg.t0 - math.log((1 - target_p) / target_p) / alpha_adj
+        yrs = t_hit - now_year if math.isfinite(t_hit) else np.nan
+        days = yrs * 365.25 if pd.notna(yrs) else np.nan
+        rows.append({
+            'cenario': label,
+            'alpha': round(alpha_adj, 4),
+            'data_hit': f'{int(t_hit)}-{int((t_hit - int(t_hit)) * 12) + 1:02d}'
+                         if math.isfinite(t_hit) else 'nunca',
+            'years_ate_hit': round(yrs, 1) if pd.notna(yrs) else np.nan,
+            'days_ate_hit': int(round(days)) if pd.notna(days) else np.nan,
+            'aum_adicional_usd_tn': round(aum_needed / 1e12, 2) if aum_needed > 0 else 0,
+            'aum_adicional_por_dia_usd_bn': round(aum_needed / 1e9 / days, 3)
+                                                 if pd.notna(days) and days > 0 else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+def fig_threshold_projection(cfg: PassiveBreaksConfig,
+                                us_equity_mktcap_usd: float = 60e12) -> go.Figure:
+    """
+    Curva logistica da passive share + projecoes em 5 cenarios ate Lyapunov e Feller.
+    Linhas verticais marcando as datas de hit em cada cenario.
+    """
+    thr = critical_thresholds(cfg.kappa, cfg.sigma)
+    lyap_p = thr['lyapunov_threshold']
+    feller_p = thr['feller_threshold']
+    now_year = datetime.now().year + (datetime.now().month - 1) / 12
+    p_now = passive_share(now_year, cfg.alpha, cfg.t0)
+
+    years = np.linspace(1990, 2060, 701)
+    alpha_sigma_pct = 15
+    scenarios = [
+        ('-2σ', -2, _C['green']),
+        ('-1σ', -1, _C['teal']),
+        ('Base', 0, _C['accent']),
+        ('+1σ', 1, _C['orange']),
+        ('+2σ', 2, _C['red']),
+    ]
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                         row_heights=[0.7, 0.3],
+                         subplot_titles=(
+                             'Projecao Passive Share — 5 cenarios (alpha ±1σ, ±2σ)',
+                             'Distancia aos thresholds (pp) — quanto falta pra Lyapunov / Feller'))
+
+    for label, mult, color in scenarios:
+        alpha_adj = cfg.alpha * (1 + mult * alpha_sigma_pct / 100)
+        p = np.array([passive_share(y, alpha_adj, cfg.t0) for y in years]) * 100
+        fig.add_trace(go.Scatter(
+            x=years, y=p, name=label,
+            line=dict(color=color, width=2.0 if mult == 0 else 1.2,
+                       dash='solid' if mult == 0 else ('dot' if abs(mult) == 2 else 'dash'))),
+            row=1, col=1)
+
+    # Thresholds como bandas horizontais
+    fig.add_hline(y=lyap_p * 100, line_color=_C['yellow'], line_dash='dash',
+                   line_width=1.3, row=1, col=1,
+                   annotation_text=f'Lyapunov {lyap_p*100:.1f}%',
+                   annotation_font_color=_C['yellow'], annotation_position='left')
+    fig.add_hline(y=feller_p * 100, line_color=_C['red'], line_dash='dash',
+                   line_width=1.3, row=1, col=1,
+                   annotation_text=f'Feller {feller_p*100:.1f}%',
+                   annotation_font_color=_C['red'], annotation_position='left')
+
+    # Linha vertical NOW
+    fig.add_vline(x=now_year, line_color='#fff', line_width=1.5, line_dash='dot',
+                   row=1, col=1,
+                   annotation_text=f'HOJE {p_now*100:.1f}%',
+                   annotation_font_color='#fff')
+
+    # Paineel 2: distancia pp aos thresholds ao longo do tempo (base scenario)
+    p_base = np.array([passive_share(y, cfg.alpha, cfg.t0) for y in years]) * 100
+    dist_lyap = lyap_p * 100 - p_base
+    dist_feller = feller_p * 100 - p_base
+    fig.add_trace(go.Scatter(x=years, y=dist_lyap, name='dist Lyapunov',
+                              line=dict(color=_C['yellow'], width=1.3),
+                              showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=years, y=dist_feller, name='dist Feller',
+                              line=dict(color=_C['red'], width=1.3),
+                              showlegend=False), row=2, col=1)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6, row=2, col=1)
+    fig.add_vline(x=now_year, line_color='#fff', line_width=1.5, line_dash='dot',
+                   row=2, col=1)
+
+    fig.update_yaxes(range=[0, 100], title_text='Passive Share %', row=1, col=1)
+    fig.update_yaxes(title_text='pp ate threshold', row=2, col=1)
+    fig.update_xaxes(range=[2010, 2055])
+    fig.update_layout(**{**_FIG_LAYOUT, 'height': 720})
+    return fig
+
+
 def fig_passive_share_curve(cfg: PassiveBreaksConfig) -> go.Figure:
     """Curva logistica da passive share + linhas de threshold + ponto atual."""
     years = np.linspace(1990, 2050, 601)
@@ -2686,67 +2808,92 @@ def fig_passive_share_curve(cfg: PassiveBreaksConfig) -> go.Figure:
     p_now = passive_share(current_year, cfg.alpha, cfg.t0) * 100
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=years, y=p, name='Passive Share %',
-                              line=dict(color=_C['accent'], width=2),
-                              fill='tozeroy', fillcolor='rgba(88,166,255,0.08)'))
-    # Thresholds
-    fig.add_hline(y=lyap, line_color=_C['yellow'], line_dash='dash', line_width=1.2,
-                   annotation_text=f'Lyapunov {lyap:.1f}%',
+    # Thresholds como banda colorida (em vez de hline com annotation)
+    fig.add_hrect(y0=0, y1=lyap, fillcolor='rgba(63,185,80,0.06)', line_width=0,
+                   layer='below')
+    fig.add_hrect(y0=lyap, y1=feller, fillcolor='rgba(210,153,34,0.10)',
+                   line_width=0, layer='below',
+                   annotation_text=f'LYAPUNOV {lyap:.1f}%',
+                   annotation_position='top left',
                    annotation_font_color=_C['yellow'])
-    fig.add_hline(y=feller, line_color=_C['red'], line_dash='dash', line_width=1.2,
-                   annotation_text=f'Feller {feller:.1f}%',
+    fig.add_hrect(y0=feller, y1=100, fillcolor='rgba(248,81,73,0.10)',
+                   line_width=0, layer='below',
+                   annotation_text=f'FELLER {feller:.1f}%',
+                   annotation_position='top left',
                    annotation_font_color=_C['red'])
-    # Current point
-    fig.add_trace(go.Scatter(x=[current_year], y=[p_now],
-                              mode='markers+text',
-                              marker=dict(color=_C['orange'], size=16,
-                                          line=dict(color='#fff', width=2)),
-                              text=[f'ATUAL<br>{p_now:.1f}%'],
-                              textposition='top center',
-                              textfont=dict(color=_C['orange'], size=11),
-                              name='Atual', showlegend=False))
-    # Haddad effective
+
+    # Linha principal Passive Share
+    fig.add_trace(go.Scatter(x=years, y=p, name='Passive Share',
+                              line=dict(color=_C['accent'], width=2.4)))
+    # Haddad-ajustada
     p_eff = np.array([haddad_effective_share(passive_share(y, cfg.alpha, cfg.t0), cfg.chi)
                         for y in years]) * 100
-    fig.add_trace(go.Scatter(x=years, y=p_eff, name='Passive Share (Haddad-ajustada)',
-                              line=dict(color=_C['purple'], width=1.2, dash='dot')))
+    fig.add_trace(go.Scatter(x=years, y=p_eff, name='Haddad-ajustada (p_eff)',
+                              line=dict(color=_C['purple'], width=1.4, dash='dash')))
+
+    # Current point — marker grande + label sem overlap
+    fig.add_trace(go.Scatter(x=[current_year], y=[p_now],
+                              mode='markers',
+                              marker=dict(color='#fff', size=18,
+                                          line=dict(color=_C['orange'], width=3)),
+                              name=f'Hoje {p_now:.2f}%', showlegend=True))
+    # Linha vertical no now
+    fig.add_vline(x=current_year, line_color=_C['orange'], line_width=1,
+                   line_dash='dot')
 
     fig.update_layout(
-        title='Passive Share Logistica — distancia ate os thresholds criticos',
+        title='Passive Share Logistica — trajetoria historica + extrapolacao',
         xaxis_title='Ano', yaxis_title='Passive Share %',
         yaxis_range=[0, 100],
-        **{**_FIG_LAYOUT, 'height': 500})
+        xaxis_range=[1995, 2050],
+        **{**_FIG_LAYOUT, 'height': 500,
+           'legend': dict(orientation='h', yanchor='bottom', y=-0.18,
+                           xanchor='center', x=0.5, font=dict(size=11))})
     return fig
 
 
 def fig_passive_state_gauge(state: dict) -> go.Figure:
-    """Gauge/bar mostrando onde o mercado esta entre 0% e thresholds."""
+    """Gauge horizontal limpo: zonas coloridas + marcador atual."""
     p = state['p_raw_pct']
     lyap = state['lyapunov_threshold_pct']
     feller = state['feller_threshold_pct']
 
     fig = go.Figure()
-    # Zonas empilhadas
-    fig.add_trace(go.Bar(x=[lyap], y=['Estado'], orientation='h',
-                          marker_color=_C['green'], name=f'Estavel 0-{lyap:.1f}%',
-                          text=f'Estavel <{lyap:.1f}%', textposition='inside'))
-    fig.add_trace(go.Bar(x=[feller - lyap], y=['Estado'], orientation='h',
-                          marker_color=_C['yellow'],
-                          name=f'Lyapunov {lyap:.1f}-{feller:.1f}%',
-                          text=f'Lyapunov', textposition='inside'))
-    fig.add_trace(go.Bar(x=[100 - feller], y=['Estado'], orientation='h',
-                          marker_color=_C['red'],
-                          name=f'Feller >{feller:.1f}%',
-                          text=f'Feller', textposition='inside'))
-    # Current marker
-    fig.add_vline(x=p, line_color='#fff', line_width=3,
-                   annotation_text=f'ATUAL {p:.1f}%',
-                   annotation_font_color='#fff', annotation_font_size=13)
+    # Zonas como shapes (nao bars) pra nao poluir
+    fig.add_shape(type='rect', x0=0, x1=lyap, y0=0, y1=1,
+                   fillcolor='rgba(63,185,80,0.55)', line_width=0)
+    fig.add_shape(type='rect', x0=lyap, x1=feller, y0=0, y1=1,
+                   fillcolor='rgba(210,153,34,0.55)', line_width=0)
+    fig.add_shape(type='rect', x0=feller, x1=100, y0=0, y1=1,
+                   fillcolor='rgba(248,81,73,0.55)', line_width=0)
+
+    # Labels das zonas (so texto, sem barra duplicada)
+    fig.add_annotation(x=lyap / 2, y=0.5, text=f'<b>ESTAVEL</b><br>0 → {lyap:.1f}%',
+                        showarrow=False, font=dict(color='#fff', size=13))
+    fig.add_annotation(x=(lyap + feller) / 2, y=0.5,
+                        text=f'<b>LYAPUNOV</b><br>{lyap:.1f} → {feller:.1f}%',
+                        showarrow=False, font=dict(color='#fff', size=13))
+    fig.add_annotation(x=(feller + 100) / 2, y=0.5,
+                        text=f'<b>FELLER</b><br>&gt; {feller:.1f}%',
+                        showarrow=False, font=dict(color='#fff', size=13))
+
+    # Marker atual — linha branca grossa + seta + texto acima
+    fig.add_shape(type='line', x0=p, x1=p, y0=0, y1=1,
+                   line=dict(color='#fff', width=4))
+    fig.add_annotation(x=p, y=1.35, text=f'<b>ATUAL<br>{p:.2f}%</b>',
+                        showarrow=True, arrowhead=2, arrowcolor='#fff',
+                        arrowwidth=2, ax=0, ay=-30,
+                        font=dict(color='#fff', size=14),
+                        bgcolor='rgba(1,8,20,0.9)', bordercolor='#fff', borderwidth=1)
+
+    fig.update_xaxes(range=[0, 100], title='Passive Share %',
+                      tickmode='array', tickvals=[0, 25, 50, 75, 100],
+                      ticktext=['0%', '25%', '50%', '75%', '100%'])
+    fig.update_yaxes(range=[0, 2], visible=False)
     fig.update_layout(
         title=f'Passive Breaks Zone — {state["zone"]}',
-        barmode='stack', xaxis=dict(range=[0, 100], title='Passive Share %'),
-        yaxis=dict(showticklabels=False),
-        **{**_FIG_LAYOUT, 'height': 220})
+        showlegend=False,
+        **{**_FIG_LAYOUT, 'height': 260, 'margin': dict(l=40, r=40, t=80, b=60)})
     return fig
 
 
@@ -2916,14 +3063,22 @@ def run_passive_breaks_section(close: pd.Series, ticker: str = 'SPX Index',
         S0, F0, cfg, n_paths=n_paths, horizon_years=horizon_years,
         p_fn=None, include_haddad=True)
 
+    # Projecao temporal ate thresholds (5 cenarios)
+    thr = critical_thresholds(cfg.kappa, cfg.sigma)
+    proj_lyap = project_threshold_hit(cfg, thr['lyapunov_threshold'])
+    proj_feller = project_threshold_hit(cfg, thr['feller_threshold'])
+
     return {
         'config': cfg,
         'state': state,
+        'projection_lyapunov': proj_lyap,
+        'projection_feller': proj_feller,
         'paths_no_passive': paths_no_p,
         'paths_logistic': paths_logistic,
         'paths_haddad': paths_haddad,
         'horizon_years': horizon_years,
         'figs': {
+            'threshold_projection': fig_threshold_projection(cfg),
             'passive_curve': fig_passive_share_curve(cfg),
             'state_gauge': fig_passive_state_gauge(state),
             's_vs_f': fig_s_vs_f(close, cfg, ticker),
@@ -2939,6 +3094,135 @@ def run_passive_breaks_section(close: pd.Series, ticker: str = 'SPX Index',
             'critical_vs_r': fig_critical_vs_r(cfg),
         }
     }
+
+
+def _passive_opinion_html(state: dict, proj_lyap: pd.DataFrame = None,
+                             proj_feller: pd.DataFrame = None) -> str:
+    """
+    Card de INTERPRETACAO — em linguagem direta:
+    - O que cada limite significa
+    - Quanto falta (pp + anos + USD tn)
+    - O que esperar em cada zona
+    - Onde estamos e pra onde vamos
+    """
+    p = state['p_raw_pct']
+    lyap = state['lyapunov_threshold_pct']
+    feller = state['feller_threshold_pct']
+    dist_lyap = state['distance_to_lyapunov_pct']
+    dist_feller = state['distance_to_feller_pct']
+
+    # Anos base ate os limites
+    yrs_lyap_base = None; yrs_feller_base = None
+    aum_lyap = None; aum_feller = None
+    if proj_lyap is not None and len(proj_lyap) > 0:
+        base = proj_lyap[proj_lyap['cenario'].str.contains('Base')]
+        if len(base) > 0:
+            yrs_lyap_base = base.iloc[0]['years_ate_hit']
+            aum_lyap = base.iloc[0]['aum_adicional_usd_tn']
+    if proj_feller is not None and len(proj_feller) > 0:
+        base = proj_feller[proj_feller['cenario'].str.contains('Base')]
+        if len(base) > 0:
+            yrs_feller_base = base.iloc[0]['years_ate_hit']
+            aum_feller = base.iloc[0]['aum_adicional_usd_tn']
+
+    zone_emoji = '🟢' if p < lyap else ('🟡' if p < feller else '🔴')
+
+    # Explicacao contextual por zona
+    if p < lyap:
+        interp = f"""
+            <b>Mercado ainda funcional.</b> O passive share ({p:.2f}%) esta
+            <b>{dist_lyap:.1f} pp abaixo</b> do limiar de Lyapunov. Active managers
+            ainda conseguem puxar os precos de volta ao valor fundamental F(t) apos
+            choques — mean reversion opera. Volatilidade mean-reverta pra nivel
+            estavel V_stable ≈ {state.get('V_stable_pct', 'N/A')}%.
+            <br><br>
+            <b>O que vigiar:</b> ritmo do passive share. Ao ritmo atual (α calibrado
+            pelo Haddad), chegamos no <b>Lyapunov em ~{yrs_lyap_base:.1f} anos</b>
+            (+{aum_lyap:.1f} trilhoes USD em AUM passivo incremental).
+        """ if yrs_lyap_base else ""
+    elif p < feller:
+        interp = f"""
+            <b>Zona de transicao (LYAPUNOV).</b> Acima de {lyap:.1f}%, o paper prova
+            matematicamente que a volatilidade comeca a crescer em <b>cubic speed</b> —
+            ou seja, dV ~ V^3. Isso significa que shocks pequenos se amplificam
+            exponencialmente. Mean reversion k*(1-p) esta fraco demais pra controlar.
+            <br><br>
+            <b>O que esperar:</b> caudas mais gordas, periodos longos com F/S
+            sustentadamente elevado (subvalorizacao estrutural), drawdowns mais
+            profundos e recuperacoes mais lentas. Vol target e vol control sistematicos
+            viram foguete amplificador.
+        """
+    else:
+        interp = f"""
+            <b>Zona FELLER — colapso possivel.</b> Acima de {feller:.1f}%, a condicao
+            2·k·(1-p) ≥ σ² e quebrada. Matematicamente existe probabilidade estritamente
+            positiva de S(t) → 0 em tempo finito. Na pratica, circuit breakers e
+            intervencao de banco central impedem o colapso real, mas a volatilidade
+            realizada fica impossivel de controlar.
+            <br><br>
+            <b>Implicacao:</b> o premio de risco equity some, liquidez dos indices
+            principais vira questao sistemica, e a engine que sustenta o passive
+            (retorno consistente) deixa de existir.
+        """
+
+    lyap_projection_html = f"""
+          <div style='margin:14px 0 6px 0;'>
+            <span style='color:#d29922; font-weight:700; letter-spacing:2px;
+                         font-size:12px;'>🟡 LYAPUNOV ({lyap:.1f}%)</span>
+          </div>
+          <div style='color:#cce8ff; font-size:13px; line-height:1.6'>
+            Falta <b>{dist_lyap:.1f}pp</b> de passive share. No ritmo atual do α:
+            <b>~{yrs_lyap_base:.1f} anos</b> ({int(yrs_lyap_base * 365.25)} dias uteis)
+            e <b>+{aum_lyap:.1f} trilhoes USD</b> de inflow passivo adicional.
+            Quando cruzar: volatilidade comeca a crescer em velocidade cubica.
+          </div>
+    """ if yrs_lyap_base else ""
+
+    feller_projection_html = f"""
+          <div style='margin:14px 0 6px 0;'>
+            <span style='color:#f85149; font-weight:700; letter-spacing:2px;
+                         font-size:12px;'>🔴 FELLER ({feller:.1f}%)</span>
+          </div>
+          <div style='color:#cce8ff; font-size:13px; line-height:1.6'>
+            Falta <b>{dist_feller:.1f}pp</b>. No ritmo atual:
+            <b>~{yrs_feller_base:.1f} anos</b> ({int(yrs_feller_base * 365.25)} dias uteis)
+            e <b>+{aum_feller:.1f} trilhoes USD</b>. Quando cruzar: probabilidade positiva
+            de colapso em tempo finito. O paper chama de "critical systems analysis".
+          </div>
+    """ if yrs_feller_base else ""
+
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-card' style='padding:18px 22px; border-left:3px solid {state['zone_color']};'>
+        <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                    text-transform:uppercase; margin-bottom:10px;'>
+          {zone_emoji} Interpretacao — o que os limites significam
+        </div>
+
+        <div style='color:#cce8ff; font-size:13px; line-height:1.65; margin-bottom:12px;'>
+          {interp}
+        </div>
+
+        <div style='border-top:1px solid rgba(0,200,255,0.15); padding-top:12px;'>
+          <div style='font-size:11px; color:#8b949e; letter-spacing:2px;
+                      text-transform:uppercase; margin-bottom:6px;'>
+            Quanto falta pra cada limite (cenario base, α=0.106)
+          </div>
+          {lyap_projection_html}
+          {feller_projection_html}
+        </div>
+
+        <div style='margin-top:12px; font-size:10px; color:#8b949e; font-style:italic;
+                    line-height:1.5;'>
+          Premissa AUM: mkt cap US equity = $60tn. A projecao usa logistica calibrada em
+          Haddad 1995-2019 (α=0.106). Cenarios ±1σ/±2σ no grafico assumem 15% de incerteza
+          no α — valores baixos ({dist_lyap > 0 and '-' or '+'}) sao mais lentos, altos
+          sao mais rapidos. Se active managers desertarem (virarem seguidores de tendencia),
+          α real pode ser maior que o calibrado (+σ ou +2σ).
+        </div>
+      </div>
+    </div>
+    """
 
 
 def _passive_state_card_html(state: dict) -> str:
@@ -3389,8 +3673,26 @@ def build_section_widgets(result: dict) -> list:
             "<div class='mm-section-label'>Passive Breaks the Market "
             "(Green/Krishnan/Sturm SSRN 2025)</div>"))
         sec.append(wd.HTML(_passive_state_card_html(pb['state'])))
+        sec.append(wd.HTML(_passive_opinion_html(pb['state'],
+                                                    pb.get('projection_lyapunov'),
+                                                    pb.get('projection_feller'))))
         sec.append(go.FigureWidget(pb['figs']['state_gauge']))
         sec.append(go.FigureWidget(pb['figs']['passive_curve']))
+
+        # Projecao temporal
+        sec.append(wd.HTML(
+            "<div class='mm-section-label'>Projecao temporal — "
+            "quando chegamos em cada threshold? (±1σ / ±2σ do α)</div>"))
+        sec.append(go.FigureWidget(pb['figs']['threshold_projection']))
+        if pb.get('projection_lyapunov') is not None and len(pb['projection_lyapunov']) > 0:
+            sec.append(wd.HTML(f"<div class='mm-section-label'>"
+                                 f"Ate o Lyapunov ({pb['state']['lyapunov_threshold_pct']}%)</div>"))
+            sec.append(wd.HTML(_df_to_html_table(pb['projection_lyapunov'])))
+        if pb.get('projection_feller') is not None and len(pb['projection_feller']) > 0:
+            sec.append(wd.HTML(f"<div class='mm-section-label'>"
+                                 f"Ate o Feller ({pb['state']['feller_threshold_pct']}%)</div>"))
+            sec.append(wd.HTML(_df_to_html_table(pb['projection_feller'])))
+
         sec.append(go.FigureWidget(pb['figs']['s_vs_f']))
         sec.append(wd.HTML("<div class='mm-section-label'>Monte Carlo — 3 cenarios</div>"))
         sec.append(go.FigureWidget(pb['figs']['mc_no_passive']))
