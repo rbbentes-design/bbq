@@ -8259,9 +8259,81 @@ def build_section_widgets(result: dict) -> list:
         for w in (erp_real_sl, g_real_sl):
             w.observe(_redraw_gordon_real, names='value')
 
+        # Fisher gap diagnostic — (k_nom - g_nom) vs (k_real - g_real)
+        fisher_out = wd.Output()
+
+        def _redraw_fisher(*_):
+            try:
+                k_nom_g = (_us10y + erp_nom_sl.value - g_nom_sl.value) / 100.0
+                k_real_g = (_tips + erp_real_sl.value - g_real_sl.value) / 100.0
+                gap_bps = (k_nom_g - k_real_g) * 10000
+                # Breakeven implicito = 10Y - TIPS
+                be_implied = _us10y - _tips
+
+                # PE implicitos
+                pe_nom = 1.0/k_nom_g if k_nom_g > 0.005 else 0
+                pe_real = 1.0/k_real_g if k_real_g > 0.005 else 0
+
+                # Color + mensagem
+                abs_gap = abs(gap_bps)
+                if abs_gap < 25:
+                    col, msg = '#7ae582', f'Consistente com Fisher ({abs_gap:.0f} bps ≈ 0)'
+                elif abs_gap < 75:
+                    col, msg = '#ffb84d', f'Gap moderado ({gap_bps:+.0f} bps) — premissas levemente desalinhadas'
+                else:
+                    col, msg = '#ff6b6b', f'⚠ Gap grande ({gap_bps:+.0f} bps) — Fisher quebrado'
+
+                # Interpretacao
+                if gap_bps > 50:
+                    interp = ("k_nom−g_nom &gt; k_real−g_real: voce esta "
+                               "sendo <b>mais conservador no Nominal</b> — "
+                               "implica que inflacao esperada e MAIOR que o breakeven "
+                               f"implicito ({be_implied:.2f}%).")
+                elif gap_bps < -50:
+                    interp = ("k_nom−g_nom &lt; k_real−g_real: voce esta "
+                               "sendo <b>mais conservador no Real</b> — "
+                               "implica que inflacao esperada e MENOR que o breakeven "
+                               f"implicito ({be_implied:.2f}%).")
+                else:
+                    interp = (f"Breakeven implicito (10Y - TIPS) = "
+                               f"<b>{be_implied:.2f}%</b>. Seus spreads estao "
+                               "coerentes com essa inflacao esperada.")
+
+                with fisher_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(
+                        f"<div class='mm-card' style='padding:14px 18px; "
+                        f"border-left:3px solid {col};'>"
+                        f"<div class='mm-metric-lbl' style='font-size:12px; "
+                        f"margin-bottom:8px;'>FISHER DIAGNOSTIC — "
+                        f"consistencia entre Nominal e Real</div>"
+                        f"<div style='font-size:12px; color:#cce8ff;'>"
+                        f"<b>Nominal</b>: k−g = "
+                        f"<b style='color:#cce8ff;'>{k_nom_g*100:.2f}%</b> "
+                        f"(PE {pe_nom:.1f}x) &nbsp;|&nbsp; "
+                        f"<b>Real</b>: k−g = "
+                        f"<b style='color:#cce8ff;'>{k_real_g*100:.2f}%</b> "
+                        f"(PE {pe_real:.1f}x) &nbsp;|&nbsp; "
+                        f"<b>Gap</b>: <b style='color:{col};'>{msg}</b>"
+                        f"</div>"
+                        f"<div style='font-size:11px; color:#8b949e; "
+                        f"margin-top:8px;'>{interp}</div>"
+                        f"</div>"))
+            except Exception as e:
+                import traceback
+                with fisher_out:
+                    clear_output(wait=True)
+                    display(wd.HTML(
+                        f"<div class='mm-card'><p class='mm-flag'>"
+                        f"Fisher fail: {e}</p></div>"))
+
+        for w in (erp_nom_sl, g_nom_sl, erp_real_sl, g_real_sl):
+            w.observe(_redraw_fisher, names='value')
+
         _redraw_sens()
         _redraw_gordon_nom()
         _redraw_gordon_real()
+        _redraw_fisher()
 
         # Layout final — inputs + sensitivity
         sec.append(wd.HTML(
@@ -8282,10 +8354,13 @@ def build_section_widgets(result: dict) -> list:
         # Gordon REAL
         sec.append(wd.HTML(
             "<div class='mm-section-label' style='margin-top:8px;'>"
-            "Gordon REAL — rf = TIPS 10Y, EPS deflacionado via CPI "
+            "Gordon REAL — rf = TIPS 10Y, EPS e SPX deflacionados via CPI "
             "(defaults centrados em PE ~21x)</div>"))
         sec.append(wd.HBox([erp_real_sl, g_real_sl]))
         sec.append(gordon_real_out)
+
+        # Fisher diagnostic (consistencia Nom vs Real)
+        sec.append(fisher_out)
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
