@@ -130,7 +130,45 @@ DASH_CSS = """<style>
 .mm-table tr:hover td { background:rgba(0,200,255,0.05); }
 .mm-note { color:#8b949e; font-size:10px; font-style:italic; margin-top:6px; }
 .mm-flag { color:#ff8c00; font-weight:600; }
+
+.mm-divider {
+  margin: 40px 0 24px 0;
+  padding: 18px 24px;
+  background: linear-gradient(90deg, rgba(0,200,255,0.04), rgba(0,200,255,0.08), rgba(0,200,255,0.04));
+  border-top: 2px solid rgba(0,200,255,0.35);
+  border-bottom: 2px solid rgba(0,200,255,0.35);
+  text-align: center;
+}
+.mm-divider-title {
+  font-family: 'Orbitron', monospace;
+  font-size: 18px;
+  font-weight: 900;
+  color: #ff8c00;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  text-shadow: 0 0 12px rgba(255,140,0,0.4);
+}
+.mm-divider-subtitle {
+  color: #cce8ff;
+  font-size: 11px;
+  letter-spacing: 2px;
+  margin-top: 6px;
+  opacity: 0.75;
+}
 </style>"""
+
+
+def _big_divider(title: str, subtitle: str = '') -> str:
+    """Divisor visual grande pra separar grandes blocos do relatorio."""
+    sub_html = f"<div class='mm-divider-subtitle'>{subtitle}</div>" if subtitle else ''
+    return f"""
+    <div class='mm-dash'>
+      <div class='mm-divider'>
+        <div class='mm-divider-title'>◆ ◆ ◆ &nbsp; {title} &nbsp; ◆ ◆ ◆</div>
+        {sub_html}
+      </div>
+    </div>
+    """
 
 # Layout comum pros gráficos.
 # Altura default aumentada de 380 -> 460 pra melhor legibilidade.
@@ -2441,19 +2479,31 @@ def stable_volatility(p: float, kappa: float, sigma: float, r: float) -> float:
     return 2.0 * sigma * math.sqrt(num / den)
 
 
-def calibrate_passive_breaks(close: pd.Series, r_override: float = None) -> PassiveBreaksConfig:
+def calibrate_passive_breaks(close: pd.Series, r_override: float = None,
+                                use_paper_defaults: bool = True) -> PassiveBreaksConfig:
     """
-    Calibra kappa, sigma, r do modelo usando serie diaria de close do indice.
+    Calibra kappa, sigma, r do modelo.
 
-    Metodo do paper (eq 6): regressao com intercepto=0 de:
+    use_paper_defaults=True (default): usa os valores fixos do paper
+      calibrados em 1926-1994 (era limpa, sem passive relevante):
+      kappa=0.0909, sigma=0.1247, r=0.0917.
+      Isso e o RECOMENDADO — calibrar em dados modernos (2005+) da valores
+      contaminados pela propria distorcao que o modelo tenta capturar.
+
+    use_paper_defaults=False: calibra via regressao eq (6) do paper:
         dS/sqrt(F*S)  =  kappa*dt * (F-S)/sqrt(F*S) + sigma*sqrt(dt)*eps
 
-    Assume r tal que F(T) = S(T) (boundary condition no final da janela).
-    Retorna PassiveBreaksConfig calibrado.
+    Retorna PassiveBreaksConfig.
     """
+    if use_paper_defaults:
+        log.info('[passive_breaks] usando parametros fixos do paper (1926-1994): '
+                 'kappa=0.0909 sigma=0.1247 r=0.0917')
+        return PassiveBreaksConfig()
+
     s = close.dropna().astype(float)
     if len(s) < 500:
-        log.warning('[passive_breaks] dados insuficientes pra calibracao')
+        log.warning('[passive_breaks] dados insuficientes pra calibracao, '
+                     'caindo em defaults do paper')
         return PassiveBreaksConfig()
 
     # tempo em anos (252 uteis/ano)
@@ -2830,9 +2880,19 @@ def fig_critical_vs_r(cfg: PassiveBreaksConfig) -> go.Figure:
 
 def run_passive_breaks_section(close: pd.Series, ticker: str = 'SPX Index',
                                  horizon_years: float = 20,
-                                 n_paths: int = 100) -> dict:
-    """Pipeline completo da secao Passive Breaks."""
-    cfg = calibrate_passive_breaks(close)
+                                 n_paths: int = 100,
+                                 use_paper_defaults: bool = True) -> dict:
+    """
+    Pipeline completo da secao Passive Breaks.
+
+    use_paper_defaults=True (RECOMENDADO): usa kappa/sigma/r fixos do paper
+      (calibrados em 1926-1994 — era sem contaminacao de passive).
+      Nao depende de tamanho do historico — 2y ja basta pra plotar S vs F.
+
+    use_paper_defaults=False: auto-calibra nos dados atuais (risco de
+      bias por passive — so use se entender as implicacoes).
+    """
+    cfg = calibrate_passive_breaks(close, use_paper_defaults=use_paper_defaults)
     state = compute_passive_breaks_state(close, cfg)
 
     # Simula dois cenarios: (a) no passive share, (b) logistic passive share
@@ -3049,23 +3109,22 @@ def compute_session_stats(ticker: str, years: int = 5,
     passive_breaks = {}
     if include_passive_breaks:
         try:
-            pb_years = max(years, 15)
-            log.info(f'[passive_breaks] carregando {pb_years}y de {ticker}...')
-            pb_daily = load_daily(ticker, pb_years) if pb_years > years else daily
-            if pb_daily is None or len(pb_daily) < 500:
+            # Com parametros fixos do paper, nao precisa de historia longa.
+            # Usa o daily que ja foi carregado (years do usuario) pra visualizacao.
+            log.info(f'[passive_breaks] inicializando com {len(daily)} dias de {ticker}...')
+            if daily is None or len(daily) < 50:
                 raise ValueError(
-                    f'Historico insuficiente: {len(pb_daily) if pb_daily is not None else 0} '
-                    f'dias. Passive Breaks precisa de 500+ dias (2y+) pra calibracao.')
-            log.info(f'[passive_breaks] simulando com {len(pb_daily)} dias...')
+                    f'Historico muito curto: {len(daily) if daily is not None else 0} dias. '
+                    f'Precisa de 50+ dias pra visualizacao.')
             passive_breaks = run_passive_breaks_section(
-                pb_daily['close'], ticker=ticker, horizon_years=20, n_paths=100)
+                daily['close'], ticker=ticker, horizon_years=20, n_paths=100,
+                use_paper_defaults=True)
             log.info('[passive_breaks] OK')
         except Exception as e:
             import traceback
             err_trace = traceback.format_exc()
             log.warning(f'Passive Breaks falhou: {e}')
             log.warning(err_trace)
-            # Guarda erro pra UI exibir (nao silenciar)
             passive_breaks = {'error': str(e), 'traceback': err_trace}
 
     return {
@@ -3152,6 +3211,11 @@ def build_section_widgets(result: dict) -> list:
         "<b>n</b> = numero de observacoes. "
         "Todos os valores com 2 casas decimais."
         "</div>"))
+
+    # ====== PART I: QUANT SESSION STATS ======
+    sec.append(wd.HTML(_big_divider(
+        'Parte I — Quant Session Stats',
+        f'Estatistica intradiaria de {ticker} | RTH vs ETH | Weekday | Sequencias | Regime | Gap | Sazonalidade | Backtest')))
 
     # --- RTH (Regular Trading Hours) ---
     sec.append(wd.HTML("<div class='mm-section-label'>RTH — Weekday Stats (open→close, %)</div>"))
@@ -3243,6 +3307,9 @@ def build_section_widgets(result: dict) -> list:
 
     if result.get('nomura'):
         n = result['nomura']
+        sec.append(wd.HTML(_big_divider(
+            'Parte II — Nomura Options Framework',
+            'Daily Options PnL Summary | Skew Percentiles | Systematic Flows (AUM dinamico) | Vol Panic Proxy')))
         sec.append(wd.HTML("<div class='mm-section-label'>Nomura — Options PnL Summary "
                              "(valores em % do spot, 2 casas)</div>"))
         sec.append(go.FigureWidget(n['figs']['options_pnl']))
@@ -3267,8 +3334,13 @@ def build_section_widgets(result: dict) -> list:
                              "VC + CTA + RP (USD bn, AUM dinamico)</div>"))
         sec.append(go.FigureWidget(n['figs']['flows']))
 
-    # --- Passive Breaks Model ---
+    # ====== PART III: STRUCTURAL MODELS (Passive Breaks) ======
     pb_data = result.get('passive_breaks') or {}
+    if pb_data.get('error') or pb_data.get('state'):
+        sec.append(wd.HTML(_big_divider(
+            'Parte III — Structural Market Models',
+            'Passive Breaks Model (Green/Krishnan/Sturm SSRN 2025) | nao e quant trading, e analise estrutural')))
+
     if pb_data.get('error'):
         sec.append(wd.HTML(
             f"<div class='mm-section-label'>Passive Breaks Model — ERRO</div>"
@@ -3300,10 +3372,13 @@ def build_section_widgets(result: dict) -> list:
         sec.append(wd.HTML("<div class='mm-section-label'>State snapshot (valores)</div>"))
         sec.append(wd.HTML(_df_to_html_table(state_df)))
 
-    # --- GS Factor Monitor ---
+    # ====== PART IV: CROSS-SECTIONAL MONITOR (GS Factor Monitor) ======
     if result.get('gs_factors') and result['gs_factors'].get('table') is not None \
        and len(result['gs_factors']['table']) > 0:
         gf = result['gs_factors']
+        sec.append(wd.HTML(_big_divider(
+            'Parte IV — Cross-Sectional Factor Monitor',
+            'GS Barra Pair Indices + Momentum + GS Themes + BBG Themes | scan 1D/5D/1M/YTD/1Y | rotacao de factors')))
         sec.append(wd.HTML(
             "<div class='mm-section-label'>GS Factor Monitor — Barra Pair Indices + "
             "Momentum + Thematic Baskets (historico via BQL)</div>"))
