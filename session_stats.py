@@ -303,6 +303,257 @@ def load_daily(ticker: str, years: int = 5) -> pd.DataFrame:
     return load_daily_bql(ticker, years) if HAS_BQL else load_daily_yf(ticker, years)
 
 
+def load_vix_term_structure(years: int = 5) -> pd.DataFrame:
+    """
+    Carrega VIX spot + VIX3M (3-month) + VIX6M (6-month) se disponiveis.
+    Usado pra calcular VRS (Variance from Reference Structure) estilo
+    Krishnamurthy JOTA 71.
+
+    Fallback: se VIX6M nao disponivel, usa so VIX + VIX3M.
+    Se nenhum futures disponivel, retorna empty.
+    """
+    tickers_to_try = {
+        'VIX': 'VIX Index',
+        'VIX3M': 'VIX3M Index',
+        'VIX6M': 'VIX6M Index',
+        'VIX9D': 'VIX9D Index',
+    }
+    out = {}
+    if HAS_BQL:
+        for name, bbg in tickers_to_try.items():
+            try:
+                b = load_ticker_bql(bbg, years=years)
+                if b is not None and len(b.daily) > 20:
+                    out[name] = b.daily['close']
+            except Exception as e:
+                log.debug(f'[vix_ts] {name} falhou: {e}')
+    if not out and HAS_YF:
+        # Fallback yfinance
+        try:
+            df = yf.download('^VIX', period=f'{years}y', progress=False, auto_adjust=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            out['VIX'] = df['Close']
+        except Exception:
+            pass
+    if not out:
+        return pd.DataFrame()
+    df = pd.DataFrame(out)
+    df.index = pd.to_datetime(df.index)
+    return df.astype(float).dropna(how='all')
+
+
+def compute_vrs(vix_ts: pd.DataFrame,
+                  reference_start: str = None,
+                  reference_end: str = None) -> dict:
+    """
+    Calcula VRS (Variance from Reference Structure) no estilo
+    Krishnamurthy CMT JOTA 71.
+
+    VRS = spread_atual - spread_medio_reference
+      spread = VIX3M - VIX    (proxy do slope do term structure)
+      Se VIX6M disponivel, usa VIX6M - VIX (melhor proxy)
+
+    Interpretacao:
+      VRS < 0  : term structure em contango mais forte que referencia (bull OK)
+      VRS ~ 0  : contango similar ao referencia (threshold)
+      VRS > 0  : term structure achatando ou em backwardation (stress)
+
+    Reference: se nao fornecido, usa os ultimos 3 anos de dados (aproximacao
+    do Jan 2012 - May 2015 do paper, que era periodo de rally limpo).
+    """
+    if len(vix_ts) == 0 or 'VIX' not in vix_ts.columns:
+        return {'error': 'VIX nao disponivel'}
+
+    # Escolhe horizonte longo disponivel
+    if 'VIX6M' in vix_ts.columns:
+        long_col = 'VIX6M'
+        short_col = 'VIX'
+        horizon_label = '6M-30d'
+    elif 'VIX3M' in vix_ts.columns:
+        long_col = 'VIX3M'
+        short_col = 'VIX'
+        horizon_label = '3M-30d'
+    else:
+        return {'error': 'Nenhum VIX forward disponivel (VIX3M/VIX6M)'}
+
+    spread = (vix_ts[long_col] - vix_ts[short_col]).dropna()
+
+    # Reference period: ultimos 3 anos (proxy), ou explicito
+    if reference_start and reference_end:
+        ref_mask = (spread.index >= pd.Timestamp(reference_start)) & \
+                    (spread.index <= pd.Timestamp(reference_end))
+    else:
+        ref_end = spread.index[-1]
+        ref_start = ref_end - pd.DateOffset(years=3)
+        ref_mask = (spread.index >= ref_start) & (spread.index <= ref_end)
+
+    ref_spread = spread[ref_mask]
+    if len(ref_spread) < 60:
+        return {'error': f'Reference window curto ({len(ref_spread)} dias)'}
+
+    ref_mean = ref_spread.mean()
+    ref_std = ref_spread.std()
+    # VRS = (spread_atual - ref_mean) — negativo = contango mais forte
+    # Invertemos sinal pra ficar como no paper: VRS alto = stress
+    vrs = -(spread - ref_mean)
+
+    # VIX threshold: media do reference window
+    vix_threshold = vix_ts.loc[ref_mask, 'VIX'].mean()
+    # VRS threshold: paper usa 4 (equivalente a flat com base em inter-month spreads).
+    # Na nossa aproximacao com VIX3M-VIX, threshold logico e spread=0 (i.e. VRS = ref_mean).
+    # Usamos 0 como boundary entre contango e flat.
+    vrs_threshold = 0.0
+
+    # Classificacao de regime pra cada ponto
+    def _regime(v, r):
+        if pd.isna(v) or pd.isna(r):
+            return np.nan
+        if v < vix_threshold and r < vrs_threshold: return 1
+        if v >= vix_threshold and r < vrs_threshold: return 2
+        if v >= vix_threshold and r >= vrs_threshold: return 3
+        return 4
+
+    regime_series = pd.Series([_regime(v, r) for v, r in zip(vix_ts['VIX'], vrs)],
+                                 index=vrs.index)
+
+    current_vix = vix_ts['VIX'].iloc[-1]
+    current_vrs = vrs.iloc[-1]
+    current_regime = _regime(current_vix, current_vrs)
+
+    regime_labels = {
+        1: ('Regime 1 — Contango normal (bull)', _C['green']),
+        2: ('Regime 2 — Divergencia (VIX spike + contango = entry)', _C['accent']),
+        3: ('Regime 3 — Backwardation (bear ativo)', _C['red']),
+        4: ('Regime 4 — VIX baixo + backwardation (raro)', _C['purple']),
+    }
+    current_label, current_color = regime_labels.get(
+        current_regime, ('Unknown', _C['text_muted']))
+
+    return {
+        'spread': spread,
+        'vrs': vrs,
+        'regime_series': regime_series,
+        'ref_mean_spread': round(ref_mean, 3),
+        'ref_std_spread': round(ref_std, 3),
+        'vix_threshold': round(vix_threshold, 2),
+        'vrs_threshold': vrs_threshold,
+        'horizon_label': horizon_label,
+        'reference_start': ref_start.strftime('%Y-%m-%d') if not reference_start else reference_start,
+        'reference_end': ref_end.strftime('%Y-%m-%d') if not reference_end else reference_end,
+        'current_vix': round(current_vix, 2),
+        'current_vrs': round(current_vrs, 3),
+        'current_regime': current_regime,
+        'current_regime_label': current_label,
+        'current_regime_color': current_color,
+    }
+
+
+def fig_vix_vrs_quadrant(vrs_result: dict, vix_ts: pd.DataFrame,
+                           tail_days: int = 60) -> go.Figure:
+    """
+    Scatter VIX (x) x VRS (y) com os 4 quadrantes coloridos.
+    Trail = ultimos tail_days. Ponto atual destacado.
+    """
+    if vrs_result.get('error'):
+        return go.Figure().update_layout(
+            title=f'VIX × VRS — {vrs_result["error"]}', **_FIG_LAYOUT)
+
+    vrs = vrs_result['vrs']
+    vix = vix_ts['VIX'].reindex(vrs.index).dropna()
+    common = vrs.index.intersection(vix.index)
+    vrs = vrs.loc[common]; vix = vix.loc[common]
+    vix_thr = vrs_result['vix_threshold']
+    vrs_thr = vrs_result['vrs_threshold']
+
+    # Range adaptive
+    pad = max(abs(vrs.quantile(0.01)), abs(vrs.quantile(0.99))) * 1.1
+    y_min, y_max = -pad, pad
+    x_min = max(5, vix.quantile(0.01) - 2)
+    x_max = min(90, vix.quantile(0.99) + 2)
+
+    fig = go.Figure()
+    # 4 quadrantes (Regime 1=bottom-left, 2=bottom-right, 3=top-right, 4=top-left)
+    fig.add_shape(type='rect', x0=x_min, x1=vix_thr, y0=y_min, y1=vrs_thr,
+                   fillcolor='rgba(63,185,80,0.10)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=vix_thr, x1=x_max, y0=y_min, y1=vrs_thr,
+                   fillcolor='rgba(88,166,255,0.10)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=vix_thr, x1=x_max, y0=vrs_thr, y1=y_max,
+                   fillcolor='rgba(248,81,73,0.12)', line_width=0, layer='below')
+    fig.add_shape(type='rect', x0=x_min, x1=vix_thr, y0=vrs_thr, y1=y_max,
+                   fillcolor='rgba(188,140,255,0.10)', line_width=0, layer='below')
+
+    # Historico todo em cinza leve
+    fig.add_trace(go.Scatter(
+        x=vix.values, y=vrs.values, mode='markers',
+        marker=dict(size=3, color='rgba(139,148,158,0.18)'),
+        name='historico', showlegend=False, hoverinfo='skip'))
+    # Trail ultimas tail_days
+    tail_mask = vix.index >= (vix.index[-1] - pd.Timedelta(days=tail_days))
+    fig.add_trace(go.Scatter(
+        x=vix[tail_mask].values, y=vrs[tail_mask].values, mode='lines+markers',
+        line=dict(color=_C['orange'], width=1.3),
+        marker=dict(size=4, color=_C['orange']),
+        name=f'ultimos {tail_days}d', hoverinfo='skip'))
+    # Ponto atual — grande, branco com borda
+    fig.add_trace(go.Scatter(
+        x=[vix.iloc[-1]], y=[vrs.iloc[-1]],
+        mode='markers',
+        marker=dict(size=18, color='#fff',
+                     line=dict(color=vrs_result['current_regime_color'], width=3)),
+        name=f'HOJE — R{vrs_result["current_regime"]}'))
+
+    # Linhas dos eixos thresholds
+    fig.add_hline(y=vrs_thr, line_color=_C['text_muted'], line_dash='dash', line_width=0.8)
+    fig.add_vline(x=vix_thr, line_color=_C['text_muted'], line_dash='dash', line_width=0.8,
+                   annotation_text=f'VIX thr {vix_thr:.1f}', annotation_font_size=10)
+
+    # Labels dos quadrantes nos cantos
+    fig.add_annotation(x=(x_min + vix_thr) / 2, y=(y_min + vrs_thr * 0.5) / 2,
+                        text='<b>R1 — RALLY</b><br>Contango + VIX baixo',
+                        showarrow=False, font=dict(color=_C['green'], size=11))
+    fig.add_annotation(x=(vix_thr + x_max) / 2, y=(y_min + vrs_thr * 0.5) / 2,
+                        text='<b>R2 — ENTRY</b><br>VIX spike + Contango',
+                        showarrow=False, font=dict(color=_C['accent'], size=11))
+    fig.add_annotation(x=(vix_thr + x_max) / 2, y=(vrs_thr + y_max * 0.5) / 2,
+                        text='<b>R3 — BEAR</b><br>Backwardation',
+                        showarrow=False, font=dict(color=_C['red'], size=11))
+    fig.add_annotation(x=(x_min + vix_thr) / 2, y=(vrs_thr + y_max * 0.5) / 2,
+                        text='<b>R4 — RARO</b><br>VIX baixo + Backw',
+                        showarrow=False, font=dict(color=_C['purple'], size=11))
+
+    fig.update_layout(
+        title=(f'VIX × VRS Quadrant — Krishnamurthy JOTA 71 | '
+               f'horizonte {vrs_result["horizon_label"]} | '
+               f'{vrs_result["current_regime_label"]}'),
+        xaxis_title='VIX', yaxis_title=f'VRS (-(spread - ref_mean))',
+        xaxis=dict(range=[x_min, x_max]), yaxis=dict(range=[y_min, y_max]),
+        **{**_FIG_LAYOUT, 'height': 600})
+    return fig
+
+
+def fig_vix_vrs_timeseries(vrs_result: dict, vix_ts: pd.DataFrame) -> go.Figure:
+    """VIX + VRS no tempo com zonas coloridas dos regimes."""
+    if vrs_result.get('error'):
+        return go.Figure().update_layout(title='VRS timeseries — erro', **_FIG_LAYOUT)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                         subplot_titles=('VIX', f'VRS ({vrs_result["horizon_label"]})'))
+    fig.add_trace(go.Scatter(x=vix_ts.index, y=vix_ts['VIX'],
+                              line=dict(color=_C['accent'], width=1),
+                              name='VIX', showlegend=False), row=1, col=1)
+    fig.add_hline(y=vrs_result['vix_threshold'], line_color=_C['yellow'],
+                   line_dash='dash', line_width=0.8, row=1, col=1,
+                   annotation_text=f'VIX thr {vrs_result["vix_threshold"]:.1f}')
+    fig.add_trace(go.Scatter(x=vrs_result['vrs'].index, y=vrs_result['vrs'].values,
+                              line=dict(color=_C['orange'], width=1),
+                              fill='tozeroy', fillcolor='rgba(240,136,62,0.12)',
+                              name='VRS', showlegend=False), row=2, col=1)
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6,
+                   line_dash='dash', row=2, col=1)
+    fig.update_layout(**{**_FIG_LAYOUT, 'height': 460})
+    return fig
+
+
 def load_vol_indices(years: int = 5) -> pd.DataFrame:
     """VIX + SKEW diarios alinhados."""
     vix = load_daily('VIX Index', years)['close']
@@ -4816,6 +5067,80 @@ TRADING_LENSES = [
         'contrarian': 'Mercado move-se "por motivos"; pinning mostra que e mecanico.',
         'confidence_boost': 1,
     },
+    # ---- VIX × VRS Quadrant (Krishnamurthy JOTA 71) ----
+    {
+        'id': 'vix_vrs_regime1',
+        'source': 'Krishnamurthy JOTA 71',
+        'name': 'Regime 1 (VIX+VRS) — Contango Normal, Bull OK',
+        'trigger': lambda c: c.get('vix_vrs_regime') == 1,
+        'interpretation': (
+            'VIX abaixo do threshold + VRS abaixo de 0. Term structure em '
+            'contango saudavel. Historicamente regime de rally sustentavel.'),
+        'action': (
+            'Manter long exposure. Pode vender theta via credit spreads '
+            'OTM — mercado nao esta pagando premium extra por caudas.'),
+        'structures': ['Bull Put Credit Spread', 'Covered Call conservador',
+                         'Long equity c/ collar largo'],
+        'contrarian': 'Parece ser melhor entrar so quando VIX spike; paper mostra que R1 e regime MAIS rentavel.',
+        'confidence_boost': 2,
+    },
+    {
+        'id': 'vix_vrs_regime2',
+        'source': 'Krishnamurthy JOTA 71',
+        'name': 'Regime 2 (VIX+VRS) — Divergencia = ENTRY Signal',
+        'trigger': lambda c: c.get('vix_vrs_regime') == 2,
+        'interpretation': (
+            'VIX spike ACIMA do threshold MAS term structure AINDA em contango. '
+            'Paper: historicamente melhor sinal de entrada durante correcoes '
+            '<10%. Medo concentrado no curto, nao sistemico.'),
+        'action': (
+            'Entry point tactico. Comprar o dip com bull put spread credit '
+            '(captura o premium inflado do spike). Se manteve contango, '
+            'high prob de reversao.'),
+        'structures': ['Bull Put Credit Spread (premium inflado)',
+                         'Long SPY/SPX com ATM call', 'Debit spread bullish'],
+        'contrarian': 'Medo assusta — paper mostra que justamente esse e o setup mais rentavel historicamente.',
+        'confidence_boost': 3,
+    },
+    {
+        'id': 'vix_vrs_regime3',
+        'source': 'Krishnamurthy JOTA 71',
+        'name': 'Regime 3 (VIX+VRS) — Backwardation, Bear Ativo',
+        'trigger': lambda c: c.get('vix_vrs_regime') == 3,
+        'interpretation': (
+            'VIX alto + VRS acima de 0 (backwardation). Medo se extendeu '
+            'pra longo prazo. Bear market/correcao sistemica ativa. '
+            'Paper: NAO entrar pelo VIX level — esperar VRS virar pra contango.'),
+        'action': (
+            'Reduzir exposure. Fechar short vol positions IMEDIATAMENTE '
+            '(era o gatilho do XIV em fev/2018). Aguardar VRS virar pra '
+            'contango antes de re-entrar long.'),
+        'structures': ['Cash preservado', 'Long VIX futures/calls',
+                         'Put spread como hedge', 'ZEROS short vol'],
+        'contrarian': 'Tentacao de comprar o dip porque VIX esta alto; paper: NAO — estrutura confirma stress sistemico.',
+        'confidence_boost': 3,
+    },
+    {
+        'id': 'vix_vrs_contango_restored',
+        'source': 'Krishnamurthy JOTA 71',
+        'name': 'VRS Retornando ao Contango — All-Clear',
+        'trigger': lambda c: (c.get('vix_vrs_current_vrs') is not None
+                                and c.get('vix_vrs_regime_5d_avg') is not None
+                                and c['vix_vrs_current_vrs'] < 0
+                                and c['vix_vrs_regime_5d_avg'] > 2.5),
+        'interpretation': (
+            'VRS cruzou de volta pra contango depois de periodo de stress. '
+            'Paper: historicamente o MELHOR sinal de re-entrada pos-correcao. '
+            'Medo dissipando, term structure voltou ao normal.'),
+        'action': (
+            'Re-estabelecer long exposure de forma mais agressiva. '
+            'Estruturas de debit spread capturam o upside da recuperacao '
+            'com risco limitado.'),
+        'structures': ['Long Call 2-3m', 'Bull Call Debit Spread',
+                         'Re-entrada de short vol positions'],
+        'contrarian': 'Mercado ainda medroso post-crise; a transicao contango e o sinal antecipado.',
+        'confidence_boost': 3,
+    },
     # ---- RTH vs ETH ----
     {
         'id': 'eth_dominating',
@@ -4839,6 +5164,18 @@ TRADING_LENSES = [
 def build_trading_context(result: dict) -> dict:
     """Extrai o estado atual num dict unico pra avaliar os triggers."""
     ctx = {}
+
+    # VIX × VRS quadrant (Krishnamurthy)
+    vrs = result.get('vix_vrs')
+    if vrs and not vrs.get('error'):
+        ctx['vix_vrs_regime'] = vrs.get('current_regime')
+        ctx['vix_vrs_current_vrs'] = vrs.get('current_vrs')
+        ctx['vix_vrs_current_vix'] = vrs.get('current_vix')
+        # Regime medio ultimos 5 dias pra detectar transicoes
+        if vrs.get('regime_series') is not None:
+            rs = vrs['regime_series'].dropna()
+            if len(rs) >= 5:
+                ctx['vix_vrs_regime_5d_avg'] = float(rs.tail(5).mean())
 
     # Regime
     regime_data = result.get('regime') or {}
@@ -5150,15 +5487,317 @@ def _trading_context_html(context: dict) -> str:
     """
 
 
-def run_trading_section(result: dict) -> dict:
+def _strike_from_delta_abs(spot: float, iv: float, T_years: float,
+                              delta_abs: float, kind: str) -> float:
+    """Strike aproximado pra dado |delta|. 25d call ~ strike exp(+0.67·σ√T)."""
+    z_map = {0.50: 0.0, 0.25: 0.67, 0.10: 1.28, 0.05: 1.65, 0.15: 1.04}
+    z = z_map.get(round(delta_abs, 2), 0.67)
+    sign = 1 if kind == 'C' else -1
+    return spot * math.exp(sign * z * iv * math.sqrt(T_years))
+
+
+def build_structure_legs(name: str, spot: float, iv: float,
+                            T_years: float = 21 / 252,
+                            r: float = 0.04) -> list:
+    """
+    Retorna [(kind, qty, strike, premium), ...] pra cada estrutura.
+    kind: 'C' (call) / 'P' (put) / 'S' (stock, strike=0, premium=spot_entry)
+    """
+    atm = spot
+    k25c = _strike_from_delta_abs(spot, iv, T_years, 0.25, 'C')
+    k25p = _strike_from_delta_abs(spot, iv, T_years, 0.25, 'P')
+    k10c = _strike_from_delta_abs(spot, iv, T_years, 0.10, 'C')
+    k10p = _strike_from_delta_abs(spot, iv, T_years, 0.10, 'P')
+
+    def p(K, kind):
+        return bs_price(spot, K, T_years, r, iv, kind)
+
+    n = name.lower()
+    if 'iron butterfly' in n or ('straddle' in n and 'wing' in n):
+        return [
+            ('C', -1, atm, p(atm, 'C')), ('P', -1, atm, p(atm, 'P')),
+            ('C', +1, k25c, p(k25c, 'C')), ('P', +1, k25p, p(k25p, 'P')),
+        ]
+    if 'iron condor' in n:
+        return [
+            ('P', -1, k25p, p(k25p, 'P')), ('P', +1, k10p, p(k10p, 'P')),
+            ('C', -1, k25c, p(k25c, 'C')), ('C', +1, k10c, p(k10c, 'C')),
+        ]
+    if 'butterfly' in n:
+        # Call butterfly 25d wings
+        return [
+            ('C', +1, k25p, p(k25p, 'C')), ('C', -2, atm, p(atm, 'C')),
+            ('C', +1, k25c, p(k25c, 'C')),
+        ]
+    if 'bull call' in n and ('debit' in n or 'diagonal' not in n):
+        return [('C', +1, atm, p(atm, 'C')), ('C', -1, k25c, p(k25c, 'C'))]
+    if 'bear put' in n and 'debit' in n:
+        return [('P', +1, atm, p(atm, 'P')), ('P', -1, k25p, p(k25p, 'P'))]
+    if 'bull put' in n and ('credit' in n or 'spread' in n):
+        return [('P', -1, k25p, p(k25p, 'P')), ('P', +1, k10p, p(k10p, 'P'))]
+    if 'bear call' in n and ('credit' in n or 'spread' in n):
+        return [('C', -1, k25c, p(k25c, 'C')), ('C', +1, k10c, p(k10c, 'C'))]
+    if 'long straddle' in n or ('straddle' in n and 'short' not in n):
+        return [('C', +1, atm, p(atm, 'C')), ('P', +1, atm, p(atm, 'P'))]
+    if 'long strangle' in n:
+        return [('C', +1, k25c, p(k25c, 'C')), ('P', +1, k25p, p(k25p, 'P'))]
+    if 'short strangle' in n:
+        return [('C', -1, k25c, p(k25c, 'C')), ('P', -1, k25p, p(k25p, 'P'))]
+    if 'covered call' in n:
+        return [('S', +1, 0, spot), ('C', -1, k25c, p(k25c, 'C'))]
+    if 'long call' in n and 'spread' not in n:
+        return [('C', +1, atm, p(atm, 'C'))]
+    if 'long put' in n and 'spread' not in n:
+        return [('P', +1, atm, p(atm, 'P'))]
+    if 'calendar' in n:
+        # Simplified: approximation (short front, long back) — mesmo strike
+        # Usa dois T diferentes; retorna so a visualizacao do front pra simplicidade
+        return [('C', -1, atm, p(atm, 'C')), ('P', -1, atm, p(atm, 'P'))]
+    if 'backspread' in n:
+        return [('C', -1, atm, p(atm, 'C')),
+                ('C', +2, k25c, p(k25c, 'C'))]
+    if 'risk reversal' in n:
+        return [('P', -1, k25p, p(k25p, 'P')), ('C', +1, k25c, p(k25c, 'C'))]
+    # Fallback
+    return []
+
+
+def payoff_at_expiry(legs: list, spot_range: np.ndarray) -> np.ndarray:
+    pnl = np.zeros_like(spot_range, dtype=np.float64)
+    for kind, qty, strike, premium in legs:
+        if kind == 'C':
+            intrinsic = np.maximum(spot_range - strike, 0)
+        elif kind == 'P':
+            intrinsic = np.maximum(strike - spot_range, 0)
+        elif kind == 'S':
+            intrinsic = spot_range - premium  # stock: "premium" = entry price
+        pnl += qty * (intrinsic - premium) if kind != 'S' else qty * intrinsic
+    return pnl
+
+
+def fig_structure_payoff(name: str, legs: list, spot: float, iv: float) -> go.Figure:
+    """Payoff at expiry + zone de breakeven + strikes marcados."""
+    if not legs:
+        return go.Figure().update_layout(title=f'{name} — estrutura nao mapeada',
+                                            **_FIG_LAYOUT)
+    x = np.linspace(spot * 0.80, spot * 1.20, 250)
+    y = payoff_at_expiry(legs, x)
+
+    # Max profit / max loss
+    max_profit = float(np.nanmax(y))
+    max_loss = float(np.nanmin(y))
+    # Break-evens (onde cruza 0)
+    bes = []
+    for i in range(1, len(y)):
+        if (y[i - 1] <= 0 < y[i]) or (y[i - 1] >= 0 > y[i]):
+            # Interpolacao linear
+            be = x[i - 1] + (x[i] - x[i - 1]) * (0 - y[i - 1]) / (y[i] - y[i - 1])
+            bes.append(be)
+
+    net_cost = sum(qty * premium for kind, qty, _, premium in legs if kind != 'S')
+    cost_label = (f'DEBIT (paga ${abs(net_cost):.2f})' if net_cost > 0
+                   else f'CREDIT (recebe ${abs(net_cost):.2f})')
+
+    fig = go.Figure()
+    # Area positiva/negativa
+    pos_mask = y >= 0
+    neg_mask = y < 0
+    fig.add_trace(go.Scatter(
+        x=x[pos_mask], y=y[pos_mask], fill='tozeroy',
+        fillcolor='rgba(63,185,80,0.25)', line=dict(color=_C['green'], width=1.8),
+        name='profit', showlegend=False))
+    fig.add_trace(go.Scatter(
+        x=x[neg_mask], y=y[neg_mask], fill='tozeroy',
+        fillcolor='rgba(248,81,73,0.25)', line=dict(color=_C['red'], width=1.8),
+        name='loss', showlegend=False))
+    # Spot atual
+    fig.add_vline(x=spot, line_color=_C['orange'], line_dash='dot', line_width=1.6,
+                   annotation_text=f'spot ${spot:.2f}', annotation_font_color=_C['orange'])
+    # Strikes
+    for kind, qty, strike, _ in legs:
+        if kind == 'S' or strike == 0: continue
+        color = _C['accent'] if qty > 0 else _C['yellow']
+        symbol = ('▲' if qty > 0 else '▼') + kind
+        fig.add_vline(x=strike, line_color=color, line_dash='dash', line_width=0.8,
+                       annotation_text=f'{symbol} {strike:.0f}',
+                       annotation_font_size=9, annotation_font_color=color,
+                       annotation_position='top')
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
+
+    be_str = ' / '.join(f'${b:.2f}' for b in bes) if bes else 'sem BE no range'
+    fig.update_layout(
+        title=(f'{name} — Payoff @ expiry (T=21d)<br>'
+               f'<sub>{cost_label} · max profit ${max_profit:.2f} · '
+               f'max loss ${max_loss:.2f} · BE {be_str}</sub>'),
+        xaxis_title='spot price at expiry', yaxis_title='P&L ($)',
+        **{**_FIG_LAYOUT, 'height': 380})
+    return fig
+
+
+def mini_backtest_structure(name: str, spot_history: pd.Series,
+                               iv_series: pd.Series, n_days: int = 5,
+                               T_years: float = 21 / 252, r: float = 0.04) -> pd.DataFrame:
+    """
+    Simula abrir a estrutura em cada um dos ultimos n_days e marca-to-market
+    ate hoje. Retorna tabela com entry_date, cost, current_value, P&L.
+    """
+    close = spot_history.dropna()
+    iv = iv_series.reindex(close.index).ffill() if iv_series is not None else None
+    if len(close) < n_days + 1:
+        return pd.DataFrame()
+
+    today_idx = len(close) - 1
+    current_spot = float(close.iloc[today_idx])
+    current_iv = float(iv.iloc[today_idx]) / 100 if iv is not None else 0.20
+
+    rows = []
+    for back in range(n_days, 0, -1):
+        entry_idx = today_idx - back
+        if entry_idx < 0: continue
+        entry_spot = float(close.iloc[entry_idx])
+        entry_iv = float(iv.iloc[entry_idx]) / 100 if iv is not None else 0.20
+        legs = build_structure_legs(name, entry_spot, entry_iv, T_years, r)
+        if not legs: continue
+
+        # Custo liquido na entrada (positivo = debit, negativo = credit)
+        entry_cost = sum(qty * prem for kind, qty, _, prem in legs if kind != 'S')
+
+        # Mark-to-market hoje
+        T_remaining = max(T_years - (back / 252), 0.001)
+        mtm = 0.0
+        for kind, qty, strike, _ in legs:
+            if kind == 'S':
+                mtm += qty * current_spot
+            elif kind in ('C', 'P'):
+                mtm += qty * bs_price(current_spot, strike, T_remaining, r, current_iv, kind)
+
+        pnl = mtm - entry_cost
+        entry_date = close.index[entry_idx]
+        rows.append({
+            'days_ago': back,
+            'entry_date': entry_date.strftime('%Y-%m-%d') if hasattr(entry_date, 'strftime') else str(entry_date),
+            'entry_spot': round(entry_spot, 2),
+            'entry_cost_usd': round(entry_cost, 2),
+            'current_spot': round(current_spot, 2),
+            'mtm_value_usd': round(mtm, 2),
+            'pnl_usd': round(pnl, 2),
+            'pnl_pct_of_cost': (round(pnl / abs(entry_cost) * 100, 2)
+                                  if entry_cost != 0 else np.nan),
+        })
+    return pd.DataFrame(rows)
+
+
+def fig_structure_backtest(backtest_df: pd.DataFrame, name: str) -> go.Figure:
+    """Gráfico de barras do P&L diário."""
+    if len(backtest_df) == 0:
+        return go.Figure().update_layout(title=f'{name} — sem backtest', **_FIG_LAYOUT)
+    colors = [_C['green'] if v > 0 else _C['red'] for v in backtest_df['pnl_usd']]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=backtest_df['entry_date'],
+        y=backtest_df['pnl_usd'],
+        marker_color=colors,
+        text=[f'${v:+.2f}<br>({p:+.1f}%)'
+              for v, p in zip(backtest_df['pnl_usd'],
+                               backtest_df['pnl_pct_of_cost'].fillna(0))],
+        textposition='outside', showlegend=False))
+    fig.add_hline(y=0, line_color=_C['text_muted'], line_width=0.6)
+    fig.update_layout(
+        title=f'{name} — P&L se abrisse nos ultimos {len(backtest_df)} dias (MtM hoje)',
+        yaxis_title='P&L USD por contrato', xaxis_title='data de entrada',
+        **{**_FIG_LAYOUT, 'height': 340})
+    return fig
+
+
+def build_trading_operations(scorecard: dict, ticker: str, daily: pd.DataFrame,
+                                vol_indices: pd.DataFrame = None,
+                                top_n: int = 3) -> list:
+    """
+    Pra cada uma das top_n estruturas sugeridas, monta legs + payoff + backtest 5d.
+    Retorna lista de dicts.
+    """
+    if daily is None or len(daily) < 10:
+        return []
+    close = daily['close']
+    current_spot = float(close.iloc[-1])
+    # IV series: usa VIX como proxy do ATM IV anualizado (em %)
+    iv_series = None
+    if vol_indices is not None and 'vix' in vol_indices.columns:
+        iv_series = vol_indices['vix'].reindex(close.index).ffill()
+    current_iv = (float(iv_series.iloc[-1]) / 100 if iv_series is not None
+                   else 0.20)
+
+    operations = []
+    for struct_name in scorecard.get('suggested_structures', [])[:top_n]:
+        legs = build_structure_legs(struct_name, current_spot, current_iv)
+        if not legs:
+            operations.append({
+                'name': struct_name, 'mapped': False, 'legs': [],
+            })
+            continue
+        payoff_fig = fig_structure_payoff(struct_name, legs, current_spot, current_iv)
+        backtest = mini_backtest_structure(struct_name, close, iv_series, n_days=5)
+        bt_fig = fig_structure_backtest(backtest, struct_name)
+        operations.append({
+            'name': struct_name, 'mapped': True,
+            'legs': legs, 'spot': current_spot, 'iv': current_iv,
+            'payoff_fig': payoff_fig,
+            'backtest': backtest, 'backtest_fig': bt_fig,
+        })
+    return operations
+
+
+def _legs_html(legs: list) -> str:
+    """Tabela HTML das legs."""
+    rows = ''
+    for kind, qty, strike, premium in legs:
+        side = 'LONG' if qty > 0 else 'SHORT'
+        side_color = _C['green'] if qty > 0 else _C['red']
+        kind_label = {'C': 'CALL', 'P': 'PUT', 'S': 'STOCK'}.get(kind, kind)
+        rows += f"""
+        <tr>
+          <td style='padding:5px 10px; color:{side_color}; font-weight:700;'>
+            {side} {abs(qty)}x
+          </td>
+          <td style='padding:5px 10px; color:#cce8ff;'>{kind_label}</td>
+          <td style='padding:5px 10px; color:#cce8ff;'>${strike:.2f}</td>
+          <td style='padding:5px 10px; color:#8b949e;'>
+            {"premium" if kind != "S" else "entry"} ${premium:.2f}
+          </td>
+        </tr>
+        """
+    return f"""
+    <table style='width:100%; border-collapse:collapse; font-size:12px;'>
+      <tr style='border-bottom:1px solid rgba(0,200,255,0.15);'>
+        <th style='padding:4px 10px; color:#8b949e; text-align:left; font-size:10px;'>SIDE</th>
+        <th style='padding:4px 10px; color:#8b949e; text-align:left; font-size:10px;'>TIPO</th>
+        <th style='padding:4px 10px; color:#8b949e; text-align:left; font-size:10px;'>STRIKE</th>
+        <th style='padding:4px 10px; color:#8b949e; text-align:left; font-size:10px;'>PREMIUM</th>
+      </tr>
+      {rows}
+    </table>
+    """
+
+
+def run_trading_section(result: dict, ticker: str = None,
+                          daily: pd.DataFrame = None,
+                          vol_indices: pd.DataFrame = None) -> dict:
     """Pipeline completo da secao Trading."""
     context = build_trading_context(result)
     active_lenses = scan_active_lenses(context)
     scorecard = build_trading_scorecard(context, active_lenses)
+    operations = []
+    if daily is not None:
+        try:
+            operations = build_trading_operations(scorecard, ticker, daily,
+                                                     vol_indices=vol_indices, top_n=3)
+        except Exception as e:
+            log.warning(f'Trading operations falhou: {e}')
     return {
         'context': context,
         'active_lenses': active_lenses,
         'scorecard': scorecard,
+        'operations': operations,
     }
 
 
@@ -5380,13 +6019,39 @@ def compute_session_stats(ticker: str, years: int = 5,
             log.warning(err_trace)
             passive_breaks = {'error': str(e), 'traceback': err_trace}
 
+    # VIX × VRS quadrant (Krishnamurthy JOTA 71) — sempre roda se BQL OK
+    vix_vrs = {}
+    try:
+        vix_ts = load_vix_term_structure(years=max(5, min(years, 20)))
+        if len(vix_ts) > 60 and 'VIX' in vix_ts.columns:
+            vrs_result = compute_vrs(vix_ts)
+            if not vrs_result.get('error'):
+                vrs_result['figs'] = {
+                    'quadrant': fig_vix_vrs_quadrant(vrs_result, vix_ts),
+                    'timeseries': fig_vix_vrs_timeseries(vrs_result, vix_ts),
+                }
+                vrs_result['vix_ts'] = vix_ts
+                vix_vrs = vrs_result
+            else:
+                vix_vrs = {'error': vrs_result.get('error', 'unknown')}
+        else:
+            vix_vrs = {'error': f'VIX series curto ({len(vix_ts)} dias) ou VIX ausente'}
+    except Exception as e:
+        import traceback
+        log.warning(f'VIX×VRS falhou: {e}')
+        vix_vrs = {'error': str(e), 'traceback': traceback.format_exc()}
+
     # Trading Lens Engine — sempre roda no final (usa os outros resultados)
     result_partial = {
         'regime': regime, 'nomura': nomura,
         'passive_breaks': passive_breaks, 'bt': bt,
+        'vix_vrs': vix_vrs,
     }
     try:
-        trading = run_trading_section(result_partial)
+        # Passa daily + vol pra permitir payoff/backtest das estruturas
+        vol_for_iv = nomura.get('vol_indices') if nomura else None
+        trading = run_trading_section(result_partial, ticker=ticker,
+                                         daily=daily, vol_indices=vol_for_iv)
     except Exception as e:
         log.warning(f'Trading section falhou: {e}')
         import traceback
@@ -5968,6 +6633,31 @@ def build_section_widgets(result: dict) -> list:
             trading_data['context'],
             trading_data['scorecard'],
             trading_data['active_lenses'])))
+
+        # Operations: payoff + mini backtest das estruturas sugeridas
+        ops = trading_data.get('operations', [])
+        if ops:
+            sec.append(wd.HTML(
+                "<div class='mm-section-label'>Desenho das Operacoes + "
+                "Mini-Backtest 5d (se tivesse aberto a cada um dos ultimos 5 dias)</div>"))
+            for op in ops:
+                if not op.get('mapped'):
+                    sec.append(wd.HTML(
+                        f"<div class='mm-card'>"
+                        f"<p class='mm-flag'>{op['name']} — estrutura nao "
+                        f"mapeada pro engine de payoff (ainda).</p></div>"))
+                    continue
+                sec.append(wd.HTML(
+                    f"<div class='mm-section-label'>▶ {op['name']}</div>"))
+                sec.append(wd.HTML(
+                    f"<div class='mm-card' style='padding:12px 18px;'>"
+                    f"<div class='mm-metric-lbl' style='margin-bottom:8px;'>"
+                    f"Estrutura (spot ${op['spot']:.2f}, IV {op['iv']*100:.1f}%, "
+                    f"T=21d)</div>{_legs_html(op['legs'])}</div>"))
+                sec.append(go.FigureWidget(op['payoff_fig']))
+                if len(op.get('backtest', [])) > 0:
+                    sec.append(go.FigureWidget(op['backtest_fig']))
+                    sec.append(wd.HTML(_df_to_html_table(op['backtest'])))
 
         # Detalhe das lentes ativas
         sec.append(wd.HTML("<div class='mm-section-label'>Lentes Ativas — "
