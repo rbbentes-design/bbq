@@ -6144,12 +6144,21 @@ def _fig_macro_dual(s1: pd.Series, s2: pd.Series, name1: str, name2: str,
     return fig
 
 
+SECTOR_ETFS = {
+    'XLK': 'Tech',           'XLF': 'Financials',   'XLE': 'Energy',
+    'XLV': 'Health Care',    'XLI': 'Industrials',  'XLY': 'Cons. Disc.',
+    'XLP': 'Staples',        'XLU': 'Utilities',    'XLB': 'Materials',
+    'XLRE': 'Real Estate',   'XLC': 'Comm. Svcs',
+}
+
+
 def compute_macro_charts(years: int = 10) -> dict:
     """
-    Macro charts estilo Morgan Stanley Weekly Warm-up.
-    3 sub-secoes: valuation, rates/vol/correlation, commodities/relative.
+    Macro charts estilo Morgan Stanley Weekly Warm-up. 6 sub-secoes com
+    ~35 graficos: valuation (SPX + sectors), rates/vol, commodities/FX,
+    sector relative performance (11 setores), market breadth, internacional.
 
-    Faz ~10 queries BQL (cap 20y). Degrada graciosamente — se um ticker
+    BQL: ~40 queries (cap 20y). Degrada graciosamente — se um ticker
     falhar, pula so ele e loga.
     """
     years = min(years, 20)
@@ -6167,102 +6176,297 @@ def compute_macro_charts(years: int = 10) -> dict:
         except Exception as e:
             log.warning(f'[macro] {key} ({ticker}) falhou: {e}')
 
-    # --- Fetch all ---
+    # --- FETCH ALL ---
+    # Core indices
     _try('spx', 'SPX Index')
-    _try('rty', 'RTY Index')
+    _try('spy', 'SPY US Equity')
+    _try('rty', 'RTY Index')         # Russell 2000 small cap
+    _try('mid', 'MID Index')         # S&P 400 mid cap
+    _try('ndx', 'NDX Index')         # Nasdaq 100
+    _try('mxwo', 'MXWO Index')       # MSCI World
+    _try('mxef', 'MXEF Index')       # MSCI EM
+
+    # Vol
     _try('vix', 'VIX Index')
+    _try('vix3m', 'VIX3M Index')
     _try('move', 'MOVE Index')
+
+    # Rates / FX / credit
+    _try('us2y', 'USGG2YR Index')
     _try('us10y', 'USGG10YR Index')
+    _try('us30y', 'USGG30YR Index')
+    _try('be10', 'USGGBE10 Index')   # 10y breakeven inflation
+    _try('dxy', 'DXY Curncy')
+    _try('cdx_ig', 'CDX IG CDSI GEN 5Y Corp')
+    _try('cdx_hy', 'CDX HY CDSI GEN 5Y SPRD Corp')
+    _try('nfci', 'NFCI Index')       # Chicago Fed NFCI
+
+    # Commodities
     _try('brent', 'CO1 Comdty')
     _try('wti', 'CL1 Comdty')
-    _try('xle', 'XLE US Equity')
-    _try('spy', 'SPY US Equity')
     _try('gold', 'XAU Curncy')
+    _try('copper', 'HG1 Comdty')
+    _try('natgas', 'NG1 Comdty')
+    _try('silver', 'XAG Curncy')
+    _try('dba', 'DBA US Equity')     # Agriculture ETF
 
-    # NTM P/E e NTM EPS do SPX — best-effort (campos que podem nao existir)
-    for key, fn in [('spx_pe', 'pe_ratio'), ('spx_best_eps', 'best_eps')]:
+    # Sector ETFs
+    for etf in SECTOR_ETFS:
+        _try(f'sec_{etf}', f'{etf} US Equity')
+
+    # Valuation (SPX + sectors)
+    for tk, key in [('SPX Index', 'spx_pe')]:
         try:
-            field = getattr(bq.data, fn)
-            _try(key, 'SPX Index', field)
+            _try(key, tk, bq.data.pe_ratio)
         except Exception as e:
-            log.warning(f'[macro] {fn} nao disponivel: {e}')
+            log.warning(f'[macro] pe_ratio({tk}) fail: {e}')
+    try:
+        _try('spx_best_eps', 'SPX Index', bq.data.best_eps)
+    except Exception as e:
+        log.warning(f'[macro] best_eps fail: {e}')
+    # Sector P/E (current snapshot via pe_ratio)
+    for etf in SECTOR_ETFS:
+        try:
+            _try(f'pe_{etf}', f'{etf} US Equity', bq.data.pe_ratio)
+        except Exception:
+            pass
 
-    # --- Build figs ---
-    # 1. Valuation: SPX NTM P/E (ou trailing como fallback)
+    # =========================================================
+    # BUILD FIGS
+    # =========================================================
+
+    # --- A. VALUATION & EARNINGS ---
     if 'spx_pe' in series:
-        figs['spx_pe'] = _fig_macro({'SPX P/E (trailing)': series['spx_pe']},
-                                        'S&P 500 P/E Ratio', 'P/E multiple')
-
-    # 2. EPS Y/Y growth
+        figs['spx_pe'] = _fig_macro({'SPX P/E': series['spx_pe']},
+                                        'S&P 500 P/E Ratio', 'multiple')
     if 'spx_best_eps' in series:
         eps = series['spx_best_eps'].dropna()
-        eps_yoy = eps.pct_change(252) * 100
-        figs['spx_eps_yoy'] = _fig_macro({'SPX NTM EPS Y/Y %': eps_yoy},
-                                             'S&P 500 NTM EPS Y/Y Growth', '%',
-                                             colors=['#7ae582'])
-
-    # 3. Equity Risk Premium = 1/PE - 10Y (aprox)
+        figs['spx_eps_level'] = _fig_macro({'SPX NTM EPS ($)': eps},
+                                                'S&P 500 NTM EPS (level)', '$',
+                                                colors=['#7ae582'])
+        figs['spx_eps_yoy'] = _fig_macro({'SPX NTM EPS Y/Y %': eps.pct_change(252) * 100},
+                                              'S&P 500 NTM EPS Y/Y Growth', '%',
+                                              colors=['#7ae582'])
     if 'spx_pe' in series and 'us10y' in series:
-        pe_aligned, y10_aligned = series['spx_pe'].align(series['us10y'], join='inner')
-        if len(pe_aligned) > 0:
-            earnings_yield = (1.0 / pe_aligned) * 100.0
-            erp_bps = (earnings_yield - y10_aligned) * 100  # bps
-            figs['erp'] = _fig_macro({'Equity Risk Premium (bps)': erp_bps},
-                                         'Equity Risk Premium (earnings yield - 10Y)',
-                                         'bps', colors=['#00d4ff'])
+        pe_a, y10_a = series['spx_pe'].align(series['us10y'], join='inner')
+        ey = (1.0 / pe_a) * 100.0
+        erp = (ey - y10_a) * 100  # bps
+        figs['erp'] = _fig_macro({'ERP (bps)': erp},
+                                      'Equity Risk Premium (earnings yield - 10Y)',
+                                      'bps', colors=['#00d4ff'])
 
-    # 4. MOVE Index (bond vol)
+    # Sector P/E snapshot (bar chart — current value)
+    sec_pe_now = {}
+    for etf, name in SECTOR_ETFS.items():
+        k = f'pe_{etf}'
+        if k in series and len(series[k]) > 0:
+            v = series[k].dropna()
+            if len(v) > 0:
+                sec_pe_now[f'{name} ({etf})'] = float(v.iloc[-1])
+    if sec_pe_now:
+        items = sorted(sec_pe_now.items(), key=lambda x: x[1], reverse=True)
+        bar = go.Figure(go.Bar(x=[k for k, _ in items],
+                                y=[v for _, v in items],
+                                marker_color='#00d4ff',
+                                text=[f'{v:.1f}' for _, v in items],
+                                textposition='outside'))
+        bar.update_layout(template=DASH_TEMPLATE,
+                           title='Sector P/E — snapshot atual (via ETFs)',
+                           yaxis_title='P/E', height=380,
+                           margin=dict(l=50, r=20, t=50, b=100))
+        figs['sector_pe_bar'] = bar
+
+    # Sector P/E time series (all 11 in one chart)
+    sec_pe_ts = {}
+    for etf, name in SECTOR_ETFS.items():
+        k = f'pe_{etf}'
+        if k in series:
+            sec_pe_ts[f'{name}'] = series[k]
+    if sec_pe_ts:
+        figs['sector_pe_ts'] = _fig_macro(sec_pe_ts,
+                                              'Sector P/E — time series',
+                                              'P/E multiple')
+
+    # --- B. RATES, VOL & CORRELATION ---
     if 'move' in series:
-        figs['move'] = _fig_macro({'MOVE Index': series['move']},
+        figs['move'] = _fig_macro({'MOVE': series['move']},
                                       'MOVE Index (Bond Volatility)', 'index',
                                       colors=['#ff6b6b'])
-
-    # 5. Rolling 1M correlation SPX returns vs 10Y yield
+    if 'vix' in series:
+        vix_dict = {'VIX': series['vix']}
+        if 'vix3m' in series:
+            vix_dict['VIX3M'] = series['vix3m']
+        figs['vix'] = _fig_macro(vix_dict, 'VIX Term Structure', 'vol %',
+                                      colors=['#ff6b6b', '#ffb84d'])
+    # 2s10s curve
+    if 'us2y' in series and 'us10y' in series:
+        s2, s10 = series['us2y'].align(series['us10y'], join='inner')
+        figs['yield_curve'] = _fig_macro({'2s10s (%)': s10 - s2},
+                                              'Yield Curve: 10Y - 2Y (inversion = <0)',
+                                              '%', colors=['#c77dff'])
+    # Yields panel
+    y_dict = {}
+    for k, label in [('us2y', '2Y'), ('us10y', '10Y'), ('us30y', '30Y')]:
+        if k in series:
+            y_dict[f'US {label}'] = series[k]
+    if y_dict:
+        figs['us_yields'] = _fig_macro(y_dict, 'US Treasury Yields', '%')
+    # Breakeven inflation
+    if 'be10' in series:
+        figs['breakeven'] = _fig_macro({'10Y Breakeven (%)': series['be10']},
+                                            'Market-implied 10Y Inflation Expectations',
+                                            '%', colors=['#ffb84d'])
+    # SPX-10Y corr
     if 'spx' in series and 'us10y' in series:
         spx_ret = series['spx'].pct_change()
         y10_chg = series['us10y'].diff()
-        aligned = pd.concat([spx_ret, y10_chg], axis=1, join='inner').dropna()
-        if len(aligned) > 30:
-            aligned.columns = ['spx', 'y10']
-            corr = aligned['spx'].rolling(21).corr(aligned['y10'])
+        a = pd.concat([spx_ret, y10_chg], axis=1, join='inner').dropna()
+        if len(a) > 30:
+            a.columns = ['spx', 'y10']
+            corr = a['spx'].rolling(21).corr(a['y10'])
             figs['corr_spx_10y'] = _fig_macro(
-                {'Rolling 21d corr SPX vs 10Y yield': corr.dropna()},
-                'Equity-Rates Correlation (neg = rates pesam no multiplo)',
+                {'Rolling 21d corr': corr.dropna()},
+                'Equity-Rates Correlation (neg = yields pesam no multiplo)',
                 'correlation', colors=['#c77dff'])
+    # DXY
+    if 'dxy' in series:
+        figs['dxy'] = _fig_macro({'DXY': series['dxy']},
+                                      'US Dollar Index (DXY)', 'index',
+                                      colors=['#7ae582'])
+    # Credit spreads
+    credit = {}
+    if 'cdx_ig' in series:
+        credit['CDX IG'] = series['cdx_ig']
+    if 'cdx_hy' in series:
+        credit['CDX HY'] = series['cdx_hy']
+    if credit:
+        figs['credit'] = _fig_macro(credit, 'Credit Spreads (CDX IG & HY)', 'bps',
+                                         colors=['#00d4ff', '#ff6b6b'])
+    # NFCI
+    if 'nfci' in series:
+        figs['nfci'] = _fig_macro({'NFCI': series['nfci']},
+                                       'Chicago Fed NFCI (>0 = tighter, <0 = looser)',
+                                       'index', colors=['#c77dff'])
 
-    # 6. Brent/WTI spread (Morgan Stanley Exhibit 7)
+    # --- C. COMMODITIES & FX ---
     if 'brent' in series and 'wti' in series:
         br, wt = series['brent'].align(series['wti'], join='inner')
-        spread = br - wt
         figs['brent_wti'] = _fig_macro_dual(
-            br, spread, 'Brent ($/bbl)', 'Brent-WTI spread ($)',
-            'Brent Oil + Brent-WTI Spread (watch spread peak = end of supply shock)')
+            br, br - wt, 'Brent ($/bbl)', 'Brent-WTI spread',
+            'Brent Oil + Brent-WTI Spread (spread peak = end of supply shock)')
+    if 'gold' in series:
+        figs['gold'] = _fig_macro({'Gold ($/oz)': series['gold']},
+                                       'Gold', '$/oz', colors=['#ffb84d'])
+    if 'copper' in series:
+        figs['copper'] = _fig_macro({'Copper ($/lb)': series['copper']},
+                                         'Copper (growth signal)', '$/lb',
+                                         colors=['#ff6b6b'])
+    if 'gold' in series and 'copper' in series:
+        g, c = series['gold'].align(series['copper'], join='inner')
+        figs['gold_copper'] = _fig_macro({'Gold / Copper ratio': g / c},
+                                              'Gold / Copper (risk-off > risk-on)',
+                                              'ratio', colors=['#c77dff'])
+    if 'natgas' in series:
+        figs['natgas'] = _fig_macro({'Nat Gas': series['natgas']},
+                                         'Natural Gas', '$/MMBtu', colors=['#00d4ff'])
+    if 'silver' in series:
+        figs['silver'] = _fig_macro({'Silver': series['silver']},
+                                         'Silver', '$/oz', colors=['#c0c0c0'])
+    # Commodity composite rebased
+    rebased_comm = {}
+    for k, lbl in [('brent', 'Brent'), ('gold', 'Gold'), ('copper', 'Copper')]:
+        if k in series:
+            s_ = series[k].dropna()
+            if len(s_) > 0:
+                rebased_comm[lbl] = (s_ / s_.iloc[0]) * 100
+    if len(rebased_comm) >= 2:
+        figs['commodities_rebased'] = _fig_macro(rebased_comm,
+                                                      'Commodities — rebased to 100',
+                                                      'index')
 
-    # 7. Energy relative performance (XLE vs SPY)
-    if 'xle' in series and 'spy' in series:
-        xl, sp = series['xle'].align(series['spy'], join='inner')
-        rel = (xl / sp)
-        rel = rel / rel.iloc[0] * 100
-        figs['xle_rel'] = _fig_macro({'XLE / SPY (rebased 100)': rel},
-                                         'Energy Relative Performance vs SPX',
-                                         'index', colors=['#ffb84d'])
+    # --- D. SECTOR RELATIVE PERFORMANCE (11 sectors vs SPX) ---
+    bench = series.get('spy') or series.get('spx')
+    if bench is not None:
+        for etf, name in SECTOR_ETFS.items():
+            k = f'sec_{etf}'
+            if k in series:
+                e_, b_ = series[k].align(bench, join='inner')
+                rel = (e_ / b_)
+                if len(rel) > 0:
+                    rel = rel / rel.iloc[0] * 100
+                    figs[f'rel_{etf}'] = _fig_macro(
+                        {f'{name} / SPX': rel},
+                        f'{name} ({etf}) Relative vs SPX — rebased 100',
+                        'index', colors=['#00d4ff'])
+        # Combined sector relative (1y rolling relative return, all 11)
+        combined = {}
+        for etf, name in SECTOR_ETFS.items():
+            k = f'sec_{etf}'
+            if k in series:
+                e_, b_ = series[k].align(bench, join='inner')
+                rel = (e_ / b_).pct_change(252) * 100  # 1Y relative
+                combined[name] = rel.dropna()
+        if combined:
+            figs['sector_rel_combined'] = _fig_macro(
+                combined, 'Sector Relative 1Y Return vs SPX (all sectors)',
+                '%')
 
-    # 8. SPX / Gold (real SPX — Exhibit 11)
+    # --- E. MARKET BREADTH & TECHNICALS ---
+    if 'spx' in series:
+        spx = series['spx']
+        figs['spx_ma'] = _fig_macro({
+            'SPX': spx,
+            '50D MA': spx.rolling(50).mean(),
+            '200D MA': spx.rolling(200).mean(),
+        }, 'S&P 500 with 50D & 200D Moving Averages', 'price',
+            colors=['#00d4ff', '#ffb84d', '#7ae582'])
+        # Drawdown from all-time high
+        dd = (spx / spx.cummax() - 1) * 100
+        figs['spx_dd'] = _fig_macro({'SPX drawdown from ATH (%)': dd},
+                                         'S&P 500 Drawdown from All-Time High', '%',
+                                         colors=['#ff6b6b'])
+
+    # --- F. INTERNATIONAL & STYLE ---
+    if 'xle' in series and bench is not None:
+        xl, sp = series['xle'].align(bench, join='inner')
+        rel = xl / sp
+        figs['xle_rel'] = _fig_macro({'XLE / SPY': rel / rel.iloc[0] * 100},
+                                          'Energy Relative Performance vs SPX',
+                                          'rebased 100', colors=['#ffb84d'])
     if 'spx' in series and 'gold' in series:
-        sp, go_ = series['spx'].align(series['gold'], join='inner')
-        ratio = sp / go_
-        figs['spx_gold'] = _fig_macro({'SPX / Gold ratio': ratio},
-                                          '"Real" SPX (SPX priced in Gold)',
-                                          'ratio', colors=['#7ae582'])
-
-    # 9. Russell 2000 vs SPX (small cap relative)
+        sp, g = series['spx'].align(series['gold'], join='inner')
+        figs['spx_gold'] = _fig_macro({'SPX / Gold': sp / g},
+                                           '"Real" SPX (priced in Gold)', 'ratio',
+                                           colors=['#7ae582'])
     if 'rty' in series and 'spx' in series:
         r, s_ = series['rty'].align(series['spx'], join='inner')
-        rel_rty = r / s_
-        rel_rty = rel_rty / rel_rty.iloc[0] * 100
-        figs['rty_rel'] = _fig_macro({'RTY / SPX (rebased 100)': rel_rty},
-                                         'Russell 2000 Relative vs S&P 500',
-                                         'index', colors=['#c77dff'])
+        rel = r / s_
+        figs['rty_rel'] = _fig_macro({'RTY / SPX': rel / rel.iloc[0] * 100},
+                                          'Russell 2000 Relative vs S&P 500',
+                                          'rebased 100', colors=['#c77dff'])
+    if 'mid' in series and 'spx' in series:
+        m, s_ = series['mid'].align(series['spx'], join='inner')
+        rel = m / s_
+        figs['mid_rel'] = _fig_macro({'MID / SPX': rel / rel.iloc[0] * 100},
+                                          'S&P 400 Mid Cap Relative vs S&P 500',
+                                          'rebased 100', colors=['#ff6b6b'])
+    if 'ndx' in series and 'spx' in series:
+        n, s_ = series['ndx'].align(series['spx'], join='inner')
+        rel = n / s_
+        figs['ndx_rel'] = _fig_macro({'NDX / SPX': rel / rel.iloc[0] * 100},
+                                          'Nasdaq 100 Relative vs S&P 500 (growth/tech)',
+                                          'rebased 100', colors=['#00d4ff'])
+    # International
+    intl = {}
+    for k, lbl in [('spx', 'S&P 500'), ('mxwo', 'MSCI World'), ('mxef', 'MSCI EM')]:
+        if k in series:
+            s_ = series[k].dropna()
+            if len(s_) > 0:
+                intl[lbl] = (s_ / s_.iloc[0]) * 100
+    if len(intl) >= 2:
+        figs['intl_rebased'] = _fig_macro(intl,
+                                               'International Equity — rebased 100',
+                                               'index')
 
     return {'series': series, 'figs': figs, 'n_series': len(series),
              'n_figs': len(figs)}
@@ -6603,6 +6807,8 @@ def _shorten_tab_title(full_title: str) -> str:
             'Nomura Options Framework': 'Nomura',
             'Trading Desk': '🎯 Trading',
             'Macro Charts': '📊 Macro',
+            'Macro Economico': '🌐 Macro',
+            'Setorial': '🏭 Setorial',
         }
         short = mapping.get(rest)
         if short is None:
@@ -7200,43 +7406,75 @@ def build_section_widgets(result: dict) -> list:
                              "inputs que alimentaram os triggers</div>"))
         sec.append(wd.HTML(_trading_context_html(trading_data['context'])))
 
-    # ====== PARTE VII: MACRO CHARTS (Morgan Stanley style) ======
+    # ====== PARTE VII: MACRO ECONOMICO ======
     macro_data = result.get('macro') or {}
     if macro_data and not macro_data.get('error') and macro_data.get('figs'):
-        sec.append(wd.HTML(_big_divider(
-            'Parte VII — Macro Charts',
-            'Valuation + Rates/Vol + Commodities (estilo Morgan Stanley Weekly Warm-up)')))
         figs_m = macro_data['figs']
 
-        # --- Sub-secao A: Valuation & Earnings ---
+        def _add_figs(keys):
+            for k in keys:
+                if k in figs_m:
+                    sec.append(go.FigureWidget(figs_m[k]))
+
+        # ----- PARTE VII: MACRO ECONOMICO -----
+        sec.append(wd.HTML(_big_divider(
+            'Parte VII — Macro Economico',
+            'Valuation + Rates/Vol/Credit/FX + Commodities + Breadth + Internacional')))
+
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
-                             "— P/E, NTM EPS Growth, Equity Risk Premium</div>"))
-        for k in ('spx_pe', 'spx_eps_yoy', 'erp'):
-            if k in figs_m:
-                sec.append(go.FigureWidget(figs_m[k]))
+                             "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
+        _add_figs(['spx_pe', 'spx_eps_level', 'spx_eps_yoy', 'erp'])
 
-        # --- Sub-secao B: Rates, Vol & Correlation ---
-        sec.append(wd.HTML("<div class='mm-section-label'>B · Rates, Vol & Correlation "
-                             "— MOVE Index + Equity-Rates correlation</div>"))
-        for k in ('move', 'corr_spx_10y'):
-            if k in figs_m:
-                sec.append(go.FigureWidget(figs_m[k]))
+        sec.append(wd.HTML("<div class='mm-section-label'>B · Rates, Vol & Credit "
+                             "— VIX/MOVE, yield curve, breakeven, DXY, credit, NFCI</div>"))
+        _add_figs(['vix', 'move', 'us_yields', 'yield_curve', 'breakeven',
+                    'corr_spx_10y', 'dxy', 'credit', 'nfci'])
 
-        # --- Sub-secao C: Commodities & Relative Performance ---
-        sec.append(wd.HTML("<div class='mm-section-label'>C · Commodities & Relative "
-                             "— Brent/WTI, Energy/SPX, SPX/Gold, Russell/SPX</div>"))
-        for k in ('brent_wti', 'xle_rel', 'spx_gold', 'rty_rel'):
-            if k in figs_m:
-                sec.append(go.FigureWidget(figs_m[k]))
+        sec.append(wd.HTML("<div class='mm-section-label'>C · Commodities & FX "
+                             "— Brent/WTI, Gold, Copper, Gold/Copper, NatGas, Silver, composite</div>"))
+        _add_figs(['brent_wti', 'gold', 'copper', 'gold_copper',
+                    'natgas', 'silver', 'commodities_rebased'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>D · Market Breadth & Technicals "
+                             "— SPX + 50D/200D MAs, drawdown from ATH</div>"))
+        _add_figs(['spx_ma', 'spx_dd'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>E · Internacional & Style "
+                             "— SPX/Gold, Russell/SPX, Mid/SPX, NDX/SPX, MSCI World+EM</div>"))
+        _add_figs(['spx_gold', 'rty_rel', 'mid_rel', 'ndx_rel', 'intl_rebased'])
+
+        # ----- PARTE VIII: SETORIAL -----
+        sec.append(wd.HTML(_big_divider(
+            'Parte VIII — Setorial',
+            'Sector valuations + relative performance (11 setores GICS via ETFs)')))
+
+        sec.append(wd.HTML("<div class='mm-section-label'>A · Sector Valuations "
+                             "— P/E snapshot + time series (11 setores)</div>"))
+        _add_figs(['sector_pe_bar', 'sector_pe_ts'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>B · Sector Relative 1Y "
+                             "— performance relativa anual de todos os setores</div>"))
+        _add_figs(['sector_rel_combined'])
+
+        sec.append(wd.HTML("<div class='mm-section-label'>C · Sector Relative "
+                             "(rebased) — 11 setores individualmente vs SPX</div>"))
+        # Energy primeiro (tese do MS), resto em ordem alfabetica
+        _add_figs(['rel_XLE', 'xle_rel'])
+        for etf in ['XLF', 'XLI', 'XLY', 'XLK', 'XLC', 'XLV',
+                     'XLP', 'XLU', 'XLB', 'XLRE']:
+            key = f'rel_{etf}'
+            if key in figs_m:
+                sec.append(go.FigureWidget(figs_m[key]))
 
         sec.append(wd.HTML(
             "<div class='mm-note' style='margin-top:12px;'>"
-            "<b>Macro Charts:</b> replica Exhibits 1-11 + 75-77 do MS Weekly "
-            "Warm-up. ERP = earnings yield (1/PE) - 10Y; correlacao 21d "
-            "(negativa = yields pesam no multiplo = broad risk-off)."
+            "<b>Macro+Setorial:</b> ~35 graficos replicando MS Weekly Warm-up. "
+            "Dados via BQL (cap 20y). P/E via ETFs setoriais (proxy), breakeven "
+            "10Y = USGGBE10, NFCI = Chicago Fed. ERP = earnings yield - 10Y. "
+            "Rel charts = ETF/SPY rebased 100 no 1o dia."
             "</div>"))
     elif macro_data.get('error'):
-        sec.append(wd.HTML(_big_divider('Parte VII — Macro Charts', 'Erro')))
+        sec.append(wd.HTML(_big_divider('Parte VII — Macro Economico', 'Erro')))
         sec.append(wd.HTML(
             f"<div class='mm-card'><p class='mm-flag'>❌ Macro falhou:</p>"
             f"<p style='color:#cce8ff;'><b>{macro_data['error']}</b></p></div>"))
