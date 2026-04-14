@@ -6144,7 +6144,87 @@ def _fig_macro_dual(s1: pd.Series, s2: pd.Series, name1: str, name2: str,
     return fig
 
 
-def _ms_snapshot_html() -> str:
+def _eps_sensitivity_html(spx_spot: float = None,
+                             eps_fy1: float = None,
+                             eps_fy2: float = None,
+                             eps_ntm: float = None) -> str:
+    """
+    Matriz de sensibilidade P/E × EPS = SPX target.
+    EPS vem do BBG via best_eps(fa_period_offset). Cell = PE * EPS,
+    com % vs SPX spot (live).
+    """
+    # EPS scenarios (cols)
+    scenarios = []
+    if eps_ntm:
+        scenarios.append(('NTM', eps_ntm))
+    if eps_fy1:
+        scenarios.extend([
+            ('FY1 -10%', eps_fy1 * 0.90),
+            ('FY1 -5%',  eps_fy1 * 0.95),
+            ('FY1 base', eps_fy1),
+            ('FY1 +5%',  eps_fy1 * 1.05),
+            ('FY1 +10%', eps_fy1 * 1.10),
+        ])
+    if eps_fy2:
+        scenarios.append(('FY2 base', eps_fy2))
+
+    if not scenarios:
+        return ("<div class='mm-card'><p class='mm-flag'>"
+                 "EPS sensitivity matrix: BBG best_eps nao retornou valores.</p></div>")
+
+    # P/E rows
+    pe_rows = [17, 18, 19, 20, 21, 22, 23, 24]
+
+    header = '<tr><th style="text-align:left;">P/E</th>' + ''.join(
+        f'<th>{lbl}<br/><span style="color:#8b949e;font-weight:400;font-size:10px;">'
+        f'${eps:.0f}</span></th>'
+        for lbl, eps in scenarios) + '</tr>'
+
+    rows_html = []
+    for pe in pe_rows:
+        cells = [f'<td><b>{pe}x</b></td>']
+        for _, eps in scenarios:
+            tgt = pe * eps
+            if spx_spot:
+                pct = (tgt / spx_spot - 1) * 100
+                col = '#7ae582' if pct > 2 else '#ff6b6b' if pct < -2 else '#cce8ff'
+                pct_txt = f'<div style="color:{col};font-size:10px;">{pct:+.1f}%</div>'
+            else:
+                pct_txt = ''
+            cells.append(
+                f'<td style="text-align:center;"><div style="color:#cce8ff;'
+                f'font-weight:700;">{tgt:,.0f}</div>{pct_txt}</td>')
+        rows_html.append('<tr>' + ''.join(cells) + '</tr>')
+
+    spot_line = (f"Current SPX ~{spx_spot:,.0f}" if spx_spot else "SPX spot N/A")
+    eps_line = (
+        f"FY1 ${eps_fy1:.1f}" if eps_fy1 else "FY1 N/A")
+    if eps_fy2:
+        eps_line += f" | FY2 ${eps_fy2:.1f}"
+    if eps_ntm:
+        eps_line += f" | NTM ${eps_ntm:.1f}"
+
+    return f"""
+    <div class='mm-card' style='padding:16px 20px;'>
+      <div class='mm-metric-lbl' style='font-size:13px; margin-bottom:10px;'>
+        EPS × P/E SENSITIVITY MATRIX — SPX target (vs spot live)
+      </div>
+      <table class='mm-table' style='width:auto; font-size:12px;'>
+        {header}
+        {''.join(rows_html)}
+      </table>
+      <div style='color:#8b949e; font-size:11px; margin-top:8px;'>
+        {spot_line} | {eps_line}
+        <br/>EPS via BBG <code>best_eps(fa_period_type='A', fa_period_offset=N)</code>
+        — SPX Index consensus. Spot via <code>px_last</code>.
+      </div>
+    </div>
+    """
+
+
+def _ms_snapshot_html(spx_spot: float = None,
+                        eps_fy1: float = None,
+                        eps_fy2: float = None) -> str:
     """
     Snapshot narrativo das views do relatorio MS (Weekly Warm-up, Apr 2026).
     Dados parafraseados — forecasts + sector ratings + consensus estimates.
@@ -6246,7 +6326,9 @@ def _ms_snapshot_html() -> str:
         {tgt_rows}
       </table>
       <div style='color:#8b949e; font-size:11px; margin-top:6px;'>
-        Current ~6,817 | MS assumes EPS $272 ('25), $317 ('26), $356 ('27)
+        {f"Current SPX <b style='color:#cce8ff;'>{spx_spot:,.0f}</b> (live BBG)" if spx_spot else "Current ~6,817 (ref MS report)"}
+        | {f"EPS FY1 <b style='color:#7ae582;'>${eps_fy1:.1f}</b>" if eps_fy1 else "MS assumes EPS $317 ('26)"}
+        {f" | FY2 <b style='color:#7ae582;'>${eps_fy2:.1f}</b>" if eps_fy2 else ""}
       </div>
     </div>
 
@@ -6402,6 +6484,36 @@ def compute_macro_charts(years: int = 10) -> dict:
         _try('spx_best_eps', 'SPX Index', bq.data.best_eps)
     except Exception as e:
         log.warning(f'[macro] best_eps fail: {e}')
+
+    # Forward EPS estimates (FY1/FY2) — one-shot snapshot pra sensitivity matrix
+    eps_fy1, eps_fy2, eps_ntm = None, None, None
+    for offset, key in [(1, 'fy1'), (2, 'fy2')]:
+        try:
+            req = bql.Request('SPX Index', {
+                'eps': bq.data.best_eps(fa_period_type='A',
+                                           fa_period_offset=offset,
+                                           dates=bq.func.range('-60D', '0D'),
+                                           fill='PREV')})
+            s = _bql_ts(bq.execute(req)[0], 'eps')
+            s = pd.to_numeric(s, errors='coerce').dropna()
+            if len(s) > 0:
+                val = float(s.iloc[-1])
+                if key == 'fy1':
+                    eps_fy1 = val
+                else:
+                    eps_fy2 = val
+                log.info(f'[macro] EPS {key.upper()} = ${val:.1f}')
+        except Exception as e:
+            log.warning(f'[macro] best_eps fy{offset} fail: {e}')
+
+    # NTM EPS current value
+    if 'spx_best_eps' in series:
+        s = series['spx_best_eps'].dropna()
+        if len(s) > 0:
+            eps_ntm = float(s.iloc[-1])
+
+    # SPX spot atual
+    spx_spot = float(series['spx'].iloc[-1]) if 'spx' in series else None
     # Sector P/E (current snapshot via pe_ratio)
     for etf in SECTOR_ETFS:
         try:
@@ -6796,7 +6908,9 @@ def compute_macro_charts(years: int = 10) -> dict:
     figs['reporting_season'] = rep_fig
 
     return {'series': series, 'figs': figs, 'n_series': len(series),
-             'n_figs': len(figs)}
+             'n_figs': len(figs),
+             'spx_spot': spx_spot, 'eps_fy1': eps_fy1,
+             'eps_fy2': eps_fy2, 'eps_ntm': eps_ntm}
 
 
 # =============================================================================
@@ -7748,10 +7862,19 @@ def build_section_widgets(result: dict) -> list:
             'Parte VII — Macro Economico',
             'MS Research Snapshot + Valuation + Rates/Vol/Credit/FX + Commodities + Breadth + Internacional')))
 
-        # MS Research Snapshot (hardcoded views do relatorio)
+        # MS Research Snapshot (views + LIVE SPX/EPS do BBG)
         sec.append(wd.HTML("<div class='mm-section-label'>@ · MS Research Snapshot "
-                             "— forecasts + ratings + thesis (Morgan Stanley view)</div>"))
-        sec.append(wd.HTML(_ms_snapshot_html()))
+                             "+ EPS Sensitivity — forecasts, ratings, thesis (spot live BBG)</div>"))
+        sec.append(wd.HTML(_ms_snapshot_html(
+            spx_spot=macro_data.get('spx_spot'),
+            eps_fy1=macro_data.get('eps_fy1'),
+            eps_fy2=macro_data.get('eps_fy2'))))
+        # Matriz de sensibilidade P/E x EPS
+        sec.append(wd.HTML(_eps_sensitivity_html(
+            spx_spot=macro_data.get('spx_spot'),
+            eps_fy1=macro_data.get('eps_fy1'),
+            eps_fy2=macro_data.get('eps_fy2'),
+            eps_ntm=macro_data.get('eps_ntm'))))
 
         sec.append(wd.HTML("<div class='mm-section-label'>A · Valuation & Earnings "
                              "— SPX P/E, NTM EPS (level + Y/Y), Equity Risk Premium</div>"))
