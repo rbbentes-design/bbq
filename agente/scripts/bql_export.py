@@ -1397,6 +1397,112 @@ def export_eps_revisions():
         _log(f'eps_revisions — {len(rows)} tickers')
 
 
+def export_quarterly_financials():
+    """
+    Financials trimestrais (9 trimestres) para infográfico de earnings.
+    Exporta: receita, lucro líquido, LPA, margens por mega-cap.
+    CSV: quarterly_financials_YYYY-MM-DD.csv
+    """
+    universe = list(set(MEGA_CAP_TICKERS))
+
+    # Periods: últimos 9 trimestres fiscais
+    # BQL: is_comp_sales, is_net_income, is_oper_income, trail_12m_eps
+    # Usamos fund_data com periodicidade trimestral
+    quarters = []
+    ref = date.today()
+    for i in range(9):
+        # ~3 meses por trimestre, volta do mais recente
+        offset_days = i * 91
+        d = ref - pd.Timedelta(days=offset_days)
+        quarters.append(d.strftime('%Y-%m-%d'))
+
+    rows = []
+    for bbg_tk in universe:
+        ticker_short = bbg_tk.replace(' US Equity', '').replace('/', '-')
+        try:
+            # Tenta buscar dados fundamentais trimestrais
+            # BQL fund_data: is_comp_sales (receita), is_net_income, is_oper_income
+            items = _safe_items([
+                ('revenue',        lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=0)),
+                ('revenue_1q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-1)),
+                ('revenue_2q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-2)),
+                ('revenue_3q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-3)),
+                ('revenue_4q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-4)),
+                ('revenue_5q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-5)),
+                ('revenue_6q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-6)),
+                ('revenue_7q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-7)),
+                ('revenue_8q',     lambda: bq.data.is_comp_sales(fa_period_type='Q', fa_period_offset=-8)),
+                ('net_income',     lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=0)),
+                ('net_income_1q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-1)),
+                ('net_income_2q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-2)),
+                ('net_income_3q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-3)),
+                ('net_income_4q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-4)),
+                ('net_income_5q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-5)),
+                ('net_income_6q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-6)),
+                ('net_income_7q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-7)),
+                ('net_income_8q',  lambda: bq.data.is_net_income(fa_period_type='Q', fa_period_offset=-8)),
+                ('oper_income',    lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=0)),
+                ('oper_income_1q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-1)),
+                ('oper_income_2q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-2)),
+                ('oper_income_3q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-3)),
+                ('oper_income_4q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-4)),
+                ('oper_income_5q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-5)),
+                ('oper_income_6q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-6)),
+                ('oper_income_7q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-7)),
+                ('oper_income_8q', lambda: bq.data.is_oper_income(fa_period_type='Q', fa_period_offset=-8)),
+                ('gross_profit',   lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=0)),
+                ('gross_profit_1q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-1)),
+                ('gross_profit_2q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-2)),
+                ('gross_profit_3q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-3)),
+                ('gross_profit_4q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-4)),
+                ('gross_profit_5q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-5)),
+                ('gross_profit_6q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-6)),
+                ('gross_profit_7q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-7)),
+                ('gross_profit_8q',lambda: bq.data.is_gross_profit(fa_period_type='Q', fa_period_offset=-8)),
+                ('eps',            lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=0)),
+                ('eps_1q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-1)),
+                ('eps_2q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-2)),
+                ('eps_3q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-3)),
+                ('eps_4q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-4)),
+                ('eps_5q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-5)),
+                ('eps_6q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-6)),
+                ('eps_7q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-7)),
+                ('eps_8q',         lambda: bq.data.is_diluted_eps(fa_period_type='Q', fa_period_offset=-8)),
+                # Estimates (consensus) para o trimestre atual
+                ('eps_est',        lambda: bq.data.best_eps()),
+                ('rev_est',        lambda: bq.data.best_sales()),
+                # Fiscal period info
+                ('fq_end',         lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=0)),
+                ('fq_end_1q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-1)),
+                ('fq_end_2q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-2)),
+                ('fq_end_3q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-3)),
+                ('fq_end_4q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-4)),
+                ('fq_end_5q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-5)),
+                ('fq_end_6q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-6)),
+                ('fq_end_7q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-7)),
+                ('fq_end_8q',      lambda: bq.data.fiscal_quarter_end_date(fa_period_type='Q', fa_period_offset=-8)),
+            ])
+            if not items:
+                _log(f'quarterly_fin: sem fields para {ticker_short}')
+                continue
+
+            r = bq.execute(bql.Request(bq.univ.list([bbg_tk]), items))
+            df_q = pd.concat([x.df()[x.name] for x in r], axis=1)
+
+            if len(df_q) > 0:
+                row = df_q.iloc[0]
+                entry = {'ticker': ticker_short}
+                for field in items.keys():
+                    entry[field] = _to_num(row.get(field)) if field in items else ''
+                rows.append(entry)
+        except Exception as e:
+            _log(f'quarterly_fin warn {ticker_short}: {e}')
+
+    if rows:
+        pd.DataFrame(rows).to_csv(OUT / f'quarterly_financials_{hoje}.csv', index=False)
+        _log(f'quarterly_financials — {len(rows)} mega-caps, {len(rows[0])} fields each')
+
+
 def export_realized_vol():
     """RV (realized volatility) 30d, 60d, 90d, 252d via px_volatility BQL."""
     universe = list(set(FUND_TICKERS))
@@ -1845,6 +1951,7 @@ def export_all(_download=True):
     print('Borrow rate (mega-caps)...');   _safe('borrow', export_borrow_rate)
     print('Dividends...');                 _safe('dividends', export_dividends)
     print('EPS revisions...');             _safe('eps_revisions', export_eps_revisions)
+    print('Quarterly financials (9Q)...');  _safe('quarterly_fin', export_quarterly_financials)
 
     # ── Prices / macro ───────────────────────────────────────────────────
     print('Realized vol (30/60/90/252d)...');   _safe('realized_vol', export_realized_vol)
