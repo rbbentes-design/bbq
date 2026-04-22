@@ -164,32 +164,35 @@ pre.how-memo { background: #0a0d14; color: #cce8ff; padding: 16px; border-radius
 """
 
 # ----- Tickers config (§3.3) -----
+# Tickers — multi-candidate: tenta em ordem, usa o 1o que funcionar.
+# Se todos falharem via BBG, cai no FRED (FRED_ALIASES).
 TICKERS_CB = {
-    'FED':   'FARBAST Index',      # Fed Reserve Bank Assets
-    'ECB':   'EBBSTOTA Index',     # ECB total assets
-    'BOJ':   'BJACTOTL Index',     # BoJ total assets
-    'PBOC':  'CNGFAS Index',       # PBoC total assets
-    'BOE':   'APFAAPFA Index',     # BoE APF (fallback; BOEAPPLA alt)
+    # Fed total assets — varios aliases
+    'FED':   ['FARBAST Index', 'H41RCASH Index', 'H41TCTOT Index'],
+    'ECB':   ['EBBSTOTA Index', 'EUCBTOTA Index'],
+    'BOJ':   ['BJACTOTL Index', 'JPNACBA Index'],
+    'PBOC':  ['CNGFAS Index', 'CHBATOTL Index'],
+    'BOE':   ['APFAAPFA Index', 'BOEAPFAF Index', 'UKAPFBS Index'],
 }
 TICKERS_BANK_CREDIT = {
-    'US':  'ALCBCBCT Index',  # US H.8 bank credit
-    'EUR': 'ECMSM3 Index',    # EUR M3 (proxy)
-    'UK':  'UKM4MLB Index',   # UK M4 lending (proxy)
-    'JP':  'JNLJAOYS Index',  # Japan bank lending
-    'CN':  'CNFFFAS Index',   # China TSF
+    'US':  ['ALCBCBCT Index', 'ALCBTOTL Index', 'H8TBNKCR Index'],  # H.8 credit
+    'EUR': ['ECMSM3 Index', 'ECMAM3 Index'],
+    'UK':  ['UKM4MLB Index', 'UKMS Index'],
+    'JP':  ['JNLJAOYS Index', 'JMNSM2 Index'],
+    'CN':  ['CNFFFAS Index', 'CHTSFAMT Index'],
 }
 TICKERS_REPO = {
-    'SOFR':   'SOFRRATE Index',
-    'IORB':   'IORB Index',
-    'WRESBAL':'WRESBAL Index',  # Reserve balances
-    'RRP':    'RRPONTSYD Index',
-    'MOVE':   'MOVE Index',
+    'SOFR':   ['SOFRRATE Index', 'SOFR Index'],
+    'IORB':   ['IORB Index', 'IOER Index'],
+    'WRESBAL':['WRESBAL Index', 'ARESDPIT Index', 'WRRESUAW Index'],
+    'RRP':    ['RRPONTSYD Index', 'RRPONTSYAWARD Index', 'RRPONTSYOPS Index'],
+    'MOVE':   ['MOVE Index'],
 }
 TICKERS_WBCI_CORE4 = {
-    'US_ISM':    'NAPMPMI Index',
-    'JP_TANKAN': 'JNTGMFG Index',
-    'DE_IFO':    'GRIFPBUS Index',
-    'UK_CBI':    'UKCBIMS Index',
+    'US_ISM':    ['NAPMPMI Index', 'ISMPMI Index', 'USNPMI Index'],
+    'JP_TANKAN': ['JNTGMFG Index', 'JNTGSECE Index', 'JNTGSEMS Index'],
+    'DE_IFO':    ['GRIFPBUS Index', 'IFOEPECU Index', 'GRZEBUSN Index'],
+    'UK_CBI':    ['UKCBIMS Index', 'UKCBIIND Index', 'UKCBITEF Index'],
 }
 TICKERS_WBCI_EXT = {
     'US_ISM_SVC': 'NAPMNMI Index',
@@ -268,23 +271,29 @@ TICKERS_EQ_INDICES = {
 FRED_ALIASES = {
     # Central Banks
     'FED':      'WALCL',            # Fed balance sheet
-    'ECB':      'ECBASSETS',        # ECB total assets (FRED proxy)
+    'ECB':      'ECBASSETSW',       # ECB total assets weekly
+    'BOJ':      'JPNASSETS',        # BoJ total assets
+    'BOE':      'BOGMBASE',         # fallback: US monetary base (se BoE ausente)
     # Bank credit / M
     'US':       'TOTBKCR',          # H.8 bank credit total
+    'EUR':      'MYAGM3EZM196S',    # Euro M3 monthly
+    'UK':       'MABMM101GBM189S',  # UK M4
+    'JP':       'MYAGM2JPM189S',    # Japan M2
+    'CN':       'MABMM201CNM189S',  # China M2
     'US_M2':    'M2SL',
-    'UK_M4':    'MABMM101GBM189S',  # UK M4 (best FRED proxy)
-    'JP_M2':    'MYAGM2JPM189S',    # Japan M2
-    'EUR_M3':   'MYAGM3EZM196S',    # Euro M3
-    'CN_M2':    'MABMM201CNM189S',  # China M2
+    'EUR_M3':   'MYAGM3EZM196S',
+    'UK_M4':    'MABMM101GBM189S',
+    'JP_M2':    'MYAGM2JPM189S',
+    'CN_M2':    'MABMM201CNM189S',
     # Rates
     'US2Y':     'DGS2',
     'US5Y':     'DGS5',
     'US10Y':    'DGS10',
     'US30Y':    'DGS30',
     'US3M':     'DGS3MO',
-    'TIPS10':   'DFII10',           # 10Y TIPS constant maturity
+    'TIPS10':   'DFII10',
     'FED_FUNDS':'FEDFUNDS',
-    'TP_ACM10': 'THREEFYTP10',      # Kim-Wright 10Y TP (FRED proxy for ACM)
+    'TP_ACM10': 'THREEFYTP10',      # Kim-Wright 10Y TP
     # Repo / reserves
     'SOFR':     'SOFR',
     'IORB':     'IORB',
@@ -299,18 +308,24 @@ FRED_ALIASES = {
     'Gold':     'GOLDAMGBD228NLBM',
     'WTI':      'DCOILWTICO',
     'Brent':    'DCOILBRENTEU',
-    # FX
-    'DXY':      'DTWEXBGS',         # trade-weighted USD (broad goods+svcs)
+    'Copper':   'PCOPPUSDM',        # copper monthly
+    # FX / EM
+    'DXY':      'DTWEXBGS',
+    'EMFX':     'DTWEXEMEGS',       # trade-weighted emerging
+    # PMIs (via FRED onde tiver)
+    'US_ISM':   'NAPM',             # ISM manuf (descontinuado no FRED; USMPMI alt)
+    'GLOBAL_PMI':'MPMIGLMA',        # provavelmente ausente, log warning
+    'OECD_CLI': 'OECDLOLITOAASTSAM',
     # Macro
     'cpi_lvl':  'CPIAUCSL',
+    'cpi_yoy':  'CPIAUCSL',         # compute YoY downstream
     'ppi_lvl':  'PPIACO',
+    'ppi_yoy':  'PPIACO',
     'umich':    'UMCSENT',
     'umich_cur':'UMCSENT',
-    'OECD_CLI': 'OECDLOLITOAASTSAM',
-    'GLOBAL_PMI':'GEPUCURRENT',     # global economic policy uncertainty proxy
-    # Labor (atalho pra rate_paradox/macro geral)
-    'US_ISM':   'NAPM',             # ISM manuf PMI
-    'US_ISM_SVC':'NAPMNMI',         # NAO tem no FRED — fallback vazio
+    # Equity indices (fallback raro — BBG tem)
+    'SPX':      'SP500',
+    'NDX':      'NASDAQ100',
 }
 
 
@@ -393,24 +408,31 @@ def _bql_one_field(ticker: str, field, period: str = '-20Y') -> pd.Series:
     return s
 
 
-def safe_load(ticker: str, field=None, period: str = '-20Y',
+def safe_load(tickers, field=None, period: str = '-20Y',
                label: str = None) -> pd.Series:
     """
-    Carrega serie com try/except. Tenta BQL primeiro; se falhar ou vier vazio,
-    cai no FRED via FRED_ALIASES[label] (se disponivel).
+    Carrega serie com try/except. Aceita str (1 ticker) ou list (multi-candidate).
+    Tenta cada ticker BBG em ordem; usa o 1o que retornar dados.
+    Se tudo falhar, cai no FRED via FRED_ALIASES[label].
     """
-    result = pd.Series(dtype=float)
+    # Normaliza pra lista
+    if isinstance(tickers, str):
+        tickers = [tickers]
 
-    # 1. Tenta BQL
+    # 1. Tenta cada candidate BBG em ordem
     if HAS_BQL:
         f = field if field is not None else bq.data.px_last
-        try:
-            s = _bql_one_field(ticker, f, period)
-            if len(s) > 0:
-                return s
-            log.warning(f'{label or ticker}: BQL vazio')
-        except Exception as e:
-            log.warning(f'{label or ticker} BQL fail: {str(e)[:80]}')
+        for tk in tickers:
+            try:
+                s = _bql_one_field(tk, f, period)
+                if len(s) > 0:
+                    if len(tickers) > 1:
+                        log.info(f'[bbg] {label or tk}: OK via {tk}')
+                    return s
+            except Exception as e:
+                msg = str(e)[:60]
+                if len(tickers) > 1:
+                    log.debug(f'[bbg] {label} try {tk}: {msg}')
 
     # 2. Fallback FRED (via label)
     if HAS_FRED and label:
@@ -425,7 +447,10 @@ def safe_load(ticker: str, field=None, period: str = '-20Y',
                 log.info(f'[fred fallback] {label} -> {fred_id}')
                 return s
 
-    return result
+    # Todas falharam
+    log.warning(f'{label or tickers[0]}: todas fontes vazias '
+                  f'({len(tickers)} BBG + FRED)')
+    return pd.Series(dtype=float)
 
 
 def _clean(s):
@@ -438,13 +463,55 @@ def _clean(s):
 
 def load_group(tickers: dict, period: str = '-20Y',
                 field=None) -> dict:
-    """Carrega um dict de tickers e retorna dict de series (so as que vieram)."""
+    """Carrega um dict de tickers e retorna dict de series (so as que vieram).
+    Registra em _loader_audit quais tickers tiveram sucesso/falha."""
     out = {}
     for name, tk in tickers.items():
         s = safe_load(tk, field, period, label=name)
+        _loader_audit[name] = {
+            'candidates': tk if isinstance(tk, list) else [tk],
+            'got_data': len(s) > 0,
+            'n_points': len(s),
+            'fred_fallback': FRED_ALIASES.get(name, None),
+        }
         if len(s) > 0:
             out[name] = s
     return out
+
+
+# Audit global pra debug
+_loader_audit: dict = {}
+
+
+def debug_loader_report() -> str:
+    """Gera relatorio HTML/text de quais tickers funcionaram."""
+    rows = []
+    ok_count = 0
+    fail_count = 0
+    for name, info in _loader_audit.items():
+        status = '✓' if info['got_data'] else '✗'
+        if info['got_data']:
+            ok_count += 1
+        else:
+            fail_count += 1
+        cands = ' | '.join(info['candidates'][:3])
+        if len(info['candidates']) > 3:
+            cands += f' +{len(info["candidates"])-3}'
+        fred = info.get('fred_fallback') or '—'
+        rows.append(f"<tr><td>{status}</td><td><b>{name}</b></td>"
+                      f"<td>{cands}</td><td>{info['n_points']}</td>"
+                      f"<td>{fred}</td></tr>")
+
+    table = ("<table class='how-table'>"
+              "<tr><th></th><th>Label</th><th>BBG candidates</th>"
+              "<th>Points</th><th>FRED fallback</th></tr>"
+              + ''.join(rows) + "</table>")
+    summary = (f"<div class='how-card'><b>Loader Audit:</b> "
+                f"<span class='how-badge how-badge-green'>{ok_count} OK</span> "
+                f"<span class='how-badge how-badge-red'>{fail_count} failed</span> "
+                f"| FRED enabled: {'✓' if HAS_FRED else '✗ (set FRED_API_KEY env var)'}"
+                f"</div>")
+    return summary + f"<div class='how-card'>{table}</div>"
 
 
 # ============================================================================
@@ -1888,6 +1955,14 @@ def _build_section_widgets(result: dict) -> list:
         f"Quadrant: {state.get('cycle', {}).get('current_quadrant', 'N/A')}"
         f"</div>"
         f"</div>"))
+
+    # Loader audit (debug de tickers)
+    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
+                         "LOADER AUDIT (debug) — quais BBG tickers funcionaram</div>"
+                         "<div class='how-divider-sub'>Use pra identificar tickers "
+                         "quebrados e adicionar FRED_API_KEY env var se faltando</div>"
+                         "</div>"))
+    sec.append(wd.HTML(debug_loader_report()))
 
     # Charts (all 15)
     sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
