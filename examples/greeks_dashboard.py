@@ -2137,20 +2137,51 @@ def compute_flow_score(leveraged_flow, buyback_daily=0, cot_net_change=0,
                        passive_etf_flow=0, history_leveraged=None,
                        history_cot=None, dealer_flow=0, volctrl_flow=0,
                        cta_flow=0, rp_flow=0,
-                       history_dealer=None, history_volctrl=None):
+                       history_dealer=None, history_volctrl=None,
+                       history_buyback=None, history_cta=None,
+                       history_rp=None, history_passive=None,
+                       buyback_blackout_pct=0.0):
     """
     Computa score combinado de fluxo contratado — 8 componentes.
     Pesos: CTA 22%, Dealer 18%, VolCtrl 12%, Risk Parity 12%,
            ETFs Alav 12%, Buyback 8%, COT 10%, ETFs Passivos 6%.
+
+    Z-scores usam histórico rolling quando disponível (flow_zscore).
+    Fallback: normalização por escala realista (divisor ≈ 1σ típico de cada série).
+    buyback_blackout_pct: em blackout (≥ 50%), força Z negativo proporcional.
     """
-    z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else 0
+    # Escalas realistas (USD) — divisor ≈ 1 desvio-padrão típico
+    SCALE_BUYBACK = 3e9      # ~$3B/dia pico SPX (pós-earnings, full open)
+    SCALE_CTA     = 20e9     # ~$20B flow CTA extremo
+    SCALE_DEALER  = 5e9      # ~$5B dealer flow diário
+    SCALE_VOLCTRL = 3e9      # ~$3B vol control rebalance
+    SCALE_RP      = 3e9      # ~$3B risk parity
+    SCALE_PASSIVE = 5e9      # ~$5B passive ETF flow
+    SCALE_LEV     = 2e9      # ~$2B leveraged ETF rebalance
+
+    z_lev = flow_zscore(leveraged_flow, history_leveraged) if history_leveraged is not None else \
+            (np.clip(leveraged_flow / SCALE_LEV, -3, 3) if leveraged_flow else 0)
     z_cot = flow_zscore(cot_net_change, history_cot) if history_cot is not None else 0
-    z_buyback = np.clip(buyback_daily / 1e8, -3, 3) if buyback_daily else 0
-    z_passive = np.clip(passive_etf_flow / 1e9, -3, 3) if passive_etf_flow else 0
-    z_dealer = np.clip(dealer_flow / 1e9, -3, 3) if dealer_flow else 0
-    z_volctrl = np.clip(volctrl_flow / 1e9, -3, 3) if volctrl_flow else 0
-    z_cta = np.clip(cta_flow / 1e9, -3, 3) if cta_flow else 0
-    z_rp = np.clip(rp_flow / 1e9, -3, 3) if rp_flow else 0
+
+    # Buyback: Z-score negativo se em blackout (maioria nao pode recomprar)
+    if history_buyback is not None:
+        z_buyback = flow_zscore(buyback_daily, history_buyback)
+    elif buyback_blackout_pct >= 0.5:
+        # Blackout >= 50%: forca Z negativo proporcional (80% = -2.4, 100% = -3)
+        z_buyback = -3.0 * buyback_blackout_pct
+    else:
+        z_buyback = np.clip(buyback_daily / SCALE_BUYBACK, -3, 3) if buyback_daily else 0
+
+    z_passive = flow_zscore(passive_etf_flow, history_passive) if history_passive is not None else \
+                (np.clip(passive_etf_flow / SCALE_PASSIVE, -3, 3) if passive_etf_flow else 0)
+    z_dealer = flow_zscore(dealer_flow, history_dealer) if history_dealer is not None else \
+               (np.clip(dealer_flow / SCALE_DEALER, -3, 3) if dealer_flow else 0)
+    z_volctrl = flow_zscore(volctrl_flow, history_volctrl) if history_volctrl is not None else \
+                (np.clip(volctrl_flow / SCALE_VOLCTRL, -3, 3) if volctrl_flow else 0)
+    z_cta = flow_zscore(cta_flow, history_cta) if history_cta is not None else \
+            (np.clip(cta_flow / SCALE_CTA, -3, 3) if cta_flow else 0)
+    z_rp = flow_zscore(rp_flow, history_rp) if history_rp is not None else \
+           (np.clip(rp_flow / SCALE_RP, -3, 3) if rp_flow else 0)
 
     w_cta, w_deal, w_vc, w_rp = 0.22, 0.18, 0.12, 0.12
     w_lev, w_buy, w_cot, w_passive = 0.12, 0.08, 0.10, 0.06
@@ -11860,7 +11891,8 @@ def run_analysis(_):
                         dealer_flow=fp_dealer_flow,
                         volctrl_flow=fp_volctrl['total'],
                         cta_flow=fp_cta['flow'],
-                        rp_flow=fp_rp['total'])
+                        rp_flow=fp_rp['total'],
+                        buyback_blackout_pct=fp_buyback.get('blackout_pct', 0))
                     fp_ok = True
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
