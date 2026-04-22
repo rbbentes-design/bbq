@@ -2046,7 +2046,8 @@ def run_analysis(_):
                         dealer_flow=fp_dealer_flow,
                         volctrl_flow=fp_volctrl['total'],
                         cta_flow=fp_cta['flow'],
-                        rp_flow=fp_rp['total'])
+                        rp_flow=fp_rp['total'],
+                        buyback_blackout_pct=fp_buyback.get('blackout_pct', 0))
                     fp_ok = True
                 except Exception as fp_err:
                     print(f"⚠️ Flow score: {fp_err}")
