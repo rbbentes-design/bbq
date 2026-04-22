@@ -74,6 +74,19 @@ try:
 except Exception:
     HAS_SCIPY = False
 
+# FRED fallback — usado quando BQL falhar (muitos series faltam entitlement)
+try:
+    from fredapi import Fred
+    _fred_key = os.environ.get('FRED_API_KEY')
+    fred = Fred(api_key=_fred_key) if _fred_key else None
+    HAS_FRED = fred is not None
+    if HAS_FRED:
+        log.info(f'[fred] FRED API habilitada (key ****{_fred_key[-4:]})')
+except Exception as e:
+    log.warning(f'[fred] nao disponivel: {e}')
+    fred = None
+    HAS_FRED = False
+
 
 # ============================================================================
 # 2. Constants + Config
@@ -250,6 +263,75 @@ TICKERS_EQ_INDICES = {
     'AGG':        'LBUSTRUU Index',
 }
 
+# ----- FRED series aliases (fallback quando BQL falhar) -----
+# Mapeia o 'label' interno (chave do TICKERS_*) para o FRED series ID.
+FRED_ALIASES = {
+    # Central Banks
+    'FED':      'WALCL',            # Fed balance sheet
+    'ECB':      'ECBASSETS',        # ECB total assets (FRED proxy)
+    # Bank credit / M
+    'US':       'TOTBKCR',          # H.8 bank credit total
+    'US_M2':    'M2SL',
+    'UK_M4':    'MABMM101GBM189S',  # UK M4 (best FRED proxy)
+    'JP_M2':    'MYAGM2JPM189S',    # Japan M2
+    'EUR_M3':   'MYAGM3EZM196S',    # Euro M3
+    'CN_M2':    'MABMM201CNM189S',  # China M2
+    # Rates
+    'US2Y':     'DGS2',
+    'US5Y':     'DGS5',
+    'US10Y':    'DGS10',
+    'US30Y':    'DGS30',
+    'US3M':     'DGS3MO',
+    'TIPS10':   'DFII10',           # 10Y TIPS constant maturity
+    'FED_FUNDS':'FEDFUNDS',
+    'TP_ACM10': 'THREEFYTP10',      # Kim-Wright 10Y TP (FRED proxy for ACM)
+    # Repo / reserves
+    'SOFR':     'SOFR',
+    'IORB':     'IORB',
+    'WRESBAL':  'WRESBAL',
+    'RRP':      'RRPONTSYD',
+    # Vol / credit
+    'VIX':      'VIXCLS',
+    'VXV':      'VXVCLS',
+    'HY_OAS':   'BAMLH0A0HYM2',
+    'IG_OAS':   'BAMLC0A0CM',
+    # Commodities
+    'Gold':     'GOLDAMGBD228NLBM',
+    'WTI':      'DCOILWTICO',
+    'Brent':    'DCOILBRENTEU',
+    # FX
+    'DXY':      'DTWEXBGS',         # trade-weighted USD (broad goods+svcs)
+    # Macro
+    'cpi_lvl':  'CPIAUCSL',
+    'ppi_lvl':  'PPIACO',
+    'umich':    'UMCSENT',
+    'umich_cur':'UMCSENT',
+    'OECD_CLI': 'OECDLOLITOAASTSAM',
+    'GLOBAL_PMI':'GEPUCURRENT',     # global economic policy uncertainty proxy
+    # Labor (atalho pra rate_paradox/macro geral)
+    'US_ISM':   'NAPM',             # ISM manuf PMI
+    'US_ISM_SVC':'NAPMNMI',         # NAO tem no FRED — fallback vazio
+}
+
+
+def _fred_get(series_id: str, years: int = 20) -> pd.Series:
+    """Busca serie do FRED. Retorna vazia se falhar."""
+    if not HAS_FRED or not series_id:
+        return pd.Series(dtype=float)
+    try:
+        start = (datetime.now() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
+        s = fred.get_series(series_id, observation_start=start)
+        if s is None or len(s) == 0:
+            return pd.Series(dtype=float)
+        s.index = pd.to_datetime(s.index)
+        s = pd.to_numeric(s, errors='coerce').dropna()
+        log.info(f'[fred] {series_id}: {len(s)} pts')
+        return s
+    except Exception as e:
+        log.warning(f'[fred] {series_id} fail: {str(e)[:80]}')
+        return pd.Series(dtype=float)
+
+
 # Framework constants
 HOWELL_CYCLE_MONTHS = 60  # 60-65 per §3.4
 LIQ_LEAD_MONTHS = 18      # §3.4: 15-20m default 18
@@ -314,20 +396,36 @@ def _bql_one_field(ticker: str, field, period: str = '-20Y') -> pd.Series:
 def safe_load(ticker: str, field=None, period: str = '-20Y',
                label: str = None) -> pd.Series:
     """
-    Carrega serie com try/except. Retorna Series vazia em falha + log.
+    Carrega serie com try/except. Tenta BQL primeiro; se falhar ou vier vazio,
+    cai no FRED via FRED_ALIASES[label] (se disponivel).
     """
-    if not HAS_BQL:
-        return pd.Series(dtype=float)
-    f = field if field is not None else bq.data.px_last
-    try:
-        s = _bql_one_field(ticker, f, period)
-        if len(s) == 0:
-            log.warning(f'{label or ticker}: serie vazia')
-            return pd.Series(dtype=float)
-        return s
-    except Exception as e:
-        log.warning(f'{label or ticker} fail: {str(e)[:80]}')
-        return pd.Series(dtype=float)
+    result = pd.Series(dtype=float)
+
+    # 1. Tenta BQL
+    if HAS_BQL:
+        f = field if field is not None else bq.data.px_last
+        try:
+            s = _bql_one_field(ticker, f, period)
+            if len(s) > 0:
+                return s
+            log.warning(f'{label or ticker}: BQL vazio')
+        except Exception as e:
+            log.warning(f'{label or ticker} BQL fail: {str(e)[:80]}')
+
+    # 2. Fallback FRED (via label)
+    if HAS_FRED and label:
+        fred_id = FRED_ALIASES.get(label)
+        if fred_id:
+            try:
+                yrs = int(period.replace('-', '').replace('Y', ''))
+            except Exception:
+                yrs = 20
+            s = _fred_get(fred_id, years=min(yrs, 20))
+            if len(s) > 0:
+                log.info(f'[fred fallback] {label} -> {fred_id}')
+                return s
+
+    return result
 
 
 def _clean(s):
