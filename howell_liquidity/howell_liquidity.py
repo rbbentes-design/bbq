@@ -481,6 +481,10 @@ FRED_ALIASES = {
     'NDX':      'NASDAQ100',
     # TGA
     'TGA':      'WDTGAL',
+    # Federal debt (v10 fix — chart_us_capital_demands)
+    'US_FED_DEBT': 'GFDEBTN',      # Total federal debt (quarterly, $M)
+    # GDP
+    'US_GDP':   'GDP',              # US Nominal GDP (quarterly, $Bn)
     # Economic surprise — nao tem no FRED direto (Citi, nao public)
     # Country 10Y via FRED fallback
     'DE10Y':    'IRLTLT01DEM156N',  # Germany long-term gov bond yield
@@ -2394,9 +2398,8 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
 
     # Federal debt level. BBG retorna unidades inconsistentes:
     #   GFDEBTN: as vezes $M (18M+), as vezes $Bn (18K+), as vezes $Tn (18+)
-    #   GDP CUR$: igual
-    # Normaliza AMBOS pra $Bn explicitamente (mesma unidade!)
-    debt = safe_load('GFDEBTN Index', period=period, label='US_FED_DEBT')
+    # Label 'US_FED_DEBT' mapeia pra FRED GFDEBTN se BBG indisponivel.
+    debt = safe_load(['GFDEBTN Index'], period=period, label='US_FED_DEBT')
     gdp = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
                       label='US_GDP')
 
@@ -2428,10 +2431,14 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
             source = 'Federal net issuance 4q / GDP'
 
     if demand is None or len(demand) < 12:
+        import os
+        has_fred = bool(os.environ.get('FRED_API_KEY'))
+        msg = ('GFDEBTN Index indisponivel no BBG.<br>'
+                 + ('FRED fallback configurado — recarregue pra tentar.'
+                      if has_fred else
+                      'Defina FRED_API_KEY no env pra habilitar fallback.'))
         fig.add_annotation(
-            text='GFDEBTN Index indisponivel — fonte primaria.<br>'
-                 'Verifique entitlements BBG ou use FRED GFDEBTN.',
-            xref='paper', yref='paper', x=0.5, y=0.5,
+            text=msg, xref='paper', yref='paper', x=0.5, y=0.5,
             showarrow=False, font=dict(color='#666666', size=11))
         fig.update_yaxes(title_text='%')
         return fig
@@ -2634,24 +2641,45 @@ def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
 
 def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
     """Liquidity/Collateral Imbalance (SOFR-IORB) em BPS, daily.
-    Range tipico +/-20 bps. Danger zone = SOFR acima de IORB."""
+    IORB foi introduzido Jul/2021 — filtramos so dates com ambos validos.
+    Range tipico +/-20 bps."""
     fig = _fig_base('Liquidity / Collateral Imbalance (SOFR-IORB)',
                       height=420)
-    # Forca SOFRRATE (rate) — evita fallback pra SOFR Index que e
-    # nivel compounding (valor ~100-115) que quebra o spread
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
     iorb = safe_load('IORB Index', period=period, label='IORB')
+
+    debug_info = []
     if len(sofr) > 0 and len(iorb) > 0:
-        s = _to_pct(_clean(sofr)).resample('D').last().ffill()
-        i = _to_pct(_clean(iorb)).resample('D').last().ffill()
+        # Limpa zeros e NaN do IORB (pre-2021 nao existia)
+        s_raw = _clean(sofr)
+        i_raw = _clean(iorb)
+        i_raw = i_raw[i_raw != 0]  # drop zeros (dados pre-IORB)
+
+        s = _to_pct(s_raw).resample('D').last().ffill()
+        i = _to_pct(i_raw).resample('D').last().ffill()
+
+        # INNER join — so dates com ambos validos
         s, i = s.align(i, join='inner')
-        # Spread em BPS (pp * 100), escala tipica +/-20
-        spread = (s - i) * 100
-        fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
-                                    name='SOFR − IORB',
-                                    line=dict(color=PALETTE['orange'], width=1.2),
-                                    hovertemplate='%{y:+.1f} bps<extra></extra>'))
-    # Zonas em bps: normal (-10 a 0), danger (>0)
+        # Drop residuais NaN
+        mask = s.notna() & i.notna()
+        s, i = s[mask], i[mask]
+
+        debug_info.append(f'SOFR: {s.min():.2f}-{s.max():.2f}% '
+                            f'(n={len(s)})')
+        debug_info.append(f'IORB: {i.min():.2f}-{i.max():.2f}% '
+                            f'(n={len(i)})')
+
+        if len(s) > 0 and len(i) > 0:
+            spread = (s - i) * 100  # bps
+            debug_info.append(f'Spread: {spread.min():+.1f} a '
+                                f'{spread.max():+.1f} bps')
+            fig.add_trace(go.Scatter(x=spread.index, y=spread.values,
+                                        mode='lines', name='SOFR − IORB',
+                                        line=dict(color=PALETTE['orange'],
+                                                   width=1.2),
+                                        hovertemplate='%{y:+.1f} bps'
+                                                        '<extra></extra>'))
+    # Zonas em bps
     fig.add_hrect(y0=-10, y1=0, fillcolor=PALETTE['grey'],
                    opacity=0.15, layer='below', line_width=0,
                    annotation_text='Normal Zone',
@@ -2663,7 +2691,16 @@ def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
                    annotation_position='top right',
                    annotation_font=dict(color=PALETTE['red'], size=10))
     fig.add_hline(y=0, line=dict(color=PALETTE['red'], width=1.2, dash='dash'))
+
+    # Debug annotation no canto
+    if debug_info:
+        fig.add_annotation(
+            xref='paper', yref='paper', x=0.01, y=-0.18,
+            text=' | '.join(debug_info), showarrow=False,
+            xanchor='left', font=dict(color='#888', size=9, family='monospace'))
+
     fig.update_yaxes(title_text='Basis Points (bps)', range=[-30, 30])
+    fig.update_layout(margin=dict(b=60))
     return fig
 
 
