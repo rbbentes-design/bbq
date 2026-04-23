@@ -416,20 +416,36 @@ class BloombergQueryLayer:
         BASE = ["atm", "put25", "call25", "put10", "call10",
                 "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
         fields = [f"{b}_{t}" for b in BASE for t in TENORS]
-        # Inclui fallback fields (lowercase iv_30d) que existem para SPY/QQQ/etc
-        fallback_fields = ["iv_30d", "iv_60d", "iv_90d", "iv_180d", "atm_iv"]
+        # Inclui fallback fields que existem para SPY/QQQ/etc (vem do greeks dashboard)
+        fallback_fields = ["iv_30d", "iv_60d", "iv_90d", "iv_180d", "atm_iv",
+                           "skew_25d", "total_call_oi", "total_put_oi", "pcr_oi", "pc_oi"]
         all_fields = fields + fallback_fields
         result = self._get_latest_by_fields(all_fields, ticker_filter=ticker)
 
-        # Aplica fallback: se atm_30D faltando, usa iv_30d * 100 (BBG vem em fração)
-        # iv_30d ja vem como decimal (0.20 = 20%), igual atm_30D
+        # Aplica fallback: campos do skew_tails ausentes -> usa equivalentes do greeks dashboard
         for tk, data in result.items():
+            # ATM IV (atm_30D vem da BQuant com prazo, iv_30d vem do greeks_per_ticker)
             if data.get("atm_30D") is None and data.get("iv_30d") is not None:
                 data["atm_30D"] = data["iv_30d"]
             if data.get("atm_90D") is None and data.get("iv_90d") is not None:
                 data["atm_90D"] = data["iv_90d"]
             if data.get("atm_180D") is None and data.get("iv_180d") is not None:
                 data["atm_180D"] = data["iv_180d"]
+            # RR 25d (skew_25d generico do greeks dashboard equivalente a rr_25d_30D)
+            if data.get("rr_25d_30D") is None and data.get("skew_25d") is not None:
+                data["rr_25d_30D"] = data["skew_25d"]
+            # Put skew aproximado: 1 + skew_25d/atm_iv (skew positivo = puts mais caras)
+            if data.get("put_skew_30D") is None and data.get("skew_25d") is not None and data.get("iv_30d"):
+                try:
+                    data["put_skew_30D"] = 1.0 + float(data["skew_25d"]) / float(data["iv_30d"])
+                except Exception:
+                    pass
+            # Call skew aproximado: 1 - skew_25d/atm_iv
+            if data.get("call_skew_30D") is None and data.get("skew_25d") is not None and data.get("iv_30d"):
+                try:
+                    data["call_skew_30D"] = 1.0 - float(data["skew_25d"]) / float(data["iv_30d"])
+                except Exception:
+                    pass
         return result
 
     def get_positioning_models(self, ticker: str | None = None) -> dict[str, dict[str, Any]]:

@@ -1,0 +1,90 @@
+{
+  "name": "Krishnamurthy VIX × VRS Quadrant (CMT JOTA 71)",
+  "version": "1.0",
+  "source": "Krishnamurthy CMT — JOTA 71 paper (Journal of Technical Analysis)",
+  "description": "4-regime framework para timing de entrada long em SPX combinando VIX e VRS (Variance from Reference Structure). VRS = spread_atual - spread_referencia, onde spread = VIX3M-VIX (ou VIX6M-VIX).",
+  "lenses": [
+    {
+      "id": "vix_vrs_regime1",
+      "tags": ["options", "vol_regime", "entry_timing", "vix_vrs"],
+      "name": "Regime 1 — Contango Normal, Bull OK",
+      "trigger": "VIX < threshold AND VRS < 0",
+      "regime_quadrant": "R1",
+      "interpretation": "VIX abaixo do threshold + VRS abaixo de 0. Term structure em contango saudavel. Historicamente regime de rally sustentavel. Medo baixo, curva normal.",
+      "action": "Manter long exposure. Pode vender theta via credit spreads OTM — mercado nao esta pagando premium extra por caudas.",
+      "structures": [
+        "Bull Put Credit Spread OTM",
+        "Covered Call conservador",
+        "Long equity com collar largo"
+      ],
+      "contrarian": "Parece que o momento de entrar eh durante VIX spike; paper mostra que R1 eh regime MAIS rentavel para holders.",
+      "confidence_boost": 2,
+      "historical_stats": "Segundo paper Krishnamurthy JOTA 71: R1 representa maioria do tempo em bull markets, retornos medios SPX 5d positivos."
+    },
+    {
+      "id": "vix_vrs_regime2",
+      "tags": ["options", "vol_regime", "entry_timing", "vix_vrs"],
+      "name": "Regime 2 — Divergencia = ENTRY Signal (sinal raro)",
+      "trigger": "VIX > threshold AND VRS < 0",
+      "regime_quadrant": "R2",
+      "interpretation": "VIX spike ACIMA do threshold MAS term structure AINDA em contango. Paper: historicamente o MELHOR sinal de entrada durante correcoes <10%. Medo concentrado no curto, nao sistemico.",
+      "action": "Entry point tactico. Comprar o dip com bull put spread credit (captura o premium inflado do spike). Se manteve contango, high prob de reversao para R1.",
+      "structures": [
+        "Bull Put Credit Spread (premium inflado)",
+        "Long SPY/SPX com ATM call",
+        "Debit spread bullish",
+        "Iron Condor assimetrico pro lado bull"
+      ],
+      "contrarian": "Medo assusta — paper mostra que justamente esse eh o setup mais rentavel historicamente. Maioria dos investidores vende aqui.",
+      "confidence_boost": 3,
+      "historical_stats": "Paper: retorno medio 5d positivo e estatisticamente significativo, com Sharpe > 1.5 vs R3 (sharpe negativo). Setup raro (<10% dos dias)."
+    },
+    {
+      "id": "vix_vrs_regime3",
+      "tags": ["options", "vol_regime", "risk_off", "vix_vrs"],
+      "name": "Regime 3 — Backwardation = BEAR",
+      "trigger": "VIX > threshold AND VRS > 0",
+      "regime_quadrant": "R3",
+      "interpretation": "VIX spike ACIMA do threshold + term structure em BACKWARDATION (curva invertida). Medo sistemico. Historicamente pior regime para long — drawdowns maiores e sustentados.",
+      "action": "Reduzir exposure long. Considerar hedges com put debit spreads ou puts outright. NAO comprar o dip neste regime — a curva esta dizendo que o stress eh real.",
+      "structures": [
+        "Put Debit Spread OTM",
+        "Long VIX calls proximas",
+        "Covered Put / Bear Call Spread",
+        "Collar com put ITM"
+      ],
+      "contrarian": "Parece oportunidade — paper mostra que eh justamente a armadilha. Backwardation indica stress estrutural, nao ruido.",
+      "confidence_boost": 2,
+      "historical_stats": "Paper: retornos medios 5d negativos, vol realizada sobe, dispersion pico. Nao eh hora de pegar faca caindo."
+    },
+    {
+      "id": "vix_vrs_regime4",
+      "tags": ["options", "vol_regime", "anomaly", "vix_vrs"],
+      "name": "Regime 4 — RARO (backwardation sem spike)",
+      "trigger": "VIX < threshold AND VRS > 0",
+      "regime_quadrant": "R4",
+      "interpretation": "VIX BAIXO mas term structure em BACKWARDATION. Configuracao anomala: mercado calmo com curva invertida. Geralmente transicional — R4 raramente persiste.",
+      "action": "Cautela. Geralmente precede transicao para R3 (VIX explode) ou volta a R1 (curva normaliza). Posicoes neutras, straddles curtos com teto de risco.",
+      "structures": [
+        "Short Straddle com wings (iron butterfly)",
+        "Long Vega via calendar",
+        "Reducao de alavancagem"
+      ],
+      "contrarian": "Backwardation eh o sinal estrutural — VIX eventualmente alcanca a curva.",
+      "confidence_boost": 1,
+      "historical_stats": "Paper: <5% dos dias. Resultados mistos — depende se resolve pra R1 ou R3."
+    }
+  ],
+  "core_mechanism": {
+    "formula_vrs": "VRS = spread_atual - spread_medio_referencia",
+    "spread_def": "spread = VIX6M - VIX (preferencial) ou VIX3M - VIX (fallback)",
+    "vix_threshold": "Mediana movel ou valor fixo (~17-20). Paper usa ~17-18.",
+    "vrs_threshold": "Zero (spread atual == spread medio referencia)",
+    "reference_window": "Historico de 1-2 anos para calcular spread medio"
+  },
+  "use_cases": [
+    "Timing de entrada long em SPX durante correcoes",
+    "Identificar setups bear estruturais (R3) vs transicionais (R2)",
+    "Scorecard de regime diario para posicionamento"
+  ]
+}

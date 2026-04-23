@@ -2704,7 +2704,18 @@ def generate_macro_desk_v2_html(
             '</div>'
         )
 
-    # FlowPatrol panel — insights + charts do SpotGamma (no TOPO da aba Opcoes)
+    # VIX × VRS Quadrant (Krishnamurthy JOTA 71) — topo da aba Opcoes
+    vix_vrs_panel = ""
+    try:
+        from app.analysis.vix_vrs_regime import compute_vix_vrs_regime, load_vix_history_from_db
+        from app.analysis.vix_vrs_chart import render_vix_vrs_panel
+        hist_df = load_vix_history_from_db(days=365)
+        vvrs = compute_vix_vrs_regime(history_df=hist_df)
+        vix_vrs_panel = render_vix_vrs_panel(vvrs)
+    except Exception as _exc_vv:
+        _log.warning("vix_vrs_panel_failed", error=str(_exc_vv)[:120])
+
+    # FlowPatrol panel — insights + charts do SpotGamma
     try:
         from app.analysis.flow_patrol_parser import parse_flow_patrol
         from app.analysis.flow_patrol_charts import render_flow_patrol_panel
@@ -2721,6 +2732,11 @@ def generate_macro_desk_v2_html(
                 options_tab_html = fp_wrapped + options_tab_html
     except Exception as _exc_fp:
         _log.warning("flow_patrol_panel_failed", error=str(_exc_fp)[:100])
+
+    # Injeta VIX × VRS ACIMA do FlowPatrol (topo absoluto)
+    if vix_vrs_panel:
+        vvrs_wrapped = f'<div style="padding:20px 24px 0">{vix_vrs_panel}</div>'
+        options_tab_html = vvrs_wrapped + options_tab_html
 
     top_hubs = mst_meta.get("top_hubs") or []
     hubs_str = ", ".join(f"{t}({d})" for t, d in top_hubs[:3]) if top_hubs else "—"
