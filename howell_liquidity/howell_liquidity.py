@@ -1600,15 +1600,15 @@ def chart_04_cyc_def(cyc: dict) -> 'go.Figure':
 
 def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
     """
-    Net Fed Liquidity: FARBAST - RRP*1000 - TGA*1000
+    Net Fed Liquidity = Fed BS - RRP - TGA (todos em $M, exibidos em $Bn).
     LEFT axis: NFL (USD bn, area laranja principal).
-    RIGHT axis: YoY% change do NFL (sinaliza aceleracao/desaceleracao).
-    Drenos (RRP, TGA) em legendonly por default pra nao poluir.
+    RIGHT axis: YoY% change do NFL.
     """
     fig = _fig_dual('Chart 5b — Net Fed Liquidity (Fed BS − RRP − TGA)',
                       height=420)
     if 'nfl_series' in nfl:
-        n = _clean(nfl['nfl_series'])
+        # $M -> $Bn (divide por 1000)
+        n = _clean(nfl['nfl_series']) / 1000
         fig.add_trace(go.Scatter(x=n.index, y=n.values, mode='lines',
                                     name='Net Fed Liquidity',
                                     line=dict(color=PALETTE['orange'], width=2.5),
@@ -1625,25 +1625,25 @@ def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
                                                dash='dot'),
                                     hovertemplate='%{y:+.1f}%<extra></extra>'),
                         secondary_y=True)
-    # Componentes em legendonly
+    # Componentes em legendonly (tambem em $Bn)
     if 'fed_bs' in nfl and len(nfl.get('fed_bs', [])) > 0:
-        b = _clean(nfl['fed_bs'])
+        b = _clean(nfl['fed_bs']) / 1000
         fig.add_trace(go.Scatter(x=b.index, y=b.values, mode='lines',
                                     name='Fed BS (FARBAST)',
                                     line=dict(color=PALETTE['blue'], width=1.2),
                                     visible='legendonly'),
                         secondary_y=False)
     if 'rrp' in nfl and len(nfl.get('rrp', [])) > 0:
-        r = _clean(nfl['rrp']) * 1000
+        r = _clean(nfl['rrp']) / 1000
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
-                                    name='RRP × 1000 (drain)',
+                                    name='RRP (drain)',
                                     line=dict(color=PALETTE['red'], width=1.2),
                                     visible='legendonly'),
                         secondary_y=False)
     if 'tga' in nfl and len(nfl.get('tga', [])) > 0:
-        t = _clean(nfl['tga']) * 1000
+        t = _clean(nfl['tga']) / 1000
         fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
-                                    name='TGA × 1000 (drain)',
+                                    name='TGA (drain)',
                                     line=dict(color=PALETTE['purple'], width=1.2),
                                     visible='legendonly'),
                         secondary_y=False)
@@ -1662,25 +1662,27 @@ def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
 
 
 def chart_05_stimulus(liq: dict, period: str = '-10Y') -> 'go.Figure':
-    """Ch 5: Stimulus decomp (Fed QE / Not-QE / Treasury QE)."""
+    """Ch 5: Stimulus decomp (Fed QE / Not-QE / Treasury QE). Em $Bn."""
     fig = _fig_base('Chart 5 — Fed Stimulus Decomposition (Reserves, RRP, Treasury)')
     rates_repo = load_group(TICKERS_REPO, period)
+    # Todos em $M no BBG -> converte pra $Bn (/1000)
     if 'WRESBAL' in rates_repo:
-        r = _clean(rates_repo['WRESBAL'])
+        r = _to_millions(_clean(rates_repo['WRESBAL'])) / 1000
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
                                     name='Reserve Balances',
                                     line=dict(color=PALETTE['orange'], width=2)))
     if 'RRP' in rates_repo:
-        rr = _clean(rates_repo['RRP'])
+        rr = _to_millions(_clean(rates_repo['RRP'])) / 1000
         fig.add_trace(go.Scatter(x=rr.index, y=rr.values, mode='lines',
                                     name='ON RRP',
                                     line=dict(color=PALETTE['red'], width=1.5)))
     if 'cb_sum' in liq and liq['cb_sum'] is not None:
-        c = _clean(liq['cb_sum'])
+        c = _to_millions(_clean(liq['cb_sum'])) / 1000
         fig.add_trace(go.Scatter(x=c.index, y=c.values, mode='lines',
                                     name='CB Total (Fed+ECB+BoJ+…)',
                                     line=dict(color=PALETTE['beige'], width=1.5,
                                                dash='dot')))
+    fig.update_yaxes(title_text='US$ Billions')
     return fig
 
 
@@ -2116,45 +2118,51 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
 
 
 def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
-    """US Fed & US Treasury: All Stimulus — stacked area 3-tier."""
+    """US Fed & US Treasury: All Stimulus — stacked area 3-tier em TRILLIONS.
+    GLI usa 52w change (YoY) em US$ Trillions. Stock range 4-9T,
+    YoY change range -2T a +5T.
+    """
     fig = _fig_base('US Fed & US Treasury: All Stimulus', height=440)
-    # Tier 1 (preto) = Treasury 'QE' (bill issuance delta) = aprox via TGA reduction
-    # Tier 2 (vermelho) = Fed QE-plus = Fed securities 13w change
-    # Tier 3 (laranja) = Not-QE,QE = Reserve Management / emergency
-    # Simplificacao: usa componentes do NFL
+    # Tier 1 (preto) = Treasury 'QE' via -ΔTGA
+    # Tier 2 (vermelho) = Fed QE-plus = Fed securities 52w change
+    # Tier 3 (laranja) = Not-QE,QE = -ΔRRP (RRP drain = liquidez)
     if 'fed_bs' not in nfl or len(nfl.get('fed_bs', [])) == 0:
         fig.add_annotation(text='Fed BS ausente', xref='paper', yref='paper',
                             x=0.5, y=0.5, showarrow=False,
                             font=dict(color=PALETTE['muted']))
         return fig
 
-    fed = _clean(nfl['fed_bs']).diff(13)  # 13w change = QE impulse
+    # Todos os 3 em $M (apos fix NFL). Converte pra $T dividindo por 1e6.
+    # Usa YoY (52w) que e o que o GLI plota (range -2T a +5T, pico COVID ~6T)
+    fed = _clean(nfl['fed_bs']).diff(52) / 1e6
     rrp = _clean(nfl.get('rrp', pd.Series()))
     tga = _clean(nfl.get('tga', pd.Series()))
 
-    # Stack: fed_bs_change (red), -rrp_change (orange = liquidity returning), -tga_change (black)
-    if len(rrp) > 13:
-        not_qe = -rrp.diff(13) * 1000  # RRP shrinking = liquidity +
+    if len(rrp) > 52:
+        not_qe = -rrp.diff(52) / 1e6  # RRP shrinking = liquidity +, em $T
         fig.add_trace(go.Scatter(x=not_qe.index, y=not_qe.values, mode='lines',
                                     name='Not-QE,QE (−ΔRRP)',
                                     line=dict(color=PALETTE['orange'], width=0),
                                     stackgroup='stim',
-                                    fillcolor='rgba(232,116,44,0.6)'))
+                                    fillcolor='rgba(232,116,44,0.6)',
+                                    hovertemplate='$%{y:+.2f}T<extra></extra>'))
     fig.add_trace(go.Scatter(x=fed.index, y=fed.values, mode='lines',
-                                name='Fed QE-plus (13w ΔBS)',
+                                name='Fed QE-plus (52w ΔBS)',
                                 line=dict(color=PALETTE['red'], width=0),
                                 stackgroup='stim',
-                                fillcolor='rgba(214,69,69,0.6)'))
-    if len(tga) > 13:
-        treas_qe = -tga.diff(13) * 1000  # TGA shrinking = liquidity +
+                                fillcolor='rgba(214,69,69,0.6)',
+                                hovertemplate='$%{y:+.2f}T<extra></extra>'))
+    if len(tga) > 52:
+        treas_qe = -tga.diff(52) / 1e6  # TGA shrinking = liquidity +, em $T
         fig.add_trace(go.Scatter(x=treas_qe.index, y=treas_qe.values,
                                     mode='lines',
                                     name="Treasury 'QE' (−ΔTGA)",
                                     line=dict(color='#000000', width=0),
                                     stackgroup='stim',
-                                    fillcolor='rgba(0,0,0,0.7)'))
+                                    fillcolor='rgba(0,0,0,0.7)',
+                                    hovertemplate='$%{y:+.2f}T<extra></extra>'))
 
-    fig.update_yaxes(title_text='US$ Duration in Billions (13w Δ)')
+    fig.update_yaxes(title_text='US$ Trillions (YoY Δ)')
     fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=1))
     _add_recession_shading(fig)
     return fig
