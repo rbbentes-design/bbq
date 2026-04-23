@@ -980,27 +980,110 @@ def build_net_fed_liquidity(period: str = '-20Y') -> dict:
 
 def build_global_liquidity(period: str = '-20Y') -> dict:
     """
-    Global Liquidity Index (§3.3). CB + Retail Bank Credit + Repo + Shadow.
-    Retorna: series, YoY%, 10y z, fit sine, contribuicao CB vs Private.
+    Global Liquidity Index (§3.3). CB + Retail Bank Credit.
+    Bugfix: converte cada serie pra USD TRILLIONS via FX + scale detection
+    em vez de somar raw (que misturava \$M, €M, ¥100M, etc).
+    Target: total_usd deve ficar ~120-160 \$T matching GLI real.
     """
     log.info('[liquidity] carregando CBs + bank credit...')
     cbs = load_group(TICKERS_CB, period)
     bank = load_group(TICKERS_BANK_CREDIT, period)
     repo = load_group(TICKERS_REPO, period)
 
-    # USD-sum (assume que todos ja sao em USD ou reasonable proxy)
+    # Carrega FX pra converter unidades locais -> USD
+    # Usa spot mais recente (aproximacao: nao reflete FX historico exato
+    # mas suficiente pra escala do total_usd em \$T)
+    fx_raw = load_group({
+        'EUR': 'EUR Curncy', 'JPY': 'JPY Curncy', 'GBP': 'GBP Curncy',
+        'CAD': 'CAD Curncy', 'CNY': 'CNY Curncy', 'AUD': 'AUD Curncy',
+        'CHF': 'CHF Curncy', 'BRL': 'BRL Curncy', 'MXN': 'MXN Curncy',
+        'KRW': 'KRW Curncy', 'TWD': 'TWD Curncy',
+    }, period='-5Y')
+    fx_latest = {}
+    for k, s in fx_raw.items():
+        c = _clean(s)
+        if len(c) > 0:
+            fx_latest[k] = float(c.iloc[-1])
+
+    # Mapa: ticker -> (currency, usd_per_unit_multiplier)
+    # EUR/GBP: cotacao direta (X USD por 1 EUR/GBP)
+    # JPY/CNY/etc: cotacao invertida (X LCY por 1 USD), usa 1/fx
+    # Scale multiplier converte unidade local pra USD-unit-equivalent
+    def _to_usd_trillions(series: pd.Series, ticker: str) -> pd.Series:
+        """Converte qualquer CB/M2 series pra USD trillions."""
+        s = _clean(series).resample('M').last()
+        if len(s) == 0:
+            return s
+        med = abs(s.median())
+
+        # Conversao USD/LCY
+        fx_rate_usd = 1.0  # default USD
+        tkup = ticker.upper()
+        if 'EBBSTOTA' in tkup or 'ECMSM2' in tkup or 'ECORUKN' in tkup:
+            fx_rate_usd = fx_latest.get('EUR', 1.08)  # EUR->USD direto
+        elif 'BJACTOTL' in tkup or 'JMNSM2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('JPY', 150)  # JPY->USD
+        elif 'B111B56A' in tkup or 'UKMSM4' in tkup or 'LTSBBANX' in tkup:
+            fx_rate_usd = fx_latest.get('GBP', 1.26)
+        elif 'BOC2LICA' in tkup or 'MSCAM2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('CAD', 1.37)
+        elif 'CNBMTTAS' in tkup or 'CNMSM2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('CNY', 7.15)
+        elif 'AUM3' in tkup:
+            fx_rate_usd = fx_latest.get('AUD', 0.66)
+        elif 'SZMSM2' in tkup:
+            fx_rate_usd = fx_latest.get('CHF', 1.12)
+        elif 'BZMS2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('BRL', 5.0)
+        elif 'MXMS2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('MXN', 17)
+        elif 'KOMSM2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('KRW', 1350)
+        elif 'TWMSM2' in tkup:
+            fx_rate_usd = 1.0 / fx_latest.get('TWD', 32)
+
+        # Converte pra USD
+        s_usd = s * fx_rate_usd
+
+        # Scale detection — converte pra TRILLIONS
+        # JPY BJACTOTL vem em ¥億 (100M units): 760,000 unidades × 100M = ¥76T
+        # (depois FX ~$507B = 0.5T). Ja convertido acima.
+        med_usd = abs(s_usd.median())
+        if med_usd > 1e9:     # unidades = $ (raw dollars)
+            return s_usd / 1e12
+        if med_usd > 1e6:     # unidades = $M ou similar
+            return s_usd / 1e6
+        if med_usd > 1e3:     # unidades = $Bn
+            return s_usd / 1e3
+        return s_usd          # ja em $T (ou proximo)
+
+    # Soma CBs em $T
     all_cb_sum = None
+    cb_breakdown = {}
     for k, s in cbs.items():
-        s_m = _clean(s).resample('M').last()
-        all_cb_sum = s_m if all_cb_sum is None else all_cb_sum.add(s_m, fill_value=0)
+        ticker = TICKERS_CB.get(k, [k])
+        tk_str = ticker[0] if isinstance(ticker, list) else ticker
+        s_t = _to_usd_trillions(s, tk_str)
+        if len(s_t) > 0:
+            cb_breakdown[k] = float(s_t.iloc[-1])
+        all_cb_sum = s_t if all_cb_sum is None else \
+                      all_cb_sum.add(s_t, fill_value=0)
 
+    # Soma bank credit em $T
     all_bank_sum = None
+    bank_breakdown = {}
     for k, s in bank.items():
-        s_m = _clean(s).resample('M').last()
-        all_bank_sum = s_m if all_bank_sum is None else \
-                       all_bank_sum.add(s_m, fill_value=0)
+        ticker = TICKERS_BANK_CREDIT.get(k, [k])
+        tk_str = ticker[0] if isinstance(ticker, list) else ticker
+        s_t = _to_usd_trillions(s, tk_str)
+        if len(s_t) > 0:
+            bank_breakdown[k] = float(s_t.iloc[-1])
+        all_bank_sum = s_t if all_bank_sum is None else \
+                        all_bank_sum.add(s_t, fill_value=0)
 
-    # Total liquidity USD (proxy)
+    log.info(f'[liquidity] CB breakdown (latest $T): {cb_breakdown}')
+    log.info(f'[liquidity] Bank breakdown (latest $T): {bank_breakdown}')
+
     total = pd.DataFrame({'cb': all_cb_sum, 'bank': all_bank_sum}).dropna(how='all')
     if total.empty or len(total) < 24:
         return {'error': 'dados de liquidity insuficientes',
@@ -1022,7 +1105,7 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
           {'error': 'curta'}
 
     return {
-        'total_usd': total['total'],
+        'total_usd': total['total'],       # ja em USD trillions agora
         'cb_sum': total['cb'],
         'bank_sum': total['bank'],
         'yoy_pct': liq_yoy,
@@ -1034,6 +1117,13 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
         'latest_yoy': float(liq_yoy.iloc[-1]) if len(liq_yoy) else None,
         'latest_z': float(liq_z.iloc[-1]) if len(liq_z.dropna()) else None,
         'latest_slope_3m': float(slope_3m.iloc[-1]) if len(slope_3m.dropna()) else None,
+        '_debug': {
+            'cb_breakdown_T': cb_breakdown,
+            'bank_breakdown_T': bank_breakdown,
+            'total_latest_T': float(total['total'].iloc[-1])
+                                 if len(total) else None,
+            'fx_used': fx_latest,
+        },
     }
 
 
@@ -3149,23 +3239,16 @@ def chart_msci_vs_global_liq(liq: dict, period: str = '-15Y') -> 'go.Figure':
                                     line=dict(color='#000000', width=1.4)),
                         secondary_y=False)
     if 'total_usd' in liq:
-        raw = _clean(liq['total_usd'])
-        med = abs(raw.median())
-        # Auto-scale pra trillions
-        if med > 1e7:
-            gl = raw / 1e6  # raw em $M -> $T
-            scale_note = '$M raw /1e6'
-        elif med > 1e4:
-            gl = raw / 1e3  # raw em $Bn -> $T
-            scale_note = '$Bn raw /1e3'
-        elif med > 10:
-            gl = raw         # ja em $T
-            scale_note = 'raw em $T'
-        else:
-            gl = raw * 1e3  # serie normalizada/z, scale up (aproximado)
-            scale_note = 'raw pequeno x1e3'
-        debug_info.append(f'Liq raw median={med:.0f} -> {scale_note} '
-                            f'-> {gl.min():.1f}-{gl.max():.1f}T')
+        # Apos fix em build_global_liquidity, total_usd ja esta em $T
+        gl = _clean(liq['total_usd'])
+        dbg = liq.get('_debug', {})
+        debug_info.append(f'Liq total: ${gl.min():.1f}T-${gl.max():.1f}T '
+                            f'(latest: ${gl.iloc[-1]:.1f}T)')
+        if dbg.get('cb_breakdown_T'):
+            top3 = sorted(dbg['cb_breakdown_T'].items(),
+                            key=lambda x: -x[1])[:3]
+            cb_str = ', '.join(f'{k}=${v:.1f}T' for k, v in top3)
+            debug_info.append(f'CB top3: {cb_str}')
         fig.add_trace(go.Scatter(x=gl.index, y=gl.values, mode='lines',
                                     name='Global Liquidity',
                                     line=dict(color=PALETTE['orange'],
