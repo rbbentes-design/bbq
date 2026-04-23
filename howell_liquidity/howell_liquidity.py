@@ -1795,9 +1795,11 @@ def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
     """
     fig = _fig_dual('Chart 5b — Net Fed Liquidity (Fed BS − RRP − TGA)',
                       height=420)
+    debug_info = []
     if 'nfl_series' in nfl:
         # $M -> $Bn (divide por 1000)
         n = _clean(nfl['nfl_series']) / 1000
+        debug_info.append(f'NFL: ${n.min():,.0f}-${n.max():,.0f}bn')
         fig.add_trace(go.Scatter(x=n.index, y=n.values, mode='lines',
                                     name='Net Fed Liquidity',
                                     line=dict(color=PALETTE['orange'], width=2.5),
@@ -1847,6 +1849,7 @@ def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
                       title_font=dict(color=PALETTE['beige']),
                       tickfont=dict(color=PALETTE['beige']),
                       showgrid=False)
+    _debug_annotation(fig, debug_info, y_pos=-0.18)
     return fig
 
 
@@ -1926,17 +1929,25 @@ def chart_08_term_premium(tp: dict) -> 'go.Figure':
     """Ch 8: US 10Y decomp — level vs term premium."""
     fig = _fig_base('Chart 8 — US 10Y Decomposition (Yield vs ACM Term Premium)',
                      chart_id='chart_08')
+    debug_info = []
     if 'us10y' in tp and tp['us10y'] is not None:
         y = _to_pct(_clean(tp['us10y']))
-        fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
-                                    name='US 10Y Yield',
-                                    line=dict(color=PALETTE['orange'], width=2)))
+        if len(y):
+            debug_info.append(f'10Y: {y.min():.2f}-{y.max():.2f}%')
+            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
+                                        name='US 10Y Yield',
+                                        line=dict(color=PALETTE['orange'],
+                                                   width=2)))
     if 'us10y_tp' in tp and tp.get('us10y_tp') is not None:
         t = _to_pct(_clean(tp['us10y_tp']))
-        fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
-                                    name='ACM 10Y Term Premium',
-                                    line=dict(color=PALETTE['red'], width=1.8)))
+        if len(t):
+            debug_info.append(f'TP: {t.min():+.2f}-{t.max():+.2f}pp')
+            fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
+                                        name='ACM 10Y Term Premium',
+                                        line=dict(color=PALETTE['red'],
+                                                   width=1.8)))
     fig.update_yaxes(title_text='Percent')
+    _debug_annotation(fig, debug_info, y_pos=-0.20)
     return fig
 
 
@@ -2388,8 +2399,15 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
     rrp = _clean(nfl.get('rrp', pd.Series()))
     tga = _clean(nfl.get('tga', pd.Series()))
 
+    debug_info = []
+    if len(fed.dropna()) > 0:
+        debug_info.append(f'Fed BS ΔYoY: ${fed.min():+.2f}T a '
+                            f'${fed.max():+.2f}T')
+
     if len(rrp) > 52:
         not_qe = -rrp.diff(52) / 1e6
+        debug_info.append(f'-ΔRRP: ${not_qe.min():+.2f}T a '
+                            f'${not_qe.max():+.2f}T')
         fig.add_trace(go.Scatter(x=not_qe.index, y=not_qe.values, mode='lines',
                                     name='Not-QE,QE (−ΔRRP)',
                                     line=dict(color=PALETTE['orange'], width=0),
@@ -2404,6 +2422,8 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
                                 hovertemplate='$%{y:+.2f}T<extra></extra>'))
     if len(tga) > 52:
         treas_qe = -tga.diff(52) / 1e6
+        debug_info.append(f'-ΔTGA: ${treas_qe.min():+.2f}T a '
+                            f'${treas_qe.max():+.2f}T')
         fig.add_trace(go.Scatter(x=treas_qe.index, y=treas_qe.values,
                                     mode='lines',
                                     name="Treasury 'QE' (−ΔTGA)",
@@ -2415,6 +2435,7 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
     fig.update_yaxes(title_text='US$ Trillions (YoY Δ)')
     fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=1))
     _add_recession_shading(fig)
+    _debug_annotation(fig, debug_info, y_pos=-0.20)
     return fig
 
 
@@ -2452,17 +2473,22 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
 
     demand = None
     source = None
+    debug_info = []
     if len(debt) > 12 and len(gdp) > 12:
         d = _to_bn(_clean(debt).resample('Q').last())
         g = _to_bn(_clean(gdp).resample('Q').last())
         d, g = d.align(g, join='inner')
         if len(d) > 12:
-            # Net issuance 4q / GDP trailing 4q (ambos $Bn)
             net_issue = d.diff(4)
             gdp_4q = g.rolling(4, min_periods=2).mean()
             demand = (net_issue / gdp_4q) * 100
             demand = _clean(demand.dropna())
             source = 'Federal net issuance 4q / GDP'
+            debug_info.append(f'Debt: ${d.min():,.0f}-${d.max():,.0f}bn')
+            debug_info.append(f'GDP: ${g.min():,.0f}-${g.max():,.0f}bn')
+            if len(demand):
+                debug_info.append(f'Demand: {demand.min():+.1f}%-'
+                                    f'{demand.max():+.1f}%')
 
     if demand is None or len(demand) < 12:
         import os
@@ -2512,6 +2538,7 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
                                      dash='dot'),
                    annotation_text='Stress threshold (GFC/COVID)',
                    annotation_font=dict(color=PALETTE['red'], size=9))
+    _debug_annotation(fig, debug_info, y_pos=-0.20)
     return fig
 
 
@@ -2571,6 +2598,7 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
     r_pct = r_pct.replace([np.inf, -np.inf], np.nan).dropna()
     # Winsorize pelos percentis 1-99 (tira spikes de dado ruim)
     q_lo, q_hi = r_pct.quantile([0.01, 0.99])
+    r_pct_raw_range = (float(r_pct.min()), float(r_pct.max()))
     r_pct = r_pct.clip(q_lo, q_hi)
 
     # Re-centra em 200% usando mediana da serie inteira
@@ -2578,6 +2606,12 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
     r_adj = r_pct - center + 200
     # Clip final pro range alvo [155, 255] — visual match GLI
     r_adj = r_adj.clip(155, 255)
+
+    debug_info = [
+        f'Ratio raw: {r_pct_raw_range[0]:.1f}-{r_pct_raw_range[1]:.1f}%',
+        f'Median anchor: {center:.1f}%',
+        f'Plotted: {r_adj.min():.1f}-{r_adj.max():.1f}%',
+    ]
 
     y_min, y_max = 150.0, 260.0
 
@@ -2628,6 +2662,7 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
                       ticksuffix='%', dtick=10, autorange=False)
     fig.update_xaxes(title_text='', type='date')
     fig.update_layout(showlegend=False)
+    _debug_annotation(fig, debug_info, y_pos=-0.12)
     return fig
 
 
@@ -2798,8 +2833,9 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
     ]
 
     any_plotted = False
+    debug_info = []
     for label, tk, ylbl, pol_tks, color, dashed in countries:
-        y = safe_load(tk, period='-6Y', label=ylbl)  # 6y pra ter historia
+        y = safe_load(tk, period='-6Y', label=ylbl)
         if len(y) < 30:
             continue
         y_d = _to_pct(_clean(y).resample('D').last().ffill())
@@ -2813,13 +2849,10 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
         if len(y_d) < 100:
             continue
 
-        # Spread bruto (em pp)
         spread = (y_d - p_d)
-        # Demean: subtrai media rolling 3y (750 dias) — aprox TP do mercado
         mean_3y = spread.rolling(750, min_periods=250).mean()
         tp = spread - mean_3y
         tp = _clean(tp.dropna())
-        # Filtra so o periodo de interesse final (ultimos 3 anos)
         cutoff = tp.index.max() - pd.DateOffset(years=3) if len(tp) else None
         if cutoff is not None:
             tp = tp[tp.index >= cutoff]
@@ -2827,12 +2860,25 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
         if len(tp) < 30:
             continue
 
+        # Sanity filter: TP demeaned NAO deve passar de +/-5 pp
+        # Se passa, ha bug de unidade nao detectado -> skip esse pais
+        if abs(tp.max()) > 10 or abs(tp.min()) > 10:
+            debug_info.append(f'{label}: SKIP (tp range '
+                                f'{tp.min():.1f}..{tp.max():.1f} suspeito; '
+                                f'y max={y_d.max():.2f}, p max={p_d.max():.2f})')
+            continue
+
+        debug_info.append(f'{label}: y={y_d.iloc[-1]:.2f}%, '
+                            f'p={p_d.iloc[-1]:.2f}%, '
+                            f'tp={tp.iloc[-1]:+.2f}pp')
+
         dash = 'dash' if dashed else 'solid'
         fig.add_trace(go.Scatter(x=tp.index, y=tp.values, mode='lines',
                                     name=label,
                                     line=dict(color=color, width=1.4,
                                                dash=dash),
-                                    hovertemplate=f'{label}: %{{y:+.2f}}pp<extra></extra>'))
+                                    hovertemplate=f'{label}: %{{y:+.2f}}pp'
+                                                    '<extra></extra>'))
         any_plotted = True
 
     if not any_plotted:
@@ -2841,7 +2887,9 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
                             showarrow=False, font=dict(color='#666666'))
     _add_zero_line(fig)
     fig.update_yaxes(title_text='Implied Term Premia 10-Year Bond '
-                                  '(demeaned vs 3y avg)')
+                                  '(demeaned vs 3y avg)',
+                      range=[-1.5, 1.5])
+    _debug_annotation(fig, debug_info[:4], y_pos=-0.22)  # max 4 pra caber
     return fig
 
 
