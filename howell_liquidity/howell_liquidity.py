@@ -1,8 +1,7 @@
 """
-howell_liquidity.py — Howell Two-Agent Liquidity Framework (v4)
+howell_liquidity.py — Two-Agent Liquidity Framework (v4)
 ================================================================
-Single-file BQuant module implementando o framework de Michael Howell
-(CrossBorder Capital). Segue o padrao de session_stats.py:
+Single-file BQuant module. Segue o padrao de session_stats.py:
 - BQL + ipywidgets + plotly
 - Degradacao graciosa por ticker
 - Output + ZIP export com state.json + memo.md + figs PNG
@@ -1184,8 +1183,7 @@ def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figu
     """Ch 1: Global Liquidity vs Real Economy + sine-wave fit."""
     fig = make_subplots(specs=[[{'secondary_y': True}]])
     fig.update_layout(template=DASH_TEMPLATE, height=420,
-                       title=f"Chart 1 — Global Liquidity YoY vs Real Economy "
-                             f"(Proxy — not CrossBorder Capital's proprietary index)")
+                       title='Chart 1 — Global Liquidity YoY vs Real Economy')
 
     if 'yoy_pct' in liq:
         s = _clean(liq['yoy_pct'])
@@ -1231,13 +1229,68 @@ def chart_02_wbci(wbci: dict) -> 'go.Figure':
     return fig
 
 
-def chart_03_ai_nowcast_stub() -> 'go.Figure':
-    """Ch 3: AI Global Growth Nowcast — STUB (requires training pipeline)."""
-    fig = _fig_base('Chart 3 — AI Global Growth Nowcast (STUB)')
-    fig.add_annotation(text='ML nowcast module — implementar com HistGBR/XGBoost '
-                              'sobre predictors (DXY, BCOM, spreads). Stub pra agora.',
-                        xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
-                        font=dict(color=PALETTE['muted'], size=12))
+def chart_03_growth_nowcast(period: str = '-20Y') -> 'go.Figure':
+    """
+    Ch 3: Growth Nowcast — composite z-score de predictors macro.
+    Simples (sem ML) mas funcional. Predictors:
+      +BCOM (commodity demand), +2s10s (curve steepness),
+      -DXY (USD strength = tightening), -HY OAS (tight = confidence),
+      -VIX (low vol = risk on).
+    """
+    fig = _fig_base('Chart 3 — Growth Nowcast (composite macro z-score)')
+    predictors = {}
+
+    # Carrega os componentes (reuso tickers ja configurados)
+    dxy = safe_load('DXY Curncy', period=period, label='DXY')
+    bcom = safe_load('BCOM Index', period=period, label='BCOM')
+    hy = safe_load('LF98OAS Index', period=period, label='HY_OAS')
+    vix = safe_load('VIX Index', period=period, label='VIX')
+    us2 = safe_load('USGG2YR Index', period=period, label='US2Y')
+    us10 = safe_load('USGG10YR Index', period=period, label='US10Y')
+
+    def _z(s, invert=False):
+        s = _clean(s).resample('M').last()
+        z = rolling_z(s, window_years=10)
+        return -z if invert else z
+
+    if len(bcom) > 60:
+        predictors['BCOM'] = _z(bcom)
+    if len(us2) > 60 and len(us10) > 60:
+        s2, s10 = _clean(us2).align(_clean(us10), join='inner')
+        curve = (s10 - s2).resample('M').last()
+        predictors['2s10s'] = _z(curve)
+    if len(dxy) > 60:
+        predictors['-DXY'] = _z(dxy, invert=True)
+    if len(hy) > 60:
+        predictors['-HY_OAS'] = _z(hy, invert=True)
+    if len(vix) > 60:
+        predictors['-VIX'] = _z(vix, invert=True)
+
+    if not predictors:
+        fig.add_annotation(text='Predictors ausentes',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color=PALETTE['muted']))
+        return fig
+
+    df = pd.DataFrame(predictors).dropna(how='all')
+    composite = df.mean(axis=1)
+
+    fig.add_trace(go.Scatter(x=composite.index, y=composite.values, mode='lines',
+                                name='Growth Pulse (composite z)',
+                                line=dict(color=PALETTE['orange'], width=2.5),
+                                fill='tozeroy',
+                                fillcolor='rgba(232,116,44,0.15)'))
+    for col in df.columns:
+        s = _clean(df[col])
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, mode='lines',
+                                    name=col, visible='legendonly',
+                                    line=dict(width=1)))
+    fig.add_hline(y=0, line_color=PALETTE['grey'])
+    fig.add_hline(y=-1, line_color=PALETTE['red'], line_dash='dash',
+                   annotation_text='Contraction zone')
+    fig.add_hline(y=1, line_color=PALETTE['green'], line_dash='dash',
+                   annotation_text='Expansion zone')
+    fig.update_yaxes(title_text='z-score')
     return fig
 
 
@@ -1619,7 +1672,7 @@ def run_harvest(years: int = 20) -> dict:
     figs = {
         'chart_01': chart_01_liquidity_vs_economy(liq),
         'chart_02': chart_02_wbci(wbci),
-        'chart_03': chart_03_ai_nowcast_stub(),
+        'chart_03': chart_03_growth_nowcast(period),
         'chart_04': chart_04_cyc_def(cyc),
         'chart_05': chart_05_stimulus(liq, period),
         'chart_06': chart_06_repo_spread(period),
@@ -1924,7 +1977,7 @@ def _build_section_widgets(result: dict) -> list:
         f"<div class='how-divider'>"
         f"<div class='how-divider-title'>HOWELL LIQUIDITY FRAMEWORK {VERSION}</div>"
         f"<div class='how-divider-sub'>As of {state['as_of_date']} | "
-        f"Michael Howell (CrossBorder Capital) — two-agent proxy implementation</div>"
+        f"Two-agent liquidity framework — Harvester + Analyst</div>"
         f"</div>"))
 
     # Executive summary card
