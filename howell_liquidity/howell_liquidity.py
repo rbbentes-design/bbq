@@ -1018,8 +1018,9 @@ def build_term_premium(period: str = '-20Y') -> dict:
                      'world_10y_tp_bps': None}
         return {'error': 'rates insuficientes'}
 
-    tp = _clean(rates['TP_ACM10'])
-    us10y = _clean(rates.get('US10Y', pd.Series(dtype=float)))
+    # Normaliza pra percent-points (BQL as vezes retorna decimal)
+    tp = _to_pct(_clean(rates['TP_ACM10']))
+    us10y = _to_pct(_clean(rates.get('US10Y', pd.Series(dtype=float))))
 
     return {
         'us10y': us10y,
@@ -1208,7 +1209,7 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
         10:   rates.get('US10Y'),
         30:   rates.get('US30Y'),
     }
-    curve_points = {k: _clean(v).resample('M').last()
+    curve_points = {k: _to_pct(_clean(v).resample('M').last())
                       for k, v in curve_points.items() if v is not None and len(v)}
     if len(curve_points) < 3:
         return {'error': 'curva insuficiente'}
@@ -1735,16 +1736,16 @@ def chart_08_term_premium(tp: dict) -> 'go.Figure':
     """Ch 8: US 10Y decomp — level vs term premium."""
     fig = _fig_base('Chart 8 — US 10Y Decomposition (Yield vs ACM Term Premium)')
     if 'us10y' in tp and tp['us10y'] is not None:
-        y = _clean(tp['us10y'])
+        y = _to_pct(_clean(tp['us10y']))
         fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
                                     name='US 10Y Yield',
                                     line=dict(color=PALETTE['orange'], width=2)))
     if 'us10y_tp' in tp and tp.get('us10y_tp') is not None:
-        t = _clean(tp['us10y_tp'])
+        t = _to_pct(_clean(tp['us10y_tp']))
         fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
                                     name='ACM 10Y Term Premium',
                                     line=dict(color=PALETTE['red'], width=1.8)))
-    fig.update_yaxes(title_text='%')
+    fig.update_yaxes(title_text='Percent')
     return fig
 
 
@@ -1789,12 +1790,12 @@ def chart_11_world_term_premia(period: str = '-15Y') -> 'go.Figure':
     rates = load_group({'US10Y_TP': 'ACMTP10 Index', 'US_FF': 'FDTR Index'},
                          period)
     if 'US10Y_TP' in rates:
-        t = _clean(rates['US10Y_TP']).resample('M').last()
+        t = _to_pct(_clean(rates['US10Y_TP']).resample('M').last())
         fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
                                     name='US ACM 10Y TP',
                                     line=dict(color=PALETTE['orange'], width=2)))
     if 'US_FF' in rates:
-        f = _clean(rates['US_FF']).resample('M').last()
+        f = _to_pct(_clean(rates['US_FF']).resample('M').last())
         fig.add_trace(go.Scatter(x=f.index, y=f.values, mode='lines',
                                     name='Fed Funds',
                                     line=dict(color=PALETTE['red'], width=1.5,
@@ -2496,7 +2497,7 @@ def chart_terminal_policy_majors(period: str = '-3Y') -> 'go.Figure':
         s = safe_load(tks, period=period, label=label)
         if len(s) < 30:
             continue
-        s_d = _clean(s).resample('D').last().ffill()
+        s_d = _to_pct(_clean(s).resample('D').last().ffill())
         dash = 'dash' if label == 'China' else 'solid'
         fig.add_trace(go.Scatter(x=s_d.index, y=s_d.values, mode='lines',
                                     name=label,
