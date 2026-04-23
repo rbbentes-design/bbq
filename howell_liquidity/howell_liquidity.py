@@ -53,11 +53,13 @@ except Exception as e:
 
 try:
     import ipywidgets as wd
-    from IPython.display import display, clear_output
+    from IPython.display import display, clear_output, HTML as IPyHTML
     HAS_WIDGETS = True
 except Exception:
     HAS_WIDGETS = False
     wd = None
+
+import base64
 
 try:
     import plotly.graph_objects as go
@@ -1013,7 +1015,8 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
     if df.empty:
         return {'error': 'curva vazia'}
 
-    # Area: aproxima com trapezoide sobre pontos
+    # Area: trapezio sobre pontos. Unidade = %-years.
+    # Nao e "bps", e literalmente o integral do yield (em %) sobre tenor (yr).
     tenors = sorted(df.columns)
     df = df[tenors]
     area = df.apply(lambda row: np.trapz(row.values, tenors), axis=1)
@@ -1046,7 +1049,7 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
         'area': area,
         'delta_near_3m': d_near_3m,
         'delta_far_3m': d_far_3m,
-        'latest_area_bps': float(area.iloc[-1] * 100) if len(area) else None,
+        'latest_area': float(area.iloc[-1]) if len(area) else None,
         'latest_d_near_bps': float(d_near_3m.iloc[-1] * 100)
                               if len(d_near_3m.dropna()) else None,
         'latest_d_far_bps': float(d_far_3m.iloc[-1] * 100)
@@ -2104,23 +2107,34 @@ def display_dashboard():
         with out_zip:
             clear_output(wait=True)
             if not _result_cache['result']:
-                print('Run harvester first.')
+                display(wd.HTML(DASH_CSS +
+                                  "<div class='how-card'><p class='how-flag'>"
+                                  "⚠ Run harvester primeiro.</p></div>"))
                 return
             try:
                 blob = build_zip(_result_cache['result'])
-                import base64
-                b64 = base64.b64encode(blob).decode()
                 fname = f'howell_{AS_OF}.zip'
-                display(wd.HTML(
-                    f"<a download='{fname}' "
-                    f"href='data:application/zip;base64,{b64}' "
-                    f"style='display:inline-block;padding:8px 16px;"
-                    f"background:#E8742C;color:#0B0E14;"
-                    f"text-decoration:none;border-radius:4px;font-weight:700;'>"
-                    f"📥 Download {fname} ({len(blob)/1024:.0f} KB)</a>"))
+                b64 = base64.b64encode(blob).decode('ascii')
+                # Trigger download via JS (funciona no BQuant sandbox,
+                # mesmo padrao do session_stats.py)
+                js = (f"var a=document.createElement('a');"
+                       f"a.href='data:application/zip;base64,{b64}';"
+                       f"a.download='{fname}';"
+                       f"document.body.appendChild(a);a.click();"
+                       f"document.body.removeChild(a);")
+                display(IPyHTML(f"<script>{js}</script>"))
+                display(wd.HTML(DASH_CSS +
+                                  f"<div class='how-card'>"
+                                  f"<p>✅ ZIP gerado: <b>{fname}</b> "
+                                  f"({len(blob)/1024:.0f} KB)</p>"
+                                  f"<p class='how-note'>state.json + memo.md + "
+                                  f"charts/*.html</p></div>"))
             except Exception as e:
-                print(f'ZIP fail: {e}')
-                print(traceback.format_exc())
+                display(wd.HTML(DASH_CSS +
+                                  f"<div class='how-card'>"
+                                  f"<p class='how-flag'>❌ ZIP fail: {e}</p>"
+                                  f"<pre style='color:#8b949e;font-size:10px'>"
+                                  f"{traceback.format_exc()}</pre></div>"))
 
     run_btn.on_click(_on_run)
     zip_btn.on_click(_on_zip)
