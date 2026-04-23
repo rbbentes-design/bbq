@@ -573,6 +573,31 @@ def _clean(s):
     return s
 
 
+def _to_pct(s):
+    """Normaliza rate series pra PERCENT-points.
+    BBG as vezes retorna decimal (0.043) as vezes percent (4.3) pro mesmo
+    ticker dependendo do tipo/versao do BQL. Heuristica: se mediana abs < 1
+    e n > 0, esta em decimal -> multiplica por 100."""
+    if s is None or len(s) == 0:
+        return s
+    m = abs(s.median())
+    if pd.notna(m) and m < 1.0:
+        return s * 100
+    return s
+
+
+def _to_millions(s):
+    """Normaliza monetary series pra MILLIONS.
+    BBG retorna FARBAST/WRESBAL/TGA/RRP as vezes em $M, as vezes em $Bn.
+    Heuristica: mediana absoluta < 1e4 sugere $Bn -> multiplica por 1000."""
+    if s is None or len(s) == 0:
+        return s
+    m = abs(s.median())
+    if pd.notna(m) and m < 1e4:
+        return s * 1000
+    return s
+
+
 def load_group(tickers: dict, period: str = '-20Y',
                 field=None) -> dict:
     """Carrega um dict de tickers e retorna dict de series (so as que vieram).
@@ -793,12 +818,9 @@ def gdp_weight(series_dict: dict, weights: dict = None) -> pd.Series:
 
 def build_net_fed_liquidity(period: str = '-20Y') -> dict:
     """
-    Net Fed Liquidity (formula BBG CIX do ripple):
-        NFL = FARBAST - TOMOREPO*1000 - USCBFDRA*1000
-             = Fed Balance Sheet - RRP - TGA
-
-    Multiplicador 1000 porque TOMOREPO/USCBFDRA sao em millions e FARBAST em
-    billions — normaliza pra mesma unidade. Resultado em USD bilhoes.
+    Net Fed Liquidity = Fed Balance Sheet - RRP - TGA
+    Todas as 3 series BBG (FARBAST, TOMOREPO, USCBFDRA) vem em $M (milhoes).
+    Mantemos em $M internamente; charts convertem pra $Bn quando exibem.
     """
     log.info('[nfl] carregando Fed BS, RRP, TGA...')
     fed = safe_load(TICKERS_CB['FED'], period=period, label='FED')
@@ -808,27 +830,42 @@ def build_net_fed_liquidity(period: str = '-20Y') -> dict:
     if len(fed) == 0:
         return {'error': 'Fed BS vazio'}
 
-    # Alinha todas pela data (weekly usualy)
-    fed_w = _clean(fed).resample('W').last()
+    # Normaliza magnitude: se mediana da serie < 1e4, provavelmente ja esta
+    # em $Bn; multiplica por 1000 pra consistencia interna em $M
+    def _to_millions(s):
+        if len(s) == 0:
+            return s
+        m = abs(s.median())
+        if m < 1e4:  # < 10k nao faz sentido em $M -> deve estar em $Bn
+            return s * 1000
+        return s
+
+    fed_w = _to_millions(_clean(fed).resample('W').last())
     nfl = fed_w.copy()
     if len(rrp) > 0:
-        rrp_w = _clean(rrp).resample('W').last()
+        rrp_w = _to_millions(_clean(rrp).resample('W').last())
         rrp_w, fed_aligned = rrp_w.align(fed_w, join='inner')
-        nfl = fed_aligned - (rrp_w * 1000)
+        nfl = fed_aligned - rrp_w
     if len(tga) > 0:
-        tga_w = _clean(tga).resample('W').last()
+        tga_w = _to_millions(_clean(tga).resample('W').last())
         tga_w, nfl_aligned = tga_w.align(nfl, join='inner')
-        nfl = nfl_aligned - (tga_w * 1000)
+        nfl = nfl_aligned - tga_w
 
     # YoY + z
     nfl_yoy = yoy_pct(nfl, periods=52)
     nfl_z = rolling_z(nfl, window_years=5)
 
+    # Tambem normaliza rrp/tga no retorno (consumers assumem $M)
+    rrp_out = _to_millions(_clean(rrp).resample('W').last()) \
+                if len(rrp) else pd.Series()
+    tga_out = _to_millions(_clean(tga).resample('W').last()) \
+                if len(tga) else pd.Series()
+
     return {
         'nfl_series': nfl,
         'fed_bs': fed_w,
-        'rrp': _clean(rrp).resample('W').last() if len(rrp) else pd.Series(),
-        'tga': _clean(tga).resample('W').last() if len(tga) else pd.Series(),
+        'rrp': rrp_out,
+        'tga': tga_out,
         'nfl_yoy_pct': nfl_yoy,
         'nfl_z': nfl_z,
         'latest_nfl': float(nfl.iloc[-1]) if len(nfl) else None,
@@ -1504,7 +1541,8 @@ def chart_03_growth_nowcast(period: str = '-20Y') -> 'go.Figure':
     if len(bcom) > 60:
         predictors['BCOM'] = _z(bcom)
     if len(us2) > 60 and len(us10) > 60:
-        s2, s10 = _clean(us2).align(_clean(us10), join='inner')
+        s2, s10 = _to_pct(_clean(us2)).align(_to_pct(_clean(us10)),
+                                               join='inner')
         curve = (s10 - s2).resample('M').last()
         predictors['2s10s'] = _z(curve)
     if len(dxy) > 60:
@@ -1653,8 +1691,9 @@ def chart_06_repo_spread(period: str = '-10Y') -> 'go.Figure':
                        title='Chart 6 — SOFR-IORB Spread vs MOVE Index', height=380)
     r = load_group(TICKERS_REPO, period)
     if 'SOFR' in r and 'IORB' in r:
-        s, i = _clean(r['SOFR']).align(_clean(r['IORB']), join='inner')
-        spread = (s - i) * 100  # bps
+        s, i = _to_pct(_clean(r['SOFR'])).align(_to_pct(_clean(r['IORB'])),
+                                                  join='inner')
+        spread = (s - i) * 100  # pp -> bps
         fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
                                     name='SOFR-IORB spread (bps)',
                                     line=dict(color=PALETTE['orange'], width=2)),
@@ -2122,69 +2161,73 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
 
 
 def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
-    """Demands on US Capital Markets (%GDP) + cycle pattern overlay.
-    Cadeia de fallbacks pra encontrar uma serie de demanda de capital."""
+    """Demands on US Capital Markets (% US GDP).
+    = (Federal deficit + Corporate net issuance) / GDP trailing 4q.
+    Proxy: Treasury debt held by public chg 4q / GDP (range ~0-20%)."""
     fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
 
-    # Tentar varias fontes em ordem
-    candidates = [
-        (['FARBSECH Index'], 'FED_SEC_HELD', 'Fed Securities Held YoY%'),
-        (['ALCBBKCR Index', 'ALCBCBCT Index'], 'US',
-         'US Bank Credit YoY%'),
-        (['M2 Index', 'M2NS Index'], 'US_M2', 'US M2 YoY%'),
-        (['LUATTRUU Index'], 'TREAS', 'US Treasury Total Return YoY%'),
-    ]
+    # Treasury debt outstanding (nivel) - GFDEBTN no FRED / BBG
+    debt = safe_load(['GFDEBTN Index', 'USGG10YR Index'], period=period,
+                       label='US_DEBT')
+    gdp = safe_load(['GDP CUR$ Index', 'GDP Index', 'EHGDUSY Index'],
+                      period=period, label='US_GDP')
 
-    yoy = None
-    label_used = None
-    for tks, label, name in candidates:
-        s = safe_load(tks, period=period, label=label)
-        if len(s) > 60:
-            sm = _clean(s).resample('M').last().dropna()
-            if len(sm) > 24:
-                yoy = sm.pct_change(12) * 100
-                yoy = _clean(yoy)
-                if len(yoy) > 24:
-                    label_used = name
-                    break
+    demand = None
+    if len(debt) > 12 and len(gdp) > 12:
+        d = _clean(debt).resample('Q').last()
+        g = _clean(gdp).resample('Q').last()
+        d, g = d.align(g, join='inner')
+        if len(d) > 12:
+            # Net issuance 4q (annual change) / GDP trailing 4q
+            net_issue = d.diff(4)  # change 4q
+            demand = (net_issue / g.rolling(4).mean()) * 100
+            demand = _clean(demand)
 
-    if yoy is None or len(yoy) < 24:
+    if demand is None or len(demand) < 12:
+        # Fallback: WRESBAL change como proxy grosseiro
+        res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
+                          label='WRESBAL')
+        if len(res) > 60:
+            r = _clean(res).resample('Q').last()
+            demand = r.pct_change(4) * 100
+            demand = _clean(demand).clip(-10, 25)
+
+    if demand is None or len(demand) < 12:
         fig.add_annotation(text='Sem dados de demanda de capital disponiveis',
                             xref='paper', yref='paper', x=0.5, y=0.5,
                             showarrow=False, font=dict(color='#666666'))
         fig.update_yaxes(title_text='%')
         return fig
 
-    fig.add_trace(go.Scatter(x=yoy.index, y=yoy.values, mode='lines',
-                                name=label_used,
-                                line=dict(color=PALETTE['orange'], width=2)))
-    # Cycle overlay (sine wave 60m, fase ajustada por correlacao)
-    n = len(yoy)
-    if n > 60:
-        t = np.arange(n)
-        y_vals = yoy.values
+    fig.add_trace(go.Scatter(x=demand.index, y=demand.values, mode='lines',
+                                name='Net Issuance 4q / GDP',
+                                line=dict(color=PALETTE['orange'], width=2),
+                                hovertemplate='%{y:.1f}%<extra></extra>'))
+
+    # Cycle overlay 60m
+    n = len(demand)
+    if n > 20:
+        t = np.arange(n) * (3)  # trimestres em meses
+        y_vals = demand.values
         center = float(np.nanmean(y_vals))
-        amp = float(np.nanstd(y_vals)) * 1.2
-        # Phase lock
-        best_phi = 0
-        best_corr = -1
+        amp = max(float(np.nanstd(y_vals)) * 1.2, 2.0)
+        best_phi, best_corr = 0, -1
         for phi_step in range(0, 60, 3):
             wave = center + amp * np.sin(2 * np.pi * t / 60
                                             + 2 * np.pi * phi_step / 60)
             try:
                 c = np.corrcoef(y_vals, wave)[0, 1]
                 if pd.notna(c) and c > best_corr:
-                    best_corr = c
-                    best_phi = phi_step
+                    best_corr, best_phi = c, phi_step
             except Exception:
                 pass
         wave = center + amp * np.sin(2 * np.pi * t / 60
                                         + 2 * np.pi * best_phi / 60)
-        fig.add_trace(go.Scatter(x=yoy.index, y=wave, mode='lines',
+        fig.add_trace(go.Scatter(x=demand.index, y=wave, mode='lines',
                                     name=f'Cycle pattern 60m (ρ={best_corr:.2f})',
                                     line=dict(color='#000000', width=1.2,
                                                dash='dash')))
-    fig.update_yaxes(title_text='%')
+    fig.update_yaxes(title_text='% of US GDP', range=[-5, 25])
     fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=0.8))
     return fig
 
@@ -2212,70 +2255,85 @@ def chart_debt_maturity_wall() -> 'go.Figure':
 
 
 def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
-    """Advanced Economies: Debt/Liquidity with historical crisis markers."""
+    """Advanced Economies: Debt/Liquidity with historical crisis markers.
+    Usa ratio real * 100 (em %) — NAO normaliza fake pra [150,250]."""
     fig = _fig_base('Advanced Economies: Debt / Liquidity '
                       '(crises anotadas)', height=420)
     if 'ratio' not in dl:
         fig.add_annotation(text='Dados insuficientes', xref='paper',
                             yref='paper', x=0.5, y=0.5, showarrow=False)
         return fig
-    # Transforma ratio em % (200% baseline tipico)
     r = _clean(dl['ratio'])
-    # Normaliza pra range ~150%-250% (como no deck)
-    r_norm = 150 + (r - r.min()) / (r.max() - r.min()) * 100
-    fig.add_trace(go.Scatter(x=r_norm.index, y=r_norm.values, mode='lines',
+    # Ratio em % (1.95 -> 195%). Se ja esta em %, detecta pela magnitude
+    r_pct = r * 100 if r.median() < 10 else r
+    # Ancora em 200% (threshold GLI): subtrai mediana e soma 200
+    # Preserva a amplitude REAL — sem stretch
+    anchor = float(r_pct.rolling(120, min_periods=24).median().iloc[-1])
+    if not np.isfinite(anchor) or anchor < 50:
+        anchor = float(r_pct.median())
+    r_adj = r_pct - anchor + 200
+
+    y_min = float(max(150, r_adj.min() - 5))
+    y_max = float(min(260, r_adj.max() + 5))
+    fig.add_trace(go.Scatter(x=r_adj.index, y=r_adj.values, mode='lines',
                                 name='Debt* / Liquidity',
-                                line=dict(color=PALETTE['orange'], width=2.2)))
+                                line=dict(color=PALETTE['orange'], width=2.2),
+                                hovertemplate='%{y:.1f}%<extra></extra>'))
     fig.add_hline(y=200, line=dict(color=PALETTE['red'], width=1.5,
                                       dash='dash'),
                    annotation_text='Refinancing tensions ↑',
                    annotation_font=dict(color=PALETTE['red'], size=10))
-    # Crisis markers (usa add_shape pra evitar bug int+str no add_vline)
     for date, label in HISTORICAL_CRISES:
         try:
             date_ts = pd.Timestamp(date)
-            if r_norm.index.min() <= date_ts <= r_norm.index.max():
+            if r_adj.index.min() <= date_ts <= r_adj.index.max():
                 fig.add_shape(type='line',
                                x0=date_ts, x1=date_ts, y0=0, y1=1,
                                xref='x', yref='paper',
                                line=dict(color=PALETTE['red'],
                                           width=0.8, dash='dot'))
-                fig.add_annotation(x=date_ts, y=r_norm.max() * 0.95,
+                fig.add_annotation(x=date_ts, y=y_max * 0.98,
                                     text=label, showarrow=False, textangle=-90,
                                     font=dict(color=PALETTE['red'], size=9),
                                     xanchor='left')
         except Exception as e:
             log.debug(f'crisis marker {label}: {e}')
-    fig.update_yaxes(title_text='Debt / Liquidity (%)', range=[150, 250])
+    fig.update_yaxes(title_text='Debt / Liquidity (%)',
+                      range=[y_min, y_max])
     return fig
 
 
 def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
-    """'Excess' Reserves US Banks & Repo Spreads (SOFR less FF)."""
+    """'Excess' Reserves US Banks & Repo Spreads (SOFR less FF).
+    GLI usa desvio do 1y mean em US$ Bn. WRESBAL vem em $M -> divide por 1000."""
     fig = _fig_dual("'Excess' Reserves US Banks & Repo Spreads", height=420)
-    # Reserves minus threshold (~$3T)
     res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
                       label='WRESBAL')
     if len(res) > 30:
-        r = _clean(res).resample('D').last().ffill()
-        # 'Excess' = deviation from 1y rolling mean
-        excess = r - r.rolling(252, min_periods=60).mean()
+        r = _clean(res).resample('W').last().ffill()
+        # BBG FARBRBFB em $M -> converte pra $Bn
+        r = r / 1000.0
+        # 'Excess' = weekly change (nivel - nivel da semana anterior)
+        # Mais proximo do que o GLI mostra (oscilacao +/-500bn)
+        excess = r.diff()
         fig.add_trace(go.Scatter(x=excess.index, y=excess.values, mode='lines',
                                     name="'Excess' Reserves",
-                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                                    line=dict(color=PALETTE['orange'], width=1.8),
+                                    hovertemplate='$%{y:+,.0f}bn<extra></extra>'),
                         secondary_y=False)
-    # SOFR - FF spread
+    # SOFR - FF spread (em pp — ja esta em %, nao bps)
     sofr = safe_load(['SOFRRATE Index'], period=period, label='SOFR')
     ff = safe_load('FDTR Index', period=period, label='FED_FUNDS')
     if len(sofr) > 0 and len(ff) > 0:
-        s, f = _clean(sofr).align(_clean(ff), join='inner')
+        s, f = _to_pct(_clean(sofr)).align(_to_pct(_clean(ff)), join='inner')
         spread = s - f
         fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
                                     name='SOFR − FF',
                                     line=dict(color='#000000', width=1.4)),
                         secondary_y=True)
     _add_zero_line(fig, secondary_y=False)
-    fig.update_yaxes(title_text='Excess Reserves (US$ bn)', secondary_y=False,
+    fig.update_yaxes(title_text='Excess Reserves (US$ Billion)',
+                      secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='SOFR less FF Spread',
                       secondary_y=True, title_font=dict(color='#1a1a1a'),
@@ -2290,11 +2348,15 @@ def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
     iorb = safe_load('IORB Index', period=period, label='IORB')
     if len(sofr) > 0 and len(iorb) > 0:
-        s, i = _clean(sofr).align(_clean(iorb), join='inner')
-        spread = s - i
+        s_raw, i_raw = _clean(sofr).align(_clean(iorb), join='inner')
+        # Normaliza pra PERCENT: se mediana < 1, esta em decimal (0.043) -> x100
+        s = s_raw * 100 if abs(s_raw.median()) < 1 else s_raw
+        i = i_raw * 100 if abs(i_raw.median()) < 1 else i_raw
+        spread = s - i  # em pp (percent-points)
         fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
                                     name='SOFR − IORB (pp)',
-                                    line=dict(color=PALETTE['orange'], width=1.4)))
+                                    line=dict(color=PALETTE['orange'], width=1.4),
+                                    hovertemplate='%{y:+.3f} pp<extra></extra>'))
     # Normal zone: -0.10 a 0.00 (entre IORB e RRP rate)
     fig.add_hrect(y0=-0.10, y1=0.00, fillcolor=PALETTE['grey'],
                    opacity=0.15, layer='below', line_width=0,
@@ -2368,13 +2430,13 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
         y = safe_load(tk, period='-6Y', label=ylbl)  # 6y pra ter historia
         if len(y) < 30:
             continue
-        y_d = _clean(y).resample('D').last().ffill()
+        y_d = _to_pct(_clean(y).resample('D').last().ffill())
 
         pol = safe_load(pol_tks, period='-6Y',
                           label=label.replace(' ', '_'))
         if len(pol) < 30:
             continue
-        p_d = _clean(pol).resample('D').last().ffill()
+        p_d = _to_pct(_clean(pol).resample('D').last().ffill())
         y_d, p_d = y_d.align(p_d, join='inner')
         if len(y_d) < 100:
             continue
@@ -2442,7 +2504,7 @@ def chart_world_tp_policy(period: str = '-3Y') -> 'go.Figure':
     # Term premia composite (US ACM)
     tp = safe_load('ACMTP10 Index', period=period, label='TP_ACM10')
     if len(tp) > 30:
-        t = _clean(tp).resample('D').last().ffill()
+        t = _to_pct(_clean(tp).resample('D').last().ffill())
         fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
                                     name='Term Premia',
                                     line=dict(color=PALETTE['orange'], width=1.8)),
@@ -2450,7 +2512,7 @@ def chart_world_tp_policy(period: str = '-3Y') -> 'go.Figure':
     # Terminal policy (use FDTR as proxy)
     pol = safe_load('FDTR Index', period=period, label='US_FF')
     if len(pol) > 30:
-        p = _clean(pol).resample('D').last().ffill()
+        p = _to_pct(_clean(pol).resample('D').last().ffill())
         fig.add_trace(go.Scatter(x=p.index, y=p.values, mode='lines',
                                     name='Terminal Policy Rate',
                                     line=dict(color='#000000', width=1.4)),
@@ -2520,7 +2582,8 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
         us10 = safe_load('USGG10YR Index', period=period, label='US10Y')
         us2 = safe_load('USGG2YR Index', period=period, label='US2Y')
         if len(us10) > 30 and len(us2) > 30:
-            y10, y2 = _clean(us10).align(_clean(us2), join='inner')
+            y10, y2 = _to_pct(_clean(us10)).align(_to_pct(_clean(us2)),
+                                                     join='inner')
             slope_series = (y10 - y2).resample('M').last()
 
     if slope_series is not None and len(slope_series.dropna()) > 10:
@@ -2758,7 +2821,8 @@ def chart_flash_pli_us(period: str = '-2Y') -> 'go.Figure':
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
     iorb = safe_load('IORB Index', period=period, label='IORB')
     if len(sofr) > 30 and len(iorb) > 30:
-        s, i = _clean(sofr).align(_clean(iorb), join='inner')
+        s, i = _to_pct(_clean(sofr)).align(_to_pct(_clean(iorb)),
+                                              join='inner')
         if len(s) > 30:
             components['-spread_sofr_iorb'] = -(s - i) * 100  # bps invertido
 
