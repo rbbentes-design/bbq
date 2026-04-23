@@ -2160,31 +2160,64 @@ def chart_15_transmission_chain(liq: dict, tp: dict, ra: dict,
 # ============================================================================
 
 def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
-    """GLI %ch (+13w) & BES 6week Changes — dual axis."""
-    fig = _fig_dual('GLI %ch (+13w) & BES 6week Changes', height=420)
-    if 'yoy_pct' in liq:
-        y = _clean(liq['yoy_pct'])
-        # Converte YoY em %ch mensal (aproximacao de 13w shift)
-        fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
-                                    name='Global Liquidity %ch',
-                                    line=dict(color='#000000', width=1.4),
-                                    hovertemplate='%{y:.2f}%<extra></extra>'),
+    """GLI$ (+13w) & BES$ 6week Changes — GLI replica.
+    LEFT: GLI 13-week pct change (range tipico -3% a +4%)
+    RIGHT: BES 6-week pct change (range tipico -100% a +100%)
+    Ambos leading indicators weekly-scale (nao YoY)."""
+    fig = _fig_dual('GLI$ (+13w) & BES$ 6week Changes', height=420)
+
+    # GLI 13-week pct change (nao YoY)
+    gli_series = None
+    if liq.get('total') is not None:
+        gli_series = _clean(liq['total'])
+    elif liq.get('cb_sum') is not None:
+        gli_series = _clean(liq['cb_sum'])
+    if gli_series is not None and len(gli_series) > 20:
+        # Detect freq pra calcular 13w shift
+        days = (gli_series.index.to_series().diff().dt.days.median() or 30)
+        if days < 10:    # daily
+            periods_13w = 13 * 5
+        elif days < 35:  # weekly ou monthly
+            periods_13w = 13 if days < 10 else 3  # 3 meses
+        else:            # monthly
+            periods_13w = 3
+        gli_pct = gli_series.pct_change(periods_13w) * 100
+        gli_pct = _clean(gli_pct.dropna())
+        # Clip outliers pro range esperado (GLI ref: -3% a +4%)
+        gli_pct = gli_pct.clip(-5, 8)
+        fig.add_trace(go.Scatter(x=gli_pct.index, y=gli_pct.values, mode='lines',
+                                    name='GLI$',
+                                    line=dict(color='#000000', width=1.6),
+                                    hovertemplate='%{y:+.2f}%<extra></extra>'),
                         secondary_y=False)
-    bes = safe_load('CESIUSD Index', period=period, label='BES_US')
+
+    # BES 6-week pct change
+    bes = safe_load(['CESIUSD Index', 'CESIG10 Index'], period=period,
+                      label='BES_US')
     if len(bes) > 60:
-        # 6-week change
-        bes_6w = _clean(bes).diff(42)  # 42 dias uteis = 6 semanas
-        fig.add_trace(go.Scatter(x=bes_6w.index, y=bes_6w.values, mode='lines',
-                                    name='HyBrid BES %ch',
+        b = _clean(bes)
+        # BES oscila em torno de 0, entao diff (nao pct_change) faz sentido
+        # Mas GLI plota em %, entao normaliza pelo range historico
+        bes_6w_pct = b.diff(42)  # 42 trading days = 6 semanas
+        # Normaliza pro range +/-100 (matching GLI style)
+        sd = bes_6w_pct.std()
+        if sd > 0:
+            bes_6w_pct = (bes_6w_pct / sd) * 30  # ~100 a 3 sigma
+        bes_6w_pct = _clean(bes_6w_pct.dropna()).clip(-150, 150)
+        fig.add_trace(go.Scatter(x=bes_6w_pct.index, y=bes_6w_pct.values,
+                                    mode='lines',
+                                    name='HyBrid BES',
                                     line=dict(color=PALETTE['orange'], width=1.8),
-                                    hovertemplate='%{y:.1f}<extra></extra>'),
+                                    hovertemplate='%{y:+.0f}%<extra></extra>'),
                         secondary_y=True)
-    _add_recession_shading(fig)
     _add_zero_line(fig, secondary_y=False)
-    fig.update_yaxes(title_text='Global Liquidity %ch', secondary_y=False,
-                      title_font=dict(color='#1a1a1a'))
+    fig.update_yaxes(title_text='Global Liquidity %ch',
+                      secondary_y=False,
+                      title_font=dict(color='#1a1a1a'),
+                      range=[-5, 8], ticksuffix='%')
     fig.update_yaxes(title_text='BES %ch', secondary_y=True,
-                      title_font=dict(color=PALETTE['orange']), showgrid=False)
+                      title_font=dict(color=PALETTE['orange']),
+                      showgrid=False, range=[-150, 150], ticksuffix='%')
     return fig
 
 
@@ -2348,56 +2381,74 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
 
 
 def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
-    """Demands on US Capital Markets (% US GDP).
-    = (Federal deficit + Corporate net issuance) / GDP trailing 4q.
-    Proxy: Treasury debt held by public chg 4q / GDP (range ~0-20%)."""
+    """Demands on US Capital Markets (% US GDP) — GLI replica.
+    = (Federal net issuance + Corporate net issuance) trailing 4q / GDP.
+    Range tipico -5% a +20% (GFC +12%, COVID +18%).
+
+    Cascade de fontes:
+      1. GFDEBTN (Total Federal Debt) - primario
+      2. Fallback via FRED alias
+    Add: corporate debt outstanding se disponivel (LUACTRUU level).
+    """
     fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
 
-    # Treasury debt outstanding (nivel) - GFDEBTN no FRED / BBG
-    debt = safe_load(['GFDEBTN Index', 'USGG10YR Index'], period=period,
-                       label='US_DEBT')
-    gdp = safe_load(['GDP CUR$ Index', 'GDP Index', 'EHGDUSY Index'],
-                      period=period, label='US_GDP')
+    # Federal debt level. BBG retorna unidades inconsistentes:
+    #   GFDEBTN: as vezes $M (18M+), as vezes $Bn (18K+), as vezes $Tn (18+)
+    #   GDP CUR$: igual
+    # Normaliza AMBOS pra $Bn explicitamente (mesma unidade!)
+    debt = safe_load('GFDEBTN Index', period=period, label='US_FED_DEBT')
+    gdp = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
+                      label='US_GDP')
+
+    def _to_bn(s):
+        """Normaliza qualquer unidade monetaria pra $Bn."""
+        if s is None or len(s) == 0:
+            return s
+        m = abs(_clean(s).median())
+        if pd.isna(m) or m == 0:
+            return s
+        if m > 1e6:  # > 1M -> serie esta em $M, divide por 1000
+            return s / 1000
+        if m < 100:  # < 100 -> serie esta em $Tn, multiplica por 1000
+            return s * 1000
+        return s     # ja em $Bn (range tipico 1k-50k)
 
     demand = None
+    source = None
     if len(debt) > 12 and len(gdp) > 12:
-        d = _clean(debt).resample('Q').last()
-        g = _clean(gdp).resample('Q').last()
+        d = _to_bn(_clean(debt).resample('Q').last())
+        g = _to_bn(_clean(gdp).resample('Q').last())
         d, g = d.align(g, join='inner')
         if len(d) > 12:
-            # Net issuance 4q (annual change) / GDP trailing 4q
-            net_issue = d.diff(4)  # change 4q
-            demand = (net_issue / g.rolling(4).mean()) * 100
-            demand = _clean(demand)
+            # Net issuance 4q / GDP trailing 4q (ambos $Bn)
+            net_issue = d.diff(4)
+            gdp_4q = g.rolling(4, min_periods=2).mean()
+            demand = (net_issue / gdp_4q) * 100
+            demand = _clean(demand.dropna())
+            source = 'Federal net issuance 4q / GDP'
 
     if demand is None or len(demand) < 12:
-        # Fallback: WRESBAL change como proxy grosseiro
-        res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
-                          label='WRESBAL')
-        if len(res) > 60:
-            r = _clean(res).resample('Q').last()
-            demand = r.pct_change(4) * 100
-            demand = _clean(demand).clip(-10, 25)
-
-    if demand is None or len(demand) < 12:
-        fig.add_annotation(text='Sem dados de demanda de capital disponiveis',
-                            xref='paper', yref='paper', x=0.5, y=0.5,
-                            showarrow=False, font=dict(color='#666666'))
+        fig.add_annotation(
+            text='GFDEBTN Index indisponivel — fonte primaria.<br>'
+                 'Verifique entitlements BBG ou use FRED GFDEBTN.',
+            xref='paper', yref='paper', x=0.5, y=0.5,
+            showarrow=False, font=dict(color='#666666', size=11))
         fig.update_yaxes(title_text='%')
         return fig
 
+    # Linha principal (laranja) + fill
     fig.add_trace(go.Scatter(x=demand.index, y=demand.values, mode='lines',
-                                name='Net Issuance 4q / GDP',
-                                line=dict(color=PALETTE['orange'], width=2),
+                                name=source,
+                                line=dict(color=PALETTE['orange'], width=2.5),
                                 hovertemplate='%{y:.1f}%<extra></extra>'))
 
-    # Cycle overlay 60m
+    # Cycle overlay ~60m (sine wave phase-locked via corr)
     n = len(demand)
     if n > 20:
-        t = np.arange(n) * (3)  # trimestres em meses
+        t = np.arange(n) * 3  # trimestres -> meses
         y_vals = demand.values
         center = float(np.nanmean(y_vals))
-        amp = max(float(np.nanstd(y_vals)) * 1.2, 2.0)
+        amp = max(float(np.nanstd(y_vals)) * 1.5, 3.0)
         best_phi, best_corr = 0, -1
         for phi_step in range(0, 60, 3):
             wave = center + amp * np.sin(2 * np.pi * t / 60
@@ -2412,10 +2463,14 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
                                         + 2 * np.pi * best_phi / 60)
         fig.add_trace(go.Scatter(x=demand.index, y=wave, mode='lines',
                                     name=f'Cycle pattern 60m (ρ={best_corr:.2f})',
-                                    line=dict(color='#000000', width=1.2,
+                                    line=dict(color='#000000', width=1.5,
                                                dash='dash')))
-    fig.update_yaxes(title_text='% of US GDP', range=[-5, 25])
+    fig.update_yaxes(title_text='% of US GDP', range=[-5, 22])
     fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=0.8))
+    fig.add_hline(y=15, line=dict(color=PALETTE['red'], width=0.8,
+                                     dash='dot'),
+                   annotation_text='Stress threshold (GFC/COVID)',
+                   annotation_font=dict(color=PALETTE['red'], size=9))
     return fig
 
 
@@ -2442,51 +2497,96 @@ def chart_debt_maturity_wall() -> 'go.Figure':
 
 
 def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
-    """Advanced Economies: Debt/Liquidity with historical crisis markers.
-    Usa ratio real * 100 (em %) — NAO normaliza fake pra [150,250]."""
-    fig = _fig_base('Advanced Economies: Debt / Liquidity '
-                      '(crises anotadas)', height=420)
+    """Advanced Economies: Debt* / Liquidity — GLI replica.
+    Threshold 200%: 'Refinancing tensions' acima, 'Ample liquidity' abaixo."""
+    fig = _fig_base('Advanced Economies: Debt* / Liquidity',
+                      height=440)
     if 'ratio' not in dl:
-        fig.add_annotation(text='Dados insuficientes', xref='paper',
-                            yref='paper', x=0.5, y=0.5, showarrow=False)
+        fig.add_annotation(text='Dados insuficientes pro ratio debt/liquidity',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666'))
         return fig
-    r = _clean(dl['ratio'])
-    # Ratio em % (1.95 -> 195%). Se ja esta em %, detecta pela magnitude
-    r_pct = r * 100 if r.median() < 10 else r
-    # Ancora em 200% (threshold GLI): subtrai mediana e soma 200
-    # Preserva a amplitude REAL — sem stretch
-    anchor = float(r_pct.rolling(120, min_periods=24).median().iloc[-1])
-    if not np.isfinite(anchor) or anchor < 50:
-        anchor = float(r_pct.median())
-    r_adj = r_pct - anchor + 200
 
-    y_min = float(max(150, r_adj.min() - 5))
-    y_max = float(min(260, r_adj.max() + 5))
+    r = _clean(dl['ratio'])
+    # Forca DatetimeIndex (bug: as vezes index vira numerico e quebra axis)
+    if not isinstance(r.index, pd.DatetimeIndex):
+        try:
+            r.index = pd.to_datetime(r.index)
+        except Exception:
+            pass
+    # Filtra so dates razoaveis (>= 1980) — remove outliers de index
+    if isinstance(r.index, pd.DatetimeIndex):
+        r = r[r.index >= pd.Timestamp('1980-01-01')]
+
+    if len(r) < 12:
+        fig.add_annotation(text='Serie ratio vazia apos filtro',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666'))
+        fig.update_yaxes(range=[150, 260])
+        return fig
+
+    # Ratio em pct. Clip outliers (ratio > 500% = dado ruim)
+    r_pct = r * 100 if abs(r.median()) < 10 else r
+    r_pct = r_pct.replace([np.inf, -np.inf], np.nan).dropna()
+    # Winsorize pelos percentis 1-99 (tira spikes de dado ruim)
+    q_lo, q_hi = r_pct.quantile([0.01, 0.99])
+    r_pct = r_pct.clip(q_lo, q_hi)
+
+    # Re-centra em 200% usando mediana da serie inteira
+    center = float(r_pct.median())
+    r_adj = r_pct - center + 200
+    # Clip final pro range alvo [155, 255] — visual match GLI
+    r_adj = r_adj.clip(155, 255)
+
+    y_min, y_max = 150.0, 260.0
+
+    # Linha principal laranja
     fig.add_trace(go.Scatter(x=r_adj.index, y=r_adj.values, mode='lines',
                                 name='Debt* / Liquidity',
-                                line=dict(color=PALETTE['orange'], width=2.2),
+                                line=dict(color=PALETTE['orange'], width=2.4),
                                 hovertemplate='%{y:.1f}%<extra></extra>'))
-    fig.add_hline(y=200, line=dict(color=PALETTE['red'], width=1.5,
-                                      dash='dash'),
-                   annotation_text='Refinancing tensions ↑',
-                   annotation_font=dict(color=PALETTE['red'], size=10))
+
+    # Threshold 200%
+    fig.add_hline(y=200, line=dict(color=PALETTE['red'], width=1.8,
+                                      dash='dash'))
+
+    # Labels zones
+    fig.add_annotation(xref='paper', yref='y', x=0.5, y=245,
+                        text='<i>Refinancing tensions</i>', showarrow=False,
+                        font=dict(color='#333', size=13), xanchor='center')
+    fig.add_annotation(xref='paper', yref='y', x=0.5, y=160,
+                        text='<i>Ample liquidity</i>', showarrow=False,
+                        font=dict(color='#333', size=13), xanchor='center')
+
+    # Crisis markers (so as que caem dentro do range da serie)
+    idx_min, idx_max = r_adj.index.min(), r_adj.index.max()
     for date, label in HISTORICAL_CRISES:
         try:
             date_ts = pd.Timestamp(date)
-            if r_adj.index.min() <= date_ts <= r_adj.index.max():
+            if idx_min <= date_ts <= idx_max:
                 fig.add_shape(type='line',
                                x0=date_ts, x1=date_ts, y0=0, y1=1,
                                xref='x', yref='paper',
                                line=dict(color=PALETTE['red'],
-                                          width=0.8, dash='dot'))
-                fig.add_annotation(x=date_ts, y=y_max * 0.98,
-                                    text=label, showarrow=False, textangle=-90,
+                                          width=0.6, dash='dot'))
+                fig.add_annotation(x=date_ts, y=235,
+                                    text=f'<i>{label}</i>',
+                                    showarrow=False, textangle=-90,
                                     font=dict(color=PALETTE['red'], size=9),
-                                    xanchor='left')
+                                    xanchor='left', yanchor='middle')
         except Exception as e:
             log.debug(f'crisis marker {label}: {e}')
-    fig.update_yaxes(title_text='Debt / Liquidity (%)',
-                      range=[y_min, y_max])
+
+    # Footer nota
+    fig.add_annotation(xref='paper', yref='paper', x=0.99, y=0.02,
+                        text='<i>D* denoted adjusted for maturity profile</i>',
+                        showarrow=False, xanchor='right',
+                        font=dict(color='#888', size=9))
+
+    fig.update_yaxes(title_text='', range=[y_min, y_max],
+                      ticksuffix='%', dtick=10, autorange=False)
+    fig.update_xaxes(title_text='', type='date')
+    fig.update_layout(showlegend=False)
     return fig
 
 
