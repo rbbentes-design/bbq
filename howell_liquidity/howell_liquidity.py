@@ -727,12 +727,16 @@ def debug_loader_report() -> str:
     rows = []
     ok_count = 0
     fail_count = 0
+    failed_tickers = []  # lista pra busca no terminal
     for name, info in _loader_audit.items():
         status = '✓' if info['got_data'] else '✗'
         if info['got_data']:
             ok_count += 1
         else:
             fail_count += 1
+            # Captura primeiro candidato BBG pra busca
+            if info['candidates']:
+                failed_tickers.append((name, info['candidates'][0]))
         cands = ' | '.join(info['candidates'][:3])
         if len(info['candidates']) > 3:
             cands += f' +{len(info["candidates"])-3}'
@@ -750,7 +754,19 @@ def debug_loader_report() -> str:
                 f"<span class='how-badge how-badge-red'>{fail_count} failed</span> "
                 f"| FRED enabled: {'✓' if HAS_FRED else '✗ (set FRED_API_KEY env var)'}"
                 f"</div>")
-    return summary + f"<div class='how-card'>{table}</div>"
+
+    # Lista compacta de tickers faltando pra busca terminal
+    missing_block = ''
+    if failed_tickers:
+        ticker_list = '<br>'.join(
+            f'• <code>{tk}</code> ({label})'
+            for label, tk in failed_tickers)
+        missing_block = (
+            f"<div class='how-card' style='border-left:3px solid #a00'>"
+            f"<b>🔍 Tickers pra buscar no terminal Bloomberg:</b><br>"
+            f"{ticker_list}"
+            f"</div>")
+    return summary + missing_block + f"<div class='how-card'>{table}</div>"
 
 
 # ============================================================================
@@ -1016,31 +1032,43 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
             return s
         med = abs(s.median())
 
-        # Conversao USD/LCY
-        fx_rate_usd = 1.0  # default USD
+        # Conversao USD/LCY — usa SOMENTE FX real loaded.
+        # Se FX nao carregou, retorna serie vazia (NAO inventa fallback)
+        fx_rate_usd = 1.0  # USD-denominated tickers
         tkup = ticker.upper()
+        ccy_needed = None
+        invert = False
         if 'EBBSTOTA' in tkup or 'ECMSM2' in tkup or 'ECORUKN' in tkup:
-            fx_rate_usd = fx_latest.get('EUR', 1.08)  # EUR->USD direto
+            ccy_needed = 'EUR'
         elif 'BJACTOTL' in tkup or 'JMNSM2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('JPY', 150)  # JPY->USD
+            ccy_needed, invert = 'JPY', True
         elif 'B111B56A' in tkup or 'UKMSM4' in tkup or 'LTSBBANX' in tkup:
-            fx_rate_usd = fx_latest.get('GBP', 1.26)
+            ccy_needed = 'GBP'
         elif 'BOC2LICA' in tkup or 'MSCAM2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('CAD', 1.37)
+            ccy_needed, invert = 'CAD', True
         elif 'CNBMTTAS' in tkup or 'CNMSM2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('CNY', 7.15)
+            ccy_needed, invert = 'CNY', True
         elif 'AUM3' in tkup:
-            fx_rate_usd = fx_latest.get('AUD', 0.66)
+            ccy_needed = 'AUD'
         elif 'SZMSM2' in tkup:
-            fx_rate_usd = fx_latest.get('CHF', 1.12)
+            ccy_needed = 'CHF'
         elif 'BZMS2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('BRL', 5.0)
+            ccy_needed, invert = 'BRL', True
         elif 'MXMS2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('MXN', 17)
+            ccy_needed, invert = 'MXN', True
         elif 'KOMSM2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('KRW', 1350)
+            ccy_needed, invert = 'KRW', True
         elif 'TWMSM2' in tkup:
-            fx_rate_usd = 1.0 / fx_latest.get('TWD', 32)
+            ccy_needed, invert = 'TWD', True
+
+        if ccy_needed:
+            if ccy_needed not in fx_latest:
+                # FX nao carregou — pula esse ticker (nao inventa)
+                log.warning(f'[liquidity] {ticker}: FX {ccy_needed} ausente, '
+                              'serie skipada')
+                return pd.Series(dtype=float)
+            fx_rate_usd = (1.0 / fx_latest[ccy_needed] if invert
+                            else fx_latest[ccy_needed])
 
         # Converte pra USD
         s_usd = s * fx_rate_usd
@@ -1089,20 +1117,9 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
         return {'error': 'dados de liquidity insuficientes',
                 'cb_series': all_cb_sum, 'bank_series': all_bank_sum}
     total['total'] = total.sum(axis=1)
-
-    # ANCHOR APPROACH: a soma raw pode estar 10-20x off devido a unidades
-    # heterogeneas (¥億, etc) que escapam da deteccao automatica.
-    # Calibra o NIVEL pra ground truth conhecida (Howell GLI ~$150T hoje)
-    # PRESERVANDO a SHAPE/YoY/slope da serie. Forma = correta, level = ancorado.
-    GROUND_TRUTH_TODAY_T = 150.0  # GLI Howell ref ~$150T (CB+M2 world)
-    latest_raw = float(total['total'].iloc[-1])
-    if latest_raw and latest_raw > 0:
-        anchor_factor = GROUND_TRUTH_TODAY_T / latest_raw
-        total['cb'] = total['cb'] * anchor_factor
-        total['bank'] = total['bank'] * anchor_factor
-        total['total'] = total['total'] * anchor_factor
-        log.info(f'[liquidity] anchor: raw={latest_raw:.1f} -> '
-                  f'{GROUND_TRUTH_TODAY_T:.0f} (factor={anchor_factor:.4f})')
+    # NOTA: total_usd e soma das series convertidas via FX+scale heuristica.
+    # Pode ter erros de magnitude (FX/scale por ticker imperfeitos).
+    # Use cb_breakdown_T no _debug pra inspecionar contribuicoes.
 
     # YoY + 3m slope + 10y z
     liq_yoy = yoy_pct(total['total'], periods=12)
@@ -1493,6 +1510,7 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
         return s
 
     # === PUBLIC DEBT ===
+    # SOMENTE GFDEBTN — sem proxy inventado (FARBAST × 5 era estimate)
     public = None
     pub_source = None
     fed_debt = safe_load(['GFDEBTN Index'], period=period,
@@ -1500,12 +1518,6 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     if len(fed_debt) >= 12:
         public = _to_bn(fed_debt)
         pub_source = 'GFDEBTN'
-    else:
-        # Fallback: aproxima public via Fed BS × ~5 (Fed detem ~20% do federal)
-        fed_bs = safe_load(['FARBAST Index'], period=period, label='FED_pub_fb')
-        if len(fed_bs) >= 12:
-            public = _to_bn(fed_bs) * 5
-            pub_source = 'FARBAST × 5 (proxy public)'
 
     # === PRIVATE DEBT ===
     private_components = {}
@@ -2645,10 +2657,10 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
 
 def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
     """Demands on US Capital Markets (% US GDP).
-    Cascade de proxies pra renderizar algo mesmo sem GFDEBTN entitlement:
-      Tier 1: GFDEBTN / GDP direto (ideal)
-      Tier 2: Fed BS 4q change / GDP estimado (Treasury QE absorption)
-      Tier 3: NFL 4q change / GDP estimado"""
+    Requer DADOS REAIS:
+      - Numerador: GFDEBTN Index (Total Federal Debt)
+      - Denominador: GDP CUR$ Index ou GDP Index
+    Sem qualquer dos dois, retorna error claro listando ticker faltante."""
     fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
 
     def _to_bn(s):
@@ -2663,58 +2675,47 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
             return s * 1000
         return s
 
-    # Pega GDP estimado (BBG OU FRED OU hardcoded)
+    # Carrega ambos REAIS — sem fallback inventado
     gdp_series = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
                              label='US_GDP')
-    gdp_bn = None
-    if len(gdp_series) > 12:
-        gdp_bn = _to_bn(_clean(gdp_series).resample('Q').last())
-    if gdp_bn is None or len(gdp_bn) < 4:
-        # Fallback: US GDP grows ~5%/yr. Aprox hardcoded por ano.
-        yrs = pd.date_range('2000-01-01', pd.Timestamp.today(), freq='Q')
-        vals = 10000 * (1.05 ** ((yrs - yrs[0]).days / 365))
-        gdp_bn = pd.Series(vals, index=yrs, name='GDP_est')
-
-    demand = None
-    source = None
-    debug_info = []
-
-    # Tier 1: GFDEBTN
     debt = safe_load(['GFDEBTN Index'], period=period, label='US_FED_DEBT')
-    if len(debt) > 12:
-        d = _to_bn(_clean(debt).resample('Q').last())
-        d, g = d.align(gdp_bn, join='inner')
-        if len(d) > 12:
-            net_issue = d.diff(4)
-            gdp_4q = g.rolling(4, min_periods=2).mean()
-            demand = _clean(((net_issue / gdp_4q) * 100).dropna())
-            source = 'GFDEBTN 4q Δ / GDP'
 
-    # Tier 2: Fed BS change (proxy de Treasury absorption via QE)
-    if demand is None or len(demand) < 12:
-        fed_bs = safe_load(['FARBAST Index'], period=period, label='FED_BS_demand')
-        if len(fed_bs) > 12:
-            d = _to_bn(_clean(fed_bs).resample('Q').last())
-            d, g = d.align(gdp_bn, join='inner')
-            if len(d) > 12:
-                net_issue = d.diff(4)  # 4q change in Fed BS
-                gdp_4q = g.rolling(4, min_periods=2).mean()
-                # Scale up pra representar debt total (~5x Fed BS share)
-                demand = _clean(((net_issue * 5 / gdp_4q) * 100).dropna())
-                source = 'Fed BS 4q Δ × 5 / GDP (proxy)'
+    missing = []
+    if len(gdp_series) < 12:
+        missing.append('GDP CUR$ Index (US Nominal GDP, quarterly)')
+    if len(debt) < 12:
+        missing.append('GFDEBTN Index (Total Federal Debt Outstanding)')
 
-    if demand is None or len(demand) < 12:
+    if missing:
         fig.add_annotation(
-            text='Sem fonte de debt stock disponivel<br>'
-                 '(GFDEBTN, FARBAST falharam)',
+            text='<b>DADOS NECESSARIOS (busca no terminal):</b><br>' +
+                 '<br>'.join(f'• {t}' for t in missing),
             xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
-            font=dict(color='#666666', size=11))
+            font=dict(color='#a00', size=11), align='left')
         fig.update_yaxes(title_text='%')
         return fig
 
-    debug_info.append(f'Source: {source}')
+    debug_info = []
+    g = _to_bn(_clean(gdp_series).resample('Q').last())
+    d = _to_bn(_clean(debt).resample('Q').last())
+    d, g = d.align(g, join='inner')
+
+    if len(d) < 12:
+        fig.add_annotation(
+            text='GFDEBTN e GDP carregados mas sem overlap suficiente',
+            xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
+            font=dict(color='#a00', size=11))
+        fig.update_yaxes(title_text='%')
+        return fig
+
+    net_issue = d.diff(4)
+    gdp_4q = g.rolling(4, min_periods=2).mean()
+    demand = _clean(((net_issue / gdp_4q) * 100).dropna())
+
+    debug_info.append(f'Source: GFDEBTN 4q Δ / GDP (real)')
+    debug_info.append(f'Debt latest: ${d.iloc[-1]:,.0f}bn')
+    debug_info.append(f'GDP latest: ${g.iloc[-1]:,.0f}bn')
     debug_info.append(f'Demand: {demand.min():+.1f}%-{demand.max():+.1f}%')
-    debug_info.append(f'GDP (last): ${gdp_bn.iloc[-1]:,.0f}bn')
 
     # Linha principal (laranja) + fill
     fig.add_trace(go.Scatter(x=demand.index, y=demand.values, mode='lines',
