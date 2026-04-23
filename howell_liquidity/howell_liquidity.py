@@ -685,6 +685,19 @@ def _to_millions(s):
     return s
 
 
+def _debug_annotation(fig, lines: list, y_pos: float = -0.22):
+    """Adiciona rodape de debug com scales das series.
+    Usage: _debug_annotation(fig, ['SOFR: 4.2-5.3%', 'IORB: 4.1-5.4%'])."""
+    if not lines:
+        return
+    fig.add_annotation(
+        xref='paper', yref='paper', x=0.01, y=y_pos,
+        text=' | '.join(lines), showarrow=False, xanchor='left',
+        font=dict(color='#888', size=9, family='monospace'))
+    fig.update_layout(margin=dict(b=max(70, abs(int(y_pos * 300))),
+                                     l=60, r=60, t=60))
+
+
 def load_group(tickers: dict, period: str = '-20Y',
                 field=None) -> dict:
     """Carrega um dict de tickers e retorna dict de series (so as que vieram).
@@ -2640,23 +2653,38 @@ def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
                                     line=dict(color=PALETTE['orange'], width=1.8),
                                     hovertemplate='$%{y:+,.0f}bn<extra></extra>'),
                         secondary_y=False)
-    # SOFR - FF spread (em pp — ja esta em %, nao bps)
+    # SOFR - FF spread — rolling mean 20d pra mostrar TREND (filme)
+    # em vez de spot diario (foto). Daily spread e muito ruidoso.
     sofr = safe_load(['SOFRRATE Index'], period=period, label='SOFR')
     ff = safe_load('FDTR Index', period=period, label='FED_FUNDS')
+    debug_info = []
     if len(sofr) > 0 and len(ff) > 0:
-        s, f = _to_pct(_clean(sofr)).align(_to_pct(_clean(ff)), join='inner')
-        spread = s - f
-        fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
-                                    name='SOFR − FF',
-                                    line=dict(color='#000000', width=1.4)),
-                        secondary_y=True)
+        s = _to_pct(_clean(sofr)).resample('D').last().ffill()
+        f = _to_pct(_clean(ff)).resample('D').last().ffill()
+        s, f = s.align(f, join='inner')
+        # Spread daily
+        spread_raw = s - f
+        # Rolling mean 20d (1 mes trading) — smooth trend
+        spread = spread_raw.rolling(20, min_periods=5).mean().dropna()
+        if len(spread) > 0:
+            debug_info.append(f'SOFR: {s.min():.2f}-{s.max():.2f}%')
+            debug_info.append(f'FF: {f.min():.2f}-{f.max():.2f}%')
+            debug_info.append(f'Spread 20d MA: {spread.min():+.3f}-'
+                                f'{spread.max():+.3f} pp')
+            fig.add_trace(go.Scatter(x=spread.index, y=spread.values,
+                                        mode='lines',
+                                        name='SOFR − FF (20d MA)',
+                                        line=dict(color='#000000',
+                                                   width=1.5)),
+                            secondary_y=True)
     _add_zero_line(fig, secondary_y=False)
     fig.update_yaxes(title_text='Excess Reserves (US$ Billion)',
                       secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
-    fig.update_yaxes(title_text='SOFR less FF Spread',
+    fig.update_yaxes(title_text='SOFR less FF (pp, 20d MA)',
                       secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False, autorange='reversed')
+    _debug_annotation(fig, debug_info, y_pos=-0.22)
     return fig
 
 
@@ -2713,15 +2741,8 @@ def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
                    annotation_font=dict(color=PALETTE['red'], size=10))
     fig.add_hline(y=0, line=dict(color=PALETTE['red'], width=1.2, dash='dash'))
 
-    # Debug annotation no canto
-    if debug_info:
-        fig.add_annotation(
-            xref='paper', yref='paper', x=0.01, y=-0.18,
-            text=' | '.join(debug_info), showarrow=False,
-            xanchor='left', font=dict(color='#888', size=9, family='monospace'))
-
     fig.update_yaxes(title_text='Basis Points (bps)', range=[-30, 30])
-    fig.update_layout(margin=dict(b=60))
+    _debug_annotation(fig, debug_info, y_pos=-0.18)
     return fig
 
 
