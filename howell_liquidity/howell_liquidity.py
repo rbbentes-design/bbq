@@ -1267,34 +1267,102 @@ def _fig_base(title: str, height: int = 380) -> 'go.Figure':
     return fig
 
 
-def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figure':
-    """Ch 1: Global Liquidity vs Real Economy + sine-wave fit."""
+def _fig_dual(title: str, height: int = 400) -> 'go.Figure':
+    """Base figure com 2 eixos Y (esquerda + direita) — pra series com escalas diferentes."""
     fig = make_subplots(specs=[[{'secondary_y': True}]])
-    fig.update_layout(template=DASH_TEMPLATE, height=420,
-                       title='Chart 1 — Global Liquidity YoY vs Real Economy')
+    fig.update_layout(template=DASH_TEMPLATE, height=height, title=title,
+                       margin=dict(l=60, r=60, t=50, b=50),
+                       hovermode='x unified')
+    return fig
 
+
+# Recessoes US (NBER) — pra shading visual
+US_RECESSIONS = [
+    ('2001-03-01', '2001-11-30'),  # dotcom
+    ('2007-12-01', '2009-06-30'),  # GFC
+    ('2020-02-01', '2020-04-30'),  # COVID
+]
+
+
+def _add_recession_shading(fig, recessions=None, opacity=0.08):
+    """Adiciona retangulos cinza nas zonas de recessao US (NBER)."""
+    rec = recessions or US_RECESSIONS
+    for start, end in rec:
+        fig.add_vrect(x0=start, x1=end,
+                       fillcolor=PALETTE['grey'], opacity=opacity,
+                       layer='below', line_width=0)
+
+
+def _add_zero_line(fig, secondary_y=False):
+    """Linha horizontal sutil em y=0."""
+    fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=0.8),
+                   secondary_y=secondary_y)
+
+
+def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figure':
+    """Ch 1: Global Liquidity YoY (left axis, %) + 10y z-score (right axis, z).
+    Sine-wave fit desenhado sobre o z-score (right axis — mesma unidade)."""
+    T_fit = None
+    if liq.get('sine_fit') and liq['sine_fit'].get('T_months'):
+        T_fit = liq['sine_fit']['T_months']
+    subtitle = f' · sine T={T_fit:.0f}m' if T_fit else ''
+    fig = _fig_dual(f'Chart 1 — Global Liquidity YoY vs 10y Z-Score{subtitle}',
+                      height=440)
+
+    # LEFT axis: Liquidity YoY %
     if 'yoy_pct' in liq:
         s = _clean(liq['yoy_pct'])
         fig.add_trace(go.Scatter(x=s.index, y=s.values, mode='lines',
-                                    name='Global Liquidity YoY %',
-                                    line=dict(color=PALETTE['orange'], width=2)),
+                                    name='Liquidity YoY %',
+                                    line=dict(color=PALETTE['orange'], width=2.2),
+                                    fill='tozeroy',
+                                    fillcolor='rgba(232,116,44,0.10)',
+                                    hovertemplate='%{y:.1f}%<extra></extra>'),
                         secondary_y=False)
+
+    # RIGHT axis: z-score + sine fit (mesma unidade = z)
+    if 'liq_z' in liq:
+        z = _clean(liq['liq_z'])
+        fig.add_trace(go.Scatter(x=z.index, y=z.values, mode='lines',
+                                    name='Liquidity 10y Z',
+                                    line=dict(color=PALETTE['beige'], width=1.5),
+                                    hovertemplate='z=%{y:.2f}<extra></extra>'),
+                        secondary_y=True)
 
     if liq.get('sine_fit') and 'fit_series' in liq['sine_fit']:
-        fit_s = liq['sine_fit']['fit_series']
-        proj_s = liq['sine_fit']['proj_series']
+        fit_s = _clean(liq['sine_fit']['fit_series'])
+        proj_s = _clean(liq['sine_fit']['proj_series'])
         fig.add_trace(go.Scatter(x=fit_s.index, y=fit_s.values, mode='lines',
-                                    name=f"Sine fit (T={liq['sine_fit']['T_months']:.0f}m)",
-                                    line=dict(color=PALETTE['red'], width=1.2,
-                                               dash='dot')),
-                        secondary_y=False)
+                                    name=f'Sine fit (T={T_fit:.0f}m)',
+                                    line=dict(color=PALETTE['red'], width=1.4,
+                                               dash='dot'),
+                                    hovertemplate='fit=%{y:.2f}<extra></extra>'),
+                        secondary_y=True)
         fig.add_trace(go.Scatter(x=proj_s.index, y=proj_s.values, mode='lines',
                                     name='Projection 24m',
-                                    line=dict(color=PALETTE['red'], width=1.5,
-                                               dash='dash')),
-                        secondary_y=False)
+                                    line=dict(color=PALETTE['red'], width=1.6,
+                                               dash='dash'),
+                                    hovertemplate='proj=%{y:.2f}<extra></extra>'),
+                        secondary_y=True)
+        # Marca inflection com linha vertical
+        inf_date = liq['sine_fit'].get('next_inflection_date')
+        if inf_date:
+            fig.add_vline(x=inf_date, line=dict(color=PALETTE['red'], width=1,
+                                                   dash='dash'),
+                           annotation_text='Next inflection',
+                           annotation_position='top',
+                           annotation_font_color=PALETTE['red'])
 
-    fig.update_yaxes(title_text='Liquidity YoY %', secondary_y=False)
+    _add_recession_shading(fig)
+    _add_zero_line(fig, secondary_y=False)
+
+    fig.update_yaxes(title_text='Liquidity YoY %', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']),
+                      tickfont=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='Z-score (10y)', secondary_y=True,
+                      title_font=dict(color=PALETTE['beige']),
+                      tickfont=dict(color=PALETTE['beige']),
+                      showgrid=False)
     return fig
 
 
@@ -1403,42 +1471,63 @@ def chart_04_cyc_def(cyc: dict) -> 'go.Figure':
 def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
     """
     Net Fed Liquidity: FARBAST - RRP*1000 - TGA*1000
-    Componentes no mesmo eixo + NFL composta como area laranja.
+    LEFT axis: NFL (USD bn, area laranja principal).
+    RIGHT axis: YoY% change do NFL (sinaliza aceleracao/desaceleracao).
+    Drenos (RRP, TGA) em legendonly por default pra nao poluir.
     """
-    fig = make_subplots(specs=[[{'secondary_y': True}]])
-    fig.update_layout(template=DASH_TEMPLATE, height=400,
-                       title='Chart 5b — Net Fed Liquidity '
-                             '(Fed BS − RRP − TGA)')
+    fig = _fig_dual('Chart 5b — Net Fed Liquidity (Fed BS − RRP − TGA)',
+                      height=420)
     if 'nfl_series' in nfl:
         n = _clean(nfl['nfl_series'])
         fig.add_trace(go.Scatter(x=n.index, y=n.values, mode='lines',
                                     name='Net Fed Liquidity',
                                     line=dict(color=PALETTE['orange'], width=2.5),
                                     fill='tozeroy',
-                                    fillcolor='rgba(232,116,44,0.12)'),
+                                    fillcolor='rgba(232,116,44,0.12)',
+                                    hovertemplate='$%{y:,.0f}bn<extra></extra>'),
                         secondary_y=False)
+    # YoY sobre eixo direito
+    if 'nfl_yoy_pct' in nfl:
+        y = _clean(nfl['nfl_yoy_pct'])
+        fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
+                                    name='NFL YoY %',
+                                    line=dict(color=PALETTE['beige'], width=1.5,
+                                               dash='dot'),
+                                    hovertemplate='%{y:+.1f}%<extra></extra>'),
+                        secondary_y=True)
+    # Componentes em legendonly
     if 'fed_bs' in nfl and len(nfl.get('fed_bs', [])) > 0:
         b = _clean(nfl['fed_bs'])
         fig.add_trace(go.Scatter(x=b.index, y=b.values, mode='lines',
                                     name='Fed BS (FARBAST)',
-                                    line=dict(color=PALETTE['beige'], width=1.2,
-                                               dash='dot')),
+                                    line=dict(color=PALETTE['blue'], width=1.2),
+                                    visible='legendonly'),
                         secondary_y=False)
     if 'rrp' in nfl and len(nfl.get('rrp', [])) > 0:
         r = _clean(nfl['rrp']) * 1000
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
-                                    name='RRP × 1000',
+                                    name='RRP × 1000 (drain)',
                                     line=dict(color=PALETTE['red'], width=1.2),
                                     visible='legendonly'),
                         secondary_y=False)
     if 'tga' in nfl and len(nfl.get('tga', [])) > 0:
         t = _clean(nfl['tga']) * 1000
         fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
-                                    name='TGA × 1000',
+                                    name='TGA × 1000 (drain)',
                                     line=dict(color=PALETTE['purple'], width=1.2),
                                     visible='legendonly'),
                         secondary_y=False)
-    fig.update_yaxes(title_text='USD bn', secondary_y=False)
+
+    _add_recession_shading(fig)
+    _add_zero_line(fig, secondary_y=True)
+
+    fig.update_yaxes(title_text='NFL (USD bn)', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']),
+                      tickfont=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='YoY %', secondary_y=True,
+                      title_font=dict(color=PALETTE['beige']),
+                      tickfont=dict(color=PALETTE['beige']),
+                      showgrid=False)
     return fig
 
 
@@ -2189,61 +2278,220 @@ def build_zip(result: dict) -> bytes:
 _result_cache = {'result': None}
 
 
+def _phase_gauge_html(state: dict) -> str:
+    """
+    Painel visual compacto: termometro de fase + 4 ducks + key metrics
+    + 1-line call. Substitui a parede de texto JSON+memo no topo.
+    """
+    cls = state.get('classifier_output', {})
+    liq = state.get('liquidity', {})
+    nfl = state.get('net_fed_liquidity', {})
+    wbci = state.get('wbci', {})
+    cyc = state.get('cyclicals_defensives', {})
+    curve = state.get('yield_curve', {})
+    ra = state.get('risk_appetite', {})
+    mv = state.get('move', {})
+    ducks = state.get('four_ducks', {})
+    cycle = state.get('cycle', {})
+
+    phase = cls.get('phase', 'Unknown')
+    season = cls.get('season', 'Unknown')
+    next_p = cls.get('next_expected_phase', 'Unknown')
+    duck_cnt = ducks.get('alignment_count', 0)
+    months_to = cycle.get('months_to_next_inflection')
+    next_date = cycle.get('next_inflection_date')
+
+    # Termometro horizontal: 4 segmentos com pointer
+    segments = [
+        ('Rebound',     'Spring', '#7ae582', 'Recession→Recovery'),
+        ('Calm',        'Summer', '#00d4ff', 'Recovery→Boom'),
+        ('Speculation', 'Autumn', '#ffb84d', 'Boom→Slowing'),
+        ('Turbulence',  'Winter', '#ff6b6b', 'Slowing→Recession'),
+    ]
+    phase_idx = next((i for i, (p, _, _, _) in enumerate(segments)
+                       if p == phase), -1)
+
+    seg_html = []
+    for i, (p, s, color, desc) in enumerate(segments):
+        active = (i == phase_idx)
+        opacity = '1.0' if active else '0.35'
+        border = (f'box-shadow: 0 0 12px {color}, inset 0 0 0 2px {color};'
+                   if active else '')
+        seg_html.append(
+            f"<div style='flex:1; background:{color}; opacity:{opacity}; "
+            f"padding:14px 8px; text-align:center; {border} "
+            f"transition: all 0.3s;'>"
+            f"<div style='color:#0B0E14; font-weight:800; font-size:14px;'>{p}</div>"
+            f"<div style='color:#0B0E14; font-size:10px; opacity:0.85;'>{s}</div>"
+            f"<div style='color:#0B0E14; font-size:9px; opacity:0.7; margin-top:2px;'>{desc}</div>"
+            f"</div>")
+
+    # 4 Ducks como bullets coloridos
+    duck_data = [
+        ('Economy',  ducks.get('economy', 'ok')),
+        ('Bonds',    ducks.get('bonds', 'ok')),
+        ('Equity',   ducks.get('equity_sectors', 'ok')),
+        ('Liquidity',ducks.get('liquidity_metrics', 'ok')),
+    ]
+    duck_html = []
+    for name, status in duck_data:
+        is_aligned = 'turbulence' in (status or '').lower()
+        col = '#ff6b6b' if is_aligned else '#7ae582'
+        icon = '●' if is_aligned else '○'
+        label = 'aligning' if is_aligned else 'ok'
+        duck_html.append(
+            f"<div style='display:inline-block; margin-right:18px;'>"
+            f"<span style='color:{col}; font-size:18px;'>{icon}</span> "
+            f"<span style='color:#cce8ff; font-size:12px;'>{name}</span> "
+            f"<span style='color:#8b949e; font-size:10px;'>({label})</span>"
+            f"</div>")
+
+    # Key metrics — minigauges
+    def _metric(label, value, unit='', color='#cce8ff', dec=1):
+        v = (f'{value:.{dec}f}{unit}' if isinstance(value, (int, float))
+              else 'N/A')
+        return (
+            f"<div style='display:inline-block; min-width:120px; "
+            f"margin:0 14px 8px 0; vertical-align:top;'>"
+            f"<div style='color:#8b949e; font-size:10px; "
+            f"text-transform:uppercase; letter-spacing:1px;'>{label}</div>"
+            f"<div style='color:{color}; font-size:18px; "
+            f"font-weight:700;'>{v}</div></div>")
+
+    liq_z = liq.get('liq_z') or 0
+    liq_color = '#ff6b6b' if liq_z < -0.5 else ('#7ae582' if liq_z > 0.5 else '#ffb84d')
+    nfl_yoy = nfl.get('yoy_pct') or 0
+    nfl_color = '#7ae582' if nfl_yoy > 0 else '#ff6b6b'
+    ra_z = ra.get('z') or 0
+    ra_color = '#ff6b6b' if ra_z < -0.5 else ('#7ae582' if ra_z > 0.5 else '#ffb84d')
+
+    metrics_html = (
+        _metric('Liquidity Z', liq_z, '', liq_color, dec=2) +
+        _metric('NFL YoY', nfl_yoy, '%', nfl_color) +
+        _metric('Risk Appetite', ra_z, '', ra_color, dec=2) +
+        _metric('Cyc/Def 12m', cyc.get('ratio_12m_pct'), '%') +
+        _metric('MOVE level', mv.get('level'), '') +
+        _metric('Curve label', curve.get('phase_label', 'N/A'), '',
+                 color='#cce8ff', dec=0)
+    )
+
+    # Smart 1-liner
+    one_liner = _build_one_liner(phase, next_p, duck_cnt, liq_z, nfl_yoy,
+                                    mv.get('z_5y'), ra_z, months_to)
+
+    # Ponteiro do termometro
+    pointer_x = (phase_idx * 25 + 12.5) if phase_idx >= 0 else 50
+    pointer_html = (
+        f"<div style='position:relative; height:14px; margin-top:-2px;'>"
+        f"<div style='position:absolute; left:{pointer_x}%; top:0; "
+        f"transform:translateX(-50%);'>"
+        f"<div style='width:0; height:0; border-left:8px solid transparent; "
+        f"border-right:8px solid transparent; border-bottom:10px solid #cce8ff;'></div>"
+        f"</div></div>")
+
+    # Inflection countdown
+    countdown = ''
+    if months_to and next_date:
+        countdown = (
+            f"<div style='color:#8b949e; font-size:11px; margin-top:6px;'>"
+            f"⏱ Next phase inflection: <b style='color:#cce8ff;'>{next_date}</b> "
+            f"(~{months_to:.0f} months)</div>")
+
+    return f"""
+    <div class='how-card' style='padding:20px 24px;'>
+      <div style='display:flex; justify-content:space-between; align-items:center;
+                   margin-bottom:14px;'>
+        <div>
+          <div style='color:#8b949e; font-size:11px; text-transform:uppercase;
+                       letter-spacing:1.5px;'>Current Phase · Season</div>
+          <div style='color:#E8742C; font-size:28px; font-weight:800; margin-top:2px;'>
+            {phase} · {season}
+          </div>
+        </div>
+        <div style='text-align:right;'>
+          <div style='color:#8b949e; font-size:11px; text-transform:uppercase;
+                       letter-spacing:1.5px;'>Next Phase</div>
+          <div style='color:#cce8ff; font-size:18px; font-weight:700;'>{next_p}</div>
+          <div style='color:{'#ff6b6b' if duck_cnt >= 3 else '#7ae582' if duck_cnt == 0 else '#ffb84d'};
+                       font-size:13px; font-weight:700; margin-top:2px;'>
+            {duck_cnt}/4 ducks aligned
+          </div>
+        </div>
+      </div>
+
+      <!-- Thermometer -->
+      <div style='display:flex; gap:2px; border-radius:4px; overflow:hidden;'>
+        {''.join(seg_html)}
+      </div>
+      {pointer_html}
+
+      <!-- One-liner -->
+      <div style='background:rgba(232,116,44,0.08); border-left:3px solid #E8742C;
+                   padding:10px 14px; margin:14px 0; border-radius:3px;'>
+        <div style='color:#cce8ff; font-size:13px; line-height:1.5;'>{one_liner}</div>
+      </div>
+
+      <!-- 4 Ducks -->
+      <div style='margin-bottom:10px; padding-bottom:10px;
+                   border-bottom:1px solid #1e2330;'>
+        <div style='color:#8b949e; font-size:11px; text-transform:uppercase;
+                     letter-spacing:1.5px; margin-bottom:6px;'>4-Duck Scorecard</div>
+        {''.join(duck_html)}
+      </div>
+
+      <!-- Metrics -->
+      <div>
+        <div style='color:#8b949e; font-size:11px; text-transform:uppercase;
+                     letter-spacing:1.5px; margin-bottom:6px;'>Key Metrics</div>
+        {metrics_html}
+      </div>
+      {countdown}
+    </div>
+    """
+
+
+def _build_one_liner(phase, next_p, duck_cnt, liq_z, nfl_yoy, move_z,
+                       ra_z, months_to):
+    """Frase curta dependendo do regime."""
+    if phase == 'Turbulence' or duck_cnt >= 3:
+        return (f"<b>Defensive posture</b> — {duck_cnt}/4 ducks aligned, "
+                f"liquidity z {liq_z:+.2f}, MOVE elevated. "
+                f"Cash + long bonds historically work here.")
+    if phase == 'Speculation':
+        return (f"<b>Late-cycle</b> — liquidity inflecting (z {liq_z:+.2f}), "
+                f"watch the next duck. Rotate to defensives, "
+                f"trim cyclicals into strength.")
+    if phase == 'Calm':
+        return (f"<b>Risk-on regime</b> — liquidity expanding "
+                f"(NFL YoY {nfl_yoy:+.1f}%), risk appetite {ra_z:+.2f}. "
+                f"Cyclicals + commodities work.")
+    if phase == 'Rebound':
+        return (f"<b>Spring rebound</b> — liquidity leaving trough. "
+                f"Bonds early, equities late. NFL YoY {nfl_yoy:+.1f}%.")
+    return (f"<b>Mixed signals</b> — {duck_cnt}/4 ducks; liquidity z "
+            f"{liq_z:+.2f}. Wait for confirmation before sizing up.")
+
+
 def _build_section_widgets(result: dict) -> list:
     """Converte result em lista de widgets pra display."""
     sec = []
     state = result['state']
     cls = state.get('classifier_output', {})
 
-    # Header
+    # Header compacto
     sec.append(wd.HTML(
         DASH_CSS +
         f"<div class='how-divider'>"
-        f"<div class='how-divider-title'>HOWELL LIQUIDITY FRAMEWORK {VERSION}</div>"
-        f"<div class='how-divider-sub'>As of {state['as_of_date']} | "
-        f"Two-agent liquidity framework — Harvester + Analyst</div>"
+        f"<div class='how-divider-title'>HOWELL LIQUIDITY FRAMEWORK</div>"
+        f"<div class='how-divider-sub'>As of {state['as_of_date']} · {VERSION}</div>"
         f"</div>"))
 
-    # Executive summary card
-    phase = cls.get('phase', 'Unknown')
-    season = cls.get('season', 'Unknown')
-    next_p = cls.get('next_expected_phase', 'Unknown')
-    conf = cls.get('confidence', 0)
-    duck_cnt = state.get('four_ducks', {}).get('alignment_count', 0)
+    # PAINEL VISUAL PRINCIPAL — termometro + 4 ducks + metrics + 1-liner
+    sec.append(wd.HTML(_phase_gauge_html(state)))
 
-    phase_colors = {'Rebound': 'green', 'Calm': 'blue',
-                     'Speculation': 'yellow', 'Turbulence': 'red',
-                     'Neutral': 'yellow', 'Unknown': 'yellow'}
-    pc = phase_colors.get(phase, 'yellow')
-
-    sec.append(wd.HTML(
-        f"<div class='how-card how-root'>"
-        f"<div class='how-section'>EXECUTIVE SUMMARY</div>"
-        f"<div style='font-size:16px; margin-bottom:10px;'>"
-        f"Phase: <span class='how-badge how-badge-{pc}'>{phase}</span> "
-        f"(Season: <b>{season}</b>) | "
-        f"Confidence: <b>{conf}</b> | "
-        f"Ducks aligned: <b>{duck_cnt}/4</b> | "
-        f"Next: <b>{next_p}</b>"
-        f"</div>"
-        f"<div style='font-size:12px; color:#8b949e;'>"
-        f"Sine-fit T: {state.get('cycle', {}).get('length_months_sine_fit', 'N/A')}m | "
-        f"Next inflection: {state.get('cycle', {}).get('next_inflection_date', 'N/A')} | "
-        f"Quadrant: {state.get('cycle', {}).get('current_quadrant', 'N/A')}"
-        f"</div>"
-        f"</div>"))
-
-    # Loader audit (debug de tickers)
+    # Charts
     sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
-                         "LOADER AUDIT (debug) — quais BBG tickers funcionaram</div>"
-                         "<div class='how-divider-sub'>Use pra identificar tickers "
-                         "quebrados e adicionar FRED_API_KEY env var se faltando</div>"
-                         "</div>"))
-    sec.append(wd.HTML(debug_loader_report()))
-
-    # Charts (all 15)
-    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
-                         "AGENT A — HARVESTED CHARTS (15)</div></div>"))
+                         "CHARTS</div></div>"))
     for name in sorted(result['figs'].keys()):
         fig = result['figs'][name]
         try:
@@ -2255,25 +2503,37 @@ def _build_section_widgets(result: dict) -> list:
                 display(fig)
             sec.append(out)
 
-    # State.json dump (collapsible)
+    # Detalhes colapsaveis no fim (JSON + Memo + Audit)
     state_pretty = json.dumps(state, indent=2, default=str)
-    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
-                         "AGENT A — STATE.JSON (Handoff Contract)</div>"
-                         "<div class='how-divider-sub'>Schema per §5.3 — "
-                         "consumed by Agent B</div></div>"))
-    sec.append(wd.HTML(
-        f"<div class='how-card'><pre class='how-memo' style='max-height:400px;overflow:auto;'>"
-        f"{state_pretty[:8000]}{'...[truncated]' if len(state_pretty) > 8000 else ''}"
-        f"</pre></div>"))
-
-    # Agent B memo
-    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
-                         "AGENT B — ANALYST MEMO</div>"
-                         "<div class='how-divider-sub'>Framework-driven "
-                         "interpretation (§§3.1-3.12)</div></div>"))
     memo = run_analyst(state)
+
+    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
+                         "DETAILS (click to expand)</div></div>"))
+
+    # Summary (ingles simples)
     sec.append(wd.HTML(
-        f"<div class='how-card'><pre class='how-memo'>{memo}</pre></div>"))
+        f"<details class='how-card'>"
+        f"<summary style='cursor:pointer; color:#E8742C; font-weight:700; "
+        f"font-size:13px; padding:4px 0;'>📝 Analyst Memo (full)</summary>"
+        f"<pre class='how-memo' style='margin-top:12px;'>{memo}</pre>"
+        f"</details>"))
+
+    # State JSON
+    sec.append(wd.HTML(
+        f"<details class='how-card'>"
+        f"<summary style='cursor:pointer; color:#E8742C; font-weight:700; "
+        f"font-size:13px; padding:4px 0;'>🗂 state.json (handoff contract)</summary>"
+        f"<pre class='how-memo' style='margin-top:12px; max-height:500px; overflow:auto;'>"
+        f"{state_pretty}</pre>"
+        f"</details>"))
+
+    # Loader audit
+    sec.append(wd.HTML(
+        f"<details class='how-card'>"
+        f"<summary style='cursor:pointer; color:#E8742C; font-weight:700; "
+        f"font-size:13px; padding:4px 0;'>🔎 Loader Audit (ticker debug)</summary>"
+        f"<div style='margin-top:12px;'>{debug_loader_report()}</div>"
+        f"</details>"))
 
     return sec
 
