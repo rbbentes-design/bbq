@@ -3065,26 +3065,52 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
 
 
 def chart_msci_vs_global_liq(liq: dict, period: str = '-15Y') -> 'go.Figure':
-    """MSCI World & Global Liquidity — dual axis."""
+    """MSCI World & Global Liquidity — dual axis.
+    Nota: liq['total_usd'] e soma raw sem FX consistente (mistura \$M, EUR,
+    JPY etc). Scale detector abaixo tenta chegar em \$T mas e aproximado.
+    Global Liquidity real (CB+M2 world) deve rodar ~120-160 \$T."""
     fig = _fig_dual('MSCI World & Global Liquidity', height=420)
+    debug_info = []
+
     msci = safe_load('MXWO Index', period=period, label='MSCI_WORLD')
     if len(msci) > 30:
         m = _clean(msci)
+        debug_info.append(f'MSCI: {m.min():.0f}-{m.max():.0f}')
         fig.add_trace(go.Scatter(x=m.index, y=m.values, mode='lines',
                                     name='MSCI World',
                                     line=dict(color='#000000', width=1.4)),
                         secondary_y=False)
     if 'total_usd' in liq:
-        gl = _clean(liq['total_usd']) / 1e3  # em trilhoes
+        raw = _clean(liq['total_usd'])
+        med = abs(raw.median())
+        # Auto-scale pra trillions
+        if med > 1e7:
+            gl = raw / 1e6  # raw em $M -> $T
+            scale_note = '$M raw /1e6'
+        elif med > 1e4:
+            gl = raw / 1e3  # raw em $Bn -> $T
+            scale_note = '$Bn raw /1e3'
+        elif med > 10:
+            gl = raw         # ja em $T
+            scale_note = 'raw em $T'
+        else:
+            gl = raw * 1e3  # serie normalizada/z, scale up (aproximado)
+            scale_note = 'raw pequeno x1e3'
+        debug_info.append(f'Liq raw median={med:.0f} -> {scale_note} '
+                            f'-> {gl.min():.1f}-{gl.max():.1f}T')
         fig.add_trace(go.Scatter(x=gl.index, y=gl.values, mode='lines',
                                     name='Global Liquidity',
-                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                                    line=dict(color=PALETTE['orange'],
+                                               width=1.8),
+                                    hovertemplate='$%{y:.1f}T<extra></extra>'),
                         secondary_y=True)
-    fig.update_yaxes(title_text='MSCI World$ Index', secondary_y=False,
+    fig.update_yaxes(title_text='MSCI World Index', secondary_y=False,
                       title_font=dict(color='#1a1a1a'))
     fig.update_yaxes(title_text='Global Liquidity (US$ Trillions)',
-                      secondary_y=True, title_font=dict(color=PALETTE['orange']),
+                      secondary_y=True,
+                      title_font=dict(color=PALETTE['orange']),
                       showgrid=False)
+    _debug_annotation(fig, debug_info, y_pos=-0.20)
     return fig
 
 
