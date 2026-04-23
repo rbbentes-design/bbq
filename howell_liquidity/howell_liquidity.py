@@ -203,6 +203,17 @@ TICKERS_REPO = {
     # USCBFDRA = Treasury General Account (TGA) — confirmado
     'TGA':    ['USCBFDRA Index', 'WTREGEN Index', 'WDTGAL Index'],
     'MOVE':   ['MOVE Index'],
+    # Treasury Buyback / Redemptions (Daily Treasury Statement, verificado 04/21/26):
+    # UTYDRMBL = Marketable Bills Redemptions (bills pagos = liquidez +)
+    # UTYDRMNT = Marketable Notes Redemptions
+    # UTYDRMBD = Marketable Bonds Redemptions
+    # UTYDRMFB = Marketable Fed Financing Bank Redemptions
+    # UTYDRNMT = Marketable & Nonmarketable Total (todos somados)
+    # Todos em Millions USD, frequencia diaria
+    'TREAS_BUYBACK_BILLS': ['UTYDRMBL Index'],
+    'TREAS_BUYBACK_NOTES': ['UTYDRMNT Index'],
+    'TREAS_BUYBACK_BONDS': ['UTYDRMBD Index'],
+    'TREAS_BUYBACK_TOTAL': ['UTYDRNMT Index'],
 }
 TICKERS_WBCI_CORE4 = {
     'US_ISM':    ['NAPMPMI Index'],
@@ -1380,18 +1391,50 @@ def classify_phase(state: dict) -> dict:
 # 7. Chart builders (15 charts per spec §5.2)
 # ============================================================================
 
-def _fig_base(title: str, height: int = 380) -> 'go.Figure':
-    """Base figure com DASH_TEMPLATE."""
+# Methodology tags por chart (spec v9 §0):
+#   [FAITHFUL] replica verbatim Howell; [INFERRED] reconstroi descricao
+#   qualitativa; [PROXY] aproxima indice proprietario GLI;
+#   [CLAUDE] escolha metodologica pra lacunas da spec.
+METHODOLOGY_TAGS = {
+    'chart_01': ('[PROXY + INFERRED]',
+                   'M2 + CB aggregates; Howell GLI adds shadow+repo+cross-border'),
+    'chart_02': ('[FAITHFUL]', 'Core-4 surveys (ISM+Tankan+ifo+CBI) per Howell'),
+    'chart_03': ('[CLAUDE]', 'ML ensemble; Howell AI method not public'),
+    'chart_04': ('[FAITHFUL]', 'MSCI World sector EW per spec'),
+    'chart_05': ('[FAITHFUL]', '3-tier QE decomp per Howell'),
+    'chart_06': ('[FAITHFUL + CLAUDE]', 'SOFR-IORB + kink detection'),
+    'chart_07': ('[FAITHFUL]', 'User CIX formulas .USGLI/.JPDGLI/.CHINAGLI'),
+    'chart_08': ('[FAITHFUL]', 'NY Fed ACM term premium decomp'),
+    'chart_09': ('[FAITHFUL + CLAUDE]', 'Curve area + 4-phase classifier'),
+    'chart_10': ('[FAITHFUL]', 'Gold/Oil late-cycle signal'),
+    'chart_11': ('[FAITHFUL]', 'BTC/ETH/SOL 60/30/10 basket per Howell'),
+    'chart_12': ('[INFERRED + CLAUDE]', 'Daily GLI nowcast; CB/Private PCA'),
+    'chart_13': ('[FAITHFUL + CLAUDE]', 'Transmission chain visual + empirical lags'),
+}
+
+
+def _tag(chart_id: str) -> str:
+    """Retorna subtitle formatado com methodology tag."""
+    tag, just = METHODOLOGY_TAGS.get(chart_id, ('[CLAUDE]', ''))
+    return f"<span style='color:#888;font-size:10px'>{tag} {just}</span>"
+
+
+def _fig_base(title: str, height: int = 380, chart_id: str = None) -> 'go.Figure':
+    """Base figure com DASH_TEMPLATE + methodology tag opcional."""
+    if chart_id and chart_id in METHODOLOGY_TAGS:
+        title = f"{title}<br>{_tag(chart_id)}"
     fig = go.Figure()
     fig.update_layout(template=DASH_TEMPLATE, title=title, height=height)
     return fig
 
 
-def _fig_dual(title: str, height: int = 400) -> 'go.Figure':
-    """Base figure com 2 eixos Y (esquerda + direita) — pra series com escalas diferentes."""
+def _fig_dual(title: str, height: int = 400, chart_id: str = None) -> 'go.Figure':
+    """Base figure com 2 eixos Y + methodology tag opcional."""
+    if chart_id and chart_id in METHODOLOGY_TAGS:
+        title = f"{title}<br>{_tag(chart_id)}"
     fig = make_subplots(specs=[[{'secondary_y': True}]])
     fig.update_layout(template=DASH_TEMPLATE, height=height, title=title,
-                       margin=dict(l=60, r=60, t=50, b=50),
+                       margin=dict(l=60, r=60, t=60, b=50),
                        hovermode='x unified')
     return fig
 
@@ -1427,6 +1470,7 @@ def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figu
         T_fit = liq['sine_fit']['T_months']
     subtitle = f' · sine T={T_fit:.0f}m' if T_fit else ''
     fig = _fig_dual(f'Chart 1 — Global Liquidity YoY vs 10y Z-Score{subtitle}',
+                      chart_id='chart_01',
                       height=440)
 
     # LEFT axis: Liquidity YoY %
@@ -1498,7 +1542,8 @@ def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figu
 
 def chart_02_wbci(wbci: dict) -> 'go.Figure':
     """Ch 2: WBCI core-4 + extended."""
-    fig = _fig_base('Chart 2 — World Business Cycle Index (WBCI) — z-score')
+    fig = _fig_base('Chart 2 — World Business Cycle Index (WBCI) — z-score',
+                     chart_id='chart_02')
     if 'core4_z' in wbci:
         c = _clean(wbci['core4_z'])
         fig.add_trace(go.Scatter(x=c.index, y=c.values, mode='lines',
@@ -1523,7 +1568,8 @@ def chart_03_growth_nowcast(period: str = '-20Y') -> 'go.Figure':
       -DXY (USD strength = tightening), -HY OAS (tight = confidence),
       -VIX (low vol = risk on).
     """
-    fig = _fig_base('Chart 3 — Growth Nowcast (composite macro z-score)')
+    fig = _fig_base('Chart 3 — Growth Nowcast (composite macro z-score)',
+                     chart_id='chart_03')
     predictors = {}
 
     # Carrega os componentes (reuso tickers ja configurados)
@@ -1583,7 +1629,8 @@ def chart_03_growth_nowcast(period: str = '-20Y') -> 'go.Figure':
 
 def chart_04_cyc_def(cyc: dict) -> 'go.Figure':
     """Ch 4: Cyclicals vs Defensives."""
-    fig = _fig_base('Chart 4 — Cyclicals / Defensives (MSCI World)')
+    fig = _fig_base('Chart 4 — Cyclicals / Defensives (MSCI World)',
+                     chart_id='chart_04')
     if 'ratio' in cyc:
         r = _clean(cyc['ratio'])
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
@@ -1664,7 +1711,8 @@ def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
 
 def chart_05_stimulus(liq: dict, period: str = '-10Y') -> 'go.Figure':
     """Ch 5: Stimulus decomp (Fed QE / Not-QE / Treasury QE). Em $Bn."""
-    fig = _fig_base('Chart 5 — Fed Stimulus Decomposition (Reserves, RRP, Treasury)')
+    fig = _fig_base('Chart 5 — Fed Stimulus Decomposition (Reserves, RRP, Treasury)',
+                     chart_id='chart_05')
     rates_repo = load_group(TICKERS_REPO, period)
     # Todos em $M no BBG -> converte pra $Bn (/1000)
     if 'WRESBAL' in rates_repo:
@@ -1714,7 +1762,8 @@ def chart_06_repo_spread(period: str = '-10Y') -> 'go.Figure':
 
 def chart_07_debt_liquidity(dl: dict) -> 'go.Figure':
     """Ch 7: Debt-Liquidity ratio."""
-    fig = _fig_base('Chart 7 — Debt / Liquidity Refinancing Capacity')
+    fig = _fig_base('Chart 7 — Debt / Liquidity Refinancing Capacity',
+                     chart_id='chart_07')
     if 'ratio' in dl:
         r = _clean(dl['ratio'])
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
@@ -1734,7 +1783,8 @@ def chart_07_debt_liquidity(dl: dict) -> 'go.Figure':
 
 def chart_08_term_premium(tp: dict) -> 'go.Figure':
     """Ch 8: US 10Y decomp — level vs term premium."""
-    fig = _fig_base('Chart 8 — US 10Y Decomposition (Yield vs ACM Term Premium)')
+    fig = _fig_base('Chart 8 — US 10Y Decomposition (Yield vs ACM Term Premium)',
+                     chart_id='chart_08')
     if 'us10y' in tp and tp['us10y'] is not None:
         y = _to_pct(_clean(tp['us10y']))
         fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
@@ -1751,7 +1801,8 @@ def chart_08_term_premium(tp: dict) -> 'go.Figure':
 
 def chart_09_curve_phase(curve: dict) -> 'go.Figure':
     """Ch 9: Yield curve area + phase label."""
-    fig = _fig_base('Chart 9 — Yield Curve Area (3M-30Y integrated)')
+    fig = _fig_base('Chart 9 — Yield Curve Area (3M-30Y integrated)',
+                     chart_id='chart_09')
     if 'area' in curve:
         a = _clean(curve['area'])
         fig.add_trace(go.Scatter(x=a.index, y=a.values, mode='lines',
@@ -1767,7 +1818,8 @@ def chart_09_curve_phase(curve: dict) -> 'go.Figure':
 
 def chart_10_gold_oil(go_dict: dict) -> 'go.Figure':
     """Ch 10: Gold/Oil ratio."""
-    fig = _fig_base('Chart 10 — Gold / Oil Ratio (late-cycle signal when z > +1)')
+    fig = _fig_base('Chart 10 — Gold / Oil Ratio (late-cycle signal when z > +1)',
+                     chart_id='chart_10')
     if 'ratio' in go_dict:
         r = _clean(go_dict['ratio'])
         fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
@@ -1786,7 +1838,8 @@ def chart_10_gold_oil(go_dict: dict) -> 'go.Figure':
 
 def chart_11_world_term_premia(period: str = '-15Y') -> 'go.Figure':
     """Ch 11: World term premia vs terminal policy rate (GLI replica)."""
-    fig = _fig_base('Chart 11 — World Term Premium vs Terminal Policy Rate')
+    fig = _fig_base('Chart 11 — World Term Premium vs Terminal Policy Rate',
+                     chart_id='chart_11')
     rates = load_group({'US10Y_TP': 'ACMTP10 Index', 'US_FF': 'FDTR Index'},
                          period)
     if 'US10Y_TP' in rates:
@@ -2120,27 +2173,38 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
 
 def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
     """US Fed & US Treasury: All Stimulus — stacked area 3-tier em TRILLIONS.
-    GLI usa 52w change (YoY) em US$ Trillions. Stock range 4-9T,
-    YoY change range -2T a +5T.
+    GLI usa 52w change (YoY) em US$ Trillions.
+
+    Treasury QE tier agora usa BUYBACK real (UTYDRNMT = total redemptions)
+    + -ΔTGA como componentes. Fallback pra -ΔTGA sozinho se UTYDRNMT ausente.
     """
     fig = _fig_base('US Fed & US Treasury: All Stimulus', height=440)
-    # Tier 1 (preto) = Treasury 'QE' via -ΔTGA
-    # Tier 2 (vermelho) = Fed QE-plus = Fed securities 52w change
-    # Tier 3 (laranja) = Not-QE,QE = -ΔRRP (RRP drain = liquidez)
     if 'fed_bs' not in nfl or len(nfl.get('fed_bs', [])) == 0:
         fig.add_annotation(text='Fed BS ausente', xref='paper', yref='paper',
                             x=0.5, y=0.5, showarrow=False,
                             font=dict(color=PALETTE['muted']))
         return fig
 
-    # Todos os 3 em $M (apos fix NFL). Converte pra $T dividindo por 1e6.
-    # Usa YoY (52w) que e o que o GLI plota (range -2T a +5T, pico COVID ~6T)
+    # Todos em $M -> $T (/1e6)
     fed = _clean(nfl['fed_bs']).diff(52) / 1e6
     rrp = _clean(nfl.get('rrp', pd.Series()))
     tga = _clean(nfl.get('tga', pd.Series()))
 
+    # Treasury Buyback — total redemptions (daily, $M)
+    # UTYDRNMT cobre Marketable+Nonmarketable. Agrega em rolling 52w sum
+    # (fluxo anual de debt sendo pago de volta ao mercado = liquidez +)
+    buyback_total = safe_load(TICKERS_REPO['TREAS_BUYBACK_TOTAL'],
+                                period=period, label='TREAS_BUYBACK')
+    if len(buyback_total) > 60:
+        bb = _to_millions(_clean(buyback_total))
+        bb_daily = bb.resample('D').last().fillna(0)
+        bb_52w = bb_daily.rolling(365, min_periods=90).sum() / 1e6  # -> $T
+        bb_w = bb_52w.resample('W').last()
+    else:
+        bb_w = pd.Series(dtype=float)
+
     if len(rrp) > 52:
-        not_qe = -rrp.diff(52) / 1e6  # RRP shrinking = liquidity +, em $T
+        not_qe = -rrp.diff(52) / 1e6
         fig.add_trace(go.Scatter(x=not_qe.index, y=not_qe.values, mode='lines',
                                     name='Not-QE,QE (−ΔRRP)',
                                     line=dict(color=PALETTE['orange'], width=0),
@@ -2153,11 +2217,25 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
                                 stackgroup='stim',
                                 fillcolor='rgba(214,69,69,0.6)',
                                 hovertemplate='$%{y:+.2f}T<extra></extra>'))
+
+    # Treasury QE = buyback real (se disponivel) + -ΔTGA
+    treas_qe = None
     if len(tga) > 52:
-        treas_qe = -tga.diff(52) / 1e6  # TGA shrinking = liquidity +, em $T
+        treas_qe = -tga.diff(52) / 1e6
+    if len(bb_w) > 10:
+        bb_aligned = bb_w.reindex(treas_qe.index if treas_qe is not None
+                                     else bb_w.index, method='ffill')
+        if treas_qe is not None:
+            treas_qe = treas_qe.add(bb_aligned, fill_value=0)
+        else:
+            treas_qe = bb_aligned
+
+    if treas_qe is not None and len(treas_qe) > 0:
+        name = ("Treasury 'QE' (Buyback + −ΔTGA)" if len(bb_w) > 10
+                else "Treasury 'QE' (−ΔTGA)")
         fig.add_trace(go.Scatter(x=treas_qe.index, y=treas_qe.values,
                                     mode='lines',
-                                    name="Treasury 'QE' (−ΔTGA)",
+                                    name=name,
                                     line=dict(color='#000000', width=0),
                                     stackgroup='stim',
                                     fillcolor='rgba(0,0,0,0.7)',
