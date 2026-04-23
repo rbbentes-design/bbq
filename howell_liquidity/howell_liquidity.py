@@ -2319,10 +2319,12 @@ def chart_move_zones(period: str = '-15Y') -> 'go.Figure':
 
 def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
     """Daily Bond Term Premia: Major Markets.
-    Proxy = yield 10Y menos policy rate do PROPRIO pais (TP simplificado),
-    nao mais US FFR como ancora unica."""
-    fig = _fig_base('Daily Bond Term Premia: Major Markets', height=420)
-    # (label, 10Y ticker, 10Y fred_label, policy tickers, cor, dash)
+    Proxy = (10Y − policy rate) DEMEANED pelo propio historico 5y.
+    Isso aproxima o term premium tipico do GLI (range -1.0 a +1.0 pp).
+    Spread absoluto 10Y-policy e dominado por nivel de rates; demean
+    mostra o premium 'extra' que o mercado exige vs historico recente."""
+    fig = _fig_base('Daily Bond Term Premia: Major Markets (demeaned)',
+                      height=420)
     countries = [
         ('US 10y',      'USGG10YR Index', 'US10Y', ['FDTR Index'],
          PALETTE['red'], False),
@@ -2342,34 +2344,49 @@ def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
 
     any_plotted = False
     for label, tk, ylbl, pol_tks, color, dashed in countries:
-        y = safe_load(tk, period=period, label=ylbl)
+        y = safe_load(tk, period='-6Y', label=ylbl)  # 6y pra ter historia
         if len(y) < 30:
             continue
         y_d = _clean(y).resample('D').last().ffill()
 
-        # Policy rate do proprio pais
-        pol = safe_load(pol_tks, period=period,
+        pol = safe_load(pol_tks, period='-6Y',
                           label=label.replace(' ', '_'))
-        if len(pol) >= 30:
-            p_d = _clean(pol).resample('D').last().ffill()
-            y_d, p_d = y_d.align(p_d, join='inner')
-            tp = (y_d - p_d) / 100.0
-        else:
-            tp = y_d / 100.0
+        if len(pol) < 30:
+            continue
+        p_d = _clean(pol).resample('D').last().ffill()
+        y_d, p_d = y_d.align(p_d, join='inner')
+        if len(y_d) < 100:
+            continue
+
+        # Spread bruto (em pp)
+        spread = (y_d - p_d)
+        # Demean: subtrai media rolling 3y (750 dias) — aprox TP do mercado
+        mean_3y = spread.rolling(750, min_periods=250).mean()
+        tp = spread - mean_3y
+        tp = _clean(tp.dropna())
+        # Filtra so o periodo de interesse final (ultimos 3 anos)
+        cutoff = tp.index.max() - pd.DateOffset(years=3) if len(tp) else None
+        if cutoff is not None:
+            tp = tp[tp.index >= cutoff]
+
+        if len(tp) < 30:
+            continue
 
         dash = 'dash' if dashed else 'solid'
         fig.add_trace(go.Scatter(x=tp.index, y=tp.values, mode='lines',
                                     name=label,
                                     line=dict(color=color, width=1.4,
-                                               dash=dash)))
+                                               dash=dash),
+                                    hovertemplate=f'{label}: %{{y:+.2f}}pp<extra></extra>'))
         any_plotted = True
 
     if not any_plotted:
-        fig.add_annotation(text='Todos os 10Y yields falharam — verifique entitlements',
+        fig.add_annotation(text='Todos os 10Y yields falharam',
                             xref='paper', yref='paper', x=0.5, y=0.5,
                             showarrow=False, font=dict(color='#666666'))
     _add_zero_line(fig)
-    fig.update_yaxes(title_text='Implied Term Premia 10Y (yield − policy rate)')
+    fig.update_yaxes(title_text='Implied Term Premia 10-Year Bond '
+                                  '(demeaned vs 3y avg)')
     return fig
 
 
@@ -2427,36 +2444,73 @@ def chart_world_tp_policy(period: str = '-3Y') -> 'go.Figure':
 
 def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
                                        period: str = '-25Y') -> 'go.Figure':
-    """US Liquidity (Advanced 9 Months) & 'Average' Treasury Yield Curve."""
-    fig = _fig_dual("US Liquidity (Advanced 9M) & 'Average' Treasury Yield Curve",
-                      height=420)
-    # US liquidity proxy normalizado robusto 0-100
+    """US Liquidity (Advanced 9 Months) & 'Average' Treasury Yield Curve Slope.
+    GLI plota slope em escala 0-8 (pp) — usa media de varios spreads
+    em vez da area integrada."""
+    fig = _fig_dual("US Liquidity (Advanced 9M) & 'Average' "
+                      "Treasury Yield Curve Slope", height=420)
+
+    # LEFT: US liquidity normalizada 0-100
+    has_liq = False
     if 'liq_z' in liq:
         z = _clean(liq['liq_z'])
-        norm = _robust_normalize(z, lo_pct=5, hi_pct=95, out_min=10,
-                                     out_max=90)
-        # Detect freq: se mensal shift 9 periodos, se daily 9*21
-        if len(norm) > 1:
-            days = (norm.index.to_series().diff().dt.days.median() or 1)
-            shift_n = 9 if days > 20 else 9 * 21
-        else:
-            shift_n = 9
-        norm = norm.shift(-shift_n)
-        fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
-                                    name='US Domestic Liquidity (+9m)',
-                                    line=dict(color=PALETTE['orange'], width=1.6)),
-                        secondary_y=False)
-    # Avg yield curve = area
-    if 'area' in curve:
-        a = _clean(curve['area'])
-        fig.add_trace(go.Scatter(x=a.index, y=a.values, mode='lines',
-                                    name='Average Yield Curve',
+        if len(z) > 20:
+            norm = _robust_normalize(z, lo_pct=5, hi_pct=95, out_min=10,
+                                         out_max=90)
+            if len(norm) > 1:
+                days = (norm.index.to_series().diff().dt.days.median() or 1)
+                shift_n = 9 if days > 20 else 9 * 21
+            else:
+                shift_n = 9
+            norm = norm.shift(-shift_n)
+            norm = _clean(norm)
+            if len(norm) > 0:
+                fig.add_trace(go.Scatter(x=norm.index, y=norm.values,
+                                            mode='lines',
+                                            name='US Domestic Liquidity (+9m)',
+                                            line=dict(color=PALETTE['orange'],
+                                                       width=1.8)),
+                                secondary_y=False)
+                has_liq = True
+
+    # RIGHT: 'Average' yield curve slope = media de (10Y-3M, 10Y-2Y)
+    # Escala nativa em pp (0-8 como no GLI)
+    has_curve = False
+    slope_series = None
+    if 'curve_df' in curve and curve.get('curve_df') is not None:
+        df = curve['curve_df']
+        candidates = []
+        if 10 in df.columns and 0.25 in df.columns:
+            candidates.append(df[10] - df[0.25])  # 10Y-3M
+        if 10 in df.columns and 2 in df.columns:
+            candidates.append(df[10] - df[2])  # 10Y-2Y
+        if candidates:
+            slope_series = sum(candidates) / len(candidates)
+    # Fallback: carrega 10Y e 2Y direto
+    if slope_series is None or len(slope_series.dropna()) < 30:
+        us10 = safe_load('USGG10YR Index', period=period, label='US10Y')
+        us2 = safe_load('USGG2YR Index', period=period, label='US2Y')
+        if len(us10) > 30 and len(us2) > 30:
+            y10, y2 = _clean(us10).align(_clean(us2), join='inner')
+            slope_series = (y10 - y2).resample('M').last()
+
+    if slope_series is not None and len(slope_series.dropna()) > 10:
+        s = _clean(slope_series)
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, mode='lines',
+                                    name='Average Yield Curve Slope',
                                     line=dict(color='#000000', width=1.4)),
                         secondary_y=True)
+        has_curve = True
+
+    if not has_liq and not has_curve:
+        fig.add_annotation(text='Sem dados liquidity nem curve',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666666'))
+
     fig.update_yaxes(title_text='Liquidity Index (0-100)',
                       secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
-    fig.update_yaxes(title_text="'Average' Yield Curve",
+    fig.update_yaxes(title_text="'Average' Yield Curve (pp)",
                       secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False)
     return fig
