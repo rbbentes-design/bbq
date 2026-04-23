@@ -996,12 +996,49 @@ def build_net_fed_liquidity(period: str = '-20Y') -> dict:
 
 def build_global_liquidity(period: str = '-20Y') -> dict:
     """
-    Global Liquidity Index (§3.3). CB + Retail Bank Credit.
-    Bugfix: converte cada serie pra USD TRILLIONS via FX + scale detection
-    em vez de somar raw (que misturava \$M, €M, ¥100M, etc).
-    Target: total_usd deve ficar ~120-160 \$T matching GLI real.
+    Global Liquidity Index (§3.3).
+    Tier 1: CIX .GLLIQTY direto do terminal (formula do usuario, ~120T).
+    Tier 2: Reconstroi via CB + Bank Credit FX-converted (proxy).
     """
     log.info('[liquidity] carregando CBs + bank credit...')
+
+    # === TIER 1: CIX .GLLIQTY direto (formula do usuario, retorna em T) ===
+    cix_direct = safe_load(['.GLLIQTY Index'], period=period,
+                              label='GLLIQTY_CIX')
+    if len(cix_direct) >= 24:
+        log.info(f'[liquidity] usando CIX .GLLIQTY direto, '
+                  f'latest={cix_direct.iloc[-1]:.2f}T')
+        total_t = _clean(cix_direct).resample('M').last()
+        liq_yoy = yoy_pct(total_t, periods=12)
+        liq_z = rolling_z(liq_yoy, window_years=10)
+        slope_3m = liq_z.diff(3)
+        fit = sine_wave_fit(liq_z.dropna()) if len(liq_z.dropna()) > 60 \
+              else {'error': 'curta'}
+        return {
+            'total_usd': total_t,        # em $T direto
+            'cb_sum': pd.Series(dtype=float),
+            'bank_sum': pd.Series(dtype=float),
+            'total': total_t,
+            'yoy_pct': liq_yoy,
+            'liq_z': liq_z,
+            'slope_3m': slope_3m,
+            'cb_contrib_pct': None,
+            'private_contrib_pct': None,
+            'sine_fit': fit,
+            'latest_yoy': float(liq_yoy.iloc[-1]) if len(liq_yoy) else None,
+            'latest_z': float(liq_z.iloc[-1]) if len(liq_z.dropna()) else None,
+            'latest_slope_3m': float(slope_3m.iloc[-1])
+                                  if len(slope_3m.dropna()) else None,
+            '_debug': {
+                'source': '.GLLIQTY CIX direto (formula usuario)',
+                'latest_T': float(total_t.iloc[-1]),
+                'min_T': float(total_t.min()),
+                'max_T': float(total_t.max()),
+            },
+        }
+
+    # === TIER 2: Reconstroi via CB + Bank Credit (proxy) ===
+    log.warning('[liquidity] .GLLIQTY indisponivel, usando reconstrucao proxy')
     cbs = load_group(TICKERS_CB, period)
     bank = load_group(TICKERS_BANK_CREDIT, period)
     repo = load_group(TICKERS_REPO, period)
