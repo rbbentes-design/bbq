@@ -1489,126 +1489,101 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
 def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     """
     Debt / Liquidity refinancing ratio (Ch 7).
-    Debt = PUBLIC + PRIVATE (matching GLI 'Advanced Economies Debt*'):
-      - Public:   GFDEBTN (Federal Debt)
-      - Private:  ALCBBKCR (Bank Credit Total) +
-                  HMTGDOFN (Mortgage Debt Outstanding, FRED) +
-                  CMDEBT (Household Credit, FRED)
-    Sem dividida privada o ratio fica em ~120-140% (so federal/M2).
-    Com privada deve chegar a 180-240% matching GLI.
+    Usa CIX FORMULAS DO USUARIO (verificadas no terminal):
+      .USGLI    = (GDDI111G + GDDI111L) / ((M2 / GDP CUR\$) * 100)
+      .JPDGLI   = (GDDI158G + GDDI158L) / ((ECORJPN / ECOXJPS) * 100)
+      .CHINAGLI = (GDDI924G + GDDI924L) / CGGDM2G
+
+    GDDI tickers IMF Global Debt Database (% GDP):
+      G suffix = General Government Debt
+      L suffix = Loans + Debt Securities Private Sector
+    Pais codes: 111=US, 158=JP, 924=CN, 112=UK, 134=DE/EZ
     """
-    def _to_bn(s):
-        s = _clean(s).resample('M').last()
-        if len(s) == 0:
-            return s
-        m = abs(s.median())
-        if m > 1e6:
-            return s / 1000  # $M -> $Bn
-        if m < 100:
-            return s * 1000  # $T -> $Bn
-        return s
+    # Tenta CIX direto primeiro (se usuario tem registrado)
+    direct = safe_load(['.USGLI Index'], period=period, label='USGLI_CIX')
+    if len(direct) >= 12:
+        ratio = _clean(direct).resample('M').last()
+        z = rolling_z(ratio, window_years=10)
+        return {
+            'ratio': ratio,
+            'ratio_z_10y': z,
+            'latest_ratio': float(ratio.iloc[-1]),
+            'latest_z': float(z.iloc[-1]) if len(z.dropna()) else None,
+            'regime': ('fragile' if (z.iloc[-1] if len(z.dropna()) else 0) > 1
+                         else 'stretched' if (z.iloc[-1] if len(z.dropna()) else 0) < -1
+                         else 'neutral'),
+            '_debug': {'source': '.USGLI CIX direto'},
+        }
 
-    # === PUBLIC DEBT ===
-    # SOMENTE GFDEBTN — sem proxy inventado (FARBAST × 5 era estimate)
-    public = None
-    pub_source = None
-    fed_debt = safe_load(['GFDEBTN Index'], period=period,
-                           label='US_FED_DEBT')
-    if len(fed_debt) >= 12:
-        public = _to_bn(fed_debt)
-        pub_source = 'GFDEBTN'
+    # Senao reconstroi a formula USGLI: (GDDI111G + GDDI111L) / ((M2/GDP)*100)
+    gddi_g = safe_load(['GDDI111G Index'], period=period,
+                         label='US_GOV_DEBT_PCT_GDP')   # General gov % GDP
+    gddi_l = safe_load(['GDDI111L Index'], period=period,
+                         label='US_PRIV_DEBT_PCT_GDP')  # Private loans+securities % GDP
+    m2 = safe_load(['M2 Index', 'M2NS Index'], period=period, label='US_M2')
+    gdp = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
+                       label='US_GDP_dl')
 
-    # === PRIVATE DEBT ===
-    private_components = {}
+    missing = []
+    if len(gddi_g) < 4: missing.append('GDDI111G Index (US Gov Debt %GDP)')
+    if len(gddi_l) < 4: missing.append('GDDI111L Index (US Private Debt %GDP)')
+    if len(m2) < 12: missing.append('M2 Index (US M2)')
+    if len(gdp) < 4: missing.append('GDP CUR$ Index (US Nominal GDP)')
 
-    # 1) Bank Credit Total (proxy broad pro private bank debt stock)
-    bank_cr = safe_load(['ALCBBKCR Index', 'TOTBKCR'], period=period,
-                          label='BANK_CR_priv')
-    if len(bank_cr) >= 12:
-        private_components['bank_credit'] = _to_bn(bank_cr)
+    if missing:
+        return {'error': 'Tickers faltando: ' + '; '.join(missing),
+                '_debug': {'missing_tickers': missing}}
 
-    # 2) Mortgage debt outstanding (FRED HMTGDOFN ou MDOTHIOH)
-    mortgage = safe_load(['HMTGDOFN Index', 'MDOTHIOH Index'],
-                            period=period, label='MORTGAGE_DEBT')
-    if len(mortgage) >= 12:
-        private_components['mortgage'] = _to_bn(mortgage)
+    # Resample anual (GDDI sao yearly)
+    g_pct = _clean(gddi_g).resample('A').last()    # general gov % GDP
+    p_pct = _clean(gddi_l).resample('A').last()    # private % GDP
+    m2_lvl = _clean(m2).resample('A').last()
+    gdp_lvl = _clean(gdp).resample('A').last()
 
-    # 3) Household credit (FRED CMDEBT — household debt securities + loans)
-    household = safe_load(['CMDEBT Index'], period=period, label='HH_DEBT')
-    if len(household) >= 12:
-        private_components['household'] = _to_bn(household)
+    # M2/GDP em %
+    m2_aligned, gdp_aligned = m2_lvl.align(gdp_lvl, join='inner')
+    if len(m2_aligned) < 4:
+        return {'error': 'M2 e GDP sem overlap'}
+    m2_pct_gdp = (m2_aligned / gdp_aligned) * 100
 
-    # 4) Nonfinancial corporate debt (FRED BCNSDODNS)
-    corp = safe_load(['BCNSDODNS Index'], period=period, label='CORP_DEBT')
-    if len(corp) >= 12:
-        private_components['corp'] = _to_bn(corp)
+    # debt total % GDP (public + private)
+    debt_aligned = pd.concat([g_pct, p_pct], axis=1,
+                                 join='inner').dropna(how='all')
+    if debt_aligned.empty:
+        return {'error': 'GDDI G + L sem overlap'}
+    debt_pct_gdp = debt_aligned.sum(axis=1)
 
-    private = None
-    priv_source_list = []
-    if private_components:
-        df_priv = pd.DataFrame(private_components).dropna(how='all')
-        if not df_priv.empty:
-            private = df_priv.sum(axis=1)
-            priv_source_list = list(private_components.keys())
-
-    # === TOTAL DEBT (PUBLIC + PRIVATE) ===
-    if public is None and private is None:
-        return {'error': 'Nenhuma fonte de debt disponivel'}
-
-    if public is not None and private is not None:
-        df_d = pd.DataFrame({'pub': public, 'priv': private}).dropna(how='all')
-        debt = df_d.sum(axis=1)
-        source = (f'Public ({pub_source}) + Private '
-                    f'({"+".join(priv_source_list) if priv_source_list else "none"})')
-    elif public is not None:
-        debt = public
-        source = f'Public only ({pub_source})'
-    else:
-        debt = private
-        source = f'Private only ({"+".join(priv_source_list)})'
-
-    # Denominador: US M2 direto ($Bn). NAO usa liq['total_usd'] que e
-    # global liquidity ($T) — escala diferente do US debt.
-    liq_total = None
-    m2 = safe_load(['M2NS Index', 'M2SL'], period=period, label='US_M2_dl')
-    if len(m2) >= 12:
-        liq_total = _to_bn(m2)
-
-    if liq_total is None:
-        return {'error': 'M2 indisponivel pra denominador'}
-
-    aligned = pd.concat([debt, liq_total], axis=1, join='inner').dropna()
-    if aligned.empty or len(aligned) < 12:
-        return {'error': 'sem overlap debt/M2'}
+    # Ratio = debt%GDP / (M2%GDP) — adimensional, depois *100 pra display em %
+    aligned = pd.concat([debt_pct_gdp, m2_pct_gdp],
+                          axis=1, join='inner').dropna()
+    if len(aligned) < 4:
+        return {'error': 'debt e liq sem overlap final'}
     aligned.columns = ['debt', 'liq']
+    ratio = (aligned['debt'] / aligned['liq']) * 100  # em %
+    ratio = _clean(ratio)
 
-    # Ratio em % (ambos $Bn): debt/M2 * 100
-    ratio = (aligned['debt'] / aligned['liq']) * 100
-    ratio = _clean(ratio).clip(50, 400)
+    # Anual -> resample mensal pra plot suave
+    ratio_m = ratio.resample('M').interpolate(method='linear')
 
-    z = rolling_z(ratio, window_years=10)
+    z = rolling_z(ratio_m, window_years=10)
 
     return {
-        'ratio': ratio,
+        'ratio': ratio_m,
         'ratio_z_10y': z,
-        'latest_ratio': float(ratio.iloc[-1]),
+        'latest_ratio': float(ratio_m.iloc[-1]),
         'latest_z': float(z.iloc[-1]) if len(z.dropna()) else None,
         'regime': ('fragile' if (z.iloc[-1] if len(z.dropna()) else 0) > 1
                      else 'stretched' if (z.iloc[-1] if len(z.dropna()) else 0) < -1
                      else 'neutral'),
         '_debug': {
-            'source': source,
-            'public_latest_bn': float(public.iloc[-1]) if public is not None
-                                  and len(public) else None,
-            'private_latest_bn': float(private.iloc[-1]) if private is not None
-                                   and len(private) else None,
-            'private_components': priv_source_list,
-            'debt_total_latest_bn': float(debt.iloc[-1])
-                                       if len(debt) else None,
-            'm2_latest_bn': float(liq_total.iloc[-1])
-                              if len(liq_total) else None,
-            'ratio_range_pct': (float(ratio.min()), float(ratio.max())),
-            'n_obs': int(len(aligned)),
+            'source': 'USGLI reconstruido: (GDDI111G + GDDI111L) / (M2/GDP*100)',
+            'gov_debt_pct_gdp_latest': float(g_pct.iloc[-1]) if len(g_pct) else None,
+            'priv_debt_pct_gdp_latest': float(p_pct.iloc[-1]) if len(p_pct) else None,
+            'm2_pct_gdp_latest': float(m2_pct_gdp.iloc[-1])
+                                    if len(m2_pct_gdp) else None,
+            'ratio_pct_latest': float(ratio_m.iloc[-1]),
+            'ratio_range_pct': (float(ratio_m.min()), float(ratio_m.max())),
+            'n_annual_obs': int(len(aligned)),
         },
     }
 
