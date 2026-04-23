@@ -98,18 +98,21 @@ AS_OF = datetime.now().strftime('%Y-%m-%d')
 
 # Palette (GLI-style per spec §2)
 PALETTE = {
-    'orange':   '#E8742C',
+    # Cores mais vivas e saturadas (antes estavam mortas/muted)
+    'orange':   '#FF6B1A',   # laranja forte (era #E8742C muted)
     'black':    '#0B0E14',
-    'red':      '#D64545',
-    'beige':    '#C9A66B',
-    'grey':     '#6C7280',
-    'lightgrey':'#D7D9DB',
+    'red':      '#E03131',   # vermelho vivido (era #D64545)
+    'beige':    '#D4A759',   # mostarda saturada (era #C9A66B)
+    'grey':     '#495057',
+    'lightgrey':'#DEE2E6',
     'text':     '#cce8ff',
-    'muted':    '#8b949e',
-    'green':    '#7ae582',
-    'blue':     '#00d4ff',
-    'yellow':   '#ffb84d',
-    'purple':   '#c77dff',
+    'muted':    '#868E96',
+    'green':    '#2F9E44',   # verde forte
+    'blue':     '#1971C2',   # azul vivido
+    'yellow':   '#F59F00',   # amarelo forte
+    'purple':   '#9C36B5',   # roxo saturado
+    'teal':     '#0CA678',
+    'pink':     '#E64980',
     'bg':       '#0B0E14',
     'card':     '#11151f',
 }
@@ -122,18 +125,23 @@ DASH_TEMPLATE = {
                  'family': 'Arial, Helvetica, sans-serif',
                  'size': 12},
         'title': {'font': {'color': '#1a1a1a', 'size': 14}},
+        # fixedrange=False garante zoom/pan em todos charts
         'xaxis': {'gridcolor': '#E5E7EB', 'zerolinecolor': '#9CA3AF',
-                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'}},
+                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'},
+                   'fixedrange': False},
         'yaxis': {'gridcolor': '#E5E7EB', 'zerolinecolor': '#9CA3AF',
-                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'}},
+                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'},
+                   'fixedrange': False},
+        # Cores vivas + mais variedade
         'colorway': [PALETTE['orange'], '#000000', PALETTE['red'],
-                      PALETTE['beige'], PALETTE['blue'], PALETTE['green'],
-                      PALETTE['purple']],
+                      PALETTE['blue'], PALETTE['green'], PALETTE['purple'],
+                      PALETTE['teal'], PALETTE['pink'], PALETTE['yellow']],
         'margin': {'l': 60, 'r': 30, 't': 50, 'b': 40},
         'legend': {'orientation': 'h', 'y': -0.18,
                     'bgcolor': 'rgba(255,255,255,0.6)',
                     'bordercolor': '#E5E7EB', 'borderwidth': 1,
                     'font': {'color': '#1a1a1a'}},
+        'dragmode': 'zoom',    # zoom padrao (pan via modebar)
     }
 }
 
@@ -2914,7 +2922,7 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
                         font=dict(color='#888', size=9))
 
     fig.update_yaxes(title_text='', range=[y_min, y_max],
-                      ticksuffix='%', dtick=10, autorange=False)
+                      ticksuffix='%', dtick=10)
     fig.update_xaxes(title_text='', type='date')
     fig.update_layout(showlegend=False)
     _debug_annotation(fig, debug_info, y_pos=-0.12)
