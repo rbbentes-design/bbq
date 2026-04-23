@@ -2652,13 +2652,16 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
     # Carrega ambos REAIS — sem fallback inventado
     gdp_series = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
                              label='US_GDP')
-    debt = safe_load(['GFDEBTN Index'], period=period, label='US_FED_DEBT')
+    # DEBPTOTL = US Government Debt Total (BBG, verified via terminal)
+    debt = safe_load(['DEBPTOTL Index', 'GFDEBTN Index'], period=period,
+                       label='US_FED_DEBT')
 
     missing = []
     if len(gdp_series) < 12:
         missing.append('GDP CUR$ Index (US Nominal GDP, quarterly)')
     if len(debt) < 12:
-        missing.append('GFDEBTN Index (Total Federal Debt Outstanding)')
+        missing.append('DEBPTOTL Index OR GFDEBTN Index '
+                          '(US Government Debt Total)')
 
     if missing:
         fig.add_annotation(
