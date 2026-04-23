@@ -2533,35 +2533,37 @@ def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
 
 
 def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
-    """Liquidity/Collateral Imbalance (SOFR-IORB) com Danger/Normal Zones."""
+    """Liquidity/Collateral Imbalance (SOFR-IORB) em BPS, daily.
+    Range tipico +/-20 bps. Danger zone = SOFR acima de IORB."""
     fig = _fig_base('Liquidity / Collateral Imbalance (SOFR-IORB)',
                       height=420)
+    # Forca SOFRRATE (rate) — evita fallback pra SOFR Index que e
+    # nivel compounding (valor ~100-115) que quebra o spread
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
     iorb = safe_load('IORB Index', period=period, label='IORB')
     if len(sofr) > 0 and len(iorb) > 0:
-        s_raw, i_raw = _clean(sofr).align(_clean(iorb), join='inner')
-        # Normaliza pra PERCENT: se mediana < 1, esta em decimal (0.043) -> x100
-        s = s_raw * 100 if abs(s_raw.median()) < 1 else s_raw
-        i = i_raw * 100 if abs(i_raw.median()) < 1 else i_raw
-        spread = s - i  # em pp (percent-points)
+        s = _to_pct(_clean(sofr)).resample('D').last().ffill()
+        i = _to_pct(_clean(iorb)).resample('D').last().ffill()
+        s, i = s.align(i, join='inner')
+        # Spread em BPS (pp * 100), escala tipica +/-20
+        spread = (s - i) * 100
         fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
-                                    name='SOFR − IORB (pp)',
-                                    line=dict(color=PALETTE['orange'], width=1.4),
-                                    hovertemplate='%{y:+.3f} pp<extra></extra>'))
-    # Normal zone: -0.10 a 0.00 (entre IORB e RRP rate)
-    fig.add_hrect(y0=-0.10, y1=0.00, fillcolor=PALETTE['grey'],
+                                    name='SOFR − IORB',
+                                    line=dict(color=PALETTE['orange'], width=1.2),
+                                    hovertemplate='%{y:+.1f} bps<extra></extra>'))
+    # Zonas em bps: normal (-10 a 0), danger (>0)
+    fig.add_hrect(y0=-10, y1=0, fillcolor=PALETTE['grey'],
                    opacity=0.15, layer='below', line_width=0,
                    annotation_text='Normal Zone',
                    annotation_position='top left',
                    annotation_font=dict(color='#1a1a1a', size=10))
-    # Danger zone: >0 (SOFR acima do IORB = stress)
-    fig.add_hrect(y0=0, y1=0.35, fillcolor=PALETTE['red'],
+    fig.add_hrect(y0=0, y1=30, fillcolor=PALETTE['red'],
                    opacity=0.08, layer='below', line_width=0,
                    annotation_text='Danger Zone',
                    annotation_position='top right',
                    annotation_font=dict(color=PALETTE['red'], size=10))
     fig.add_hline(y=0, line=dict(color=PALETTE['red'], width=1.2, dash='dash'))
-    fig.update_yaxes(title_text='Percentage Points')
+    fig.update_yaxes(title_text='Basis Points (bps)', range=[-30, 30])
     return fig
 
 
