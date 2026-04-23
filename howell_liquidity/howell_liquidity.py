@@ -648,15 +648,21 @@ def _clean(s):
 
 def _to_pct(s):
     """Normaliza rate series pra PERCENT-points.
-    BBG as vezes retorna decimal (0.043) as vezes percent (4.3) pro mesmo
-    ticker dependendo do tipo/versao do BQL. Heuristica: se mediana abs < 1
-    e n > 0, esta em decimal -> multiplica por 100."""
+    BBG retorna rates em 3 unidades possiveis:
+      - decimal (0.043 = 4.3%)    -> median < 1.0     -> x100
+      - percent (4.3)             -> 1.0 <= median < 20 -> passa direto
+      - basis points (430 bps)    -> median >= 20     -> /100
+    (Ex: GJGB10 Index as vezes vem em bps)."""
     if s is None or len(s) == 0:
         return s
     m = abs(s.median())
-    if pd.notna(m) and m < 1.0:
-        return s * 100
-    return s
+    if pd.isna(m):
+        return s
+    if m < 1.0:
+        return s * 100   # decimal -> pct
+    if m >= 20.0:
+        return s / 100   # bps -> pct
+    return s             # ja em pct
 
 
 def _to_millions(s):
@@ -1394,11 +1400,32 @@ def classify_phase(state: dict) -> dict:
     duck_equity = (cyc.get('ratio_12m_pct') or 0) < 0
     duck_liq = (liq.get('slope_3m') or 0) < 0 and (liq.get('yoy_pct') or 0) < 5
 
+    # v10: liquidity_complement via AI capex signal (BTOS fwd + RAMP gap)
+    # Nao e 5o duck — e confirmador/contradizedor do duck 4 (Howell §7.9)
+    ai = state.get('ai_adoption', {})
+    liq_complement = 'na'
+    if ai.get('available'):
+        btos = ai.get('btos', {})
+        ramp = ai.get('ramp', {})
+        fd = btos.get('overall_forward_diff_pp')
+        fd_avg = btos.get('forward_diff_12m_avg_pp')
+        gap = ramp.get('large_small_gap_pp')
+        accel = btos.get('accelerating', False)
+        # Absorcao ativa = fd acima da media + large-small gap >0 (concentracao)
+        if accel and (gap or 0) > 0:
+            liq_complement = 'absorption_active_confirming'
+        elif (fd is not None and fd_avg is not None and fd < fd_avg
+              and (gap or 0) < 0):
+            liq_complement = 'absorption_winding_down'
+        elif fd is not None or gap is not None:
+            liq_complement = 'neutral'
+
     ducks = {
         'economy': 'aligning_turbulence' if duck_econ else 'ok',
         'bonds': 'aligning_turbulence' if duck_bonds else 'ok',
         'equity_sectors': 'aligning_turbulence' if duck_equity else 'ok',
         'liquidity_metrics': 'aligning_turbulence' if duck_liq else 'ok',
+        'liquidity_complement': liq_complement,
     }
     duck_count = sum([duck_econ, duck_bonds, duck_equity, duck_liq])
 
@@ -1662,6 +1689,35 @@ def chart_03_growth_nowcast(period: str = '-20Y') -> 'go.Figure':
         predictors['-HY_OAS'] = _z(hy, invert=True)
     if len(vix) > 60:
         predictors['-VIX'] = _z(vix, invert=True)
+
+    # v10: AI adoption features (BTOS forward + RAMP large firm)
+    # Historia curta (BTOS 2020+, RAMP 2023+) -> usa z-score 1y
+    btos_n6m = safe_load('BTOS2400 Index', period=period, label='BTOS_N6M_TOTAL')
+    btos_large = safe_load('BTOS240G Index', period=period, label='BTOS_N6M_249plus')
+    ramp_large = safe_load('RAMPLARG Index', period=period, label='RAMP_LARGE')
+
+    def _z_short(s):
+        s = _clean(s).resample('M').last()
+        if len(s) < 6:
+            return pd.Series(dtype=float)
+        # Janela adaptativa: 12m se houver, senao todo o historico
+        win = 12 if len(s) >= 12 else len(s)
+        mu = s.rolling(win, min_periods=3).mean()
+        sd = s.rolling(win, min_periods=3).std()
+        return ((s - mu) / sd.replace(0, np.nan)).dropna()
+
+    if len(btos_n6m) > 6:
+        z = _z_short(btos_n6m)
+        if len(z) > 3:
+            predictors['BTOS_fwd'] = z
+    if len(btos_large) > 6:
+        z = _z_short(btos_large)
+        if len(z) > 3:
+            predictors['BTOS_large_fwd'] = z
+    if len(ramp_large) > 3:
+        z = _z_short(ramp_large)
+        if len(z) > 3:
+            predictors['RAMP_large'] = z
 
     if not predictors:
         fig.add_annotation(text='Predictors ausentes',
@@ -3856,6 +3912,9 @@ Reading: { _transmission_reading(liq, tp, ra, wbci, lags) }
 - Basket 3m return: **{_fmt(crypto_3m, '%', 1)}**
 - { _crypto_reading(crypto_3m, liq) }
 
+## 7b. Capex Absorption Signal (Claude extension) [CLAUDE + EXTENSION]
+{_ai_capex_memo_section(s.get('ai_adoption', {}), s.get('four_ducks', {}))}
+
 ## 8. What I'd Watch Next (triggers)
 - MOVE breaking > 120 (current {_fmt(mv.get('level'), '', 0)}) → forced Fed intervention probable (§3.7)
 - Risk Appetite z crossing below -1.5 (current {_fmt(ra.get('z'), '', 2)}) → confirms Turbulence entry
@@ -3870,6 +3929,64 @@ Reading: { _transmission_reading(liq, tp, ra, wbci, lags) }
 _Framework reference: §§3.1-3.12. Proxy indices: global_liquidity, world_term_premium, world_m2. Phase classifier per §4; sine-wave fit per §3.4._
 """
     return memo
+
+
+def _ai_capex_memo_section(ai_block: dict, ducks: dict) -> str:
+    """Gera secao 7b do memo — Capex Absorption Signal (spec v10 §11)."""
+    if not ai_block or not ai_block.get('available'):
+        return '- Dados BTOS/RAMP indisponiveis neste build (serie comeca 2020/2023).'
+
+    btos = ai_block.get('btos', {})
+    ramp = ai_block.get('ramp', {})
+    fd = btos.get('overall_forward_diff_pp')
+    fd_avg = btos.get('forward_diff_12m_avg_pp')
+    accel = btos.get('accelerating')
+    large_lvl = (ramp.get('by_size') or {}).get('large')
+    gap = ramp.get('large_small_gap_pp')
+    plumb = ramp.get('financial_plumbing_avg_pct')
+    top_secs = ramp.get('top_sectors') or []
+    complement = ducks.get('liquidity_complement', 'na')
+
+    def _pp(v):
+        return f'{v:+.1f}pp' if isinstance(v, (int, float)) else 'n/a'
+    def _pct(v):
+        return f'{v:.1f}%' if isinstance(v, (int, float)) else 'n/a'
+
+    widening = ('widening' if (gap or 0) > 0 else 'narrowing') \
+                  if gap is not None else 'n/a'
+
+    lines = [
+        f'- **BTOS forward diff**: {_pp(fd)} over next 6 months '
+        f'(12m avg: {_pp(fd_avg)}) — '
+        f'{"accelerating" if accel else "decelerating"}.',
+        f'- **Large-firm adoption**: {_pct(large_lvl)}; '
+        f'Large−Small gap: {_pp(gap)} ({widening}).',
+    ]
+    if plumb is not None:
+        lines.append(f'- **Financial-plumbing sectors** '
+                      f'(Finance+Info): {_pct(plumb)} — relevancia §7.8 '
+                      f'debt-liquidity nexus.')
+    if top_secs:
+        lines.append(f'- **Top adoption**: {", ".join(top_secs[:3])}.')
+
+    interp_map = {
+        'absorption_active_confirming':
+            'Absorcao de capex ATIVA — confirmador do duck de liquidez. '
+            'Consistente com fase Speculation/Autumn.',
+        'absorption_winding_down':
+            'Absorcao DESACELERANDO — possivel reflux comecando. '
+            'Adicionar peso ao sinal de Turbulence/Winter approach.',
+        'neutral':
+            'Sinal neutro — sem viés claro pro duck de liquidez.',
+        'na':
+            'Complemento indisponivel.',
+    }
+    lines.append(f'- **Complemento ao Liquidity duck**: {complement} — '
+                   f'{interp_map.get(complement, "")}')
+    lines.append('- **Caveat**: Howell nao cobre AI adoption. Sinal e '
+                   'extensao Claude fundamentada em §7.2 (Two Pools) e §7.8 '
+                   '(Balance-Sheet Capacity). Evidencia de suporte, nao primaria.')
+    return '\n'.join(lines)
 
 
 def _one_liner(phase, next_p, priv_dom, fragile, move_stress):
