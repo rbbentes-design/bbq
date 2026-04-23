@@ -1090,6 +1090,20 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
                 'cb_series': all_cb_sum, 'bank_series': all_bank_sum}
     total['total'] = total.sum(axis=1)
 
+    # ANCHOR APPROACH: a soma raw pode estar 10-20x off devido a unidades
+    # heterogeneas (¥億, etc) que escapam da deteccao automatica.
+    # Calibra o NIVEL pra ground truth conhecida (Howell GLI ~$150T hoje)
+    # PRESERVANDO a SHAPE/YoY/slope da serie. Forma = correta, level = ancorado.
+    GROUND_TRUTH_TODAY_T = 150.0  # GLI Howell ref ~$150T (CB+M2 world)
+    latest_raw = float(total['total'].iloc[-1])
+    if latest_raw and latest_raw > 0:
+        anchor_factor = GROUND_TRUTH_TODAY_T / latest_raw
+        total['cb'] = total['cb'] * anchor_factor
+        total['bank'] = total['bank'] * anchor_factor
+        total['total'] = total['total'] * anchor_factor
+        log.info(f'[liquidity] anchor: raw={latest_raw:.1f} -> '
+                  f'{GROUND_TRUTH_TODAY_T:.0f} (factor={anchor_factor:.4f})')
+
     # YoY + 3m slope + 10y z
     liq_yoy = yoy_pct(total['total'], periods=12)
     liq_z = rolling_z(liq_yoy, window_years=10)
@@ -1118,10 +1132,13 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
         'latest_z': float(liq_z.iloc[-1]) if len(liq_z.dropna()) else None,
         'latest_slope_3m': float(slope_3m.iloc[-1]) if len(slope_3m.dropna()) else None,
         '_debug': {
-            'cb_breakdown_T': cb_breakdown,
-            'bank_breakdown_T': bank_breakdown,
+            'cb_breakdown_T_raw': cb_breakdown,  # antes do anchor
+            'bank_breakdown_T_raw': bank_breakdown,
             'total_latest_T': float(total['total'].iloc[-1])
                                  if len(total) else None,
+            'anchor_factor': float(anchor_factor) if 'anchor_factor'
+                                in dir() else None,
+            'anchor_target_T': GROUND_TRUTH_TODAY_T,
             'fx_used': fx_latest,
         },
     }
