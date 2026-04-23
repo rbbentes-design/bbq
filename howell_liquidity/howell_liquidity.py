@@ -1149,14 +1149,13 @@ def build_global_liquidity(period: str = '-20Y') -> dict:
         'latest_z': float(liq_z.iloc[-1]) if len(liq_z.dropna()) else None,
         'latest_slope_3m': float(slope_3m.iloc[-1]) if len(slope_3m.dropna()) else None,
         '_debug': {
-            'cb_breakdown_T_raw': cb_breakdown,  # antes do anchor
-            'bank_breakdown_T_raw': bank_breakdown,
+            'cb_breakdown_T': cb_breakdown,
+            'bank_breakdown_T': bank_breakdown,
             'total_latest_T': float(total['total'].iloc[-1])
                                  if len(total) else None,
-            'anchor_factor': float(anchor_factor) if 'anchor_factor'
-                                in dir() else None,
-            'anchor_target_T': GROUND_TRUTH_TODAY_T,
             'fx_used': fx_latest,
+            'note': 'sem anchor — total_usd e soma raw das series '
+                      'convertidas via FX/scale heuristica',
         },
     }
 
