@@ -20,8 +20,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from app.audit.logger import configure_logging
+from app.audit.logger import configure_logging, get_logger
 from app.pipeline.ingestion import run_ingestion
+
+_log = get_logger("cli.run")
 
 app = typer.Typer(name="run", help="Executa pipeline completo: ingestao + curacao + relatorio.")
 
@@ -531,6 +533,7 @@ def desk(
     save: bool = typer.Option(False, "--save", "-s", help="Salva diagnóstico em .txt"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     no_open: bool = typer.Option(False, "--no-open", help="Não abre HTML no browser."),
+    no_watch: bool = typer.Option(False, "--no-watch", help="Não inicia o watcher de ZIPs."),
 ) -> None:
     """Macro Desk — diagnóstico macro acionável + HTML interativo."""
     from app.cli.invest import main as desk_main
@@ -778,20 +781,26 @@ def desk(
         except Exception as _exc_rd:
             console.print(f"[yellow]Pipeline regen falhou: {_exc_rd}[/yellow]")
 
+    if no_watch:
+        return
+
     _watch_dl   = Path.home() / "Downloads"
-    _watch_seen = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
+    _watch_seen_bql = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
+    _watch_seen_greeks = {str(p) for p in _watch_dl.glob("greeks_*.zip")}
     console.print()
     console.print("[bold cyan]Bloomberg Watcher ativo[/bold cyan] — ZIP novo dispara ingest + desk regen")
+    console.print("[dim]Monitora: bql_data_*.zip + greeks_*.zip em ~/Downloads[/dim]")
     console.print("[dim]Feche esta janela para parar.[/dim]")
     import time as _time
     while True:
         _time.sleep(20)
         try:
-            _current = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
-            _novos   = _current - _watch_seen
-            if _novos:
-                for _zp in sorted(_novos):
-                    console.print(f"[green]Novo ZIP:[/green] {Path(_zp).name} — ingerindo...")
+            # ── BQL data ZIPs ────────────────────────────────────────────────
+            _current_bql = {str(p) for p in _watch_dl.glob("bql_data_*.zip")}
+            _novos_bql   = _current_bql - _watch_seen_bql
+            if _novos_bql:
+                for _zp in sorted(_novos_bql):
+                    console.print(f"[green]Novo BQL ZIP:[/green] {Path(_zp).name} — ingerindo...")
                     try:
                         from core.bloomberg_main_agent import BloombergMainAgent as _BBA
                         _r = _BBA().run()
@@ -800,11 +809,29 @@ def desk(
                             f"({'OK' if _r.status == 'ok' else _r.status})"
                         )
                         if _r.status == "ok" and _r.rows_ingested > 0:
-                            console.print("[bold cyan]>> Pipeline completo: pipeline + writer + desk + netlify[/bold cyan]")
+                            console.print("[bold cyan]>> Pipeline completo: pipeline + writer + desk[/bold cyan]")
                             _regenerate_full_pipeline()
                     except Exception as _e:
                         console.print(f"[yellow]Bloomberg ingest erro: {_e}[/yellow]")
-                _watch_seen = _current
+                _watch_seen_bql = _current_bql
+
+            # ── Greeks / Options ZIPs ────────────────────────────────────────
+            _current_greeks = {str(p) for p in _watch_dl.glob("greeks_*.zip")}
+            _novos_greeks   = _current_greeks - _watch_seen_greeks
+            if _novos_greeks:
+                for _zp in sorted(_novos_greeks):
+                    console.print(f"[green]Novo Options ZIP:[/green] {Path(_zp).name} — importando...")
+                    try:
+                        from app.providers.options_store import options_store as _os_w
+                        _os_w.import_from_zip(Path(_zp))
+                        console.print(f"[green]Options imported:[/green] {Path(_zp).name}")
+                        # Regenera desk com options atualizadas
+                        console.print("[bold cyan]>> Desk regen com options atualizadas[/bold cyan]")
+                        _regenerate_full_pipeline()
+                    except Exception as _e:
+                        console.print(f"[yellow]Options import erro: {_e}[/yellow]")
+                _watch_seen_greeks = _current_greeks
+
         except KeyboardInterrupt:
             console.print("[dim]Watcher encerrado.[/dim]")
             break
@@ -816,6 +843,7 @@ def desk(
 def writer(
     date_str: str = typer.Option(None, "--date", "-d", help="Data YYYY-MM-DD (padrão: hoje)"),
     mode: str = typer.Option(None, "--mode", "-m", help="Força modo editorial (week_ahead, growth, etc.)"),
+    tema: str = typer.Option(None, "--tema", "-t", help="Força tema do editorial (ex: 'fluxo institucional', 'gamma flip', 'cred spreads')"),
     no_open: bool = typer.Option(False, "--no-open", help="Não abre o HTML no browser."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -856,6 +884,26 @@ def writer(
         bundle_path.read_text(encoding="utf-8")
     )
 
+    # ── Auto-import greeks + BQL ZIPs se disponíveis ─────────────────────────
+    try:
+        import glob as _glob_w
+        from pathlib import Path as _Pw
+        from app.providers.options_store import options_store as _opts_w
+        _dl_w = _Pw.home() / "Downloads"
+        _zips_w = sorted(_glob_w.glob(str(_dl_w / "greeks_*.zip")),
+                         key=lambda p: _Pw(p).stat().st_mtime, reverse=True)
+        if _zips_w:
+            _latest_w = _Pw(_zips_w[0])
+            _snap_w = _opts_w.load_latest()
+            _snap_ts_w = _snap_w.imported_at if _snap_w else None
+            import datetime as _dt_w
+            _snap_ep_w = _dt_w.datetime.fromisoformat(_snap_ts_w).timestamp() if _snap_ts_w else 0
+            if _latest_w.stat().st_mtime > _snap_ep_w:
+                _opts_w.import_from_zip(_latest_w)
+                console.print(f"[green]Options auto-imported:[/green] {_latest_w.name}")
+    except Exception as _exc_ow:
+        pass  # silencioso — options são opcionais
+
     # ── Curação + Writer ───────────────────────────────────────────────────────
     from app.curation.orchestrator import run_curation
     from app.utils.timestamps import new_ulid
@@ -863,7 +911,7 @@ def writer(
 
     with console.status("[cyan]Rodando curação + writer...[/cyan]"):
         try:
-            curation_result = run_curation(bundle, run_id, str(target_date), mode_override=mode or None)
+            curation_result = run_curation(bundle, run_id, str(target_date), mode_override=mode or None, tema_hint=tema or None)
         except Exception as exc:
             console.print(f"[red]Curação falhou: {exc}[/red]")
             raise typer.Exit(1)
@@ -1000,6 +1048,223 @@ def positions(
         return
 
     print_open_positions(console)
+
+
+@app.command(name="bloomberg-ingest")
+def bloomberg_ingest() -> None:
+    """Extrai bql_data_*.zip + importa greeks_*.zip + roda BloombergMainAgent.
+    Mantem o DB Bloomberg sempre fresh — roda antes do pipeline diario."""
+    import glob as _gbi
+    import sys as _sbi
+    from pathlib import Path as _Pbi
+    from zipfile import ZipFile as _ZFbi
+    import datetime as _dtbi
+
+    downloads = _Pbi.home() / "Downloads"
+    bql_dir = _Pbi.home() / "bbg" / "agente" / "bql_data"
+    bql_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Extract latest bql_data ZIP se mais recente que os CSVs
+    bql_zips = sorted(_gbi.glob(str(downloads / "bql_data_*.zip")),
+                      key=lambda p: _Pbi(p).stat().st_mtime, reverse=True)
+    if bql_zips:
+        latest = _Pbi(bql_zips[0])
+        existing = list(bql_dir.glob("*.csv"))
+        csv_mt = max((f.stat().st_mtime for f in existing), default=0)
+        if latest.stat().st_mtime > csv_mt:
+            console.print(f"[cyan]Extracting {latest.name}...[/cyan]")
+            with _ZFbi(latest) as z:
+                z.extractall(bql_dir)
+            console.print(f"[green]BQL extracted:[/green] {latest.name}")
+        else:
+            console.print(f"[dim]BQL CSVs already up-to-date[/dim]")
+    else:
+        console.print("[yellow]No bql_data_*.zip in Downloads[/yellow]")
+
+    # 2. Auto-import greeks ZIP
+    try:
+        from app.providers.options_store import options_store as _opts_bi
+        greeks_zips = sorted(_gbi.glob(str(downloads / "greeks_*.zip")),
+                             key=lambda p: _Pbi(p).stat().st_mtime, reverse=True)
+        if greeks_zips:
+            latest_g = _Pbi(greeks_zips[0])
+            snap = _opts_bi.load_latest()
+            snap_ep = _dtbi.datetime.fromisoformat(snap.imported_at).timestamp() if snap and snap.imported_at else 0
+            if latest_g.stat().st_mtime > snap_ep:
+                new_snap = _opts_bi.import_from_zip(latest_g)
+                console.print(f"[green]Options imported:[/green] {latest_g.name} spot={new_snap.spot}")
+            else:
+                console.print(f"[dim]Options already up-to-date[/dim]")
+    except Exception as exc:
+        console.print(f"[yellow]Options import skipped: {exc}[/yellow]")
+
+    # 3. BloombergMainAgent ingest (CSVs -> DB)
+    try:
+        bbg_root = _Pbi.home() / "bbg" / "agente"
+        if str(bbg_root) not in _sbi.path:
+            _sbi.path.insert(0, str(bbg_root))
+        from core.bloomberg_main_agent import BloombergMainAgent
+        agent = BloombergMainAgent()
+        result = agent.run()
+        console.print(f"[green]DB ingest:[/green] {result.status} — {result.rows_ingested} rows")
+    except Exception as exc:
+        console.print(f"[yellow]DB ingest falhou: {exc}[/yellow]")
+
+
+@app.command(name="x-login")
+def x_login() -> None:
+    """Login manual no X para a conta @NessaTrader (perfil separado)."""
+    from app.providers.x_poster import login_interactive
+    ok = login_interactive()
+    if ok:
+        console.print("[green]Login salvo.[/green] Pode fechar o browser.")
+    else:
+        console.print("[red]Login falhou ou timeout.[/red]")
+
+
+@app.command(name="x-post")
+def x_post(
+    text: str = typer.Argument(None, help="Texto do tweet (max 280 chars)"),
+    image: str = typer.Option(None, "--image", "-i", help="Path para imagem PNG/JPG"),
+    thread: bool = typer.Option(False, "--thread", help="Posta como thread (quebra texto longo)"),
+    from_writer: bool = typer.Option(False, "--from-writer", help="Posta micro posts + texto gratuito do writer mais recente"),
+    date_str: str = typer.Option(None, "--date", "-d", help="Data do bundle (YYYY-MM-DD)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria postado sem postar"),
+) -> None:
+    """Posta no X como @NessaTrader. Texto direto ou do writer."""
+    from datetime import date as _date
+
+    if from_writer:
+        # Carrega micro posts do writer mais recente
+        from pathlib import Path as _P
+        target = _date.fromisoformat(date_str) if date_str else _date.today()
+        import glob as _g
+        raw_files = sorted(
+            _g.glob(str(_P.home() / f"agente-workspace/bundles/{target}/*_raw.txt")),
+            key=lambda p: _P(p).stat().st_mtime, reverse=True,
+        )
+        if not raw_files:
+            console.print(f"[red]Nenhum writer output encontrado para {target}[/red]")
+            raise typer.Exit(1)
+
+        raw = _P(raw_files[0]).read_text(encoding="utf-8")
+        console.print(f"[dim]Writer: {_P(raw_files[0]).name}[/dim]")
+
+        # Extrai TEXTO GRATUITO e MICRO POSTS
+        import re
+
+        def _clean_for_x(text: str) -> str:
+            """Remove separadores, marcadores de imagem, negrito markdown."""
+            text = re.sub(r"━+", "", text)
+            text = re.sub(r"<<<IMG:[^>]*>>>", "", text)
+            text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)  # **bold** -> bold
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+        sections = re.split(r"={3,}\s*\n", raw)
+        gratuito = ""
+        micro_posts: list[str] = []
+
+        for i, sec in enumerate(sections):
+            if "TEXTO GRATUITO" in sec:
+                if i + 1 < len(sections):
+                    gratuito = _clean_for_x(sections[i + 1])
+            elif "MICRO POSTS" in sec:
+                if i + 1 < len(sections):
+                    block = _clean_for_x(sections[i + 1])
+                    posts = re.split(r"POST\s+\d+\s*:", block)
+                    micro_posts = [p.strip() for p in posts if len(p.strip()) > 20]
+
+        if dry_run:
+            if gratuito:
+                from app.providers.x_poster import split_for_thread
+                thread_parts = split_for_thread(gratuito)
+                console.print(f"\n[bold cyan]TEXTO GRATUITO[/bold cyan] ({len(thread_parts)} tweets):")
+                for j, t in enumerate(thread_parts):
+                    console.print(f"  [{j+1}] ({len(t)} chars) {t[:100]}...")
+            for j, mp in enumerate(micro_posts):
+                console.print(f"\n[bold cyan]MICRO POST {j+1}[/bold cyan] ({len(mp)} chars):")
+                console.print(f"  {mp[:200]}...")
+            return
+
+        from app.providers.x_poster import post_tweet
+
+        # Espera ate 7h se for muito cedo
+        import datetime as _dt_wait
+        _now_start = _dt_wait.datetime.now()
+        if _now_start.hour < 7:
+            _start_at = _now_start.replace(hour=7, minute=0, second=0)
+            _wait_secs = int((_start_at - _now_start).total_seconds())
+            console.print(f"[dim]Aguardando ate 07:00 para comecar ({_wait_secs//60}min)...[/dim]")
+            import time as _time_early
+            _time_early.sleep(_wait_secs)
+
+        # Posta micro posts (individuais, com intervalo)
+        posted = 0
+        for j, mp in enumerate(micro_posts):
+            # Trunca no ultimo paragrafo que cabe em 280
+            if len(mp) > 280:
+                paragraphs = mp.split("\n\n")
+                trimmed = ""
+                for para in paragraphs:
+                    candidate = f"{trimmed}\n\n{para}" if trimmed else para
+                    if len(candidate) <= 280:
+                        trimmed = candidate
+                    else:
+                        break
+                mp = trimmed if trimmed else mp[:277] + "..."
+
+            console.print(f"[cyan]Postando micro post {j+1}/{len(micro_posts)}...[/cyan]")
+            console.print(f"  ({len(mp)} chars) {mp[:80]}...")
+            r = post_tweet(mp)
+            console.print(f"  -> {r['status']}")
+            posted += 1
+            if j < len(micro_posts) - 1:
+                import time as _time
+                import datetime as _dt_post
+                _now = _dt_post.datetime.now()
+                if _now.hour >= 23:  # depois de 11 PM para
+                    console.print(f"[dim]  Passou das 23h — parando posts por hoje.[/dim]")
+                    break
+                _wait = 2 * 60 * 60  # 2 horas entre posts
+                _next = _now + _dt_post.timedelta(seconds=_wait)
+                if _next.hour >= 23:
+                    console.print(f"[dim]  Proximo post cairia depois das 23h — parando.[/dim]")
+                    break
+                console.print(f"[dim]  Proximo post as {_next.strftime('%H:%M')}...[/dim]")
+                _time.sleep(_wait)
+
+        console.print(f"\n[green]{posted} micro posts publicados como @NessaTrader[/green]")
+
+        return
+
+    # Post direto
+    if not text:
+        console.print("[red]Passe o texto como argumento ou use --from-writer[/red]")
+        raise typer.Exit(1)
+
+    from app.providers.x_poster import post_tweet, post_thread, split_for_thread
+
+    if dry_run:
+        if thread and len(text) > 280:
+            parts = split_for_thread(text)
+            console.print(f"Thread com {len(parts)} tweets:")
+            for i, p in enumerate(parts):
+                console.print(f"  [{i+1}] ({len(p)} chars) {p[:100]}...")
+        else:
+            console.print(f"Tweet ({len(text)} chars): {text[:200]}...")
+        return
+
+    images = [image] if image else []
+
+    if thread and len(text) > 280:
+        parts = split_for_thread(text)
+        results = post_thread(parts)
+        for r in results:
+            console.print(f"  [{r['status']}]")
+    else:
+        r = post_tweet(text, images=images)
+        console.print(f"[{'green' if r['status']=='ok' else 'red'}]{r['status']}[/{'green' if r['status']=='ok' else 'red'}] {text[:80]}...")
 
 
 @app.command(name="options-import")
@@ -1173,7 +1438,7 @@ def run_all(
 
     if bundle is None:
         with console.status("[cyan]Ingest...[/cyan]"):
-            bundle = run_ingestion(headless=True)
+            bundle = run_ingestion(headless=False)
     console.print(f"[green]Bundle ok:[/green] {len(bundle.x_items)} X · "
                   f"{len(bundle.market_ear_blocks)} ZH/ME · "
                   f"{len(bundle.spotgamma_reports)} SpotGamma")

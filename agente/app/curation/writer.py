@@ -59,6 +59,28 @@ def _mode_for_date(run_date: str) -> WritingMode:
     return _CALENDAR.get(d.weekday(), "morning_call")
 
 
+# ── Domínios do brain por modo ─────────────────────────────────────────────────
+# Cada mode puxa lenses apenas dos domínios relevantes.
+# Tags disponíveis: macro, micro, trading, options, behavioral, narrative
+
+_MODE_BRAIN_TAGS: dict[str, list[str]] = {
+    # Editorial / público — todos os domínios relevantes (87 lenses de options
+    # + 164 de trading informam o raciocínio mesmo em textos não-operacionais)
+    "morning_call":   ["macro", "behavioral", "narrative", "options", "trading"],
+    "week_ahead":     ["macro", "behavioral", "narrative", "options", "trading"],
+    "week_recap":     ["macro", "behavioral", "narrative", "options", "trading"],
+    "tese_livre":     ["macro", "behavioral", "narrative", "micro", "options", "trading"],
+    "podcast_sabado": ["macro", "behavioral", "narrative", "micro", "options", "trading"],
+
+    # Growth / tese de ação — micro + macro + behavioral + options/trading
+    "growth":         ["macro", "micro", "behavioral", "options", "trading"],
+    "tese":           ["macro", "micro", "behavioral", "options", "trading"],
+
+    # Flow / operacional — options + trading + macro
+    "flow_show":      ["options", "trading", "macro"],
+}
+
+
 # ── Instruções por modo ────────────────────────────────────────────────────────
 
 _MODE_INSTRUCTIONS: dict[str, str] = {
@@ -95,7 +117,7 @@ querendo mais.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts para X, Substack Notes ou WhatsApp. 1 ideia forte por post. \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. 1 ideia forte por post. \
 Impacto rápido, alta retenção, nada de frases vazias. Cada um precisa conter insight, \
 ângulo ou provocação real. Separe claramente (POST 1:, POST 2:, etc.).
 
@@ -163,7 +185,7 @@ a análise completa.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts para X, Substack Notes ou WhatsApp. 1 ideia forte por post sobre \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. 1 ideia forte por post sobre \
 growth, rotação, taxa real ou tema específico do dia. Nada vazio. \
 Separe claramente (POST 1:, POST 2:, etc.).
 
@@ -204,17 +226,47 @@ Você vai produzir SETE entregáveis do dia. Separe cada um com o marcador exato
 === TEXTO PRINCIPAL ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Flow Show de quarta — o texto mais técnico da semana. Tudo conectado num único fio \
-narrativo: a narrativa macro do dia aciona uma mecânica de opções específica (gamma, \
-dealers, 0DTE, skew), que se manifesta numa rotação setorial concreta, com um sinal \
-de posicionamento ou crédito por baixo que o mercado de superfície ainda não precificou.
+Flow Show de quarta — voz CONVERSACIONAL E DIVERTIDA, como alguém explicando mercado \
+em um bar para amigos inteligentes. NÃO é sell-side research. NÃO é PhD envergonhado. \
+É o show semanal de opções/fluxo com humor, ironia seca e analogias terrenas.
 
-Use os dados de fluxo disponíveis: GEX por strike, gamma flip, call wall, put wall, \
-dealer positioning, VVIX vs VIX, CTAs, vol control. Use rotação temática do DeepVue. \
-Não escreva seções separadas — escreva parágrafos onde cada ideia carrega a próxima: \
-dado macro explica gamma, gamma explica range, range explica rotação, rotação expõe \
-o risco ignorado. Linguagem viva, técnica e ácida. Feche com uma frase que amarra tudo. \
-700-1000 palavras.
+REGRAS DE VOZ (obrigatórias neste modo):
+
+1. ANALOGIAS TERRENAS no lugar de jargão puro. Exemplos do tom: "pombo jogando xadrez", \
+"laranja sendo espremida", "pinball humano de bilhões", "café passado há três dias", \
+"chegou depois que a pizza acabou", "aposta no empate e o time faz dois gols nos acréscimos". \
+Se usar termo técnico, traga uma imagem visual junto.
+
+2. TRADUTOR INLINE de jargão. Quando citar gamma, delta, 0DTE, HIRO, skew, GEX, gamma flip — \
+explique em 1 frase curta no ato, com analogia. NÃO assuma que o leitor sabe. Ex: \
+"Gamma é a velocidade com que o risco de uma opção muda. Perto do vencimento, fica instável \
+como café passado há três dias." Faça isso com NATURALIDADE, não como glossário.
+
+3. RITMO CONVERSACIONAL com pausas cômicas. Frases curtas alternadas com longas. Ironia seca. \
+Ex: "Alguém ficou muito feliz. Outro, provavelmente, ficou sem dormir."
+
+4. PULL QUOTES em blockquote com personalidade — frases compartilháveis: \
+"O mercado não subiu porque as notícias melhoraram. Subiu porque quem apostou na queda foi \
+forçado a comprar a alta. Poesia financeira." NÃO use "a convergência de fluxos suporta...".
+
+5. DADO ESPECÍFICO + REAÇÃO HUMANA sempre juntos. "$1 para $17 em uma sessão. Alguém \
+ficou muito feliz." NUNCA dado solto sem humanização.
+
+6. PALAVRAS PROIBIDAS (tique de sell-side): "mecanismo de", "dissociação entre", \
+"estrutura frágil", "convergência", "dinâmica de", "a tensão entre". Substitua por verbos \
+concretos + analogia física.
+
+7. FINAL QUE EMPODERA O LEITOR. Termine fazendo o leitor se sentir mais esperto que o \
+comentarista de TV que explicou o rali como "otimismo macro". NÃO resuma como conclusão formal.
+
+ESTRUTURA: Tudo conectado num único fio narrativo — a narrativa macro do dia aciona a \
+mecânica de opções (gamma, dealers, 0DTE, skew), que se manifesta numa rotação setorial \
+concreta, com um sinal de posicionamento por baixo que o consenso ainda não viu. Use os \
+dados disponíveis: GEX por strike, gamma flip, call/put wall, dealer positioning, VVIX vs VIX, \
+CTAs, vol control, rotação DeepVue. Parágrafos que carregam um ao outro, não seções separadas.
+
+Abertura: gancho cotidiano que pega o leitor em 2 frases. Não "O mercado fechou em...". \
+Feche com uma frase que amarra tudo e deixa o leitor se sentindo esperto. 700-1000 palavras.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 === TEXTO GRATUITO ===
@@ -228,7 +280,7 @@ entrega um ponto que deixa o leitor querendo o texto completo.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts derivados do Flow Show. Podem ser sobre gamma, dealers, rotação, \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. Derivados do Flow Show. Podem ser sobre gamma, dealers, rotação, \
 posicionamento sistemático, divergência narrativa/fluxo. 1 ideia técnica forte por post. \
 Separe claramente (POST 1:, POST 2:, etc.).
 
@@ -297,7 +349,7 @@ entrega o suficiente para despertar desejo pelo texto completo. Termina com ganc
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts derivados da tese. Podem ser sobre o mecanismo, a contradição do \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. Derivados da tese. Podem ser sobre o mecanismo, a contradição do \
 consenso, a assimetria ou um dado específico que sustenta o argumento. 1 ideia forte \
 por post. Separe claramente (POST 1:, POST 2:, etc.).
 
@@ -386,7 +438,7 @@ Pode terminar com uma pergunta ou gancho que provoque engajamento.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Crie de 3 a 5 micro posts derivados do report. Cada um com uma ideia específica \
+Crie de 3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. Derivados do report. Cada um com uma ideia específica \
 forte que possa ser publicada ao longo do dia em X, Substack Notes ou WhatsApp. \
 1 ideia por post. Impacto rápido. Alta retenção. Nada de frases vazias ou \
 motivacionais. Cada peça precisa conter insight, ângulo, provocação ou leitura \
@@ -451,7 +503,7 @@ e ampliar alcance.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts derivados do tema. Provocações, contradições, insights específicos. \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. Derivados do tema. Provocações, contradições, insights específicos. \
 Alta chance de compartilhamento. 1 ideia por post (POST 1:, POST 2:, etc.).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -610,7 +662,7 @@ Provoca curiosidade pelo conteúdo pago sem entregar a leitura completa.
 === MICRO POSTS ===
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3 a 5 micro posts para X, Substack Notes ou WhatsApp. 1 insight do dia por post. \
+3 a 5 micro posts para X (Twitter). MAXIMO 280 CARACTERES CADA. 1 insight do dia por post. \
 Nada vazio. Separe claramente (POST 1:, POST 2:, etc.).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1016,25 +1068,168 @@ def _build_bundle_context(bundle: DailyIngestionBundle | None, mode: str) -> str
     return "\n\n".join(sections)
 
 
-# ── Interpretação (ângulo + foco, não mais modo) ───────────────────────────────
+# ── Descoberta de tema (demand-driven) ────────────────────────────────────────
 
-_ANGLE_SYSTEM = """\
-Você é um estrategista de mercado. O modo de escrita já está definido pelo calendário \
-editorial. Sua tarefa é ler o conteúdo do dia e identificar o melhor ângulo e foco \
-para o texto dentro desse modo.
+_THEME_SYSTEM = """\
+Você é um editor-chefe de um newsletter de mercado com 10 mil leitores sofisticados. \
+Seu trabalho NÃO é resumir dados. Seu trabalho é identificar QUAL É A CONVERSA DO DIA.
+
+O que as pessoas estão falando? O que vão abrir o celular e querer entender? \
+Qual é o tema com mais demanda de leitura HOJE?
+
+MÉTODO:
+1. Escaneie as manchetes RSS, timeline do X, e narrativa detectada.
+2. Identifique o EVENTO ou TEMA que está dominando a atenção coletiva neste momento.
+3. Pergunte: se eu fosse um investidor/gestor abrindo o celular HOJE, o que eu \
+   quero saber? O que muda o meu trade de amanhã?
+4. O tema precisa ter DEMANDA NATURAL de leitura, não ser apenas o dado mais \
+   recente disponível.
+
+REGRAS:
+- O ingest é o UNIVERSO de possibilidades, não o tema. O tema vem da conversa pública.
+- Nem tudo que está no ingest é relevante. Filtre pelo que GERA ENGAJAMENTO.
+- Um tema forte tem: urgência (aconteceu agora), consequência (muda algo), \
+  incerteza (o consenso não sabe a resposta), e conexão com dinheiro (afeta portfolio).
+- DIA DA SEMANA importa: domingo = preparação para segunda. Sexta = recap. \
+  Terça = rotação de growth. O tema precisa servir o leitor no contexto do dia.
+- Se hoje é fim de semana e o mercado está fechado, NÃO invente ação de mercado. \
+  Foque em: o que aconteceu que vai impactar a abertura de segunda?
 
 Responda EXATAMENTE neste formato:
 
-FOCUS: <o que o texto deve enfatizar — qual tensão, qual contradição, qual implicação central>
-HOOK: <primeira frase ou ideia de abertura — algo que prenda, quebre expectativa ou provoque>
-ANGLE: <o ângulo específico que diferencia este texto de um resumo genérico do dia>
+THEME: <o tema/evento dominante do dia — em 1 frase objetiva>
+WHY_NOW: <por que HOJE? o que torna isso urgente agora?>
+READER_QUESTION: <a pergunta que o leitor quer respondida — ex: "o que isso muda no meu trade de segunda?">
+MARKET_CONNECTION: <como esse tema se conecta com portfolio/mercado — ex: "petróleo, treasuries, risk-off">
+"""
+
+
+def _discover_theme(result: CurationResult,
+                    bundle: DailyIngestionBundle | None,
+                    mode: str) -> dict[str, str]:
+    """Identifica o tema do dia com base em demanda de leitura, não em oferta de dados.
+
+    Retorna dict com keys: theme, why_now, reader_question, market_connection.
+    """
+    # Monta contexto com headlines, X timeline e narrativa detectada
+    parts: list[str] = []
+
+    parts.append(f"DATA: {result.run_date}")
+    parts.append(f"DIA DA SEMANA: {_WEEKDAY_PT.get(mode, mode)}")
+    parts.append(f"MODO EDITORIAL: {mode.upper()}")
+
+    # Narrativa detectada pela curadoria
+    primary = result.narrative.primary_signal
+    parts.append(f"\nNARRATIVA DETECTADA: {primary.label}")
+    parts.append(f"DESCRIÇÃO: {primary.description}")
+
+    # Headlines RSS — só títulos para scanear rápido
+    if bundle and bundle.rss_items:
+        headlines = []
+        for item in bundle.rss_items[:20]:
+            if item.title and len(item.title) > 10:
+                headlines.append(f"  [{item.source_name}] {item.title}")
+        if headlines:
+            parts.append("\nMANCHETES DO DIA (RSS):")
+            parts.extend(headlines)
+
+    # X Timeline — tweets mais recentes
+    if bundle and bundle.x_items:
+        tweets = []
+        for t in bundle.x_items[:15]:
+            if t.text and len(t.text) > 30:
+                tweets.append(f"  [{t.author}] {t.text[:200]}")
+        if tweets:
+            parts.append("\nTIMELINE X:")
+            parts.extend(tweets)
+
+    # Evidências do corpus
+    if primary.evidence_quotes:
+        parts.append("\nEVIDÊNCIAS DO CORPUS:")
+        for q in primary.evidence_quotes[:5]:
+            parts.append(f'  - "{q}"')
+
+    user_prompt = "\n".join(parts)
+
+    raw = call_claude(_THEME_SYSTEM, user_prompt, model=_MODEL,
+                      max_tokens=300, temperature=0.4)
+    _log.info("writer_theme_discovered", mode=mode, raw=raw[:200])
+    return _parse_theme(raw)
+
+
+# Mapeamento de mode para dia da semana em PT (para contexto do LLM)
+_WEEKDAY_PT: dict[str, str] = {
+    "week_ahead":     "Segunda-feira",
+    "growth":         "Terça-feira",
+    "flow_show":      "Quarta-feira",
+    "tese":           "Quinta-feira",
+    "week_recap":     "Sexta-feira",
+    "podcast_sabado": "Sábado",
+    "tese_livre":     "Domingo",
+    "morning_call":   "(dia variável)",
+}
+
+
+def _parse_theme(raw: str) -> dict[str, str]:
+    result: dict[str, str] = {
+        "theme": "", "why_now": "", "reader_question": "", "market_connection": "",
+    }
+    for line in raw.splitlines():
+        for key, prefix in [
+            ("theme", "THEME:"),
+            ("why_now", "WHY_NOW:"),
+            ("reader_question", "READER_QUESTION:"),
+            ("market_connection", "MARKET_CONNECTION:"),
+        ]:
+            if line.strip().upper().startswith(prefix.upper()):
+                result[key] = line.split(":", 1)[1].strip()
+    return result
+
+
+# ── Interpretação (ângulo + foco, dentro do tema) ─────────────────────────────
+
+_ANGLE_SYSTEM = """\
+Você é um estrategista de mercado com profundidade intelectual. O modo de escrita já \
+está definido pelo calendário editorial. O TEMA DO DIA já foi definido pelo editor.
+
+Sua tarefa: dado o tema do dia e os dados disponíveis, encontrar o MELHOR ÂNGULO \
+para este texto. O ângulo não é o tema — é a LENTE específica que torna este texto \
+diferente de qualquer outro sobre o mesmo assunto.
+
+IMPORTANTE: O tema vem da demanda do leitor (o que as pessoas querem saber hoje). \
+Os dados do ingest são EVIDÊNCIA para servir esse tema, não o tema em si. Use os dados \
+para dar profundidade, números e mecanismo ao tema.
+
+REGRA DE OURO: o ângulo NÃO pode ser apenas "a tensão entre A e B" ou "a divergência \
+entre X e Y" ou "o paradoxo de Z". Esses são templates vazios que soam profundos mas \
+não dizem nada. O ângulo precisa nomear o MECANISMO específico, a CONSEQUÊNCIA concreta, \
+ou o ATOR que está sendo ignorado.
+
+PENSAMENTO DE SEGUNDA ORDEM (obrigatório):
+- O óbvio já está no preço e na manchete. Qual é a consequência INDIRETA?
+- Qual estrutura, incentivo ou mecanismo invisível explica o que está acontecendo?
+- Onde o consenso está errado, incompleto ou invertido?
+- Se todo mundo está dizendo X, por que X pode estar errado?
+- Qual é a conexão que ninguém está fazendo entre este tema e outro setor/ativo/dinâmica?
+
+Responda EXATAMENTE neste formato:
+
+FOCUS: <o mecanismo ou consequência específica que o texto deve expor — NÃO use "tensão entre", "divergência entre", "paradoxo de">
+HOOK: <primeira frase ou ideia de abertura — algo concreto que prenda, não uma abstração>
+ANGLE: <o ângulo específico que diferencia este texto — nomeie o mecanismo, o ator ou a consequência>
 """
 
 
 def _find_angle(result: CurationResult, mode: str,
                 bundle: DailyIngestionBundle | None = None,
                 tema_hint: str | None = None) -> dict[str, str]:
-    """Determina o ângulo, foco e hook — o modo já é fixo pelo calendário."""
+    """Determina o ângulo, foco e hook — o modo já é fixo pelo calendário.
+
+    Fluxo demand-driven:
+    1. _discover_theme() identifica a CONVERSA do dia (o que o leitor quer saber)
+    2. O tema guia a seleção de ângulo (dados do ingest são evidência, não tema)
+    3. O ângulo conecta o tema com o trade/portfolio do leitor
+    """
 
     # Podcast de sábado: ignora narrativa macro, usa só artigos ZH Main
     if mode == "podcast_sabado":
@@ -1050,27 +1245,60 @@ def _find_angle(result: CurationResult, mode: str,
             _log.info("writer_angle_done", mode=mode, raw=raw[:200])
             return _parse_angle(raw)
 
+    # ── Step 1: Descobre o tema do dia (demand-driven) ────────────────────────
+    theme = {"theme": "", "why_now": "", "reader_question": "", "market_connection": ""}
+    if not tema_hint:
+        try:
+            theme = _discover_theme(result, bundle, mode)
+            _log.info("writer_theme", theme=theme.get("theme", "")[:120])
+        except Exception as exc:
+            _log.warning("theme_discovery_failed", error=str(exc))
+
+    # ── Step 2: Encontra o ângulo DENTRO do tema ──────────────────────────────
     curation_ctx = _build_curation_context(result)
     bundle_ctx = _build_bundle_context(bundle, mode)
     anti_rep = _build_anti_repetition_block(mode)
 
-    # Modos com tema editorial fixo — a narrativa macro detectada é CONTEXTO, não o tema
-    _FIXED_TOPIC_MODES = {
-        "growth":    "Growth Stocks / Tech / Software — use a narrativa macro como pano de fundo, não como tema central.",
-        "flow_show": "Fluxo de mercado — opções, CTAs, dealers, vol — use a narrativa macro como contexto.",
-        "tese":      "Tese de ação ou tema macro específico — use a narrativa macro como contexto.",
-        "week_recap":"Recap da semana — dados macro, fluxo, rotação — use a narrativa macro como contexto.",
-        "tese_livre":"Tema aberto (tech, política, sociedade) — use a narrativa macro como contexto.",
-    }
-    mode_constraint = _FIXED_TOPIC_MODES.get(mode, "")
+    # Brain: modelos mentais filtrados por domínio do mode
+    brain_ctx = ""
+    try:
+        from app.curation.brain import get_brain_context
+        narrative_label = result.narrative.primary_signal.label if result.narrative and result.narrative.primary_signal else ""
+        brain_tags = _MODE_BRAIN_TAGS.get(mode, ["macro", "behavioral"])
+        # Usa o tema descoberto como contexto de busca no brain (mais preciso)
+        brain_search_ctx = theme.get("theme", "") or curation_ctx[:500]
+        brain_ctx = get_brain_context(narrative_label, brain_search_ctx, use_llm=False, tags=brain_tags)
+    except Exception as exc:
+        _log.warning("brain_angle_error", error=str(exc))
 
-    user_prompt = f"MODO DO DIA: {mode.upper()}\n\n{curation_ctx}"
-    if mode_constraint:
-        user_prompt += f"\n\n⚠️ INSTRUÇÃO EDITORIAL: {mode_constraint}\nNÃO centre o texto na narrativa geopolítica/macro detectada. Essa é apenas o pano de fundo. O tema obrigatório do dia é: {mode.upper()}."
+    # Monta prompt com tema como driver principal
+    user_prompt = f"MODO DO DIA: {mode.upper()}\n"
+    user_prompt += f"DIA: {_WEEKDAY_PT.get(mode, mode)}\n\n"
+
+    # Tema é o driver principal (se descoberto ou forçado)
+    effective_theme = tema_hint or theme.get("theme", "")
+    if effective_theme:
+        user_prompt += f"═══ TEMA DO DIA (definido pelo editor) ═══\n"
+        user_prompt += f"TEMA: {effective_theme}\n"
+        if tema_hint:
+            user_prompt += "(tema forçado pelo editor)\n"
+        else:
+            if theme.get("why_now"):
+                user_prompt += f"POR QUE HOJE: {theme['why_now']}\n"
+            if theme.get("reader_question"):
+                user_prompt += f"PERGUNTA DO LEITOR: {theme['reader_question']}\n"
+            if theme.get("market_connection"):
+                user_prompt += f"CONEXÃO COM MERCADO: {theme['market_connection']}\n"
+        user_prompt += (
+            "\nO ângulo deve servir ESTE TEMA. Os dados abaixo são EVIDÊNCIA "
+            "para dar profundidade, não são o tema em si.\n"
+        )
+    user_prompt += f"\n═══ DADOS DISPONÍVEIS (use como evidência) ═══\n{curation_ctx}"
+
+    if brain_ctx:
+        user_prompt += f"\n\n--- MODELOS MENTAIS ---\n{brain_ctx}"
     if anti_rep:
         user_prompt += f"\n\n{anti_rep}"
-    if tema_hint:
-        user_prompt += f"\n\nTEMA FORÇADO PELO EDITOR: {tema_hint}\nDesenvolva o ângulo editorial em torno deste tema específico."
     if bundle_ctx:
         user_prompt += f"\n\n--- DADOS ESTRUTURADOS ---\n{bundle_ctx[:3000]}"
 
@@ -1098,17 +1326,24 @@ def _angle_log_path() -> Path:
     return workspace.state / "angle_history.json"
 
 
-def _save_angle_log(mode: str, focus: str, angle: str, run_date: str) -> None:
-    """Persiste o ângulo gerado para evitar repetição nas próximas execuções."""
+def _save_angle_log(mode: str, focus: str, angle: str, run_date: str, title: str = "") -> None:
+    """Persiste o ângulo + título gerados para evitar repetição nas próximas execuções."""
     path = _angle_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         entries: list[dict] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
     except Exception:
         entries = []
-    entries.append({"date": run_date, "mode": mode, "focus": focus, "angle": angle})
+    entries.append({"date": run_date, "mode": mode, "focus": focus, "angle": angle, "title": title})
     # Mantém apenas últimas 60 entradas (2 meses)
     path.write_text(json.dumps(entries[-60:], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _extract_title_from_text(text: str) -> str:
+    """Extrai o primeiro título em negrito (**...**) do texto gerado."""
+    import re as _re
+    m = _re.search(r"\*\*([^*\n]{10,200})\*\*", text)
+    return m.group(1).strip() if m else ""
 
 
 def _load_angle_history(mode: str, days: int = 14) -> list[dict]:
@@ -1140,6 +1375,20 @@ def _build_anti_repetition_block(mode: str) -> str:
     history = _load_angle_history(mode, days=14)
     if not history:
         return ""
+
+    # Detecta patterns estruturais repetidos (templates vazios)
+    _STRUCTURAL_PATTERNS = [
+        "tensão entre", "divergência entre", "paradoxo de", "paradoxo do",
+        "contradição entre", "desconexão entre", "dissociação entre",
+        "a tensão", "a divergência", "o paradoxo",
+    ]
+    pattern_counts: dict[str, int] = {}
+    for e in history:
+        focus_lower = e.get("focus", "").lower()
+        for pat in _STRUCTURAL_PATTERNS:
+            if pat in focus_lower:
+                pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
+
     lines = [
         "\n⚠️  ÂNGULOS JÁ UTILIZADOS NOS ÚLTIMOS DIAS — NÃO REPITA NENHUM DESTES:",
         "Você DEVE escolher um ângulo completamente diferente dos listados abaixo.",
@@ -1150,10 +1399,137 @@ def _build_anti_repetition_block(mode: str) -> str:
         lines.append(f"  [{e['date']}] FOCUS: {e['focus'][:120]}")
         if e.get("angle"):
             lines.append(f"            ANGLE: {e['angle'][:120]}")
+        if e.get("title"):
+            lines.append(f"            TÍTULO: {e['title'][:120]}")
+
+    # Lista exclusiva de títulos recentes (até 14 dias) — proibição forte
+    recent_titles = [e.get("title", "").strip() for e in history if e.get("title")]
+    recent_titles = [t for t in recent_titles if t][-10:]
+    if recent_titles:
+        lines.append("\n🚫 TÍTULOS JÁ USADOS — NÃO ESCREVA NADA PARECIDO COM ESTES:")
+        for t in recent_titles:
+            lines.append(f'  • "{t}"')
+        lines.append(
+            "Evite estruturas como 'O X que Y', 'O Rally/Cadeia/Mecanismo que ninguém precificou', "
+            "'A semana em que...', 'Quando A encontra B'. Crie um título com VERBO ATIVO, "
+            "nomeando o motor concreto (ex: 'Dealers vendem 8B em gamma na expiry de sexta')."
+        )
+
+    # Alerta de patterns estruturais
+    if pattern_counts:
+        lines.append("\n🚫 PATTERNS ESTRUTURAIS REPETIDOS — PROIBIDOS:")
+        for pat, count in sorted(pattern_counts.items(), key=lambda x: -x[1]):
+            if count >= 2:
+                lines.append(f'  "{pat}" usado {count}x — NÃO USE esta construção.')
+        lines.append(
+            'Em vez de "tensão entre A e B", nomeie o MECANISMO: "dealers short gamma '
+            'forçando amplificação de preço" ou "CTA crowding em 2 desvios criando '
+            'squeeze mecânico". O ângulo é o motor, não o sintoma.'
+        )
+
     lines.append(
         "\nA repetição de ângulo é o maior erro editorial possível. "
         "O leitor que voltou hoje quer VER o que mudou, não reler ontem com outras palavras."
     )
+    return "\n".join(lines)
+
+
+# ── Desk Intelligence context ─────────────────────────────────────────────────
+
+def _build_wsb_context(bundle: DailyIngestionBundle | None) -> str:
+    """Formata dados WSB + Squeeze para contexto do writer."""
+    if bundle is None:
+        return ""
+    sw = bundle.swaggy_data if hasattr(bundle, "swaggy_data") else {}
+    if not sw:
+        return ""
+
+    lines: list[str] = []
+
+    wsb = sw.get("wsb_mentions", [])
+    if wsb:
+        lines.append("WSB TOP MENTIONS (WallStreetBets — sentimento varejo):")
+        for t in wsb[:15]:
+            ticker = t.get("ticker", "?")
+            mentions = t.get("mentions", 0)
+            rank = t.get("rank", 0)
+            lines.append(f"  #{rank} {ticker:6s}  {mentions} menções")
+
+    squeeze = sw.get("squeeze_candidates", [])
+    if squeeze:
+        lines.append("\nSQUEEZE CANDIDATES (alto short interest + catalisador):")
+        for t in squeeze[:10]:
+            ticker = t.get("ticker", "?")
+            si = t.get("short_interest", t.get("si_pct", "?"))
+            score = t.get("squeeze_score", t.get("score", "?"))
+            lines.append(f"  {ticker:6s}  SI={si}  score={score}")
+
+    return "\n".join(lines)
+
+
+def _build_desk_intel_context(bundle: DailyIngestionBundle | None) -> str:
+    """Carrega o DeskIntelligenceResult mais recente do dia e formata para o writer."""
+    if bundle is None:
+        return ""
+    lines: list[str] = []
+
+    # 1. SpotGamma Live data (do bundle)
+    sg_live = getattr(bundle, "spotgamma_live", {}) or {}
+    if sg_live and sg_live.get("tickers"):
+        lines.append("SPOTGAMMA LIVE (Gamma/Dealers em tempo real):")
+        spx = sg_live.get("spx_data")
+        if spx:
+            lines.append(f"  SPX: Gamma Flip={spx.get('gamma_flip', '?')}, "
+                         f"Vol Trigger={spx.get('vol_trigger', '?')}, "
+                         f"Dealer Regime={spx.get('dealer_regime', '?')}, "
+                         f"Call Wall={spx.get('call_wall', '?')}, "
+                         f"Put Wall={spx.get('put_wall', '?')}, "
+                         f"GEX={spx.get('total_gex_b', '?')}B, "
+                         f"Signal={spx.get('sg_signal', '?')}")
+        for ticker, data in sg_live.get("tickers", {}).items():
+            if ticker == "SPX":
+                continue
+            flip = data.get("gamma_flip", "")
+            regime = data.get("dealer_regime", "")
+            signal = data.get("sg_signal", 0)
+            if flip or regime != "unknown":
+                lines.append(f"  {ticker}: Flip={flip}, Regime={regime}, Signal={signal:.2f}")
+
+    # 3. OptionsSnapshot (do options_store — dados BQuant)
+    try:
+        from app.providers.options_store import options_store as _opt_store
+        snap = _opt_store.load_latest()
+        if snap:
+            lines.append(f"\nOPTIONS SNAPSHOT (BQuant Greeks Dashboard):")
+            lines.append(f"  GEX Net: {snap.gex_net_bn:.2f}B | Gamma Regime: "
+                         f"{'Long' if snap.gex_net_bn > 0 else 'Short'} Gamma")
+            lines.append(f"  Gamma Flip: {snap.gamma_flip} | Squeeze Score: {snap.squeeze_score:.1f}")
+            lines.append(f"  IV30d: {snap.iv_30d:.1f}% | RV30d: {snap.rv_30d:.1f}% | "
+                         f"IV-RV Premium: {snap.iv_30d - snap.rv_30d:.1f}pp")
+            lines.append(f"  Skew 25D: {snap.skew_25d:.2f} | P/C Ratio: {snap.pc_ratio:.2f}")
+            lines.append(f"  Call Wall: {snap.call_wall} | Put Wall: {snap.put_wall}")
+            lines.append(f"  Flow Score: {snap.flow_score_total:.2f} | "
+                         f"Fragility: {snap.fragility:.2f} | Tail: {snap.tail_score:.2f}")
+            lines.append(f"  Delta: {snap.delta_bn:.2f}B | Vanna: {snap.vanna_bn:.2f}B | "
+                         f"Charm: {snap.charm_bn:.2f}B")
+            if snap.vix:
+                lines.append(f"  VIX: {snap.vix:.1f}")
+
+            # Posicionamento CTA/VolCtrl/RP
+            zs = snap.z_scores
+            extreme = [(k, v) for k, v in zs.items() if abs(v) > 1.0]
+            if extreme:
+                extreme.sort(key=lambda x: abs(x[1]), reverse=True)
+                lines.append(f"\n  POSICIONAMENTO INSTITUCIONAL (Z-scores):")
+                for name, z in extreme[:8]:
+                    direction = "LONG" if z > 0 else "SHORT"
+                    intensity = "extremo" if abs(z) > 2 else "elevado"
+                    lines.append(f"    {name}: Z={z:+.1f} ({direction} {intensity})")
+    except Exception as exc:
+        _log.debug("options_snapshot_context_skip", error=str(exc)[:60])
+
+    if not lines:
+        return ""
     return "\n".join(lines)
 
 
@@ -1166,41 +1542,22 @@ def _write(angle: dict[str, str], mode: str, result: CurationResult,
     primary = result.narrative.primary_signal
     secondary = result.narrative.secondary_signals
 
-    # Modos com tema editorial fixo — narrativa macro é contexto, não tema central
-    _FIXED_TOPIC_WARNING = {
-        "growth":    "⚠️ MODO GROWTH: O tema central é Growth Stocks / Software / Tech. A narrativa geopolítica é PANO DE FUNDO. Não escreva sobre Iran/Ormuz como tema principal.",
-        "flow_show": "⚠️ MODO FLOW SHOW: O tema central é fluxo de opções, CTAs, dealers, vol. Narrativa macro é contexto.",
-        "tese":      "⚠️ MODO TESE: Desenvolva uma tese de ação ou tema macro específico. Narrativa detectada é contexto.",
-        "week_recap":"⚠️ MODO WEEK RECAP: Recapitule a semana com foco em dados, fluxo e rotação. Narrativa macro é contexto.",
-        "tese_livre":"⚠️ MODO TESE LIVRE: Tema aberto. Narrativa macro é apenas contexto de mercado.",
-    }
+    context_lines = [
+        f"Data: {result.run_date}",
+        f"Dia: {_WEEKDAY_PT.get(mode, mode)}",
+    ]
 
-    # Podcast de sábado: não contaminar com narrativa macro da semana
-    if mode == "podcast_sabado":
-        context_lines = [f"Data: {result.run_date}"]
-    else:
-        context_lines = [f"Data: {result.run_date}"]
-
-        # Para modos com tema fixo, a narrativa detectada é apenas contexto
-        topic_warning = _FIXED_TOPIC_WARNING.get(mode, "")
-        if topic_warning:
-            context_lines.append(topic_warning)
-            context_lines.append(f"Narrativa de mercado detectada (contexto de fundo): {primary.label}")
-            context_lines.append(f"Descrição do contexto: {primary.description}")
-        else:
-            context_lines.extend([
-                f"Narrativa central: {primary.label}",
-                f"Descrição: {primary.description}",
-            ])
-            if secondary:
-                sec = secondary[0]
-                if sec and sec.label and sec.label.upper() != "NONE":
-                    context_lines.append(f"Narrativa secundária: {sec.label} — {sec.description}")
-
-        if primary.evidence_quotes:
-            context_lines.append("\nEvidências do corpus:")
-            for q in primary.evidence_quotes[:5]:
-                context_lines.append(f'  - "{q}"')
+    # Narrativa detectada como CONTEXTO (nunca como tema principal)
+    context_lines.append(f"\nNarrativa de mercado detectada (contexto): {primary.label}")
+    context_lines.append(f"Descrição: {primary.description}")
+    if secondary:
+        sec = secondary[0]
+        if sec and sec.label and sec.label.upper() != "NONE":
+            context_lines.append(f"Narrativa secundária: {sec.label} — {sec.description}")
+    if primary.evidence_quotes:
+        context_lines.append("\nEvidências do corpus:")
+        for q in primary.evidence_quotes[:5]:
+            context_lines.append(f'  - "{q}"')
 
     # Catálogo de imagens disponíveis
     catalog: list[dict] = []
@@ -1219,6 +1576,15 @@ def _write(angle: dict[str, str], mode: str, result: CurationResult,
         "  - NUNCA escreva 'Bitcoin subiu X% hoje' a menos que tenha certeza que a sessão de hoje já fechou.",
         "  - Use 'na última sessão', 'ontem', 'na sessão recente', 'no último pregão' quando houver",
         "    qualquer dúvida. NUNCA afirme 'hoje' cegamente a partir de um número diário.",
+        "  - FIM DE SEMANA: se hoje é sábado ou domingo, o mercado está FECHADO. Não invente",
+        "    movimentos de mercado. Foque no que aconteceu e no que IMPACTA a abertura de segunda.",
+        "",
+        "⚠️ PENSAMENTO ESTRUTURAL — OBRIGATÓRIO:",
+        "  - Antes de aceitar qualquer explicação de superfície ('incerteza macro', 'budget freeze',",
+        "    'risk-off'), pergunte: qual é o MECANISMO ESTRUTURAL por trás disso?",
+        "  - Sempre conecte: FATO (o que aconteceu) → MECANISMO (por que/como) → IMPLICAÇÃO (e daí?)",
+        "  - O leitor é trader. Cada insight precisa terminar em: 'e isso significa X para o seu trade'.",
+        "  - Pense fora da caixa: que conexão entre setores/ativos/dinâmicas o consenso NÃO está fazendo?",
         "",
         "⚠️ ANTI-REDUNDÂNCIA — REGRA ABSOLUTA:",
         "  - Cada seção é uma entrega DIFERENTE. NUNCA reescreva o TEXTO PRINCIPAL em formato menor.",
@@ -1237,6 +1603,27 @@ def _write(angle: dict[str, str], mode: str, result: CurationResult,
     briefing = _image_briefing(catalog)
     if briefing:
         context_lines.append(briefing)
+
+    # Brain: modelos mentais filtrados por domínio do mode
+    try:
+        from app.curation.brain import get_brain_context
+        narrative_label = primary.label if primary else ""
+        brain_tags = _MODE_BRAIN_TAGS.get(mode, ["macro", "behavioral"])
+        brain_block = get_brain_context(narrative_label, angle.get("focus", ""), use_llm=False, tags=brain_tags)
+        if brain_block:
+            context_lines.append(f"\n--- MODELOS MENTAIS (use como lentes, não cite fontes) ---\n{brain_block}")
+    except Exception as exc:
+        _log.warning("brain_write_error", error=str(exc))
+
+    # Desk Intelligence: regime, opportunity, fragility, positioning
+    desk_intel_ctx = _build_desk_intel_context(bundle)
+    if desk_intel_ctx:
+        context_lines.append(f"\n--- DESK INTELLIGENCE (dados quantitativos do pipeline) ---\n{desk_intel_ctx}")
+
+    # WSB / Squeeze data
+    wsb_ctx = _build_wsb_context(bundle)
+    if wsb_ctx:
+        context_lines.append(f"\n--- WSB + SQUEEZE (sentimento varejo / short squeeze) ---\n{wsb_ctx}")
 
     bundle_ctx = _build_bundle_context(bundle, mode)
     if bundle_ctx:
@@ -1500,9 +1887,11 @@ def write(result: CurationResult, bundle: DailyIngestionBundle | None = None,
 
     text = _write(angle, mode, result, bundle)
 
-    # Persiste ângulo para evitar repetição nas próximas execuções
+    # Persiste ângulo + título para evitar repetição nas próximas execuções
     try:
-        _save_angle_log(mode, angle["focus"], angle["angle"], result.run_date or str(date.today()))
+        title = _extract_title_from_text(text)
+        _save_angle_log(mode, angle["focus"], angle["angle"],
+                        result.run_date or str(date.today()), title=title)
     except Exception as exc:
         _log.warning("angle_log_save_error", error=str(exc))
 

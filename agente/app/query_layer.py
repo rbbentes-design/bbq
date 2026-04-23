@@ -40,7 +40,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import sys
 _ROOT = Path(__file__).parent.parent
@@ -416,7 +416,21 @@ class BloombergQueryLayer:
         BASE = ["atm", "put25", "call25", "put10", "call10",
                 "call_skew", "put_skew", "skew_25d", "skew_10d", "rr_25d", "tail_premium"]
         fields = [f"{b}_{t}" for b in BASE for t in TENORS]
-        return self._get_latest_by_fields(fields, ticker_filter=ticker)
+        # Inclui fallback fields (lowercase iv_30d) que existem para SPY/QQQ/etc
+        fallback_fields = ["iv_30d", "iv_60d", "iv_90d", "iv_180d", "atm_iv"]
+        all_fields = fields + fallback_fields
+        result = self._get_latest_by_fields(all_fields, ticker_filter=ticker)
+
+        # Aplica fallback: se atm_30D faltando, usa iv_30d * 100 (BBG vem em fração)
+        # iv_30d ja vem como decimal (0.20 = 20%), igual atm_30D
+        for tk, data in result.items():
+            if data.get("atm_30D") is None and data.get("iv_30d") is not None:
+                data["atm_30D"] = data["iv_30d"]
+            if data.get("atm_90D") is None and data.get("iv_90d") is not None:
+                data["atm_90D"] = data["iv_90d"]
+            if data.get("atm_180D") is None and data.get("iv_180d") is not None:
+                data["atm_180D"] = data["iv_180d"]
+        return result
 
     def get_positioning_models(self, ticker: str | None = None) -> dict[str, dict[str, Any]]:
         """
@@ -712,12 +726,12 @@ class BloombergQueryLayer:
             }
         """
         try:
-            sql = f"""
+            sql = """
                 SELECT bbg_ticker, date, value
                 FROM macro_series_history
-                WHERE date >= date('now', '-{days} days')
+                WHERE date >= date('now', ?)
             """
-            params: list[Any] = []
+            params: list[Any] = [f"-{int(days)} days"]
             if bbg_ticker:
                 sql += " AND bbg_ticker = ?"
                 params.append(bbg_ticker)

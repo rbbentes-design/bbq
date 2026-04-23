@@ -69,6 +69,70 @@ def _regime_badge(regime_data: dict[str, Any]) -> str:
             f'</div></div>')
 
 
+def _wsb_section_html(bundle) -> str:
+    """Sidebar section: WSB Top Mentions + Squeeze Candidates."""
+    if not bundle:
+        return ""
+    sw = getattr(bundle, "swaggy_data", None) or {}
+    if not sw:
+        return ""
+
+    wsb = sw.get("wsb_mentions", [])
+    squeeze = sw.get("squeeze_candidates", [])
+    if not wsb and not squeeze:
+        return ""
+
+    parts = ['<div class="s-section">', '<div class="s-title">WSB + Squeeze</div>']
+
+    if wsb:
+        parts.append('<table class="mp-table" style="font-size:10px"><tbody>')
+        parts.append('<tr style="color:#64748b"><td>Ticker</td><td style="text-align:right">Mentions</td>'
+                     '<td style="text-align:center">Sent.</td></tr>')
+        for m in wsb[:12]:
+            tk = m.get("ticker", "?")
+            mentions = m.get("mentions", 0)
+            sent = m.get("sentiment_label", "neutral")
+            sent_color = "#4ade80" if sent == "bullish" else "#f87171" if sent == "bearish" else "#94a3b8"
+            sent_icon = "&#9650;" if sent == "bullish" else "&#9660;" if sent == "bearish" else "&#9679;"
+            parts.append(
+                f'<tr><td style="color:#e2e8f0;font-weight:600">{tk}</td>'
+                f'<td style="text-align:right;color:#94a3b8">{mentions:,}</td>'
+                f'<td style="text-align:center;color:{sent_color}">{sent_icon}</td></tr>'
+            )
+        parts.append('</tbody></table>')
+
+    if squeeze:
+        parts.append('<div style="margin-top:8px;font-size:10px;color:#818cf8;font-weight:600">SQUEEZE CANDIDATES</div>')
+        parts.append('<table class="mp-table" style="font-size:10px"><tbody>')
+        parts.append('<tr style="color:#64748b"><td>Ticker</td><td style="text-align:right">SI%</td>'
+                     '<td style="text-align:right">DTC</td><td style="text-align:right">Score</td></tr>')
+        for s in squeeze[:8]:
+            tk = s.get("ticker", "?")
+            si = s.get("short_interest_pct", 0)
+            dtc = s.get("days_to_cover", 0)
+            score = s.get("squeeze_score", 0)
+            bar_w = min(100, score * 100)
+            parts.append(
+                f'<tr><td style="color:#e2e8f0;font-weight:600">{tk}</td>'
+                f'<td style="text-align:right;color:#f87171">{si:.1f}%</td>'
+                f'<td style="text-align:right;color:#94a3b8">{dtc:.1f}</td>'
+                f'<td style="text-align:right"><div style="display:inline-block;width:40px;height:6px;'
+                f'background:#1e293b;border-radius:3px;overflow:hidden">'
+                f'<div style="width:{bar_w:.0f}%;height:100%;background:#818cf8;border-radius:3px"></div>'
+                f'</div></td></tr>'
+            )
+        parts.append('</tbody></table>')
+
+    bull_pct = sw.get("market_bull_pct")
+    if bull_pct is not None:
+        parts.append(f'<div style="margin-top:6px;font-size:10px;color:#64748b">'
+                     f'Market Sentiment: <span style="color:{"#4ade80" if bull_pct > 55 else "#f87171" if bull_pct < 45 else "#94a3b8"}">'
+                     f'{bull_pct:.0f}% bullish</span></div>')
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 def _flow_panel_html(flow_pred: dict[str, Any]) -> str:
     """
     Sidebar section: Fluxo Mecânico EOD (GEX + LETF Rebalancing).
@@ -2309,14 +2373,18 @@ def _load_editorial_html(bundle: "DailyIngestionBundle") -> str:
         from app.storage.paths import workspace
         from pathlib import Path as _P
         bundle_dir = _P(workspace.bundles) / str(bundle.run_date)
-        # Prefere _brief.html mais recente, depois qualquer _week_ahead_brief.html
-        candidates = sorted(
-            list(bundle_dir.glob("*_brief.html")) + list(bundle_dir.glob("*_week_ahead_brief.html")),
-            key=lambda p: p.stat().st_size, reverse=True,  # maior brief = mais conteúdo
-        )
-        if not candidates:
+        # Prefere brief do MESMO bundle, senão o mais recente por mtime
+        all_briefs = list(bundle_dir.glob("*_brief.html")) + list(bundle_dir.glob("*_week_ahead_brief.html"))
+        if not all_briefs:
             return ""
-        raw = candidates[0].read_text(encoding="utf-8")
+        # Tenta achar brief que pertence ao bundle atual
+        _rid = bundle.run_id
+        own = [p for p in all_briefs if p.name.startswith(_rid)]
+        if own:
+            chosen = own[0]
+        else:
+            chosen = sorted(all_briefs, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        raw = chosen.read_text(encoding="utf-8")
         # srcdoc precisa de & e " escapados
         srcdoc = raw.replace("&", "&amp;").replace('"', "&quot;")
         return f'<iframe srcdoc="{srcdoc}" style="width:100%;min-height:80vh;border:none;display:block;background:#06080f"></iframe>'
@@ -2529,6 +2597,7 @@ def generate_macro_desk_v2_html(
     risk_heatmap_html = _risk_heatmap_html(graph_data)
     live_network_html = _live_network_html(live_network)
     flow_panel_html   = _flow_panel_html(flow_pred_panel)
+    wsb_section_html  = _wsb_section_html(bundle)
 
     portfolio_tab_html = _render_portfolio_tab(portfolio, mp or (bundle.market_prices if bundle else None), _pt_flow_pred)
 
@@ -2634,6 +2703,24 @@ def generate_macro_desk_v2_html(
             f'Opções indisponível: {str(_exc)[:120]}'
             '</div>'
         )
+
+    # FlowPatrol panel — insights + charts do SpotGamma (no TOPO da aba Opcoes)
+    try:
+        from app.analysis.flow_patrol_parser import parse_flow_patrol
+        from app.analysis.flow_patrol_charts import render_flow_patrol_panel
+        fp_reports = [r for r in (bundle.spotgamma_reports if bundle else [])
+                      if getattr(r, "report_type", "") == "FlowPatrol"]
+        if fp_reports:
+            fp_latest = fp_reports[0]
+            fp_raw = getattr(fp_latest, "raw_text", "") or ""
+            fp_parsed = parse_flow_patrol(fp_raw)
+            fp_panel = render_flow_patrol_panel(fp_parsed)
+            if fp_panel:
+                # Wrapper com padding para alinhar com options_tab_html
+                fp_wrapped = f'<div style="padding:20px 24px 0">{fp_panel}</div>'
+                options_tab_html = fp_wrapped + options_tab_html
+    except Exception as _exc_fp:
+        _log.warning("flow_patrol_panel_failed", error=str(_exc_fp)[:100])
 
     top_hubs = mst_meta.get("top_hubs") or []
     hubs_str = ", ".join(f"{t}({d})" for t, d in top_hubs[:3]) if top_hubs else "—"
@@ -2757,6 +2844,8 @@ def generate_macro_desk_v2_html(
         <div class="s-title">Fluxo Mecânico EOD</div>
         {flow_panel_html}
       </div>
+
+      {wsb_section_html}
 
     </div>
 

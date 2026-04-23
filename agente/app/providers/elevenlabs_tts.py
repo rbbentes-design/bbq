@@ -202,6 +202,32 @@ def _clean_for_tts(text: str) -> str:
     for pattern, replacement in _SIGLAS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
+    # ── Tradução de termos em inglês que TTS pronunciaria errado em PT ─────────
+    # Respeita case quando possível
+    _TRADUCOES_EN_PT = [
+        (r"\bbase metals\b",          "metais base"),
+        (r"\bprecious metals\b",      "metais preciosos"),
+        (r"\bmetals\b",               "metais"),
+        (r"\bcommodities\b",          "commodities"),  # já é usado em PT
+        (r"\bcommodity\b",            "commodity"),
+        (r"\boil and gas\b",          "óleo e gás"),
+        (r"\bpayroll\b",              "folha de pagamento"),
+        (r"\bhedge funds?\b",         "fundos hedge"),
+        (r"\bmarket makers?\b",       "formadores de mercado"),
+        (r"\bdealers?\b",             "dealers"),  # jargão mantido
+        (r"\bshortfall\b",            "déficit"),
+        (r"\bdrawdown\b",             "queda"),
+        (r"\bbreakdown\b",            "colapso"),
+        (r"\bbreakout\b",             "rompimento"),
+        (r"\bguidance\b",             "projeção"),
+        (r"\bbeat\b",                 "superou"),
+        (r"\bmiss\b",                 "decepcionou"),
+        (r"\bguidance cut\b",         "corte de projeção"),
+        (r"\bsemiconductors?\b",      "semicondutores"),
+    ]
+    for pattern, replacement in _TRADUCOES_EN_PT:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
     # Remove linhas em branco excessivas
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -213,16 +239,94 @@ def _concat_podcast(tts_path: Path, dest: Path) -> None:
     """
     Junta intro + locução gerada + outro em um único arquivo MP3.
     Normaliza volume entre os segmentos para equilíbrio de áudio.
-    Usa pydub+static-ffmpeg se disponível; fallback para concatenação de bytes.
+    Tenta: ffmpeg direto (Python 3.14+) > pydub > fallback bytes.
     """
     intro_path = settings.podcast_intro_path
     outro_path = settings.podcast_outro_path
 
+    # Tenta ffmpeg direto primeiro (funciona em Python 3.14 sem audioop)
+    try:
+        _concat_podcast_ffmpeg(tts_path, dest, intro_path, outro_path)
+        return
+    except Exception as exc:
+        _log.warning("podcast_ffmpeg_failed", error=str(exc)[:150])
+
     try:
         _concat_podcast_pydub(tts_path, dest, intro_path, outro_path)
+        return
     except Exception as exc:
-        _log.warning("podcast_pydub_failed_fallback_bytes", error=str(exc))
-        _concat_podcast_bytes(tts_path, dest, intro_path, outro_path)
+        _log.warning("podcast_pydub_failed_fallback_bytes", error=str(exc)[:150])
+
+    _concat_podcast_bytes(tts_path, dest, intro_path, outro_path)
+
+
+def _concat_podcast_ffmpeg(tts_path: Path, dest: Path,
+                            intro_path: Path, outro_path: Path) -> None:
+    """
+    Concat via ffmpeg direto (subprocess). Funciona em Python 3.14+ (sem audioop).
+    Normaliza volume via filtro loudnorm.
+    """
+    import subprocess
+    import tempfile
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+
+    # Monta lista de arquivos na ordem correta
+    parts: list[Path] = []
+    if intro_path.exists():
+        parts.append(intro_path)
+        _log.info("podcast_intro_added", path=intro_path.name, kb=intro_path.stat().st_size // 1024)
+    else:
+        _log.warning("podcast_intro_missing", path=str(intro_path))
+
+    parts.append(tts_path)
+
+    if outro_path.exists():
+        parts.append(outro_path)
+        _log.info("podcast_outro_added", path=outro_path.name, kb=outro_path.stat().st_size // 1024)
+    else:
+        _log.warning("podcast_outro_missing", path=str(outro_path))
+
+    if not parts:
+        raise RuntimeError("nenhum segmento de audio disponivel")
+
+    # Cria arquivo de lista para ffmpeg concat demuxer
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as lf:
+        for p in parts:
+            # ffmpeg concat demuxer exige escape de barras invertidas e aspas
+            p_str = str(p.absolute()).replace("\\", "/").replace("'", r"\'")
+            lf.write(f"file '{p_str}'\n")
+        list_path = Path(lf.name)
+
+    try:
+        # Primeiro tenta concat direto (copy sem re-encoding)
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "concat", "-safe", "0",
+            "-i", str(list_path),
+            "-c", "copy",
+            str(dest),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            # Se copy falhou (formatos diferentes), re-encoda para MP3
+            _log.info("podcast_concat_reencode", reason=result.stderr[:100])
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0",
+                "-i", str(list_path),
+                "-c:a", "libmp3lame", "-b:a", "128k",
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                str(dest),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg re-encode failed: {result.stderr[:200]}")
+
+        total_kb = dest.stat().st_size // 1024
+        _log.info("podcast_concat_done_ffmpeg", path=dest.name, total_kb=total_kb, parts=len(parts))
+    finally:
+        list_path.unlink(missing_ok=True)
 
 
 def _concat_podcast_pydub(tts_path: Path, dest: Path,
@@ -305,6 +409,60 @@ def _concat_podcast_bytes(tts_path: Path, dest: Path,
     _log.info("podcast_concat_done_bytes", path=dest.name, total_kb=total_kb)
 
 
+def _join_chunks_ffmpeg(chunk_paths: list[Path], dest: Path) -> None:
+    """
+    Junta chunks TTS via ffmpeg (Python 3.14 compatible, sem pydub).
+    Usa concat demuxer com re-encoding para garantir que todos os chunks
+    sejam preservados (byte concat de mp3s com headers diferentes corta chunks).
+    Adiciona 800ms de silêncio no final para evitar truncation pelo encoder.
+    """
+    import subprocess
+    import tempfile
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+
+    if len(chunk_paths) == 1:
+        # Um único chunk — só adiciona silêncio no final via ffmpeg
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(chunk_paths[0]),
+            "-af", "apad=pad_dur=0.8",
+            "-c:a", "libmp3lame", "-b:a", "128k",
+            str(dest),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            # Fallback: copy sem padding
+            dest.write_bytes(chunk_paths[0].read_bytes())
+        return
+
+    # Múltiplos chunks: concat demuxer com re-encoding
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as lf:
+        for p in chunk_paths:
+            p_str = str(p.absolute()).replace("\\", "/").replace("'", r"\'")
+            lf.write(f"file '{p_str}'\n")
+        list_path = Path(lf.name)
+
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "concat", "-safe", "0",
+            "-i", str(list_path),
+            "-af", "apad=pad_dur=0.8",  # 800ms silence end (evita truncate)
+            "-c:a", "libmp3lame", "-b:a", "128k",
+            str(dest),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            _log.warning("tts_join_ffmpeg_failed", err=result.stderr[:200])
+            # Fallback bytes (quebrado mas último recurso)
+            dest.write_bytes(b"".join(p.read_bytes() for p in chunk_paths))
+        else:
+            _log.info("tts_joined_ffmpeg", chunks=len(chunk_paths), bytes=dest.stat().st_size)
+    finally:
+        list_path.unlink(missing_ok=True)
+
+
 # ── Síntese via ElevenLabs SDK ────────────────────────────────────────────────
 
 _ELEVENLABS_CHAR_LIMIT = 4800  # margem de segurança abaixo do limite de 5000
@@ -355,8 +513,8 @@ def _synthesize(text: str, dest: Path, api_key: str) -> bool:
             speed=1.15,
         )
 
-        # Adiciona silêncio de fechamento para o ElevenLabs não cortar brusco
-        text_with_ending = text.rstrip() + "\n\n..."
+        # Frase de fechamento audível — "..." sozinho é ignorado pelo ElevenLabs
+        text_with_ending = text.rstrip() + "\n\n. . ."
 
         chunks = _split_text(text_with_ending)
         _log.info("tts_chunks", total=len(chunks), chars=len(text))
@@ -370,8 +528,9 @@ def _synthesize(text: str, dest: Path, api_key: str) -> bool:
                 output_format="mp3_44100_128",
                 voice_settings=voice_settings,
             )
+            # Consumir generator completamente via list() antes de join
             if hasattr(audio, "__iter__") and not isinstance(audio, (bytes, bytearray)):
-                chunk_bytes = b"".join(audio)
+                chunk_bytes = b"".join(list(audio))
             else:
                 chunk_bytes = bytes(audio)
 
@@ -380,22 +539,8 @@ def _synthesize(text: str, dest: Path, api_key: str) -> bool:
             chunk_paths.append(chunk_path)
             _log.info("tts_chunk_done", chunk=i + 1, total=len(chunks), bytes=len(chunk_bytes))
 
-        # Join via pydub para evitar clique na emenda entre chunks
-        if len(chunk_paths) > 1:
-            try:
-                import static_ffmpeg
-                static_ffmpeg.add_paths()
-                from pydub import AudioSegment
-                combined = AudioSegment.from_file(str(chunk_paths[0]))
-                for cp in chunk_paths[1:]:
-                    seg = AudioSegment.from_file(str(cp))
-                    combined = combined.append(seg, crossfade=80)
-                combined.export(str(dest), format="mp3", bitrate="128k")
-            except Exception:
-                # fallback bytes
-                dest.write_bytes(b"".join(p.read_bytes() for p in chunk_paths))
-        else:
-            dest.write_bytes(chunk_paths[0].read_bytes())
+        # Join via ffmpeg subprocess (Python 3.14 compatible, preserva todos os chunks)
+        _join_chunks_ffmpeg(chunk_paths, dest)
 
         for cp in chunk_paths:
             cp.unlink(missing_ok=True)

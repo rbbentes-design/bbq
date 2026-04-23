@@ -1913,8 +1913,14 @@ def save_week_ahead_brief(
 
     # ── Texto editorial ───────────────────────────────────────────────────────
     rich_sections = _extract_written_sections(curation_path)
-    # também extrai texto plano para publicacao.html
-    sections = {k: "\n\n".join(it["text"] for it in v) for k, v in rich_sections.items()}
+    # também extrai texto plano para publicacao.html (tolera items sem "text")
+    sections = {
+        k: "\n\n".join(
+            (it["text"] if isinstance(it, dict) and "text" in it else str(it))
+            for it in v
+        )
+        for k, v in rich_sections.items()
+    }
 
     # Coleta imagens locais do ZeroHedge para intercalar no editorial (sem duplicatas, base64)
     _seen_imgs: set[str] = set()
@@ -2724,7 +2730,13 @@ def save_writer_brief(
     _log.info("writer_brief_saved", mode=mode, path=str(path))
 
     # Também gera a publicação separada (Texto Gratuito + Micro Posts + WhatsApp)
-    sections_text = {k: "\n\n".join(it["text"] for it in v) for k, v in rich_sections.items()}
+    sections_text = {
+        k: "\n\n".join(
+            (it["text"] if isinstance(it, dict) and "text" in it else str(it))
+            for it in v
+        )
+        for k, v in rich_sections.items()
+    }
     _save_publicacao(
         sections=sections_text,
         run_date=run_date,

@@ -329,6 +329,20 @@ def _mst_edges(mst_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
         if not src_id or not tgt_id:
             continue
         rho = e.get("correlation", 0.0)
+        # Sanitiza NaN/None → 0.0 (pode vir do synthetic_corr quando histórico curto)
+        try:
+            rho = float(rho)
+            if rho != rho:  # NaN check
+                rho = 0.0
+        except (TypeError, ValueError):
+            rho = 0.0
+        distance = e.get("distance", 0.0)
+        try:
+            distance = float(distance)
+            if distance != distance:
+                distance = 0.0
+        except (TypeError, ValueError):
+            distance = 0.0
         color = "#22c55e" if rho >= 0 else "#ef4444"
         edges.append({
             "data": {
@@ -338,7 +352,7 @@ def _mst_edges(mst_data: dict[str, Any], nodes_in_graph: set[str]) -> list[dict[
                 "type":        "mst",
                 "layer":       "structure",
                 "correlation": round(rho, 4),
-                "distance":    e.get("distance", 0.0),
+                "distance":    distance,
                 "color":       color,
                 "width":       max(1, int(abs(rho) * 4)),
                 "weight":      abs(rho),

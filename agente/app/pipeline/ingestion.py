@@ -14,7 +14,7 @@ Uso:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -37,6 +37,38 @@ from app.storage.raw_store import raw_store
 from app.utils.timestamps import new_ulid, utcnow
 
 _log = get_logger("pipeline.ingestion")
+
+
+def _load_recent_flowpatrol(today, max_days: int = 5):
+    """
+    Carrega o relatorio FlowPatrol mais recente dos bundles dos ultimos N dias.
+    Usado como fallback quando o login falha hoje.
+    Retorna SpotGammaReport ou None.
+    """
+    import json as _json
+    from datetime import timedelta as _td
+    from pathlib import Path as _P
+    from app.models.spotgamma_report import SpotGammaReport
+    workspace = _P.home() / "agente-workspace" / "bundles"
+    for days_back in range(1, max_days + 1):
+        d = today - _td(days=days_back)
+        d_dir = workspace / str(d)
+        if not d_dir.exists():
+            continue
+        try:
+            bundles = sorted(d_dir.glob("[0-9A-Z]*.json"),
+                             key=lambda p: p.stat().st_size, reverse=True)
+            for b in bundles:
+                if len(b.stem) != 26:
+                    continue
+                data = _json.loads(b.read_text(encoding="utf-8"))
+                fp = next((r for r in data.get("spotgamma_reports", [])
+                           if r.get("report_type") == "FlowPatrol"), None)
+                if fp:
+                    return SpotGammaReport.model_validate(fp)
+        except Exception:
+            continue
+    return None
 
 
 def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
@@ -72,6 +104,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
     fred_data: dict = {}
     damodaran_data: dict = {}
     global_liquidity_data: dict = {}
+    sg_live_data: dict = {}
     market_prices_data: dict = {}
     swaggy_data: dict = {}
     artifact_paths: dict[str, str] = {}
@@ -163,7 +196,19 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                                        source=sg_prov.SOURCE_NAME,
                                        sections=len(sg_report.sections)))
                 else:
-                    _log.warning("spotgamma_no_report", date=str(run_date))
+                    # Fallback: usa FlowPatrol do bundle mais recente (ate 5 dias)
+                    fp_fallback = _load_recent_flowpatrol(run_date, max_days=5)
+                    if fp_fallback:
+                        sg_reports.append(fp_fallback)
+                        audit.write(rec.ok(run_id, "collect", "spotgamma_flowpatrol_fallback",
+                                           source=sg_prov.SOURCE_NAME,
+                                           note="usado relatorio mais recente (login falhou hoje)"))
+                        _log.info("spotgamma_flowpatrol_fallback_used")
+                    else:
+                        _log.warning("spotgamma_no_report", date=str(run_date))
+                        audit.write(rec.error(run_id, "collect", "spotgamma_flowpatrol_failed",
+                                              msg="login timeout ou redirect, sem fallback disponivel",
+                                              source=sg_prov.SOURCE_NAME))
             except Exception as exc:
                 msg = f"SpotGamma FlowPatrol failed: {exc}"
                 errors.append(msg)
@@ -204,6 +249,31 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
                 _log.warning("spotgamma_founders_error", error=str(exc))
                 audit.write(rec.error(run_id, "collect", "spotgamma_founders_failed",
                                       msg=msg, source=sg_prov.SOURCE_NAME))
+
+            # ── SpotGamma Live (GEX, Gamma Flip, Vol Trigger, Walls) ────────
+            try:
+                from app.providers.spotgamma_live import collect_spotgamma_live
+                from dataclasses import asdict
+                sg_live_page = ctx.new_page()
+                sg_live_result = collect_spotgamma_live(sg_live_page)
+                sg_live_page.close()
+                sg_live_data = {
+                    "tickers": {k: asdict(v) for k, v in sg_live_result.tickers.items()},
+                    "spx_data": asdict(sg_live_result.spx_data) if sg_live_result.spx_data else None,
+                    "timestamp": sg_live_result.timestamp,
+                }
+                _log.info("spotgamma_live_done",
+                          tickers=len(sg_live_result.tickers),
+                          spx_flip=getattr(sg_live_result.spx_data, "gamma_flip", None))
+                audit.write(rec.ok(run_id, "collect", "spotgamma_live_done",
+                                   source="spotgamma_live",
+                                   tickers=len(sg_live_result.tickers)))
+            except Exception as exc:
+                msg = f"SpotGamma Live failed: {exc}"
+                errors.append(msg)
+                _log.warning("spotgamma_live_error", error=str(exc)[:80])
+                audit.write(rec.error(run_id, "collect", "spotgamma_live_failed",
+                                      msg=msg, source="spotgamma_live"))
 
             # ── ZeroHedge Main Page (somente sábado — podcast) ────────────────
             if run_date.weekday() == 5:  # 5 = sábado
@@ -418,6 +488,7 @@ def run_ingestion(headless: bool | None = None) -> DailyIngestionBundle:
         global_liquidity=global_liquidity_data,
         market_prices=market_prices_data,
         swaggy_data=swaggy_data,
+        spotgamma_live=sg_live_data,
         audit_summary=audit_summary,
         artifact_paths=artifact_paths,
     )
