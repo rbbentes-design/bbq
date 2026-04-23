@@ -1084,18 +1084,24 @@ def build_crypto_basket(period: str = '-10Y') -> dict:
     if not parts:
         return {'error': 'sem pecas validas'}
 
-    # Rebase 100 no primeiro dia comum
-    df = pd.DataFrame(parts).dropna(how='any')
-    if df.empty:
-        # Fallback: so BTC
-        df = pd.DataFrame({'BTC': parts.get('BTC', pd.Series())})
-    base = df.iloc[0]
-    rebased = df.div(base) * 100
+    # Rebase cada componente no SEU proprio primeiro dia (nao exige intersecao)
+    # Evita que SOL (dados so desde 2023) trunque BTC (desde 2010)
+    rebased_parts = {}
+    for k, s in parts.items():
+        s = _clean(s)
+        if len(s) == 0:
+            continue
+        rebased_parts[k] = (s / s.iloc[0]) * 100
+    rebased = pd.DataFrame(rebased_parts)
 
-    # Pesos ajustados se SOL/ETH faltarem
-    total_w = sum(weights[k] for k in df.columns)
-    active_w = {k: weights[k] / total_w for k in df.columns}
-    basket = sum(rebased[k] * active_w[k] for k in df.columns)
+    # Basket com pesos DINAMICOS por data: renormaliza pelos que existem
+    mask = rebased.notna()
+    w_series = pd.DataFrame({k: np.where(mask[k], weights[k], 0.0)
+                               for k in rebased.columns},
+                              index=rebased.index)
+    w_norm = w_series.div(w_series.sum(axis=1), axis=0)
+    basket = (rebased.fillna(0) * w_norm).sum(axis=1)
+    basket = basket.where(mask.any(axis=1))  # NaN onde nenhum componente
 
     return {
         'basket': basket,
@@ -1985,12 +1991,20 @@ def chart_stim_vs_btc(nfl: dict, cr: dict) -> 'go.Figure':
     """US Fed/Treasury Stimulus (+6m) & BTC$ (6m Change) — dual axis."""
     fig = _fig_dual('US Fed/Treasury Stimulus (+6m) & BTC$ 6m Change',
                       height=420)
-    # Stimulus = IMPULSE 6m delta, advanced 6m pra frente
+    # Stimulus = IMPULSE 6m delta, advanced 6m pra FRENTE (leading indicator)
     impulse = _stimulus_impulse(nfl)
     if len(impulse) > 30:
         days = (impulse.index.to_series().diff().dt.days.median() or 7)
         shift_n = int(round(180 / days))
-        adv = impulse.shift(-shift_n)
+        # shift positivo = valor de hoje aparece daqui 6m (leading visualization)
+        adv = impulse.shift(shift_n)
+        # Estende o index em 6m para o forward ficar visivel
+        if len(impulse) > 0:
+            last = impulse.index[-1]
+            future_idx = pd.date_range(last, periods=shift_n + 1,
+                                         freq=pd.infer_freq(impulse.index) or 'W')[1:]
+            adv = adv.reindex(adv.index.append(future_idx))
+            adv.iloc[-shift_n:] = impulse.iloc[-shift_n:].values
         fig.add_trace(go.Scatter(x=adv.index, y=adv.values, mode='lines',
                                     name='All Stimulus (+6m)',
                                     line=dict(color=PALETTE['orange'], width=2),
@@ -2032,12 +2046,19 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
     if len(impulse) > 30:
         days = (impulse.index.to_series().diff().dt.days.median() or 7)
         shift_n = int(round(180 / days))
-        adv = impulse.shift(-shift_n)
+        # +6m = pra frente (leading). shift positivo desloca valor de hoje pra daqui 6m
+        adv = impulse.shift(shift_n)
+        if len(impulse) > 0:
+            last = impulse.index[-1]
+            future_idx = pd.date_range(last, periods=shift_n + 1,
+                                         freq=pd.infer_freq(impulse.index) or 'W')[1:]
+            adv = adv.reindex(adv.index.append(future_idx))
+            adv.iloc[-shift_n:] = impulse.iloc[-shift_n:].values
         fig.add_trace(go.Scatter(x=adv.index, y=adv.values, mode='lines',
                                     name='All Stimulus (+6m)',
                                     line=dict(color=PALETTE['orange'], width=2)),
                         secondary_y=False)
-    # ISM 12m change
+    # ISM 12m change (historico, nao shifta)
     ism = safe_load('NAPMPMI Index', period='-15Y', label='US_ISM')
     if len(ism) > 30:
         ism_12m = _clean(ism).resample('M').last().diff(12)
@@ -2462,8 +2483,16 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
                 shift_n = 9 if days > 20 else 9 * 21
             else:
                 shift_n = 9
-            norm = norm.shift(-shift_n)
-            norm = _clean(norm)
+            # +9m = leading pra frente (shift positivo)
+            norm_shifted = norm.shift(shift_n)
+            if len(norm) > 0:
+                last = norm.index[-1]
+                future_idx = pd.date_range(last, periods=shift_n + 1,
+                                             freq=pd.infer_freq(norm.index) or 'D')[1:]
+                norm_shifted = norm_shifted.reindex(
+                    norm_shifted.index.append(future_idx))
+                norm_shifted.iloc[-shift_n:] = norm.iloc[-shift_n:].values
+            norm = _clean(norm_shifted)
             if len(norm) > 0:
                 fig.add_trace(go.Scatter(x=norm.index, y=norm.values,
                                             mode='lines',
