@@ -952,7 +952,8 @@ def export_skew_tails():
       - rr_25d     = put25 - call25      (risk reversal 25-delta)
       - tail_premium = skew_10d - skew_25d
     """
-    universe = list(set(FUND_TICKERS))
+    # Inclui MEGA_CAPS + FUND_TICKERS (antes so FUND_TICKERS — sem SPY/QQQ/AAPL/etc)
+    universe = list(set(FUND_TICKERS) | set(MEGA_CAP_TICKERS))
     univ  = bq.univ.list(universe)
 
     TENORS = ['30D', '90D', '180D']
