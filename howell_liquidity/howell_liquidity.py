@@ -2400,63 +2400,56 @@ def chart_15_transmission_chain(liq: dict, tp: dict, ra: dict,
 
 def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
     """GLI$ (+13w) & BES$ 6week Changes — GLI replica.
-    LEFT: GLI 13-week pct change (range tipico -3% a +4%)
-    RIGHT: BES 6-week pct change (range tipico -100% a +100%)
-    Ambos leading indicators weekly-scale (nao YoY)."""
+    LEFT: GLI 13-week pct change (range -3% a +4%)
+    RIGHT: BES 6-week pct change (range -100% a +100%)"""
     fig = _fig_dual('GLI$ (+13w) & BES$ 6week Changes', height=420)
 
-    # GLI 13-week pct change (nao YoY)
+    # GLI: normaliza pra MENSAL primeiro, depois 3-month pct change
+    # (= 13 weeks). Evita step-pattern de mistura de freq.
     gli_series = None
     if liq.get('total') is not None:
         gli_series = _clean(liq['total'])
     elif liq.get('cb_sum') is not None:
         gli_series = _clean(liq['cb_sum'])
     if gli_series is not None and len(gli_series) > 20:
-        # Detect freq pra calcular 13w shift
-        days = (gli_series.index.to_series().diff().dt.days.median() or 30)
-        if days < 10:    # daily
-            periods_13w = 13 * 5
-        elif days < 35:  # weekly ou monthly
-            periods_13w = 13 if days < 10 else 3  # 3 meses
-        else:            # monthly
-            periods_13w = 3
-        gli_pct = gli_series.pct_change(periods_13w) * 100
-        gli_pct = _clean(gli_pct.dropna())
-        # Clip outliers pro range esperado (GLI ref: -3% a +4%)
-        gli_pct = gli_pct.clip(-5, 8)
-        fig.add_trace(go.Scatter(x=gli_pct.index, y=gli_pct.values, mode='lines',
-                                    name='GLI$',
+        gli_m = gli_series.resample('M').last().ffill(limit=2)
+        gli_pct = (gli_m.pct_change(3) * 100).dropna()  # 3 meses = 13w
+        # Smooth com EMA 2-mes pra remover ruido weekly residual
+        gli_pct = gli_pct.ewm(span=2, adjust=False).mean()
+        # Clip outliers (GLI ref: -3% a +4%, range conservador -4 a +5)
+        gli_pct = _clean(gli_pct).clip(-4, 5)
+        fig.add_trace(go.Scatter(x=gli_pct.index, y=gli_pct.values,
+                                    mode='lines', name='GLI$',
                                     line=dict(color='#000000', width=1.6),
                                     hovertemplate='%{y:+.2f}%<extra></extra>'),
                         secondary_y=False)
 
-    # BES 6-week pct change
+    # BES 6-week change: normalizado por sigma pra range +/-100
     bes = safe_load(['CESIUSD Index', 'CESIG10 Index'], period=period,
                       label='BES_US')
     if len(bes) > 60:
         b = _clean(bes)
-        # BES oscila em torno de 0, entao diff (nao pct_change) faz sentido
-        # Mas GLI plota em %, entao normaliza pelo range historico
-        bes_6w_pct = b.diff(42)  # 42 trading days = 6 semanas
-        # Normaliza pro range +/-100 (matching GLI style)
-        sd = bes_6w_pct.std()
+        bes_6w = b.diff(42)  # 42 trading days = 6 semanas
+        # Normaliza pelo sigma historico pra ~+/-100 (3-sigma scaling)
+        sd = bes_6w.std()
         if sd > 0:
-            bes_6w_pct = (bes_6w_pct / sd) * 30  # ~100 a 3 sigma
-        bes_6w_pct = _clean(bes_6w_pct.dropna()).clip(-150, 150)
-        fig.add_trace(go.Scatter(x=bes_6w_pct.index, y=bes_6w_pct.values,
-                                    mode='lines',
-                                    name='HyBrid BES',
+            bes_6w_norm = (bes_6w / sd) * 33  # 3-sigma ≈ 100
+        else:
+            bes_6w_norm = bes_6w
+        bes_6w_norm = _clean(bes_6w_norm.dropna()).clip(-100, 100)
+        fig.add_trace(go.Scatter(x=bes_6w_norm.index, y=bes_6w_norm.values,
+                                    mode='lines', name='HyBrid BES',
                                     line=dict(color=PALETTE['orange'], width=1.8),
                                     hovertemplate='%{y:+.0f}%<extra></extra>'),
                         secondary_y=True)
     _add_zero_line(fig, secondary_y=False)
-    fig.update_yaxes(title_text='Global Liquidity %ch',
-                      secondary_y=False,
+    fig.update_yaxes(title_text='Global Liquidity %ch', secondary_y=False,
                       title_font=dict(color='#1a1a1a'),
-                      range=[-5, 8], ticksuffix='%')
-    fig.update_yaxes(title_text='BES %ch', secondary_y=True,
+                      range=[-4, 5], ticksuffix='%', dtick=1)
+    fig.update_yaxes(title_text='BES$ %ch', secondary_y=True,
                       title_font=dict(color=PALETTE['orange']),
-                      showgrid=False, range=[-150, 150], ticksuffix='%')
+                      showgrid=False, range=[-100, 100], ticksuffix='%',
+                      dtick=20)
     return fig
 
 
