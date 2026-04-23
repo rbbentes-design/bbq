@@ -1467,19 +1467,105 @@ def chart_11_world_term_premia(period: str = '-15Y') -> 'go.Figure':
     return fig
 
 
-def chart_12_daily_nowcast_stub(liq: dict) -> 'go.Figure':
-    """Ch 12: Daily GLI nowcast (CB vs Private) — stub com PCA opcional."""
-    fig = _fig_base('Chart 12 — Daily Global Liquidity Nowcast (CB vs Private)')
-    if 'cb_sum' in liq and liq['cb_sum'] is not None:
-        c = _clean(liq['cb_sum'])
-        fig.add_trace(go.Scatter(x=c.index, y=c.values, mode='lines',
-                                    name='CB contribution',
-                                    line=dict(color=PALETTE['red'], width=1.5)))
-    if 'bank_sum' in liq and liq['bank_sum'] is not None:
-        b = _clean(liq['bank_sum'])
-        fig.add_trace(go.Scatter(x=b.index, y=b.values, mode='lines',
-                                    name='Private (bank credit + shadow proxy)',
-                                    line=dict(color=PALETTE['orange'], width=2)))
+def chart_12_daily_liquidity_nowcast(period: str = '-10Y') -> 'go.Figure':
+    """
+    Ch 12: Daily Global Liquidity Nowcast.
+
+    Composite de predictors diarios que antecipam liquidez global antes
+    que o dado oficial mensal/semanal saia. Metodologia:
+
+      + BCOM (commodity demand = credit expansion downstream)
+      + Copper (industrial cycle lead)
+      + Gold (safe-haven; sinal 'inverse' em alguns regimes — aqui neutro)
+      - DXY (USD strength = global liquidity drain)
+      - EMFX z (weak EM = global tightening)
+      - HY OAS z (wider = credit tightening)
+      - IG OAS z
+      - MOVE z (bond vol = plumbing stress)
+
+    Cada componente = rolling z 1y (diario). Composite = mean.
+    Linha laranja solida = nowcast; linha tracejada = momentum 3m.
+    """
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.update_layout(template=DASH_TEMPLATE, height=420,
+                       title='Chart 12 — Daily Global Liquidity Nowcast '
+                             '(FX + credit + commodities composite)')
+
+    # Fetch (todos diarios)
+    dxy = safe_load('DXY Curncy', period=period, label='DXY')
+    emfx = safe_load(['USTWEME Index', 'EMCI Index'], period=period, label='EMFX')
+    hy = safe_load('LF98OAS Index', period=period, label='HY_OAS')
+    ig = safe_load('LUACOAS Index', period=period, label='IG_OAS')
+    bcom = safe_load('BCOM Index', period=period, label='BCOM')
+    copper = safe_load('HG1 Comdty', period=period, label='Copper')
+    gold = safe_load('XAU Curncy', period=period, label='Gold')
+    move = safe_load('MOVE Index', period=period, label='MOVE')
+
+    def _dz(s, invert=False):
+        s = _clean(s).asfreq('D').ffill()
+        if len(s) < 250:
+            return pd.Series(dtype=float)
+        # Rolling 252d z-score (diario, janela 1y)
+        mean = s.rolling(252, min_periods=100).mean()
+        std = s.rolling(252, min_periods=100).std()
+        z = (s - mean) / std
+        return -z if invert else z
+
+    components = {}
+    if len(bcom) > 250:
+        components['BCOM'] = _dz(bcom)
+    if len(copper) > 250:
+        components['Copper'] = _dz(copper)
+    if len(dxy) > 250:
+        components['-DXY'] = _dz(dxy, invert=True)
+    if len(emfx) > 250:
+        components['EMFX'] = _dz(emfx)  # USTWEME sobe = EM forte = liq+
+    if len(hy) > 250:
+        components['-HY OAS'] = _dz(hy, invert=True)
+    if len(ig) > 250:
+        components['-IG OAS'] = _dz(ig, invert=True)
+    if len(move) > 250:
+        components['-MOVE'] = _dz(move, invert=True)
+
+    if not components:
+        fig.add_annotation(text='Predictors diarios ausentes',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color=PALETTE['muted']))
+        return fig
+
+    df = pd.DataFrame(components).dropna(how='all')
+    df = df.resample('D').last().ffill(limit=5)
+    composite = df.mean(axis=1)
+    composite = _clean(composite)
+
+    # Linha laranja solida = nowcast
+    fig.add_trace(go.Scatter(x=composite.index, y=composite.values, mode='lines',
+                                name='Daily Liquidity Nowcast (z)',
+                                line=dict(color=PALETTE['orange'], width=2.2),
+                                fill='tozeroy',
+                                fillcolor='rgba(232,116,44,0.12)'),
+                    secondary_y=False)
+
+    # Momentum 3m (derivada suavizada) — mostra a progressive slide
+    momentum = composite.diff(63)  # ~63 dias uteis = 3m
+    momentum = _clean(momentum)
+    fig.add_trace(go.Scatter(x=momentum.index, y=momentum.values, mode='lines',
+                                name='3m Momentum',
+                                line=dict(color=PALETTE['red'], width=1.2,
+                                           dash='dot')),
+                    secondary_y=True)
+
+    # Componentes individuais em legendonly
+    for col in df.columns:
+        s = _clean(df[col])
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, mode='lines',
+                                    name=col, visible='legendonly',
+                                    line=dict(width=1)),
+                        secondary_y=False)
+
+    fig.add_hline(y=0, line_color=PALETTE['grey'])
+    fig.update_yaxes(title_text='Liquidity Nowcast (z)', secondary_y=False)
+    fig.update_yaxes(title_text='3m Momentum (Δz)', secondary_y=True)
     return fig
 
 
@@ -1698,7 +1784,7 @@ def run_harvest(years: int = 20) -> dict:
         'chart_09': chart_09_curve_phase(curve),
         'chart_10': chart_10_gold_oil(gold_oil),
         'chart_11': chart_11_world_term_premia(period),
-        'chart_12': chart_12_daily_nowcast_stub(liq),
+        'chart_12': chart_12_daily_liquidity_nowcast(period),
         'chart_13': chart_13_risk_appetite(ra),
         'chart_14': chart_14_crypto_barometer(cr, liq, wm),
         'chart_15': chart_15_transmission_chain(liq, tp, ra, wbci),
