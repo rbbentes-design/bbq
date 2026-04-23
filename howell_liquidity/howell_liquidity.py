@@ -649,20 +649,24 @@ def _clean(s):
 def _to_pct(s):
     """Normaliza rate series pra PERCENT-points.
     BBG retorna rates em 3 unidades possiveis:
-      - decimal (0.043 = 4.3%)    -> median < 1.0     -> x100
-      - percent (4.3)             -> 1.0 <= median < 20 -> passa direto
-      - basis points (430 bps)    -> median >= 20     -> /100
-    (Ex: GJGB10 Index as vezes vem em bps)."""
+      - decimal (0.043 = 4.3%)    -> max(abs) < 0.5    -> x100
+      - percent (4.3)             -> 0.5 <= max <= 100  -> passa direto
+      - basis points (430 bps)    -> max > 100         -> /100
+
+    IMPORTANTE: heuristica usa MAX (nao median) porque series de rates
+    baixos (ex: JGB/BOJ ~0.5%) tem median < 1 mas SAO em percent, nao
+    decimal. Max e robusto: taxa decimal real nunca passa 0.3 (30%);
+    taxa percent ficticia nunca cai a 0.5 max em 5y."""
     if s is None or len(s) == 0:
         return s
-    m = abs(s.median())
-    if pd.isna(m):
+    mx = s.abs().max()
+    if pd.isna(mx) or mx == 0:
         return s
-    if m < 1.0:
-        return s * 100   # decimal -> pct
-    if m >= 20.0:
-        return s / 100   # bps -> pct
-    return s             # ja em pct
+    if mx < 0.5:
+        return s * 100   # decimal -> pct (range tipico 0.001-0.3)
+    if mx > 100:
+        return s / 100   # bps -> pct (range tipico 100-2000 bps)
+    return s             # ja em pct (range tipico 0.5-20)
 
 
 def _to_millions(s):
@@ -2488,17 +2492,21 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
 
 def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
     """'Excess' Reserves US Banks & Repo Spreads (SOFR less FF).
-    GLI usa desvio do 1y mean em US$ Bn. WRESBAL vem em $M -> divide por 1000."""
+    GLI definicao: 'Excess' = desvio do NIVEL vs media rolling 1y
+    (reserves - 52w avg). Range tipico +/-500bn. Nao e weekly change
+    (que seria muito ruidoso). WRESBAL vem em $M -> /1000 pra $Bn."""
     fig = _fig_dual("'Excess' Reserves US Banks & Repo Spreads", height=420)
-    res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
+    res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period='-5Y',
                       label='WRESBAL')
-    if len(res) > 30:
-        r = _clean(res).resample('W').last().ffill()
-        # BBG FARBRBFB em $M -> converte pra $Bn
-        r = r / 1000.0
-        # 'Excess' = weekly change (nivel - nivel da semana anterior)
-        # Mais proximo do que o GLI mostra (oscilacao +/-500bn)
-        excess = r.diff()
+    if len(res) > 60:
+        # Carrega historia mais longa pra computar baseline, plota so o periodo
+        r_full = _to_millions(_clean(res).resample('W').last().ffill()) / 1000.0
+        # 'Excess' = desvio do 1y rolling mean (52 semanas)
+        trend = r_full.rolling(52, min_periods=26).mean()
+        excess = (r_full - trend).dropna()
+        # Recorta pros ultimos 2 anos pra plotar
+        if len(excess) > 104:
+            excess = excess.iloc[-104:]
         fig.add_trace(go.Scatter(x=excess.index, y=excess.values, mode='lines',
                                     name="'Excess' Reserves",
                                     line=dict(color=PALETTE['orange'], width=1.8),
