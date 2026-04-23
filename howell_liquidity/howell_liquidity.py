@@ -1413,14 +1413,24 @@ def chart_01_liquidity_vs_economy(liq: dict, real_econ: dict = None) -> 'go.Figu
                                                dash='dash'),
                                     hovertemplate='proj=%{y:.2f}<extra></extra>'),
                         secondary_y=True)
-        # Marca inflection com linha vertical
+        # Marca inflection com linha vertical (use shape em vez de add_vline
+        # pra contornar bug int+str no Plotly antigo com strings de data)
         inf_date = liq['sine_fit'].get('next_inflection_date')
         if inf_date:
-            fig.add_vline(x=inf_date, line=dict(color=PALETTE['red'], width=1,
-                                                   dash='dash'),
-                           annotation_text='Next inflection',
-                           annotation_position='top',
-                           annotation_font_color=PALETTE['red'])
+            try:
+                inf_ts = pd.Timestamp(inf_date)
+                fig.add_shape(type='line',
+                               x0=inf_ts, x1=inf_ts, y0=0, y1=1,
+                               xref='x', yref='paper',
+                               line=dict(color=PALETTE['red'], width=1,
+                                          dash='dash'))
+                fig.add_annotation(x=inf_ts, y=1, yref='paper',
+                                    text='Next inflection',
+                                    showarrow=False,
+                                    font=dict(color=PALETTE['red'], size=10),
+                                    yshift=10)
+            except Exception as e:
+                log.warning(f'[chart1] inflection marker fail: {e}')
 
     _add_recession_shading(fig)
     _add_zero_line(fig, secondary_y=False)
@@ -2115,19 +2125,22 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
                                       dash='dash'),
                    annotation_text='Refinancing tensions ↑',
                    annotation_font=dict(color=PALETTE['red'], size=10))
-    # Crisis markers
+    # Crisis markers (usa add_shape pra evitar bug int+str no add_vline)
     for date, label in HISTORICAL_CRISES:
         try:
             date_ts = pd.Timestamp(date)
             if r_norm.index.min() <= date_ts <= r_norm.index.max():
-                fig.add_vline(x=date, line=dict(color=PALETTE['red'],
-                                                  width=0.8, dash='dot'))
-                fig.add_annotation(x=date, y=r_norm.max() * 0.95, text=label,
-                                    showarrow=False, textangle=-90,
+                fig.add_shape(type='line',
+                               x0=date_ts, x1=date_ts, y0=0, y1=1,
+                               xref='x', yref='paper',
+                               line=dict(color=PALETTE['red'],
+                                          width=0.8, dash='dot'))
+                fig.add_annotation(x=date_ts, y=r_norm.max() * 0.95,
+                                    text=label, showarrow=False, textangle=-90,
                                     font=dict(color=PALETTE['red'], size=9),
                                     xanchor='left')
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f'crisis marker {label}: {e}')
     fig.update_yaxes(title_text='Debt / Liquidity (%)', range=[150, 250])
     return fig
 
