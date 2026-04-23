@@ -215,6 +215,68 @@ TICKERS_REPO = {
     'TREAS_BUYBACK_BONDS': ['UTYDRMBD Index'],
     'TREAS_BUYBACK_TOTAL': ['UTYDRNMT Index'],
 }
+
+# === v10: BTOS + RAMP — AI Adoption Capex Signal (Chart 14) ==================
+# Verificados pelo usuario via terminal BBG.
+# BTOS = US Census Business Trends & Outlook Survey (bi-semanal, desde 2020)
+# RAMP = Bloomberg Sector AI Adoption classification (mensal)
+
+# BTOS — Last 2 Weeks (adocao atual de AI por firm size)
+TICKERS_BTOS_L2W = {
+    'btos_ai_l2w_total':   'BTOS0700 Index',
+    'btos_ai_l2w_1_4':     'BTOS070A Index',
+    'btos_ai_l2w_5_9':     'BTOS070B Index',
+    'btos_ai_l2w_10_19':   'BTOS070C Index',
+    'btos_ai_l2w_20_49':   'BTOS070D Index',
+    'btos_ai_l2w_50_99':   'BTOS070E Index',
+    'btos_ai_l2w_100_249': 'BTOS070F Index',
+    'btos_ai_l2w_249plus': 'BTOS070G Index',
+}
+
+# BTOS — Next 6 Months (expectativa forward)
+TICKERS_BTOS_N6M = {
+    'btos_ai_n6m_total':   'BTOS2400 Index',
+    'btos_ai_n6m_1_4':     'BTOS240A Index',
+    'btos_ai_n6m_5_9':     'BTOS240B Index',
+    'btos_ai_n6m_10_19':   'BTOS240C Index',
+    'btos_ai_n6m_20_49':   'BTOS240D Index',
+    'btos_ai_n6m_50_99':   'BTOS240E Index',
+    'btos_ai_n6m_100_249': 'BTOS240F Index',
+    'btos_ai_n6m_249plus': 'BTOS240G Index',
+}
+
+# RAMP — sectors (22)
+TICKERS_RAMP_SECTORS = {
+    'Overall':         'RAMPOVER Index',
+    'Government':      'RAMPFEDA Index',
+    'Information':     'RAMPINFO Index',
+    'Finance_Ins':     'RAMPFINI Index',
+    'Prof_Sci_Tech':   'RAMPSCIT Index',
+    'Mgmt_Companies':  'RAMPCOMP Index',
+    'Manufacturing':   'RAMPMANU Index',
+    'Utilities':       'RAMPUTIL Index',
+    'Educational':     'RAMPEDUC Index',
+    'Admin_Waste':     'RAMPWAST Index',
+    'Wholesale':       'RAMPWHOL Index',
+    'Retail':          'RAMPTRAD Index',
+    'Transport_Ware':  'RAMPWARE Index',
+    'Mining_OG':       'RAMPMINE Index',
+    'Real_Estate':     'RAMPESTA Index',
+    'Agriculture':     'RAMPAGRI Index',
+    'Healthcare':      'RAMPHEAL Index',
+    'Other_Services':  'RAMPOTHR Index',
+    'Arts_Entertain':  'RAMPARTS Index',
+    'Construction':    'RAMPCONS Index',
+    'Public_Admin':    'RAMPPUBL Index',
+    'Accomm_Food':     'RAMPFOOD Index',
+}
+
+# RAMP — by firm size
+TICKERS_RAMP_SIZE = {
+    'Small':  'RAMPSMAL Index',
+    'Medium': 'RAMPMEDI Index',
+    'Large':  'RAMPLARG Index',
+}
 TICKERS_WBCI_CORE4 = {
     'US_ISM':    ['NAPMPMI Index'],
     # JNTGALLI = Tankan All Enterprises Actual (confirmado)
@@ -1410,6 +1472,8 @@ METHODOLOGY_TAGS = {
     'chart_11': ('[FAITHFUL]', 'BTC/ETH/SOL 60/30/10 basket per Howell'),
     'chart_12': ('[INFERRED + CLAUDE]', 'Daily GLI nowcast; CB/Private PCA'),
     'chart_13': ('[FAITHFUL + CLAUDE]', 'Transmission chain visual + empirical lags'),
+    'chart_14_ai': ('[CLAUDE + EXTENSION]',
+                      'AI adoption as capex absorption signal — Claude extension'),
 }
 
 
@@ -2995,6 +3059,215 @@ def chart_flash_tli_global(liq: dict, period: str = '-2Y') -> 'go.Figure':
     return fig
 
 
+# ============================================================================
+# v10: AI Adoption Capex Signal (Chart 14) — BTOS + RAMP
+# ============================================================================
+
+def build_ai_adoption(period: str = '-3Y') -> dict:
+    """
+    Carrega BTOS (bi-semanal) + RAMP (mensal) e monta:
+      - btos_l2w, btos_n6m: DataFrames por firm size
+      - forward_diff: (Next 6M - Last 2W) pp por size class
+      - ramp_sectors_df: levels + 3m/6m chg por setor
+      - ramp_size_df: small/medium/large levels
+      - gap_ts: Large - Small adoption gap time series
+    Spec v10 §8 Chart 14.
+    """
+    log.info('[ai_adoption] carregando BTOS + RAMP...')
+
+    # BTOS — bi-semanal; resample pra mensal (EoM) pra consistencia
+    btos_l2w_raw = load_group(TICKERS_BTOS_L2W, period)
+    btos_n6m_raw = load_group(TICKERS_BTOS_N6M, period)
+
+    def _to_monthly_df(d):
+        if not d:
+            return pd.DataFrame()
+        return pd.DataFrame(
+            {k: _clean(v).resample('M').last() for k, v in d.items()}
+        )
+
+    btos_l2w = _to_monthly_df(btos_l2w_raw)
+    btos_n6m = _to_monthly_df(btos_n6m_raw)
+
+    # Forward diff = N6M - L2W por size class (mapeia pares de colunas)
+    size_keys = ['total', '1_4', '5_9', '10_19', '20_49',
+                 '50_99', '100_249', '249plus']
+    forward_diff = pd.DataFrame(index=btos_l2w.index if len(btos_l2w) else [])
+    for sz in size_keys:
+        l2w_col = f'btos_ai_l2w_{sz}'
+        n6m_col = f'btos_ai_n6m_{sz}'
+        if l2w_col in btos_l2w.columns and n6m_col in btos_n6m.columns:
+            a, b = btos_l2w[l2w_col].align(btos_n6m[n6m_col], join='inner')
+            forward_diff[sz] = b - a
+
+    # RAMP sectors
+    ramp_raw = load_group(TICKERS_RAMP_SECTORS, period)
+    ramp_df = pd.DataFrame(
+        {k: _clean(v).resample('M').last() for k, v in ramp_raw.items()}
+    ) if ramp_raw else pd.DataFrame()
+
+    ramp_sectors_snapshot = None
+    if len(ramp_df) > 0:
+        latest = ramp_df.iloc[-1].dropna()
+        chg_3m = ramp_df.diff(3).iloc[-1] if len(ramp_df) > 3 else pd.Series()
+        chg_6m = ramp_df.diff(6).iloc[-1] if len(ramp_df) > 6 else pd.Series()
+        ramp_sectors_snapshot = pd.DataFrame({
+            'level': latest,
+            'chg_3m': chg_3m.reindex(latest.index),
+            'chg_6m': chg_6m.reindex(latest.index),
+        }).sort_values('level', ascending=False)
+
+    # RAMP by size
+    size_raw = load_group(TICKERS_RAMP_SIZE, period)
+    ramp_size_df = pd.DataFrame(
+        {k: _clean(v).resample('M').last() for k, v in size_raw.items()}
+    ) if size_raw else pd.DataFrame()
+
+    # Large - Small gap time series
+    gap_ts = pd.Series(dtype=float)
+    if 'Large' in ramp_size_df.columns and 'Small' in ramp_size_df.columns:
+        gap_ts = (ramp_size_df['Large'] - ramp_size_df['Small']).dropna()
+
+    # Capex signal summary
+    latest_fd = forward_diff.iloc[-1] if len(forward_diff) else pd.Series()
+    avg_12m_fd = forward_diff.rolling(12, min_periods=3).mean().iloc[-1] \
+                    if len(forward_diff) > 3 else pd.Series()
+    accelerating = False
+    if 'total' in latest_fd and 'total' in avg_12m_fd:
+        accelerating = latest_fd['total'] > avg_12m_fd['total']
+
+    # Financial-plumbing avg (Finance+Info) per §7.8 note
+    plumb_avg = None
+    if ramp_sectors_snapshot is not None:
+        plumb = ramp_sectors_snapshot.loc[
+            ramp_sectors_snapshot.index.isin(['Finance_Ins', 'Information']),
+            'level',
+        ]
+        if len(plumb) > 0:
+            plumb_avg = float(plumb.mean())
+
+    return {
+        'btos_l2w': btos_l2w,
+        'btos_n6m': btos_n6m,
+        'forward_diff': forward_diff,
+        'ramp_sectors_snapshot': ramp_sectors_snapshot,
+        'ramp_size_df': ramp_size_df,
+        'gap_ts': gap_ts,
+        'latest_forward_diff': latest_fd,
+        'avg_12m_forward_diff': avg_12m_fd,
+        'accelerating': bool(accelerating),
+        'financial_plumbing_avg_pct': plumb_avg,
+        'latest_large_small_gap_pp': float(gap_ts.iloc[-1])
+                                       if len(gap_ts) else None,
+    }
+
+
+def chart_14_ai_capex_signal(ai: dict) -> 'go.Figure':
+    """
+    Chart 14 — AI Adoption Capex Signal.
+    [CLAUDE + EXTENSION] — Howell nao cobre AI; extensao fundamentada em
+    §7.2 (Two Pools) e §7.8 (Balance-Sheet Capacity).
+
+    3 paineis:
+      (A) BTOS forward diff (N6M - L2W) por firm size — horizontal bar
+      (B) RAMP sectoral levels + 3m/6m chg — heatmap-like
+      (C) Large-Small adoption gap time series
+    """
+    from plotly.subplots import make_subplots as _ms
+
+    fig = _ms(
+        rows=3, cols=1,
+        row_heights=[0.28, 0.44, 0.28],
+        subplot_titles=[
+            'BTOS Forward Diff (Next 6M − Last 2W) by Firm Size',
+            'RAMP Sector Adoption — Level + 3m/6m Change',
+            'Large − Small Firm Adoption Gap (RAMP)',
+        ],
+        vertical_spacing=0.10,
+    )
+    fig.update_layout(template=DASH_TEMPLATE, height=900,
+                       title='Chart 14 — AI Adoption Capex Signal<br>'
+                             '<span style="color:#888;font-size:10px">'
+                             '[CLAUDE + EXTENSION] Claude framework extension: '
+                             'AI adoption as capex absorption signal — not in '
+                             "Howell's published work</span>",
+                       showlegend=False)
+
+    # Panel A: forward diff horizontal bar
+    fd = ai.get('latest_forward_diff', pd.Series())
+    avg_fd = ai.get('avg_12m_forward_diff', pd.Series())
+    if len(fd) > 0:
+        sizes = ['1_4', '5_9', '10_19', '20_49', '50_99',
+                  '100_249', '249plus', 'total']
+        labels = ['1–4', '5–9', '10–19', '20–49', '50–99',
+                  '100–249', '249+', 'Total']
+        values = [fd.get(s, np.nan) for s in sizes]
+        avg_values = [avg_fd.get(s, np.nan) for s in sizes]
+        colors = [PALETTE['orange'] if (v > a) else PALETTE['beige']
+                    for v, a in zip(values, avg_values)]
+        fig.add_trace(go.Bar(y=labels, x=values, orientation='h',
+                                marker=dict(color=colors),
+                                name='Forward Diff',
+                                text=[f'{v:+.1f}pp' if pd.notna(v) else ''
+                                        for v in values],
+                                textposition='outside'),
+                        row=1, col=1)
+        # 12m avg markers
+        fig.add_trace(go.Scatter(x=avg_values, y=labels, mode='markers',
+                                    marker=dict(color='#000', size=8,
+                                                  symbol='line-ns-open'),
+                                    name='12m avg'),
+                        row=1, col=1)
+
+    # Panel B: RAMP sector heatmap via stacked bars
+    snap = ai.get('ramp_sectors_snapshot')
+    if snap is not None and len(snap) > 0:
+        snap = snap.drop(index='Overall', errors='ignore')
+        sectors = snap.index.tolist()
+        levels = snap['level'].values
+        # Color map: green (high) -> amber -> red (low)
+        def _color_for(v):
+            if pd.isna(v):
+                return '#cccccc'
+            if v >= 60: return '#2e7d32'
+            if v >= 50: return '#689f38'
+            if v >= 40: return '#ffa000'
+            if v >= 30: return '#e65100'
+            return '#b71c1c'
+        bar_colors = [_color_for(v) for v in levels]
+        fig.add_trace(go.Bar(y=sectors, x=levels, orientation='h',
+                                marker=dict(color=bar_colors),
+                                text=[f'{v:.1f}%' for v in levels],
+                                textposition='outside',
+                                hovertemplate='%{y}: %{x:.1f}%<extra></extra>'),
+                        row=2, col=1)
+        fig.update_xaxes(title_text='Adoption %', row=2, col=1,
+                          range=[0, max(levels) * 1.2])
+
+    # Panel C: gap time series
+    gap = ai.get('gap_ts', pd.Series())
+    if len(gap) > 3:
+        fig.add_trace(go.Scatter(x=gap.index, y=gap.values, mode='lines',
+                                    line=dict(color=PALETTE['orange'],
+                                               width=2.2),
+                                    name='Large − Small gap',
+                                    fill='tozeroy',
+                                    fillcolor='rgba(232,116,44,0.15)',
+                                    hovertemplate='%{y:+.2f}pp<extra></extra>'),
+                        row=3, col=1)
+        # +/- 1σ bands
+        mu = gap.mean()
+        sd = gap.std()
+        fig.add_hline(y=mu + sd, line=dict(color='#888', width=0.8, dash='dot'),
+                       row=3, col=1)
+        fig.add_hline(y=mu - sd, line=dict(color='#888', width=0.8, dash='dot'),
+                       row=3, col=1)
+        fig.add_hline(y=mu, line=dict(color='#888', width=0.6), row=3, col=1)
+        fig.update_yaxes(title_text='pp', row=3, col=1)
+
+    return fig
+
+
 def chart_asset_allocation_grid_html() -> str:
     """Asset Allocation traffic-light grid por regime — HTML estatico."""
     # Por regime (Rebound, Calm, Speculation, Turbulence) — traffic light
@@ -3191,6 +3464,79 @@ def chart_debt_liquidity_cycle_html() -> str:
 # 8. Agent A — Harvester
 # ============================================================================
 
+def _ai_adoption_state_block(ai: dict) -> dict:
+    """Monta bloco ai_adoption pro state.json per spec v10 §10.3."""
+    if not ai or ai.get('btos_l2w') is None or len(ai.get('btos_l2w', pd.DataFrame())) == 0:
+        return {'available': False}
+
+    fd = ai.get('latest_forward_diff', pd.Series())
+    avg_fd = ai.get('avg_12m_forward_diff', pd.Series())
+    l2w_latest = (ai['btos_l2w'].iloc[-1] if len(ai['btos_l2w'])
+                    else pd.Series())
+    n6m_latest = (ai['btos_n6m'].iloc[-1] if len(ai['btos_n6m'])
+                    else pd.Series())
+
+    by_size = {}
+    for sz in ['1_4', '5_9', '10_19', '20_49', '50_99', '100_249', '249plus']:
+        l = l2w_latest.get(f'btos_ai_l2w_{sz}')
+        n = n6m_latest.get(f'btos_ai_n6m_{sz}')
+        d = fd.get(sz)
+        if pd.notna(l) or pd.notna(n) or pd.notna(d):
+            by_size[sz] = {
+                'l2w': float(l) if pd.notna(l) else None,
+                'n6m': float(n) if pd.notna(n) else None,
+                'diff_pp': float(d) if pd.notna(d) else None,
+            }
+
+    snap = ai.get('ramp_sectors_snapshot')
+    ramp_block = None
+    if snap is not None and len(snap) > 0:
+        no_overall = snap.drop(index='Overall', errors='ignore')
+        top3 = no_overall.head(3)
+        bottom1 = no_overall.tail(1)
+        ramp_block = {
+            'overall_pct': float(snap.loc['Overall', 'level'])
+                            if 'Overall' in snap.index else None,
+            'top_sectors': top3.index.tolist(),
+            'top_sector_levels_pct': [float(x) for x in top3['level'].tolist()],
+            'bottom_sector': bottom1.index[0] if len(bottom1) else None,
+            'bottom_sector_level_pct': float(bottom1['level'].iloc[0])
+                                         if len(bottom1) else None,
+        }
+
+    size_df = ai.get('ramp_size_df', pd.DataFrame())
+    ramp_size = {}
+    if len(size_df):
+        latest_sz = size_df.iloc[-1]
+        for k in ['Small', 'Medium', 'Large']:
+            if k in latest_sz.index and pd.notna(latest_sz[k]):
+                ramp_size[k.lower()] = float(latest_sz[k])
+
+    return {
+        'available': True,
+        'btos': {
+            'overall_l2w_pct': float(l2w_latest.get('btos_ai_l2w_total'))
+                                 if pd.notna(l2w_latest.get('btos_ai_l2w_total'))
+                                 else None,
+            'overall_n6m_pct': float(n6m_latest.get('btos_ai_n6m_total'))
+                                 if pd.notna(n6m_latest.get('btos_ai_n6m_total'))
+                                 else None,
+            'overall_forward_diff_pp': float(fd.get('total'))
+                                          if pd.notna(fd.get('total')) else None,
+            'forward_diff_12m_avg_pp': float(avg_fd.get('total'))
+                                          if pd.notna(avg_fd.get('total')) else None,
+            'accelerating': ai.get('accelerating', False),
+            'by_size': by_size,
+        },
+        'ramp': {
+            **(ramp_block or {}),
+            'by_size': ramp_size,
+            'large_small_gap_pp': ai.get('latest_large_small_gap_pp'),
+            'financial_plumbing_avg_pct': ai.get('financial_plumbing_avg_pct'),
+        },
+    }
+
+
 def run_harvest(years: int = 20) -> dict:
     """
     Agent A: pulla dados, constroi indicadores, renderiza charts,
@@ -3213,6 +3559,7 @@ def run_harvest(years: int = 20) -> dict:
     rate_p = compute_rate_paradox(period)
     curve = build_yield_curve_area(period)
     dl = build_debt_liquidity(liq, period)
+    ai = build_ai_adoption(period='-3Y')
     move_data = load_group({'MOVE': 'MOVE Index'}, period)
     move_s = _clean(move_data.get('MOVE', pd.Series()))
     move_z = rolling_z(move_s, window_years=5) if len(move_s) else pd.Series()
@@ -3284,6 +3631,7 @@ def run_harvest(years: int = 20) -> dict:
         'crypto': {
             'basket_3m_pct': cr.get('latest_3m_pct'),
         },
+        'ai_adoption': _ai_adoption_state_block(ai),
         'rate_paradox': {
             'net_transfer_annual_usd_bn': rate_p.get('net_transfer_annual_usd_bn'),
             'sign': rate_p.get('sign'),
@@ -3369,6 +3717,7 @@ def run_harvest(years: int = 20) -> dict:
         'chart_gli_vs_bes': chart_gli_pctch_vs_bes(liq),
         'chart_13': chart_13_risk_appetite(ra),
         'chart_14': chart_14_crypto_barometer(cr, liq, wm),
+        'chart_14_ai': chart_14_ai_capex_signal(ai),
         'chart_15': chart_15_transmission_chain(liq, tp, ra, wbci),
     }
 
@@ -3379,7 +3728,7 @@ def run_harvest(years: int = 20) -> dict:
             'liquidity': liq, 'wbci': wbci, 'cyc_def': cyc,
             'term_premium': tp, 'risk_appetite': ra, 'gold_oil': gold_oil,
             'crypto': cr, 'world_m2': wm, 'rate_paradox': rate_p,
-            'curve': curve, 'debt_liquidity': dl,
+            'curve': curve, 'debt_liquidity': dl, 'ai_adoption': ai,
         },
     }
 
@@ -3887,6 +4236,9 @@ def _build_section_widgets(result: dict) -> list:
             'chart_10', 'chart_07', 'chart_debt_liq_crises',
             'chart_debt_maturity', 'chart_capital_demands',
             'chart_gli_vs_bes', 'chart_13', 'chart_14', 'chart_15',
+        ],
+        '🤖 AI Capex': [
+            'chart_14_ai',
         ],
     }
 
