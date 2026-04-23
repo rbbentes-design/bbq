@@ -2293,10 +2293,13 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
 
 def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
     """US Fed & US Treasury: All Stimulus — stacked area 3-tier em TRILLIONS.
-    GLI usa 52w change (YoY) em US$ Trillions.
+    GLI usa 52w change (YoY) em US$ Trillions. Stock range 4-9T,
+    YoY change range -2T a +5T.
 
-    Treasury QE tier agora usa BUYBACK real (UTYDRNMT = total redemptions)
-    + -ΔTGA como componentes. Fallback pra -ΔTGA sozinho se UTYDRNMT ausente.
+    Nota: UTYDRNMT (Treasury redemptions total) NAO e bom proxy pra
+    Treasury QE — inclui todos rollovers brutos (10s trilhoes/ano), nao
+    buyback liquido. Mantendo -ΔTGA como proxy principal (consistente
+    com o que o GLI mostra).
     """
     fig = _fig_base('US Fed & US Treasury: All Stimulus', height=440)
     if 'fed_bs' not in nfl or len(nfl.get('fed_bs', [])) == 0:
@@ -2305,23 +2308,10 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
                             font=dict(color=PALETTE['muted']))
         return fig
 
-    # Todos em $M -> $T (/1e6)
+    # Todos em $M -> $T (/1e6), YoY (52w)
     fed = _clean(nfl['fed_bs']).diff(52) / 1e6
     rrp = _clean(nfl.get('rrp', pd.Series()))
     tga = _clean(nfl.get('tga', pd.Series()))
-
-    # Treasury Buyback — total redemptions (daily, $M)
-    # UTYDRNMT cobre Marketable+Nonmarketable. Agrega em rolling 52w sum
-    # (fluxo anual de debt sendo pago de volta ao mercado = liquidez +)
-    buyback_total = safe_load(TICKERS_REPO['TREAS_BUYBACK_TOTAL'],
-                                period=period, label='TREAS_BUYBACK')
-    if len(buyback_total) > 60:
-        bb = _to_millions(_clean(buyback_total))
-        bb_daily = bb.resample('D').last().fillna(0)
-        bb_52w = bb_daily.rolling(365, min_periods=90).sum() / 1e6  # -> $T
-        bb_w = bb_52w.resample('W').last()
-    else:
-        bb_w = pd.Series(dtype=float)
 
     if len(rrp) > 52:
         not_qe = -rrp.diff(52) / 1e6
@@ -2337,25 +2327,11 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
                                 stackgroup='stim',
                                 fillcolor='rgba(214,69,69,0.6)',
                                 hovertemplate='$%{y:+.2f}T<extra></extra>'))
-
-    # Treasury QE = buyback real (se disponivel) + -ΔTGA
-    treas_qe = None
     if len(tga) > 52:
         treas_qe = -tga.diff(52) / 1e6
-    if len(bb_w) > 10:
-        bb_aligned = bb_w.reindex(treas_qe.index if treas_qe is not None
-                                     else bb_w.index, method='ffill')
-        if treas_qe is not None:
-            treas_qe = treas_qe.add(bb_aligned, fill_value=0)
-        else:
-            treas_qe = bb_aligned
-
-    if treas_qe is not None and len(treas_qe) > 0:
-        name = ("Treasury 'QE' (Buyback + −ΔTGA)" if len(bb_w) > 10
-                else "Treasury 'QE' (−ΔTGA)")
         fig.add_trace(go.Scatter(x=treas_qe.index, y=treas_qe.values,
                                     mode='lines',
-                                    name=name,
+                                    name="Treasury 'QE' (−ΔTGA)",
                                     line=dict(color='#000000', width=0),
                                     stackgroup='stim',
                                     fillcolor='rgba(0,0,0,0.7)',
