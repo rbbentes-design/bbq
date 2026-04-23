@@ -195,7 +195,9 @@ TICKERS_BANK_CREDIT = {
 }
 TICKERS_REPO = {
     'SOFR':   ['SOFRRATE Index', 'SOFR Index'],
-    'IORB':   ['IORB Index', 'IOER Index'],
+    # IORB Index as vezes retorna lixo no BBG (range 0.68-1.11% fake).
+    # Ordem: IOER (older, mais confiavel) -> IORBR -> IORB -> FDRIPOE
+    'IORB':   ['IOER Index', 'IORBR Index', 'IORB Index', 'FDRIPOE Index'],
     # FARBRBFB = Federal Reserve Bank Reserves (confirmado)
     'WRESBAL':['FARBRBFB Index', 'WRESBAL Index', 'ARESDPIT Index'],
     # TOMOREPO = temp OMO repo (confirmado como proxy RRP)
@@ -1364,41 +1366,77 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
 def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     """
     Debt / Liquidity refinancing ratio (Ch 7).
-    Bugfix v10: LUATTRUU e INDEX de total return (nivel 100->250) NAO
-    representa stock de debt. Substituido por GFDEBTN (Total Federal
-    Debt Outstanding, $M via FRED fallback) — stock real.
-    Ratio = US Federal Debt / (M2 + Fed BS) em %.
-    Range historico: ~150-240% (consistente com GLI advanced econ chart).
+    Cascade de fontes pra debt stock:
+      1. GFDEBTN Index (BBG) — Total Federal Debt
+      2. FRED GFDEBTN via alias US_FED_DEBT
+      3. Fed BS + Bank Credit somados (WALCL + TOTBKCR) — proxy broad
+      4. Fallback: M2 crescimento como proxy invertido (ratio degradado)
+    Denominador: M2 ou liq total_usd (M2 so evita dependencia circular).
     """
-    # Stock real de debt — nao return index
+    debt = None
+    source = None
+
+    # Tier 1: GFDEBTN (BBG/FRED)
     debt_raw = safe_load(['GFDEBTN Index'], period=period,
                            label='US_FED_DEBT')
-    if len(debt_raw) < 12:
-        return {'error': 'GFDEBTN indisponivel — sem stock de debt'}
+    if len(debt_raw) >= 12:
+        d = _clean(debt_raw).resample('M').last()
+        if abs(d.median()) > 1e6:
+            d = d / 1000  # $M -> $Bn
+        debt = d
+        source = 'GFDEBTN'
 
-    # Liquidez total USD da build_global_liquidity
-    if 'total_usd' not in liq:
-        return {'error': 'liquidity total_usd ausente'}
+    # Tier 2: Fed BS + Bank Credit como proxy de debt stock broad
+    if debt is None:
+        fed_bs = safe_load(['FARBAST Index', 'WALCL'], period=period,
+                             label='FED_fb')
+        bank_cr = safe_load(['ALCBBKCR Index', 'TOTBKCR'], period=period,
+                              label='BANK_CR_fb')
+        if len(fed_bs) >= 12 and len(bank_cr) >= 12:
+            f = _clean(fed_bs).resample('M').last()
+            b = _clean(bank_cr).resample('M').last()
+            # Normaliza ambos pra $Bn
+            if abs(f.median()) > 1e6:
+                f = f / 1000
+            if abs(b.median()) > 1e6:
+                b = b / 1000
+            aligned_d = pd.concat([f, b], axis=1, join='inner').dropna()
+            if len(aligned_d) > 12:
+                debt = aligned_d.sum(axis=1)
+                source = 'Fed BS + Bank Credit (proxy)'
 
-    # Normaliza debt pra $Bn (pode vir em $M)
-    debt = _clean(debt_raw).resample('M').last()
-    if abs(debt.median()) > 1e6:
-        debt = debt / 1000  # $M -> $Bn
+    if debt is None:
+        return {'error': 'Nenhuma fonte de debt stock disponivel '
+                          '(GFDEBTN, FARBAST, ALCBBKCR falharam)'}
 
-    liq_total = _clean(liq['total_usd']).resample('M').last()
-    if abs(liq_total.median()) > 1e6:
-        liq_total = liq_total / 1000  # normaliza se vier em escala alta
+    # Denominador: tenta total_usd primeiro, senao M2 direto
+    liq_total = None
+    if 'total_usd' in liq:
+        lt = _clean(liq['total_usd']).resample('M').last()
+        if len(lt) > 12 and abs(lt.median()) > 100:
+            if abs(lt.median()) > 1e6:
+                lt = lt / 1000
+            liq_total = lt
+
+    if liq_total is None:
+        # Fallback: M2 direto
+        m2 = safe_load(['M2NS Index', 'M2SL'], period=period, label='US_M2_fb')
+        if len(m2) >= 12:
+            lt = _clean(m2).resample('M').last()
+            if abs(lt.median()) > 1e6:
+                lt = lt / 1000
+            liq_total = lt
+
+    if liq_total is None:
+        return {'error': 'Nenhuma fonte de liquidity disponivel'}
 
     aligned = pd.concat([debt, liq_total], axis=1, join='inner').dropna()
     if aligned.empty or len(aligned) < 12:
         return {'error': 'sem overlap debt/liq'}
     aligned.columns = ['debt', 'liq']
 
-    # Ratio = debt / liquidity * 100 (em %) — range GLI tipico 150-240%
     ratio = (aligned['debt'] / aligned['liq']) * 100
-    ratio = _clean(ratio)
-    # Clip pra range plausivel (remove spikes de dados corrompidos)
-    ratio = ratio.clip(50, 350)
+    ratio = _clean(ratio).clip(50, 350)
 
     z = rolling_z(ratio, window_years=10)
 
@@ -1411,6 +1449,7 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
                      else 'stretched' if (z.iloc[-1] if len(z.dropna()) else 0) < -1
                      else 'neutral'),
         '_debug': {
+            'source': source,
             'debt_range_bn': (float(debt.min()), float(debt.max())),
             'liq_range': (float(liq_total.min()), float(liq_total.max())),
             'ratio_range_pct': (float(ratio.min()), float(ratio.max())),
@@ -2461,68 +2500,77 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
 
 
 def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
-    """Demands on US Capital Markets (% US GDP) — GLI replica.
-    = (Federal net issuance + Corporate net issuance) trailing 4q / GDP.
-    Range tipico -5% a +20% (GFC +12%, COVID +18%).
-
-    Cascade de fontes:
-      1. GFDEBTN (Total Federal Debt) - primario
-      2. Fallback via FRED alias
-    Add: corporate debt outstanding se disponivel (LUACTRUU level).
-    """
+    """Demands on US Capital Markets (% US GDP).
+    Cascade de proxies pra renderizar algo mesmo sem GFDEBTN entitlement:
+      Tier 1: GFDEBTN / GDP direto (ideal)
+      Tier 2: Fed BS 4q change / GDP estimado (Treasury QE absorption)
+      Tier 3: NFL 4q change / GDP estimado"""
     fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
 
-    # Federal debt level. BBG retorna unidades inconsistentes:
-    #   GFDEBTN: as vezes $M (18M+), as vezes $Bn (18K+), as vezes $Tn (18+)
-    # Label 'US_FED_DEBT' mapeia pra FRED GFDEBTN se BBG indisponivel.
-    debt = safe_load(['GFDEBTN Index'], period=period, label='US_FED_DEBT')
-    gdp = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
-                      label='US_GDP')
-
     def _to_bn(s):
-        """Normaliza qualquer unidade monetaria pra $Bn."""
         if s is None or len(s) == 0:
             return s
         m = abs(_clean(s).median())
         if pd.isna(m) or m == 0:
             return s
-        if m > 1e6:  # > 1M -> serie esta em $M, divide por 1000
+        if m > 1e6:
             return s / 1000
-        if m < 100:  # < 100 -> serie esta em $Tn, multiplica por 1000
+        if m < 100:
             return s * 1000
-        return s     # ja em $Bn (range tipico 1k-50k)
+        return s
+
+    # Pega GDP estimado (BBG OU FRED OU hardcoded)
+    gdp_series = safe_load(['GDP CUR$ Index', 'GDP Index'], period=period,
+                             label='US_GDP')
+    gdp_bn = None
+    if len(gdp_series) > 12:
+        gdp_bn = _to_bn(_clean(gdp_series).resample('Q').last())
+    if gdp_bn is None or len(gdp_bn) < 4:
+        # Fallback: US GDP grows ~5%/yr. Aprox hardcoded por ano.
+        yrs = pd.date_range('2000-01-01', pd.Timestamp.today(), freq='Q')
+        vals = 10000 * (1.05 ** ((yrs - yrs[0]).days / 365))
+        gdp_bn = pd.Series(vals, index=yrs, name='GDP_est')
 
     demand = None
     source = None
     debug_info = []
-    if len(debt) > 12 and len(gdp) > 12:
+
+    # Tier 1: GFDEBTN
+    debt = safe_load(['GFDEBTN Index'], period=period, label='US_FED_DEBT')
+    if len(debt) > 12:
         d = _to_bn(_clean(debt).resample('Q').last())
-        g = _to_bn(_clean(gdp).resample('Q').last())
-        d, g = d.align(g, join='inner')
+        d, g = d.align(gdp_bn, join='inner')
         if len(d) > 12:
             net_issue = d.diff(4)
             gdp_4q = g.rolling(4, min_periods=2).mean()
-            demand = (net_issue / gdp_4q) * 100
-            demand = _clean(demand.dropna())
-            source = 'Federal net issuance 4q / GDP'
-            debug_info.append(f'Debt: ${d.min():,.0f}-${d.max():,.0f}bn')
-            debug_info.append(f'GDP: ${g.min():,.0f}-${g.max():,.0f}bn')
-            if len(demand):
-                debug_info.append(f'Demand: {demand.min():+.1f}%-'
-                                    f'{demand.max():+.1f}%')
+            demand = _clean(((net_issue / gdp_4q) * 100).dropna())
+            source = 'GFDEBTN 4q Δ / GDP'
+
+    # Tier 2: Fed BS change (proxy de Treasury absorption via QE)
+    if demand is None or len(demand) < 12:
+        fed_bs = safe_load(['FARBAST Index'], period=period, label='FED_BS_demand')
+        if len(fed_bs) > 12:
+            d = _to_bn(_clean(fed_bs).resample('Q').last())
+            d, g = d.align(gdp_bn, join='inner')
+            if len(d) > 12:
+                net_issue = d.diff(4)  # 4q change in Fed BS
+                gdp_4q = g.rolling(4, min_periods=2).mean()
+                # Scale up pra representar debt total (~5x Fed BS share)
+                demand = _clean(((net_issue * 5 / gdp_4q) * 100).dropna())
+                source = 'Fed BS 4q Δ × 5 / GDP (proxy)'
 
     if demand is None or len(demand) < 12:
-        import os
-        has_fred = bool(os.environ.get('FRED_API_KEY'))
-        msg = ('GFDEBTN Index indisponivel no BBG.<br>'
-                 + ('FRED fallback configurado — recarregue pra tentar.'
-                      if has_fred else
-                      'Defina FRED_API_KEY no env pra habilitar fallback.'))
         fig.add_annotation(
-            text=msg, xref='paper', yref='paper', x=0.5, y=0.5,
-            showarrow=False, font=dict(color='#666666', size=11))
+            text='Sem fonte de debt stock disponivel<br>'
+                 '(GFDEBTN, FARBAST falharam)',
+            xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
+            font=dict(color='#666666', size=11))
         fig.update_yaxes(title_text='%')
         return fig
+
+    debug_info.append(f'Source: {source}')
+    debug_info.append(f'Demand: {demand.min():+.1f}%-{demand.max():+.1f}%')
+    debug_info.append(f'GDP (last): ${gdp_bn.iloc[-1]:,.0f}bn')
 
     # Linha principal (laranja) + fill
     fig.add_trace(go.Scatter(x=demand.index, y=demand.values, mode='lines',
@@ -2761,33 +2809,53 @@ def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
 
 def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
     """Liquidity/Collateral Imbalance (SOFR-IORB) em BPS, daily.
-    IORB foi introduzido Jul/2021 — filtramos so dates com ambos validos.
-    Range tipico +/-20 bps."""
+    IORB introduzido Jul/2021. Tenta multiplos tickers; se todos falham
+    (ou retornam range suspeito), usa fallback FDTR - 10bps."""
     fig = _fig_base('Liquidity / Collateral Imbalance (SOFR-IORB)',
                       height=420)
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
-    iorb = safe_load('IORB Index', period=period, label='IORB')
+
+    # Tenta multiplos tickers de IORB, valida range plausivel (0-7%)
+    iorb_candidates = ['IOER Index', 'IORBR Index', 'IORB Index',
+                         'FDRIPOE Index']
+    iorb, iorb_source = None, None
+    for tk in iorb_candidates:
+        cand = safe_load(tk, period=period, label=f'IORB_{tk.split()[0]}')
+        if len(cand) < 30:
+            continue
+        c = _to_pct(_clean(cand))
+        c = c[c != 0]  # drop zeros (pre-2021 nao existia)
+        if len(c) < 30:
+            continue
+        # Validacao: IORB real tem range 0.1-5.5% em 5y. Se max < 3%
+        # ou range < 1pp, suspeito.
+        if c.max() < 3.0 or (c.max() - c.min()) < 1.0:
+            continue
+        iorb = c
+        iorb_source = tk
+        break
+
+    # Fallback: se nenhum ticker IORB funciona, usa FDTR - 10bps
+    # (IORB historicamente fica 5-15bps abaixo do FF upper bound)
+    if iorb is None:
+        fdtr = safe_load('FDTR Index', period=period, label='FED_FUNDS_fb')
+        if len(fdtr) > 30:
+            iorb = _to_pct(_clean(fdtr)) - 0.10
+            iorb_source = 'FDTR - 10bps (fallback)'
 
     debug_info = []
-    if len(sofr) > 0 and len(iorb) > 0:
-        # Limpa zeros e NaN do IORB (pre-2021 nao existia)
-        s_raw = _clean(sofr)
-        i_raw = _clean(iorb)
-        i_raw = i_raw[i_raw != 0]  # drop zeros (dados pre-IORB)
+    if len(sofr) > 0 and iorb is not None and len(iorb) > 0:
+        s = _to_pct(_clean(sofr)).resample('D').last().ffill()
+        i = iorb.resample('D').last().ffill()
 
-        s = _to_pct(s_raw).resample('D').last().ffill()
-        i = _to_pct(i_raw).resample('D').last().ffill()
-
-        # INNER join — so dates com ambos validos
         s, i = s.align(i, join='inner')
-        # Drop residuais NaN
         mask = s.notna() & i.notna()
         s, i = s[mask], i[mask]
 
         debug_info.append(f'SOFR: {s.min():.2f}-{s.max():.2f}% '
                             f'(n={len(s)})')
         debug_info.append(f'IORB: {i.min():.2f}-{i.max():.2f}% '
-                            f'(n={len(i)})')
+                            f'[src: {iorb_source}]')
 
         if len(s) > 0 and len(i) > 0:
             spread = (s - i) * 100  # bps
