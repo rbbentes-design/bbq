@@ -168,32 +168,39 @@ pre.how-memo { background: #0a0d14; color: #cce8ff; padding: 16px; border-radius
 # Tickers — multi-candidate: tenta em ordem, usa o 1o que funcionar.
 # Se todos falharem via BBG, cai no FRED (FRED_ALIASES).
 TICKERS_CB = {
-    # Fed total assets — varios aliases
-    'FED':   ['FARBAST Index', 'H41RCASH Index', 'H41TCTOT Index'],
+    'FED':   ['FARBAST Index', 'H41RCASH Index'],
     'ECB':   ['EBBSTOTA Index', 'EUCBTOTA Index'],
     'BOJ':   ['BJACTOTL Index', 'JPNACBA Index'],
-    'PBOC':  ['CNGFAS Index', 'CHBATOTL Index'],
-    'BOE':   ['APFAAPFA Index', 'BOEAPFAF Index', 'UKAPFBS Index'],
+    # CNBMTTAS = China Monetary Authority Total Assets (confirmado no BBG)
+    'PBOC':  ['CNBMTTAS Index', 'CNGFAS Index'],
+    # .BOE_TOT_ = BOE UK Total Assets (custom BBG label)
+    'BOE':   ['.BOE_TOT_ Index', 'APFAAPFA Index', 'APFTPFBH Index'],
 }
 TICKERS_BANK_CREDIT = {
-    'US':  ['ALCBCBCT Index', 'ALCBTOTL Index', 'H8TBNKCR Index'],  # H.8 credit
+    # ALCBBKCR = All Commercial Banks Bank Credit (US H.8 headline)
+    'US':  ['ALCBBKCR Index', 'ALCBCBCT Index', 'H8TBNKCR Index'],
     'EUR': ['ECMSM3 Index', 'ECMAM3 Index'],
-    'UK':  ['UKM4MLB Index', 'UKMS Index'],
+    # UKMSM4 = UK Money Supply M4 level (UKMSM41Y = YoY fallback)
+    'UK':  ['UKMSM4 Index', 'UKMS Index', 'UKMSM41Y Index'],
     'JP':  ['JNLJAOYS Index', 'JMNSM2 Index'],
-    'CN':  ['CNFFFAS Index', 'CHTSFAMT Index'],
+    # CNMSM2 = China Monthly Money Supply M2 (confirmado)
+    'CN':  ['CNMSM2 Index', 'CNFFFAS Index'],
 }
 TICKERS_REPO = {
     'SOFR':   ['SOFRRATE Index', 'SOFR Index'],
     'IORB':   ['IORB Index', 'IOER Index'],
-    'WRESBAL':['WRESBAL Index', 'ARESDPIT Index', 'WRRESUAW Index'],
+    'WRESBAL':['WRESBAL Index', 'ARESDPIT Index'],
     'RRP':    ['RRPONTSYD Index', 'RRPONTSYAWARD Index', 'RRPONTSYOPS Index'],
     'MOVE':   ['MOVE Index'],
+    # TOMOREPO = temp OMO repo operations
+    'TOMO':   ['TOMOREPO Index'],
 }
 TICKERS_WBCI_CORE4 = {
-    'US_ISM':    ['NAPMPMI Index', 'ISMPMI Index', 'USNPMI Index'],
+    'US_ISM':    ['NAPMPMI Index'],
     'JP_TANKAN': ['JNTGMFG Index', 'JNTGSECE Index', 'JNTGSEMS Index'],
-    'DE_IFO':    ['GRIFPBUS Index', 'IFOEPECU Index', 'GRZEBUSN Index'],
-    'UK_CBI':    ['UKCBIMS Index', 'UKCBIIND Index', 'UKCBITEF Index'],
+    'DE_IFO':    ['GRIFPBUS Index', 'IFOEPECU Index'],
+    # ECONUKCI = UK CBI Industrial Trends (confirmado)
+    'UK_CBI':    ['ECONUKCI Index', 'ECONUKCD Index'],
 }
 TICKERS_WBCI_EXT = {
     'US_ISM_SVC': 'NAPMNMI Index',
@@ -248,16 +255,20 @@ TICKERS_RISK_APPETITE = {
     'PUTCALL':'PCUSEQTR Index',
 }
 TICKERS_CRYPTO = {
-    'BTC': 'XBT Curncy',
-    'ETH': 'XETH Curncy',
-    'SOL': 'XSOL Curncy',
+    'BTC': ['XBT Curncy', 'XBTUSD Curncy'],
+    # XETUSD = Ethereum/USD Cross (confirmado)
+    'ETH': ['XETUSD Curncy', 'XETH Curncy'],
+    # XSOUSD = Solana/USD Cross (confirmado)
+    'SOL': ['XSOUSD Curncy', 'XSO Curncy', 'XSOL Curncy'],
 }
 TICKERS_WORLD_M2 = {
-    'US_M2':  'M2NS Index',
-    'EUR_M3': 'ECMAM3 Index',
-    'JP_M2':  'JMNSM2 Index',
-    'UK_M4':  'UKMS Index',
-    'CN_M2':  'CHM2 Index',
+    'US_M2':  ['M2NS Index', 'M2SL Index'],
+    'EUR_M3': ['ECMAM3 Index', 'ECMSM3 Index'],
+    'JP_M2':  ['JMNSM2 Index', 'JNMSM2 Index'],
+    # UKMSM4 = UK M4 level; UKMSM41Y = YoY (fallback)
+    'UK_M4':  ['UKMSM4 Index', 'UKMSM41Y Index', 'UKMS Index'],
+    # CNMSM2 = China M2 level (confirmado)
+    'CN_M2':  ['CNMSM2 Index', 'CHM2 Index'],
 }
 TICKERS_EQ_INDICES = {
     'SPX':   'SPX Index',
@@ -1064,8 +1075,10 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     Como BIS raro em BQL, usamos proxy com Treasury marketable + corp bond index.
     """
     # Proxy de debt: US Treasury marketable + LEGATRUU (Bloomberg Global Agg)
-    debt = load_group({'TREAS': 'TREAS Index',  # fallback pode faltar
-                        'GLOBAL_AGG': 'LEGATRUU Index'}, period)
+    # LUATTRUU = Bloomberg US Treasury Total Return (confirmado)
+    # LGTRTRUU = Bloomberg Global Agg Treasuries
+    debt = load_group({'TREAS': ['LUATTRUU Index', 'LEGATRUU Index'],
+                        'GLOBAL_AGG': ['LGTRTRUU Index', 'LEGATRUU Index']}, period)
 
     if not debt or 'total_usd' not in liq:
         return {'error': 'dados de debt/liq insuficientes'}
