@@ -1963,30 +1963,58 @@ def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
     return fig
 
 
+def _stimulus_impulse(nfl: dict) -> pd.Series:
+    """
+    All Stimulus = IMPULSO/delta 6m do NFL (Fed BS - RRP - TGA).
+    NAO e o nivel absoluto — e a mudanca 6m (flow em USD bn por periodo).
+    Conceitualmente: quanto de liquidez foi adicionada/drenada nos ultimos 6m.
+    """
+    if 'nfl_series' not in nfl:
+        return pd.Series(dtype=float)
+    s = _clean(nfl['nfl_series'])
+    if len(s) < 30:
+        return pd.Series(dtype=float)
+    # Detect freq (weekly/monthly)
+    days = (s.index.to_series().diff().dt.days.median() or 7)
+    periods_6m = int(round(180 / days))
+    impulse = s.diff(periods_6m)  # mudanca 6m em USD bn
+    return _clean(impulse)
+
+
 def chart_stim_vs_btc(nfl: dict, cr: dict) -> 'go.Figure':
     """US Fed/Treasury Stimulus (+6m) & BTC$ (6m Change) — dual axis."""
     fig = _fig_dual('US Fed/Treasury Stimulus (+6m) & BTC$ 6m Change',
                       height=420)
-    # Stimulus = NFL advanced 6m (shift forward)
-    if 'nfl_series' in nfl:
-        s = _clean(nfl['nfl_series'])
-        s_adv = s.shift(-int(6 * 4.3))  # 6m advance (weekly)
-        fig.add_trace(go.Scatter(x=s_adv.index, y=s_adv.values, mode='lines',
+    # Stimulus = IMPULSE 6m delta, advanced 6m pra frente
+    impulse = _stimulus_impulse(nfl)
+    if len(impulse) > 30:
+        days = (impulse.index.to_series().diff().dt.days.median() or 7)
+        shift_n = int(round(180 / days))
+        adv = impulse.shift(-shift_n)
+        fig.add_trace(go.Scatter(x=adv.index, y=adv.values, mode='lines',
                                     name='All Stimulus (+6m)',
                                     line=dict(color=PALETTE['orange'], width=2),
                                     hovertemplate='$%{y:,.0f}bn<extra></extra>'),
                         secondary_y=False)
+
+    # BTC 6m absolute change (em USD, nao pontos)
+    btc_s = None
     if 'basket' in cr:
-        btc = _clean(cr.get('components_rebased', pd.DataFrame()).get('BTC',
-                      cr.get('basket')))
-        if len(btc) > 0:
-            btc_6m = btc.diff(int(6 * 21)) * 100  # 6m change in points
-            fig.add_trace(go.Scatter(x=btc_6m.index, y=btc_6m.values,
-                                        mode='lines',
-                                        name='BTC$ 6m Ch',
-                                        line=dict(color='#000000', width=1.6),
-                                        hovertemplate='%{y:,.0f}<extra></extra>'),
-                            secondary_y=True)
+        comps = cr.get('components_rebased', pd.DataFrame())
+        if 'BTC' in comps:
+            btc_s = _clean(comps['BTC'])
+    if btc_s is None or len(btc_s) < 30:
+        # Tenta pegar BTC cru
+        btc_raw = safe_load(['XBT Curncy', 'XBTUSD Curncy'], period='-10Y',
+                              label='BTC')
+        btc_s = _clean(btc_raw)
+    if len(btc_s) > 126:  # ~6m de trading days
+        btc_6m = btc_s.diff(126)
+        fig.add_trace(go.Scatter(x=btc_6m.index, y=btc_6m.values, mode='lines',
+                                    name='BTC$ 6m Ch',
+                                    line=dict(color='#000000', width=1.6)),
+                        secondary_y=True)
+    _add_zero_line(fig, secondary_y=False)
     _add_zero_line(fig, secondary_y=True)
     fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
@@ -2000,10 +2028,12 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
     """US Fed/Treasury Stimulus (+6m) & ISM Survey 12m change — dual axis."""
     fig = _fig_dual('US Fed/Treasury Stimulus (+6m) & ISM Survey 12m Ch',
                       height=420)
-    if 'nfl_series' in nfl:
-        s = _clean(nfl['nfl_series'])
-        s_adv = s.shift(-int(6 * 4.3))
-        fig.add_trace(go.Scatter(x=s_adv.index, y=s_adv.values, mode='lines',
+    impulse = _stimulus_impulse(nfl)
+    if len(impulse) > 30:
+        days = (impulse.index.to_series().diff().dt.days.median() or 7)
+        shift_n = int(round(180 / days))
+        adv = impulse.shift(-shift_n)
+        fig.add_trace(go.Scatter(x=adv.index, y=adv.values, mode='lines',
                                     name='All Stimulus (+6m)',
                                     line=dict(color=PALETTE['orange'], width=2)),
                         secondary_y=False)
@@ -2015,8 +2045,10 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
                                     name='ISM Survey 12m Ch',
                                     line=dict(color='#000000', width=1.5)),
                         secondary_y=True)
+    _add_zero_line(fig, secondary_y=False)
     _add_zero_line(fig, secondary_y=True)
-    fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
+    fig.update_yaxes(title_text='US$ Billions (6m impulse)',
+                      secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='12m Ch in Index', secondary_y=True,
                       title_font=dict(color='#1a1a1a'), showgrid=False)
@@ -2403,7 +2435,13 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
         z = _clean(liq['liq_z'])
         norm = _robust_normalize(z, lo_pct=5, hi_pct=95, out_min=10,
                                      out_max=90)
-        norm = norm.shift(-9 * 21)  # advance 9 months
+        # Detect freq: se mensal shift 9 periodos, se daily 9*21
+        if len(norm) > 1:
+            days = (norm.index.to_series().diff().dt.days.median() or 1)
+            shift_n = 9 if days > 20 else 9 * 21
+        else:
+            shift_n = 9
+        norm = norm.shift(-shift_n)
         fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                     name='US Domestic Liquidity (+9m)',
                                     line=dict(color=PALETTE['orange'], width=1.6)),
