@@ -189,11 +189,11 @@ TICKERS_BANK_CREDIT = {
 TICKERS_REPO = {
     'SOFR':   ['SOFRRATE Index', 'SOFR Index'],
     'IORB':   ['IORB Index', 'IOER Index'],
-    'WRESBAL':['WRESBAL Index', 'ARESDPIT Index'],
-    'RRP':    ['RRPONTSYD Index', 'RRPONTSYAWARD Index', 'RRPONTSYOPS Index'],
+    # FARBRBFB = Federal Reserve Bank Reserves (confirmado)
+    'WRESBAL':['FARBRBFB Index', 'WRESBAL Index', 'ARESDPIT Index'],
+    # TOMOREPO = temp OMO repo (confirmado como proxy RRP)
+    'RRP':    ['TOMOREPO Index', 'RRPONTSYD Index', 'RRPONTSYAWARD Index'],
     'MOVE':   ['MOVE Index'],
-    # TOMOREPO = temp OMO repo operations
-    'TOMO':   ['TOMOREPO Index'],
 }
 TICKERS_WBCI_CORE4 = {
     'US_ISM':    ['NAPMPMI Index'],
@@ -250,9 +250,10 @@ TICKERS_VOL_CREDIT = {
     'ITRAXX_EU': 'ITRXEUE CBIL Curncy',
 }
 TICKERS_RISK_APPETITE = {
-    'DXY': 'DXY Curncy',
-    'EMFX':'EMCI Index',
-    'PUTCALL':'PCUSEQTR Index',
+    'DXY': ['DXY Curncy', 'DXY Index'],
+    # USTWEME = US trade-weighted EM (confirmado, substitui EMCI)
+    'EMFX':['USTWEME Index', 'EMCI Index', 'JPMVXYEM Index'],
+    'PUTCALL':['PCUSEQTR Index', 'PCEQUSO Index'],
 }
 TICKERS_CRYPTO = {
     'BTC': ['XBT Curncy', 'XBTUSD Curncy'],
