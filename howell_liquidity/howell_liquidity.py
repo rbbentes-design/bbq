@@ -1966,18 +1966,18 @@ def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
 def _stimulus_impulse(nfl: dict) -> pd.Series:
     """
     All Stimulus = IMPULSO/delta 6m do NFL (Fed BS - RRP - TGA).
-    NAO e o nivel absoluto — e a mudanca 6m (flow em USD bn por periodo).
-    Conceitualmente: quanto de liquidez foi adicionada/drenada nos ultimos 6m.
+    FARBAST vem em MILHOES no BBG; divide por 1000 pra virar bilhoes (GLI scale).
     """
     if 'nfl_series' not in nfl:
         return pd.Series(dtype=float)
     s = _clean(nfl['nfl_series'])
     if len(s) < 30:
         return pd.Series(dtype=float)
-    # Detect freq (weekly/monthly)
     days = (s.index.to_series().diff().dt.days.median() or 7)
     periods_6m = int(round(180 / days))
-    impulse = s.diff(periods_6m)  # mudanca 6m em USD bn
+    impulse = s.diff(periods_6m)
+    # Converte milhoes -> bilhoes (BBG FARBAST em $M, GLI plota em $B)
+    impulse = impulse / 1000.0
     return _clean(impulse)
 
 
