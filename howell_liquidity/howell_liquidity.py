@@ -1473,77 +1473,107 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
 def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     """
     Debt / Liquidity refinancing ratio (Ch 7).
-    Cascade de fontes pra debt stock:
-      1. GFDEBTN Index (BBG) — Total Federal Debt
-      2. FRED GFDEBTN via alias US_FED_DEBT
-      3. Fed BS + Bank Credit somados (WALCL + TOTBKCR) — proxy broad
-      4. Fallback: M2 crescimento como proxy invertido (ratio degradado)
-    Denominador: M2 ou liq total_usd (M2 so evita dependencia circular).
+    Debt = PUBLIC + PRIVATE (matching GLI 'Advanced Economies Debt*'):
+      - Public:   GFDEBTN (Federal Debt)
+      - Private:  ALCBBKCR (Bank Credit Total) +
+                  HMTGDOFN (Mortgage Debt Outstanding, FRED) +
+                  CMDEBT (Household Credit, FRED)
+    Sem dividida privada o ratio fica em ~120-140% (so federal/M2).
+    Com privada deve chegar a 180-240% matching GLI.
     """
-    debt = None
-    source = None
+    def _to_bn(s):
+        s = _clean(s).resample('M').last()
+        if len(s) == 0:
+            return s
+        m = abs(s.median())
+        if m > 1e6:
+            return s / 1000  # $M -> $Bn
+        if m < 100:
+            return s * 1000  # $T -> $Bn
+        return s
 
-    # Tier 1: GFDEBTN (BBG/FRED)
-    debt_raw = safe_load(['GFDEBTN Index'], period=period,
+    # === PUBLIC DEBT ===
+    public = None
+    pub_source = None
+    fed_debt = safe_load(['GFDEBTN Index'], period=period,
                            label='US_FED_DEBT')
-    if len(debt_raw) >= 12:
-        d = _clean(debt_raw).resample('M').last()
-        if abs(d.median()) > 1e6:
-            d = d / 1000  # $M -> $Bn
-        debt = d
-        source = 'GFDEBTN'
+    if len(fed_debt) >= 12:
+        public = _to_bn(fed_debt)
+        pub_source = 'GFDEBTN'
+    else:
+        # Fallback: aproxima public via Fed BS × ~5 (Fed detem ~20% do federal)
+        fed_bs = safe_load(['FARBAST Index'], period=period, label='FED_pub_fb')
+        if len(fed_bs) >= 12:
+            public = _to_bn(fed_bs) * 5
+            pub_source = 'FARBAST × 5 (proxy public)'
 
-    # Tier 2: Fed BS + Bank Credit como proxy de debt stock broad
-    if debt is None:
-        fed_bs = safe_load(['FARBAST Index', 'WALCL'], period=period,
-                             label='FED_fb')
-        bank_cr = safe_load(['ALCBBKCR Index', 'TOTBKCR'], period=period,
-                              label='BANK_CR_fb')
-        if len(fed_bs) >= 12 and len(bank_cr) >= 12:
-            f = _clean(fed_bs).resample('M').last()
-            b = _clean(bank_cr).resample('M').last()
-            # Normaliza ambos pra $Bn
-            if abs(f.median()) > 1e6:
-                f = f / 1000
-            if abs(b.median()) > 1e6:
-                b = b / 1000
-            aligned_d = pd.concat([f, b], axis=1, join='inner').dropna()
-            if len(aligned_d) > 12:
-                debt = aligned_d.sum(axis=1)
-                source = 'Fed BS + Bank Credit (proxy)'
+    # === PRIVATE DEBT ===
+    private_components = {}
 
-    if debt is None:
-        return {'error': 'Nenhuma fonte de debt stock disponivel '
-                          '(GFDEBTN, FARBAST, ALCBBKCR falharam)'}
+    # 1) Bank Credit Total (proxy broad pro private bank debt stock)
+    bank_cr = safe_load(['ALCBBKCR Index', 'TOTBKCR'], period=period,
+                          label='BANK_CR_priv')
+    if len(bank_cr) >= 12:
+        private_components['bank_credit'] = _to_bn(bank_cr)
 
-    # Denominador: tenta total_usd primeiro, senao M2 direto
+    # 2) Mortgage debt outstanding (FRED HMTGDOFN ou MDOTHIOH)
+    mortgage = safe_load(['HMTGDOFN Index', 'MDOTHIOH Index'],
+                            period=period, label='MORTGAGE_DEBT')
+    if len(mortgage) >= 12:
+        private_components['mortgage'] = _to_bn(mortgage)
+
+    # 3) Household credit (FRED CMDEBT — household debt securities + loans)
+    household = safe_load(['CMDEBT Index'], period=period, label='HH_DEBT')
+    if len(household) >= 12:
+        private_components['household'] = _to_bn(household)
+
+    # 4) Nonfinancial corporate debt (FRED BCNSDODNS)
+    corp = safe_load(['BCNSDODNS Index'], period=period, label='CORP_DEBT')
+    if len(corp) >= 12:
+        private_components['corp'] = _to_bn(corp)
+
+    private = None
+    priv_source_list = []
+    if private_components:
+        df_priv = pd.DataFrame(private_components).dropna(how='all')
+        if not df_priv.empty:
+            private = df_priv.sum(axis=1)
+            priv_source_list = list(private_components.keys())
+
+    # === TOTAL DEBT (PUBLIC + PRIVATE) ===
+    if public is None and private is None:
+        return {'error': 'Nenhuma fonte de debt disponivel'}
+
+    if public is not None and private is not None:
+        df_d = pd.DataFrame({'pub': public, 'priv': private}).dropna(how='all')
+        debt = df_d.sum(axis=1)
+        source = (f'Public ({pub_source}) + Private '
+                    f'({"+".join(priv_source_list) if priv_source_list else "none"})')
+    elif public is not None:
+        debt = public
+        source = f'Public only ({pub_source})'
+    else:
+        debt = private
+        source = f'Private only ({"+".join(priv_source_list)})'
+
+    # Denominador: US M2 direto ($Bn). NAO usa liq['total_usd'] que e
+    # global liquidity ($T) — escala diferente do US debt.
     liq_total = None
-    if 'total_usd' in liq:
-        lt = _clean(liq['total_usd']).resample('M').last()
-        if len(lt) > 12 and abs(lt.median()) > 100:
-            if abs(lt.median()) > 1e6:
-                lt = lt / 1000
-            liq_total = lt
+    m2 = safe_load(['M2NS Index', 'M2SL'], period=period, label='US_M2_dl')
+    if len(m2) >= 12:
+        liq_total = _to_bn(m2)
 
     if liq_total is None:
-        # Fallback: M2 direto
-        m2 = safe_load(['M2NS Index', 'M2SL'], period=period, label='US_M2_fb')
-        if len(m2) >= 12:
-            lt = _clean(m2).resample('M').last()
-            if abs(lt.median()) > 1e6:
-                lt = lt / 1000
-            liq_total = lt
-
-    if liq_total is None:
-        return {'error': 'Nenhuma fonte de liquidity disponivel'}
+        return {'error': 'M2 indisponivel pra denominador'}
 
     aligned = pd.concat([debt, liq_total], axis=1, join='inner').dropna()
     if aligned.empty or len(aligned) < 12:
-        return {'error': 'sem overlap debt/liq'}
+        return {'error': 'sem overlap debt/M2'}
     aligned.columns = ['debt', 'liq']
 
+    # Ratio em % (ambos $Bn): debt/M2 * 100
     ratio = (aligned['debt'] / aligned['liq']) * 100
-    ratio = _clean(ratio).clip(50, 350)
+    ratio = _clean(ratio).clip(50, 400)
 
     z = rolling_z(ratio, window_years=10)
 
@@ -1557,8 +1587,15 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
                      else 'neutral'),
         '_debug': {
             'source': source,
-            'debt_range_bn': (float(debt.min()), float(debt.max())),
-            'liq_range': (float(liq_total.min()), float(liq_total.max())),
+            'public_latest_bn': float(public.iloc[-1]) if public is not None
+                                  and len(public) else None,
+            'private_latest_bn': float(private.iloc[-1]) if private is not None
+                                   and len(private) else None,
+            'private_components': priv_source_list,
+            'debt_total_latest_bn': float(debt.iloc[-1])
+                                       if len(debt) else None,
+            'm2_latest_bn': float(liq_total.iloc[-1])
+                              if len(liq_total) else None,
             'ratio_range_pct': (float(ratio.min()), float(ratio.max())),
             'n_obs': int(len(aligned)),
         },
@@ -2800,9 +2837,18 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
     # Injeta debug de build_debt_liquidity se disponivel
     dbg = dl.get('_debug', {})
     if dbg:
-        debug_info.append(f'Debt: ${dbg["debt_range_bn"][0]:,.0f}-'
-                            f'${dbg["debt_range_bn"][1]:,.0f}bn '
-                            f'(n={dbg.get("n_obs", "?")})')
+        pub = dbg.get('public_latest_bn')
+        priv = dbg.get('private_latest_bn')
+        m2 = dbg.get('m2_latest_bn')
+        if pub is not None:
+            debug_info.append(f'Public: ${pub:,.0f}bn')
+        if priv is not None:
+            debug_info.append(f'Private: ${priv:,.0f}bn '
+                                f'({"+".join(dbg.get("private_components", []))})')
+        if m2 is not None:
+            debug_info.append(f'M2: ${m2:,.0f}bn')
+        if dbg.get('source'):
+            debug_info.append(f'Src: {dbg["source"]}')
 
     y_min, y_max = 150.0, 260.0
 
