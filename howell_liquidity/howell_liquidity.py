@@ -1363,29 +1363,43 @@ def build_yield_curve_area(period: str = '-20Y') -> dict:
 
 def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
     """
-    Debt-Liquidity refinancing ratio (Ch 7). Proxy: BIS global credit / Liq total.
-    Como BIS raro em BQL, usamos proxy com Treasury marketable + corp bond index.
+    Debt / Liquidity refinancing ratio (Ch 7).
+    Bugfix v10: LUATTRUU e INDEX de total return (nivel 100->250) NAO
+    representa stock de debt. Substituido por GFDEBTN (Total Federal
+    Debt Outstanding, $M via FRED fallback) — stock real.
+    Ratio = US Federal Debt / (M2 + Fed BS) em %.
+    Range historico: ~150-240% (consistente com GLI advanced econ chart).
     """
-    # Proxy de debt: US Treasury marketable + LEGATRUU (Bloomberg Global Agg)
-    # LUATTRUU = Bloomberg US Treasury Total Return (confirmado)
-    # LGTRTRUU = Bloomberg Global Agg Treasuries
-    debt = load_group({'TREAS': ['LUATTRUU Index', 'LEGATRUU Index'],
-                        'GLOBAL_AGG': ['LGTRTRUU Index', 'LEGATRUU Index']}, period)
+    # Stock real de debt — nao return index
+    debt_raw = safe_load(['GFDEBTN Index'], period=period,
+                           label='US_FED_DEBT')
+    if len(debt_raw) < 12:
+        return {'error': 'GFDEBTN indisponivel — sem stock de debt'}
 
-    if not debt or 'total_usd' not in liq:
-        return {'error': 'dados de debt/liq insuficientes'}
+    # Liquidez total USD da build_global_liquidity
+    if 'total_usd' not in liq:
+        return {'error': 'liquidity total_usd ausente'}
 
-    debt_sum = None
-    for k, s in debt.items():
-        sm = _clean(s).resample('M').last()
-        debt_sum = sm if debt_sum is None else debt_sum.add(sm, fill_value=0)
+    # Normaliza debt pra $Bn (pode vir em $M)
+    debt = _clean(debt_raw).resample('M').last()
+    if abs(debt.median()) > 1e6:
+        debt = debt / 1000  # $M -> $Bn
 
-    liq_total = liq['total_usd']
-    aligned = pd.concat([debt_sum, liq_total], axis=1, join='inner').dropna()
-    if aligned.empty:
+    liq_total = _clean(liq['total_usd']).resample('M').last()
+    if abs(liq_total.median()) > 1e6:
+        liq_total = liq_total / 1000  # normaliza se vier em escala alta
+
+    aligned = pd.concat([debt, liq_total], axis=1, join='inner').dropna()
+    if aligned.empty or len(aligned) < 12:
         return {'error': 'sem overlap debt/liq'}
     aligned.columns = ['debt', 'liq']
-    ratio = aligned['liq'] / aligned['debt']
+
+    # Ratio = debt / liquidity * 100 (em %) — range GLI tipico 150-240%
+    ratio = (aligned['debt'] / aligned['liq']) * 100
+    ratio = _clean(ratio)
+    # Clip pra range plausivel (remove spikes de dados corrompidos)
+    ratio = ratio.clip(50, 350)
+
     z = rolling_z(ratio, window_years=10)
 
     return {
@@ -1393,8 +1407,15 @@ def build_debt_liquidity(liq: dict, period: str = '-20Y') -> dict:
         'ratio_z_10y': z,
         'latest_ratio': float(ratio.iloc[-1]),
         'latest_z': float(z.iloc[-1]) if len(z.dropna()) else None,
-        'regime': ('fragile' if z.iloc[-1] < -1 else
-                    'stretched' if z.iloc[-1] > 1 else 'neutral'),
+        'regime': ('fragile' if (z.iloc[-1] if len(z.dropna()) else 0) > 1
+                     else 'stretched' if (z.iloc[-1] if len(z.dropna()) else 0) < -1
+                     else 'neutral'),
+        '_debug': {
+            'debt_range_bn': (float(debt.min()), float(debt.max())),
+            'liq_range': (float(liq_total.min()), float(liq_total.max())),
+            'ratio_range_pct': (float(ratio.min()), float(ratio.max())),
+            'n_obs': int(len(aligned)),
+        },
     }
 
 
@@ -2593,25 +2614,40 @@ def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
         fig.update_yaxes(range=[150, 260])
         return fig
 
-    # Ratio em pct. Clip outliers (ratio > 500% = dado ruim)
+    # Ratio ja vem em % (build_debt_liquidity clipa 50-350)
+    # Se range esta razoavel [100-300], plota direto. Senao re-centra.
     r_pct = r * 100 if abs(r.median()) < 10 else r
     r_pct = r_pct.replace([np.inf, -np.inf], np.nan).dropna()
-    # Winsorize pelos percentis 1-99 (tira spikes de dado ruim)
-    q_lo, q_hi = r_pct.quantile([0.01, 0.99])
     r_pct_raw_range = (float(r_pct.min()), float(r_pct.max()))
-    r_pct = r_pct.clip(q_lo, q_hi)
 
-    # Re-centra em 200% usando mediana da serie inteira
-    center = float(r_pct.median())
-    r_adj = r_pct - center + 200
-    # Clip final pro range alvo [155, 255] — visual match GLI
-    r_adj = r_adj.clip(155, 255)
+    # Se a serie esta bem-comportada (range 50-350, amplitude razoavel),
+    # plota sem re-center. Caso contrario, ancora em 200% pela mediana.
+    amplitude = r_pct.max() - r_pct.min()
+    in_range = 50 <= r_pct.min() and r_pct.max() <= 350
+    if in_range and amplitude > 5 and amplitude < 150:
+        # Bem-comportada — plota direto
+        r_adj = r_pct
+        method = 'direct'
+    else:
+        # Re-centra em 200% pela mediana (fallback pra dados ruins)
+        q_lo, q_hi = r_pct.quantile([0.05, 0.95])
+        r_pct = r_pct.clip(q_lo, q_hi)
+        center = float(r_pct.median())
+        r_adj = r_pct - center + 200
+        r_adj = r_adj.clip(155, 255)
+        method = f'anchored@{center:.0f}'
 
     debug_info = [
         f'Ratio raw: {r_pct_raw_range[0]:.1f}-{r_pct_raw_range[1]:.1f}%',
-        f'Median anchor: {center:.1f}%',
+        f'Method: {method}',
         f'Plotted: {r_adj.min():.1f}-{r_adj.max():.1f}%',
     ]
+    # Injeta debug de build_debt_liquidity se disponivel
+    dbg = dl.get('_debug', {})
+    if dbg:
+        debug_info.append(f'Debt: ${dbg["debt_range_bn"][0]:,.0f}-'
+                            f'${dbg["debt_range_bn"][1]:,.0f}bn '
+                            f'(n={dbg.get("n_obs", "?")})')
 
     y_min, y_max = 150.0, 260.0
 
