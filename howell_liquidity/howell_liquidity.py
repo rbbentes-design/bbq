@@ -2104,10 +2104,13 @@ def chart_13_risk_appetite(ra: dict) -> 'go.Figure':
 
 
 def chart_14_crypto_barometer(cr: dict, liq: dict, wm: dict = None) -> 'go.Figure':
-    """Ch 14: Crypto basket + residual (GLI - WorldM2)."""
+    """Ch 14: Crypto basket + residual (GLI - WorldM2) LEADING +6m.
+    Residual e LEADING 6m — shift pra FRENTE (proxy: valor de hoje
+    aparece em T+6m pra visualizar o forecast vs crypto subsequente)."""
     fig = make_subplots(specs=[[{'secondary_y': True}]])
     fig.update_layout(template=DASH_TEMPLATE, height=380,
-                       title='Chart 14 — Crypto Basket (60/30/10) vs Liquidity Residual')
+                       title='Chart 14 — Crypto Basket (60/30/10) vs '
+                             'Liquidity Residual (+6m leading)')
     if 'basket' in cr:
         b = _clean(cr['basket'])
         fig.add_trace(go.Scatter(x=b.index, y=b.values, mode='lines',
@@ -2115,7 +2118,7 @@ def chart_14_crypto_barometer(cr: dict, liq: dict, wm: dict = None) -> 'go.Figur
                                     line=dict(color=PALETTE['orange'], width=2)),
                         secondary_y=False)
 
-    # Residual = Liq YoY - WorldM2 YoY
+    # Residual = Liq YoY - WorldM2 YoY, shifted +6m pra frente (leading)
     if wm and 'yoy_pct' in wm and 'yoy_pct' in liq:
         liq_y = _clean(liq['yoy_pct']).resample('M').last()
         wm_y = _clean(wm['yoy_pct']).resample('M').last()
@@ -2123,11 +2126,29 @@ def chart_14_crypto_barometer(cr: dict, liq: dict, wm: dict = None) -> 'go.Figur
         if not a.empty:
             a.columns = ['liq', 'wm']
             residual = a['liq'] - a['wm']
-            fig.add_trace(go.Scatter(x=residual.index, y=residual.values, mode='lines',
-                                        name='Liquidity − WorldM2 (residual %)',
-                                        line=dict(color=PALETTE['red'], width=1.5,
-                                                   dash='dot')),
+            # Shift +6m pra FRENTE — valor de hoje aparece daqui 6m
+            # (visualiza residual como leading forecast de crypto)
+            shifted = residual.shift(6)
+            # Estende index 6m pro forward ficar visivel na ponta
+            if len(residual) > 0:
+                last = residual.index[-1]
+                future_idx = pd.date_range(last, periods=7, freq='M')[1:]
+                shifted = shifted.reindex(
+                    shifted.index.append(future_idx))
+                shifted.iloc[-6:] = residual.iloc[-6:].values
+            fig.add_trace(go.Scatter(x=shifted.index, y=shifted.values,
+                                        mode='lines',
+                                        name='Liquidity − WorldM2 residual (+6m)',
+                                        line=dict(color=PALETTE['red'],
+                                                   width=1.5, dash='dot')),
                             secondary_y=True)
+    fig.update_yaxes(title_text='Crypto Basket (rebased 100)',
+                      secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='Residual % (+6m leading)',
+                      secondary_y=True,
+                      title_font=dict(color=PALETTE['red']),
+                      showgrid=False)
     return fig
 
 
