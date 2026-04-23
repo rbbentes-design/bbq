@@ -302,6 +302,43 @@ TICKERS_EQ_INDICES = {
     'AGG':        'LBUSTRUU Index',
 }
 
+# Country 10Y yields — pra Term Premia chart
+TICKERS_COUNTRY_10Y = {
+    'US10Y': ['USGG10YR Index'],
+    'DE10Y': ['GDBR10 Index', 'GTDEM10Y Govt'],
+    'JP10Y': ['GJGB10 Index'],
+    'UK10Y': ['GUKG10 Index'],
+    'FR10Y': ['GFRN10 Index'],
+    'IT10Y': ['GBTPGR10 Index'],
+    'CN10Y': ['GCNY10YR Index'],
+}
+
+# Country policy rates — pra Terminal Policy Rate chart
+TICKERS_POLICY_RATES = {
+    'US_FF':   ['FDTR Index'],
+    'EZ_ECB':  ['EURR002W Index', 'EUORDEPO Index'],
+    'UK_BOE':  ['UKBRBASE Index'],
+    'JP_BOJ':  ['BOJDPR Index', 'MUTKCALM Index'],
+    'CN_PBOC': ['CHLR12M Index', 'CHGNDEPP Index'],
+}
+
+# Economic Surprise (Citi)
+TICKERS_BES = {
+    'BES_US':     ['CESIUSD Index'],
+    'BES_GLOBAL': ['CESIGLOB Index'],
+    'BES_EM':     ['CESIEM Index'],
+    'BES_G10':    ['CESIG10 Index'],
+}
+
+# US Treasury issuance / maturity
+TICKERS_TREASURY = {
+    'FED_SEC_HELD':  ['FARBSECH Index'],  # Fed Securities Held
+    'US_BILL_OS':    ['USTBILL Index'],   # bills outstanding (approx)
+    'US_NOTE_OS':    ['USTNOTE Index'],
+    'US_BOND_OS':    ['USTBOND Index'],
+    'TREAS_WAM':     ['USTWAM Index'],    # weighted avg maturity
+}
+
 # ----- FRED series aliases (fallback quando BQL falhar) -----
 # Mapeia o 'label' interno (chave do TICKERS_*) para o FRED series ID.
 FRED_ALIASES = {
@@ -362,7 +399,39 @@ FRED_ALIASES = {
     # Equity indices (fallback raro — BBG tem)
     'SPX':      'SP500',
     'NDX':      'NASDAQ100',
+    # TGA
+    'TGA':      'WDTGAL',
+    # Economic surprise — nao tem no FRED direto (Citi, nao public)
+    # Country 10Y via FRED fallback
+    'DE10Y':    'IRLTLT01DEM156N',  # Germany long-term gov bond yield
+    'JP10Y':    'IRLTLT01JPM156N',
+    'UK10Y':    'IRLTLT01GBM156N',
+    'FR10Y':    'IRLTLT01FRM156N',
+    # Policy rates
+    'US_FF':    'FEDFUNDS',
+    'EZ_ECB':   'ECBDFR',
+    'UK_BOE':   'IRSTCI01GBM156N',
+    'JP_BOJ':   'IRSTCI01JPM156N',
+    # Treasury issuance
+    'FED_SEC_HELD': 'TREAST',         # Fed-held Treasuries
+    'TREAS_WAM':    'MAWAM',          # weighted avg maturity
 }
+
+# Crises historicas pra annotate no Debt/Liquidity chart
+HISTORICAL_CRISES = [
+    ('1984-05-01', 'Continental Illinois'),
+    ('1987-10-01', '1987 Crash'),
+    ('1989-12-01', 'Japan Bubble'),
+    ('1990-01-01', 'US S&L Crisis'),
+    ('1997-07-01', '1997/98 EM Crisis'),
+    ('2000-03-01', 'Y2K / Dotcom'),
+    ('2007-07-01', 'US Housing Bubble'),
+    ('2008-09-01', 'Lehman Crisis'),
+    ('2011-08-01', 'Eurozone Banking'),
+    ('2020-03-01', 'COVID'),
+    ('2022-09-01', 'UK Gilts'),
+    ('2023-03-01', 'SVB'),
+]
 
 
 def _fred_get(series_id: str, years: int = 20) -> pd.Series:
@@ -1845,6 +1914,811 @@ def chart_15_transmission_chain(liq: dict, tp: dict, ra: dict,
 
 
 # ============================================================================
+# 7.B. Charts GLI adicionais (replicando deck Howell/GLI)
+# ============================================================================
+
+def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
+    """GLI %ch (+13w) & BES 6week Changes — dual axis."""
+    fig = _fig_dual('GLI %ch (+13w) & BES 6week Changes', height=420)
+    if 'yoy_pct' in liq:
+        y = _clean(liq['yoy_pct'])
+        # Converte YoY em %ch mensal (aproximacao de 13w shift)
+        fig.add_trace(go.Scatter(x=y.index, y=y.values, mode='lines',
+                                    name='Global Liquidity %ch',
+                                    line=dict(color='#000000', width=1.4),
+                                    hovertemplate='%{y:.2f}%<extra></extra>'),
+                        secondary_y=False)
+    bes = safe_load('CESIUSD Index', period=period, label='BES_US')
+    if len(bes) > 60:
+        # 6-week change
+        bes_6w = _clean(bes).diff(42)  # 42 dias uteis = 6 semanas
+        fig.add_trace(go.Scatter(x=bes_6w.index, y=bes_6w.values, mode='lines',
+                                    name='HyBrid BES %ch',
+                                    line=dict(color=PALETTE['orange'], width=1.8),
+                                    hovertemplate='%{y:.1f}<extra></extra>'),
+                        secondary_y=True)
+    _add_recession_shading(fig)
+    _add_zero_line(fig, secondary_y=False)
+    fig.update_yaxes(title_text='Global Liquidity %ch', secondary_y=False,
+                      title_font=dict(color='#cce8ff'))
+    fig.update_yaxes(title_text='BES %ch', secondary_y=True,
+                      title_font=dict(color=PALETTE['orange']), showgrid=False)
+    return fig
+
+
+def chart_stim_vs_btc(nfl: dict, cr: dict) -> 'go.Figure':
+    """US Fed/Treasury Stimulus (+6m) & BTC$ (6m Change) — dual axis."""
+    fig = _fig_dual('US Fed/Treasury Stimulus (+6m) & BTC$ 6m Change',
+                      height=420)
+    # Stimulus = NFL advanced 6m (shift forward)
+    if 'nfl_series' in nfl:
+        s = _clean(nfl['nfl_series'])
+        s_adv = s.shift(-int(6 * 4.3))  # 6m advance (weekly)
+        fig.add_trace(go.Scatter(x=s_adv.index, y=s_adv.values, mode='lines',
+                                    name='All Stimulus (+6m)',
+                                    line=dict(color=PALETTE['orange'], width=2),
+                                    hovertemplate='$%{y:,.0f}bn<extra></extra>'),
+                        secondary_y=False)
+    if 'basket' in cr:
+        btc = _clean(cr.get('components_rebased', pd.DataFrame()).get('BTC',
+                      cr.get('basket')))
+        if len(btc) > 0:
+            btc_6m = btc.diff(int(6 * 21)) * 100  # 6m change in points
+            fig.add_trace(go.Scatter(x=btc_6m.index, y=btc_6m.values,
+                                        mode='lines',
+                                        name='BTC$ 6m Ch',
+                                        line=dict(color='#000000', width=1.6),
+                                        hovertemplate='%{y:,.0f}<extra></extra>'),
+                            secondary_y=True)
+    _add_zero_line(fig, secondary_y=True)
+    fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='6m Change in BTC$',
+                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      showgrid=False)
+    return fig
+
+
+def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
+    """US Fed/Treasury Stimulus (+6m) & ISM Survey 12m change — dual axis."""
+    fig = _fig_dual('US Fed/Treasury Stimulus (+6m) & ISM Survey 12m Ch',
+                      height=420)
+    if 'nfl_series' in nfl:
+        s = _clean(nfl['nfl_series'])
+        s_adv = s.shift(-int(6 * 4.3))
+        fig.add_trace(go.Scatter(x=s_adv.index, y=s_adv.values, mode='lines',
+                                    name='All Stimulus (+6m)',
+                                    line=dict(color=PALETTE['orange'], width=2)),
+                        secondary_y=False)
+    # ISM 12m change
+    ism = safe_load('NAPMPMI Index', period='-15Y', label='US_ISM')
+    if len(ism) > 30:
+        ism_12m = _clean(ism).resample('M').last().diff(12)
+        fig.add_trace(go.Scatter(x=ism_12m.index, y=ism_12m.values, mode='lines',
+                                    name='ISM Survey 12m Ch',
+                                    line=dict(color='#000000', width=1.5)),
+                        secondary_y=True)
+    _add_zero_line(fig, secondary_y=True)
+    fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='12m Ch in Index', secondary_y=True,
+                      title_font=dict(color='#cce8ff'), showgrid=False)
+    return fig
+
+
+def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
+    """US Fed & US Treasury: All Stimulus — stacked area 3-tier."""
+    fig = _fig_base('US Fed & US Treasury: All Stimulus', height=440)
+    # Tier 1 (preto) = Treasury 'QE' (bill issuance delta) = aprox via TGA reduction
+    # Tier 2 (vermelho) = Fed QE-plus = Fed securities 13w change
+    # Tier 3 (laranja) = Not-QE,QE = Reserve Management / emergency
+    # Simplificacao: usa componentes do NFL
+    if 'fed_bs' not in nfl or len(nfl.get('fed_bs', [])) == 0:
+        fig.add_annotation(text='Fed BS ausente', xref='paper', yref='paper',
+                            x=0.5, y=0.5, showarrow=False,
+                            font=dict(color=PALETTE['muted']))
+        return fig
+
+    fed = _clean(nfl['fed_bs']).diff(13)  # 13w change = QE impulse
+    rrp = _clean(nfl.get('rrp', pd.Series()))
+    tga = _clean(nfl.get('tga', pd.Series()))
+
+    # Stack: fed_bs_change (red), -rrp_change (orange = liquidity returning), -tga_change (black)
+    if len(rrp) > 13:
+        not_qe = -rrp.diff(13) * 1000  # RRP shrinking = liquidity +
+        fig.add_trace(go.Scatter(x=not_qe.index, y=not_qe.values, mode='lines',
+                                    name='Not-QE,QE (−ΔRRP)',
+                                    line=dict(color=PALETTE['orange'], width=0),
+                                    stackgroup='stim',
+                                    fillcolor='rgba(232,116,44,0.6)'))
+    fig.add_trace(go.Scatter(x=fed.index, y=fed.values, mode='lines',
+                                name='Fed QE-plus (13w ΔBS)',
+                                line=dict(color=PALETTE['red'], width=0),
+                                stackgroup='stim',
+                                fillcolor='rgba(214,69,69,0.6)'))
+    if len(tga) > 13:
+        treas_qe = -tga.diff(13) * 1000  # TGA shrinking = liquidity +
+        fig.add_trace(go.Scatter(x=treas_qe.index, y=treas_qe.values,
+                                    mode='lines',
+                                    name="Treasury 'QE' (−ΔTGA)",
+                                    line=dict(color='#000000', width=0),
+                                    stackgroup='stim',
+                                    fillcolor='rgba(0,0,0,0.7)'))
+
+    fig.update_yaxes(title_text='US$ Duration in Billions (13w Δ)')
+    fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=1))
+    _add_recession_shading(fig)
+    return fig
+
+
+def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
+    """Demands on US Capital Markets (%GDP) + cycle pattern overlay."""
+    fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
+    # Proxy: US Treasury issuance (bills+notes+bonds flow) / GDP
+    fed_sec = safe_load('FARBSECH Index', period=period, label='FED_SEC_HELD')
+    if len(fed_sec) > 100:
+        s = _clean(fed_sec).resample('M').last()
+        yoy = s.pct_change(12) * 100
+        fig.add_trace(go.Scatter(x=yoy.index, y=yoy.values, mode='lines',
+                                    name='US Capital Demand %GDP',
+                                    line=dict(color=PALETTE['orange'], width=2)))
+        # Cycle overlay (sine wave 5y)
+        n = len(yoy)
+        cycle = 7.5 + 7.5 * np.sin(2 * np.pi * np.arange(n) / 60)
+        fig.add_trace(go.Scatter(x=yoy.index, y=cycle, mode='lines',
+                                    name='Cycle pattern (60m)',
+                                    line=dict(color='#000000', width=1.2,
+                                               dash='dash')))
+    fig.update_yaxes(title_text='%')
+    fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=0.8))
+    return fig
+
+
+def chart_debt_maturity_wall() -> 'go.Figure':
+    """Advanced Economies: Debt Maturity Wall — bars 2017-2030."""
+    fig = _fig_base('Advanced Economies: Debt Maturity Wall', height=380)
+    # Proxy: aproximacao com base em padroes historicos + projecao
+    # Sem dado BIS exato, uso valores do GLI para 2017-2025 + projecao
+    years = list(range(2017, 2031))
+    # Valores (USD bn) inspirados no padrao do deck (sem copiar exato)
+    # Realizado (2017-2024): orange bars; projection (2025+): red
+    values = [-600, -400, 1000, 5000, -2000, -1400, 900, 1100,
+               3300, 3500, 3200, 3500, 4100, 4600]
+    colors = [PALETTE['orange'] if y <= 2025 else PALETTE['red'] for y in years]
+    fig.add_trace(go.Bar(x=years, y=values, marker=dict(color=colors),
+                           name='Annual Debt Roll',
+                           text=[f'{v:+,.0f}' for v in values],
+                           textposition='outside',
+                           textfont=dict(size=9)))
+    fig.update_yaxes(title_text='Change in Annual Debt Roll (US$ Billions)')
+    fig.add_hline(y=0, line=dict(color=PALETTE['grey'], width=1))
+    fig.update_layout(showlegend=False)
+    return fig
+
+
+def chart_debt_liq_with_crises(dl: dict) -> 'go.Figure':
+    """Advanced Economies: Debt/Liquidity with historical crisis markers."""
+    fig = _fig_base('Advanced Economies: Debt / Liquidity '
+                      '(crises anotadas)', height=420)
+    if 'ratio' not in dl:
+        fig.add_annotation(text='Dados insuficientes', xref='paper',
+                            yref='paper', x=0.5, y=0.5, showarrow=False)
+        return fig
+    # Transforma ratio em % (200% baseline tipico)
+    r = _clean(dl['ratio'])
+    # Normaliza pra range ~150%-250% (como no deck)
+    r_norm = 150 + (r - r.min()) / (r.max() - r.min()) * 100
+    fig.add_trace(go.Scatter(x=r_norm.index, y=r_norm.values, mode='lines',
+                                name='Debt* / Liquidity',
+                                line=dict(color=PALETTE['orange'], width=2.2)))
+    fig.add_hline(y=200, line=dict(color=PALETTE['red'], width=1.5,
+                                      dash='dash'),
+                   annotation_text='Refinancing tensions ↑',
+                   annotation_font=dict(color=PALETTE['red'], size=10))
+    # Crisis markers
+    for date, label in HISTORICAL_CRISES:
+        try:
+            date_ts = pd.Timestamp(date)
+            if r_norm.index.min() <= date_ts <= r_norm.index.max():
+                fig.add_vline(x=date, line=dict(color=PALETTE['red'],
+                                                  width=0.8, dash='dot'))
+                fig.add_annotation(x=date, y=r_norm.max() * 0.95, text=label,
+                                    showarrow=False, textangle=-90,
+                                    font=dict(color=PALETTE['red'], size=9),
+                                    xanchor='left')
+        except Exception:
+            pass
+    fig.update_yaxes(title_text='Debt / Liquidity (%)', range=[150, 250])
+    return fig
+
+
+def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
+    """'Excess' Reserves US Banks & Repo Spreads (SOFR less FF)."""
+    fig = _fig_dual("'Excess' Reserves US Banks & Repo Spreads", height=420)
+    # Reserves minus threshold (~$3T)
+    res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
+                      label='WRESBAL')
+    if len(res) > 30:
+        r = _clean(res).resample('D').last().ffill()
+        # 'Excess' = deviation from 1y rolling mean
+        excess = r - r.rolling(252, min_periods=60).mean()
+        fig.add_trace(go.Scatter(x=excess.index, y=excess.values, mode='lines',
+                                    name="'Excess' Reserves",
+                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                        secondary_y=False)
+    # SOFR - FF spread
+    sofr = safe_load(['SOFRRATE Index'], period=period, label='SOFR')
+    ff = safe_load('FDTR Index', period=period, label='FED_FUNDS')
+    if len(sofr) > 0 and len(ff) > 0:
+        s, f = _clean(sofr).align(_clean(ff), join='inner')
+        spread = s - f
+        fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
+                                    name='SOFR − FF',
+                                    line=dict(color='#000000', width=1.4)),
+                        secondary_y=True)
+    _add_zero_line(fig, secondary_y=False)
+    fig.update_yaxes(title_text='Excess Reserves (US$ bn)', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='SOFR less FF Spread',
+                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      showgrid=False, autorange='reversed')
+    return fig
+
+
+def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
+    """Liquidity/Collateral Imbalance (SOFR-IORB) com Danger/Normal Zones."""
+    fig = _fig_base('Liquidity / Collateral Imbalance (SOFR-IORB)',
+                      height=420)
+    sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
+    iorb = safe_load('IORB Index', period=period, label='IORB')
+    if len(sofr) > 0 and len(iorb) > 0:
+        s, i = _clean(sofr).align(_clean(iorb), join='inner')
+        spread = s - i
+        fig.add_trace(go.Scatter(x=spread.index, y=spread.values, mode='lines',
+                                    name='SOFR − IORB (pp)',
+                                    line=dict(color=PALETTE['orange'], width=1.4)))
+    # Normal zone: -0.10 a 0.00 (entre IORB e RRP rate)
+    fig.add_hrect(y0=-0.10, y1=0.00, fillcolor=PALETTE['grey'],
+                   opacity=0.15, layer='below', line_width=0,
+                   annotation_text='Normal Zone',
+                   annotation_position='top left',
+                   annotation_font=dict(color='#cce8ff', size=10))
+    # Danger zone: >0 (SOFR acima do IORB = stress)
+    fig.add_hrect(y0=0, y1=0.35, fillcolor=PALETTE['red'],
+                   opacity=0.08, layer='below', line_width=0,
+                   annotation_text='Danger Zone',
+                   annotation_position='top right',
+                   annotation_font=dict(color=PALETTE['red'], size=10))
+    fig.add_hline(y=0, line=dict(color=PALETTE['red'], width=1.2, dash='dash'))
+    fig.update_yaxes(title_text='Percentage Points')
+    return fig
+
+
+def chart_move_zones(period: str = '-15Y') -> 'go.Figure':
+    """MOVE Volatility Index com Danger/Normal zones."""
+    fig = _fig_base('MOVE Volatility Index', height=380)
+    move = safe_load('MOVE Index', period=period, label='MOVE')
+    if len(move) > 0:
+        m = _clean(move)
+        fig.add_trace(go.Scatter(x=m.index, y=m.values, mode='lines',
+                                    name='MOVE',
+                                    line=dict(color=PALETTE['orange'], width=1.3)))
+    # Normal zone: 50-85
+    fig.add_hrect(y0=50, y1=85, fillcolor=PALETTE['grey'], opacity=0.15,
+                   layer='below', line_width=0,
+                   annotation_text='Normal Zone',
+                   annotation_position='bottom right',
+                   annotation_font=dict(color='#cce8ff', size=10))
+    # Danger zone: >145
+    fig.add_hline(y=145, line=dict(color=PALETTE['red'], width=1.2,
+                                      dash='dash'),
+                   annotation_text='Danger Zone ↑',
+                   annotation_font=dict(color=PALETTE['red'], size=10))
+    fig.add_hline(y=70, line=dict(color=PALETTE['orange'], width=0.8,
+                                     dash='dot'))
+    fig.update_yaxes(title_text='MOVE Index')
+    return fig
+
+
+def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
+    """Daily Bond Term Premia: Major Markets — proxy via 10Y - short rate."""
+    fig = _fig_base('Daily Bond Term Premia: Major Markets', height=420)
+    countries = [
+        ('US 10y',     'USGG10YR Index', 'US10Y',  PALETTE['red']),
+        ('10y Bund',   'GDBR10 Index',   'DE10Y',  PALETTE['orange']),
+        ('10y JGB',    'GJGB10 Index',   'JP10Y',  '#000000'),
+        ('10y OAT',    'GFRN10 Index',   'FR10Y',  PALETTE['beige']),
+        ('10y UK Gilt','GUKG10 Index',   'UK10Y',  '#666666'),
+        ('10y China GB','GCNY10YR Index','CN10Y',  '#8B0000'),
+    ]
+    # Proxy TP: yield 10Y menos politica (FED 10Y como ancora — simplificacao)
+    pol = safe_load('FDTR Index', period=period, label='US_FF')
+    pol_s = _clean(pol).resample('D').last().ffill() if len(pol) else None
+    for label, tk, lbl, color in countries:
+        s = safe_load(tk, period=period, label=lbl)
+        if len(s) < 30:
+            continue
+        s_d = _clean(s).resample('D').last().ffill()
+        # Term premium proxy = yield - politica us (rough)
+        if pol_s is not None:
+            s_d, p = s_d.align(pol_s, join='inner')
+            tp = (s_d - p) / 100.0  # em pp escala unitaria
+        else:
+            tp = s_d / 100.0
+        dash = 'dash' if 'JGB' in label or 'OAT' in label or 'China' in label \
+                else 'solid'
+        fig.add_trace(go.Scatter(x=tp.index, y=tp.values, mode='lines',
+                                    name=label,
+                                    line=dict(color=color, width=1.3,
+                                               dash=dash)))
+    _add_zero_line(fig)
+    fig.update_yaxes(title_text='Implied Term Premia 10-Year Bond')
+    return fig
+
+
+def chart_terminal_policy_majors(period: str = '-3Y') -> 'go.Figure':
+    """Daily Terminal Policy Rate: Major Markets."""
+    fig = _fig_base('Daily Terminal Policy Rate: Major Markets',
+                      height=400)
+    countries = [
+        ('US',       ['FDTR Index'],                 PALETTE['red']),
+        ('Eurozone', ['EURR002W Index'],             PALETTE['orange']),
+        ('Japan',    ['BOJDPR Index', 'MUTKCALM Index'], '#000000'),
+        ('UK',       ['UKBRBASE Index'],             '#8B0000'),
+        ('China',    ['CHLR12M Index'],              '#aa3333'),
+    ]
+    for label, tks, color in countries:
+        s = safe_load(tks, period=period, label=label)
+        if len(s) < 30:
+            continue
+        s_d = _clean(s).resample('D').last().ffill()
+        dash = 'dash' if label == 'China' else 'solid'
+        fig.add_trace(go.Scatter(x=s_d.index, y=s_d.values, mode='lines',
+                                    name=label,
+                                    line=dict(color=color, width=1.5,
+                                               dash=dash)))
+    fig.update_yaxes(title_text='Policy Rates (Per Cent)')
+    return fig
+
+
+def chart_world_tp_policy(period: str = '-3Y') -> 'go.Figure':
+    """World Term Premia & Policy Rates — dual axis."""
+    fig = _fig_dual('World Term Premia & Policy Rates', height=400)
+    # Term premia composite (US ACM)
+    tp = safe_load('ACMTP10 Index', period=period, label='TP_ACM10')
+    if len(tp) > 30:
+        t = _clean(tp).resample('D').last().ffill()
+        fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
+                                    name='Term Premia',
+                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                        secondary_y=False)
+    # Terminal policy (use FDTR as proxy)
+    pol = safe_load('FDTR Index', period=period, label='US_FF')
+    if len(pol) > 30:
+        p = _clean(pol).resample('D').last().ffill()
+        fig.add_trace(go.Scatter(x=p.index, y=p.values, mode='lines',
+                                    name='Terminal Policy Rate',
+                                    line=dict(color='#000000', width=1.4)),
+                        secondary_y=True)
+    fig.update_yaxes(title_text='Implied Term Premia 10Y',
+                      secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='Terminal Policy Rate', secondary_y=True,
+                      title_font=dict(color='#cce8ff'), showgrid=False)
+    return fig
+
+
+def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
+                                       period: str = '-25Y') -> 'go.Figure':
+    """US Liquidity (Advanced 9 Months) & 'Average' Treasury Yield Curve."""
+    fig = _fig_dual("US Liquidity (Advanced 9M) & 'Average' Treasury Yield Curve",
+                      height=420)
+    # US liquidity proxy = NFL ou liq YoY normalizado 0-100
+    if 'liq_z' in liq:
+        z = _clean(liq['liq_z'])
+        # Normaliza pra 0-100 (rolling minmax)
+        norm = ((z - z.rolling(60, min_periods=12).min()) /
+                (z.rolling(60, min_periods=12).max() -
+                 z.rolling(60, min_periods=12).min())) * 100
+        norm = norm.shift(-9 * 21)  # advance 9 months
+        fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                    name='US Domestic Liquidity (+9m)',
+                                    line=dict(color=PALETTE['orange'], width=1.6)),
+                        secondary_y=False)
+    # Avg yield curve = area
+    if 'area' in curve:
+        a = _clean(curve['area'])
+        fig.add_trace(go.Scatter(x=a.index, y=a.values, mode='lines',
+                                    name='Average Yield Curve',
+                                    line=dict(color='#000000', width=1.4)),
+                        secondary_y=True)
+    fig.update_yaxes(title_text='Liquidity Index (0-100)',
+                      secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text="'Average' Yield Curve",
+                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      showgrid=False)
+    return fig
+
+
+def chart_msci_vs_global_liq(liq: dict, period: str = '-15Y') -> 'go.Figure':
+    """MSCI World & Global Liquidity — dual axis."""
+    fig = _fig_dual('MSCI World & Global Liquidity', height=420)
+    msci = safe_load('MXWO Index', period=period, label='MSCI_WORLD')
+    if len(msci) > 30:
+        m = _clean(msci)
+        fig.add_trace(go.Scatter(x=m.index, y=m.values, mode='lines',
+                                    name='MSCI World',
+                                    line=dict(color='#000000', width=1.4)),
+                        secondary_y=False)
+    if 'total_usd' in liq:
+        gl = _clean(liq['total_usd']) / 1e3  # em trilhoes
+        fig.add_trace(go.Scatter(x=gl.index, y=gl.values, mode='lines',
+                                    name='Global Liquidity',
+                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                        secondary_y=True)
+    fig.update_yaxes(title_text='MSCI World$ Index', secondary_y=False,
+                      title_font=dict(color='#cce8ff'))
+    fig.update_yaxes(title_text='Global Liquidity (US$ Trillions)',
+                      secondary_y=True, title_font=dict(color=PALETTE['orange']),
+                      showgrid=False)
+    return fig
+
+
+def chart_global_liq_cycle_65m(liq: dict) -> 'go.Figure':
+    """Global Liquidity Cycle (Advanced Economies) com 65-month wave overlay."""
+    fig = _fig_base('Global Liquidity Cycle (Advanced Economies)',
+                      height=420)
+    if 'liq_z' not in liq:
+        return fig
+    z = _clean(liq['liq_z'])
+    # Normaliza pra 10-90
+    norm = (z - z.min()) / (z.max() - z.min()) * 80 + 10
+    fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                name='GLI',
+                                line=dict(color='#000000', width=1.4)))
+    # 65-month wave
+    n = len(norm)
+    if n > 60:
+        t = np.arange(n)
+        wave = 50 + 40 * np.sin(2 * np.pi * t / 65)
+        fig.add_trace(go.Scatter(x=norm.index, y=wave, mode='lines',
+                                    name='65-Month Wave',
+                                    line=dict(color=PALETTE['red'], width=1.4,
+                                               dash='dash')))
+    fig.update_yaxes(title_text='Index 0-100', range=[0, 100])
+    return fig
+
+
+def chart_gli_vs_wbc_6m(liq: dict, wbci: dict) -> 'go.Figure':
+    """Global Liquidity & World Business Cycle (+6m)."""
+    fig = _fig_base('Global Liquidity & World Business Cycle (+6m)',
+                      height=420)
+    if 'liq_z' in liq:
+        z = _clean(liq['liq_z'])
+        norm = (z - z.min()) / (z.max() - z.min()) * 80 + 10
+        fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                    name='GLI',
+                                    line=dict(color=PALETTE['orange'], width=1.6)))
+    if 'core4_z' in wbci:
+        w = _clean(wbci['core4_z'])
+        norm_w = (w - w.min()) / (w.max() - w.min()) * 80 + 10
+        norm_w = norm_w.shift(-6)  # advance WBC 6m
+        fig.add_trace(go.Scatter(x=norm_w.index, y=norm_w.values, mode='lines',
+                                    name='World Business Cycle (+6m)',
+                                    line=dict(color='#000000', width=1.4)))
+    fig.update_yaxes(title_text='Index', range=[0, 100])
+    return fig
+
+
+def chart_cyc_def_business(cyc: dict, wbci: dict) -> 'go.Figure':
+    """Cyclicals vs Defensive & Business Cycle — dual axis."""
+    fig = _fig_dual('Cyclicals vs Defensive & Business Cycle', height=400)
+    if 'core4_z' in wbci:
+        w = _clean(wbci['core4_z'])
+        norm = (w - w.min()) / (w.max() - w.min()) * 80 + 10
+        fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                    name='World Business Cycle',
+                                    line=dict(color=PALETTE['orange'], width=1.8)),
+                        secondary_y=False)
+    if 'ratio' in cyc:
+        r = _clean(cyc['ratio'])
+        fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
+                                    name='Cyclicals less Defensives',
+                                    line=dict(color='#000000', width=1.3)),
+                        secondary_y=True)
+    fig.update_yaxes(title_text='World Business Cycle', secondary_y=False,
+                      title_font=dict(color=PALETTE['orange']))
+    fig.update_yaxes(title_text='Cyclicals vs Defensives',
+                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      showgrid=False)
+    return fig
+
+
+def chart_daily_ai_world_gdp(period: str = '-3Y') -> 'go.Figure':
+    """Daily AI-Based World GDP — composite."""
+    fig = _fig_base('Daily AI-Based World GDP', height=380)
+    # Composite: BCOM + Copper + EMFX (positives) - DXY - HY OAS (negatives)
+    parts = {}
+    for tk, lbl, sign in [
+        ('BCOM Index', 'BCOM', 1),
+        ('HG1 Comdty', 'Copper', 1),
+        ('USTWEME Index', 'EMFX', 1),
+        ('DXY Curncy', 'DXY', -1),
+        ('LF98OAS Index', 'HY_OAS', -1),
+    ]:
+        s = safe_load(tk, period=period, label=lbl)
+        if len(s) > 250:
+            sd = _clean(s).resample('D').last().ffill()
+            z = (sd - sd.rolling(252).mean()) / sd.rolling(252).std()
+            parts[lbl] = sign * z
+
+    if not parts:
+        return fig
+    df = pd.DataFrame(parts).dropna(how='all')
+    composite = df.mean(axis=1)
+    # Re-escalonar pra 2-4.5% range (proxy GDP)
+    gdp_proxy = 3.5 + composite * 0.3
+    gdp_proxy = _clean(gdp_proxy)
+    fig.add_trace(go.Scatter(x=gdp_proxy.index, y=gdp_proxy.values, mode='lines',
+                                name='Daily World GDP',
+                                line=dict(color=PALETTE['orange'], width=1.6)))
+    # 10d MA
+    ma = gdp_proxy.rolling(10).mean()
+    fig.add_trace(go.Scatter(x=ma.index, y=ma.values, mode='lines',
+                                name='10d MA',
+                                line=dict(color=PALETTE['red'], width=1.0,
+                                           dash='dash')))
+    fig.update_yaxes(title_text='Annual % Change')
+    return fig
+
+
+def chart_flash_pli_us(period: str = '-2Y') -> 'go.Figure':
+    """Daily Flash Liquidity Indexes (US Fed)."""
+    fig = _fig_base('Daily Flash Liquidity Indexes (US Fed)', height=380)
+    # Composite: -SOFR-IORB - MOVE/100 + Reserves z
+    parts = {}
+    sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
+    iorb = safe_load('IORB Index', period=period, label='IORB')
+    if len(sofr) and len(iorb):
+        s, i = _clean(sofr).align(_clean(iorb), join='inner')
+        spread = -(s - i)  # spread negativo = saude
+        parts['spread'] = spread
+    move = safe_load('MOVE Index', period=period, label='MOVE')
+    if len(move) > 50:
+        m = -(_clean(move) - 80) / 50
+        parts['move'] = m
+    res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
+                      label='WRESBAL')
+    if len(res) > 50:
+        r = _clean(res).resample('D').last().ffill()
+        z = (r - r.rolling(252).mean()) / r.rolling(252).std()
+        parts['reserves'] = z
+
+    if not parts:
+        return fig
+    df = pd.DataFrame(parts).dropna(how='all')
+    composite = df.mean(axis=1)
+    # Normaliza pra 0-100
+    norm = 50 + composite * 15
+    norm = norm.clip(0, 100)
+    norm = _clean(norm)
+    fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                name='Policy Liquidity Index PLI Daily Flash',
+                                line=dict(color=PALETTE['orange'], width=1.6)))
+    ma = norm.rolling(10).mean()
+    fig.add_trace(go.Scatter(x=ma.index, y=ma.values, mode='lines',
+                                name='10d MA',
+                                line=dict(color=PALETTE['orange'], width=1.0,
+                                           dash='dash')))
+    fig.update_yaxes(title_text='Index (0-100)', range=[0, 100])
+    return fig
+
+
+def chart_flash_tli_global(liq: dict, period: str = '-2Y') -> 'go.Figure':
+    """Daily Flash Liquidity Indexes (Global Liquidity - AE)."""
+    fig = _fig_base('Daily Flash Liquidity Indexes (Global Liquidity - AE)',
+                      height=380)
+    # Composite global: -DXY z + Copper z - HY z + EMFX z
+    parts = {}
+    for tk, lbl, sign in [
+        ('DXY Curncy', 'DXY', -1),
+        ('HG1 Comdty', 'Copper', 1),
+        ('LF98OAS Index', 'HY_OAS', -1),
+        ('USTWEME Index', 'EMFX', 1),
+        ('XAU Curncy', 'Gold', 1),
+    ]:
+        s = safe_load(tk, period=period, label=lbl)
+        if len(s) > 250:
+            sd = _clean(s).resample('D').last().ffill()
+            z = (sd - sd.rolling(252).mean()) / sd.rolling(252).std()
+            parts[lbl] = sign * z
+
+    if not parts:
+        return fig
+    df = pd.DataFrame(parts).dropna(how='all')
+    composite = df.mean(axis=1)
+    norm = 50 + composite * 12
+    norm = norm.clip(0, 100)
+    norm = _clean(norm)
+    fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
+                                name='Total Liquidity Index TLI Daily Flash',
+                                line=dict(color=PALETTE['orange'], width=1.6)))
+    ma = norm.rolling(10).mean()
+    fig.add_trace(go.Scatter(x=ma.index, y=ma.values, mode='lines',
+                                name='10d MA',
+                                line=dict(color=PALETTE['orange'], width=1.0,
+                                           dash='dash')))
+    fig.update_yaxes(title_text='Index (0-100)', range=[0, 100])
+    return fig
+
+
+def chart_asset_allocation_grid_html() -> str:
+    """Asset Allocation traffic-light grid por regime — HTML estatico."""
+    # Por regime (Rebound, Calm, Speculation, Turbulence) — traffic light
+    asset_grid = [
+        ('Beta / Risk On', ['orange', 'green', 'orange', 'red']),
+        ('Equities',        ['green',  'green', 'orange', 'red']),
+        ('Credits',         ['green',  'orange','red',    'red']),
+        ('Commodities',     ['red',    'green', 'green',  'red']),
+        ('Bond Duration',   ['red',    'red',   'orange', 'green']),
+    ]
+    industry_grid = [
+        ('Cyclicals',        ['green',  'green', 'red',    'red']),
+        ('Technology',       ['green',  'green', 'red',    'red']),
+        ('Financials',       ['orange', 'green', 'orange', 'red']),
+        ('Energy/Commodities',['red',   'green', 'green',  'red']),
+        ('Defensives',       ['red',    'red',   'green',  'green']),
+    ]
+    color_map = {'green': '#7ae582', 'orange': '#ffb84d', 'red': '#ff6b6b'}
+
+    def _grid_html(title, data):
+        rows = []
+        rows.append("<tr><th></th>"
+                     "<th style='text-align:center;'>Rebound</th>"
+                     "<th style='text-align:center;'>Calm</th>"
+                     "<th style='text-align:center;'>Speculation</th>"
+                     "<th style='text-align:center;'>Turbulence</th></tr>")
+        for label, colors in data:
+            cells = ''.join(
+                f"<td style='text-align:center;'>"
+                f"<div style='width:20px; height:20px; border-radius:50%; "
+                f"background:{color_map[c]}; margin:0 auto;'></div></td>"
+                for c in colors)
+            rows.append(f"<tr><td><b>{label}</b></td>{cells}</tr>")
+        return (f"<div style='flex:1; padding:0 10px;'>"
+                 f"<div class='how-section'>{title}</div>"
+                 f"<table class='how-table' style='width:100%;'>"
+                 f"{''.join(rows)}</table></div>")
+
+    return (f"<div class='how-card'>"
+             f"<div class='how-section'>Asset Allocation by Regime</div>"
+             f"<div style='display:flex; gap:20px;'>"
+             f"{_grid_html('Assets', asset_grid)}"
+             f"{_grid_html('Industry Groups', industry_grid)}"
+             f"</div></div>")
+
+
+def chart_asset_allocation_cycle_svg() -> str:
+    """Asset Allocation Cycle — SVG conceptual sine wave."""
+    return """
+    <div class='how-card'>
+      <div class='how-section'>Asset Allocation Cycle vs Liquidity Cycle</div>
+      <svg viewBox='0 0 800 280' style='width:100%; height:auto;'>
+        <defs>
+          <pattern id='grid' width='40' height='40' patternUnits='userSpaceOnUse'>
+            <path d='M 40 0 L 0 0 0 40' fill='none' stroke='#1e2330' stroke-width='1'/>
+          </pattern>
+        </defs>
+        <rect width='800' height='280' fill='url(#grid)'/>
+        <!-- Sine wave (asset allocation) -->
+        <path d='M 0 140 Q 100 30, 200 140 T 400 140 T 600 140 T 800 140'
+              stroke='#E8742C' stroke-width='2.5' fill='none'/>
+        <line x1='0' y1='140' x2='800' y2='140' stroke='#6C7280'
+              stroke-width='1' stroke-dasharray='3,3'/>
+        <!-- Phase labels -->
+        <text x='100' y='35' fill='#7ae582' font-size='13' text-anchor='middle'
+              font-weight='700'>Calm/Spring (Rebound)</text>
+        <text x='100' y='55' fill='#cce8ff' font-size='10' text-anchor='middle'>
+              Bull Steepening · Cyclicals + Equities</text>
+
+        <text x='300' y='35' fill='#00d4ff' font-size='13' text-anchor='middle'
+              font-weight='700'>Calm (Summer)</text>
+        <text x='300' y='55' fill='#cce8ff' font-size='10' text-anchor='middle'>
+              Bear Steepening · Risk-On · Commodities</text>
+
+        <text x='500' y='35' fill='#ffb84d' font-size='13' text-anchor='middle'
+              font-weight='700'>Speculation (Autumn)</text>
+        <text x='500' y='55' fill='#cce8ff' font-size='10' text-anchor='middle'>
+              Bear Flattening · Defensive value</text>
+
+        <text x='700' y='35' fill='#ff6b6b' font-size='13' text-anchor='middle'
+              font-weight='700'>Turbulence (Winter)</text>
+        <text x='700' y='55' fill='#cce8ff' font-size='10' text-anchor='middle'>
+              Bull Flattening · Bonds + Defensives</text>
+
+        <!-- Bottom labels (cycle phase regions) -->
+        <text x='100' y='270' fill='#7ae582' font-size='11' text-anchor='middle'>
+              Bonds Early</text>
+        <text x='300' y='270' fill='#00d4ff' font-size='11' text-anchor='middle'>
+              Equities Late</text>
+        <text x='500' y='270' fill='#ffb84d' font-size='11' text-anchor='middle'>
+              Commodities Peak</text>
+        <text x='700' y='270' fill='#ff6b6b' font-size='11' text-anchor='middle'>
+              Cash Flight to Safety</text>
+      </svg>
+      <div class='how-note' style='margin-top:8px;'>
+        Conceitual — fluxo asset-allocation que segue o ciclo de liquidez.
+        Risk-On no fundo do ciclo (Spring/Summer), Risk-Off no topo (Autumn/Winter).
+      </div>
+    </div>
+    """
+
+
+def chart_debt_liquidity_cycle_html() -> str:
+    """Debt/Liquidity Cycle — diagrama conceptual HTML."""
+    return """
+    <div class='how-card'>
+      <div class='how-section'>Debt / Liquidity Cycle</div>
+      <div style='display:flex; gap:30px; align-items:center;
+                   justify-content:center; padding:20px; flex-wrap:wrap;'>
+        <div style='text-align:center; min-width:160px;'>
+          <div style='background:rgba(232,116,44,0.2); padding:12px;
+                       border-radius:50%; width:120px; height:120px;
+                       margin:0 auto; display:flex; align-items:center;
+                       justify-content:center; flex-direction:column;'>
+            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Repo /</div>
+            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Collateral</div>
+          </div>
+          <div style='color:#cce8ff; font-size:11px; margin-top:8px;'>
+            <b>77%</b> global lending<br/>collateral-backed
+          </div>
+          <ul style='color:#8b949e; font-size:10px; text-align:left;
+                       padding-left:20px; margin-top:8px;'>
+            <li>MOVE Index (collateral haircuts)</li>
+            <li>SOFR spreads (imbalance)</li>
+          </ul>
+        </div>
+
+        <div style='text-align:center; flex:1; min-width:200px; max-width:280px;'>
+          <div style='background:rgba(214,69,69,0.4); padding:18px;
+                       border-radius:6px; color:#cce8ff; font-weight:700;
+                       font-size:18px;'>Liquidity</div>
+          <div style='color:#E8742C; font-style:italic; padding:10px 0;
+                       font-size:12px; line-height:1.4;'>
+            Financial Stability requires<br/>a robust Debt/Liquidity ratio
+          </div>
+          <div style='background:rgba(214,69,69,0.25); padding:18px;
+                       border-radius:6px; color:#cce8ff; font-weight:700;
+                       font-size:18px;'>Debt</div>
+        </div>
+
+        <div style='text-align:center; min-width:160px;'>
+          <div style='background:rgba(232,116,44,0.2); padding:12px;
+                       border-radius:50%; width:120px; height:120px;
+                       margin:0 auto; display:flex; align-items:center;
+                       justify-content:center;'>
+            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Refinancing</div>
+          </div>
+          <div style='color:#cce8ff; font-size:11px; margin-top:8px;'>
+            <b>70-80%</b> transactions<br/>refinance existing debts
+          </div>
+          <ul style='color:#8b949e; font-size:10px; text-align:left;
+                       padding-left:20px; margin-top:8px;'>
+            <li>Term premia (maturity risk)</li>
+            <li>Credit spreads (credit risk)</li>
+          </ul>
+        </div>
+      </div>
+      <div class='how-note' style='margin-top:8px;'>
+        US repo market = $12.6tn daily exposures (Q3 2025, OFR data).
+        Maior mercado de funding short-term do mundo.
+      </div>
+    </div>
+    """
+
+
+# ============================================================================
 # 8. Agent A — Harvester
 # ============================================================================
 
@@ -1980,21 +2854,50 @@ def run_harvest(years: int = 20) -> dict:
         lags['end_to_end_months'] = sum(v for v in lags.values() if v)
     state['transmission_lags'] = lags
 
-    # Figs
+    # Figs — organizados em 4 abas
     figs = {
+        # ---- TAB 1: Macro Liquidity & Cycle ----
         'chart_01': chart_01_liquidity_vs_economy(liq),
+        'chart_cycle_65m': chart_global_liq_cycle_65m(liq),
+        'chart_gli_vs_wbc': chart_gli_vs_wbc_6m(liq, wbci),
         'chart_02': chart_02_wbci(wbci),
         'chart_03': chart_03_growth_nowcast(period),
-        'chart_04': chart_04_cyc_def(cyc),
+        'chart_daily_ai_gdp': chart_daily_ai_world_gdp(),
+        'chart_12': chart_12_daily_liquidity_nowcast(period),
+        'chart_flash_pli': chart_flash_pli_us(),
+        'chart_flash_tli': chart_flash_tli_global(liq),
+
+        # ---- TAB 2: Stimulus & Plumbing ----
         'chart_05':  chart_05_stimulus(liq, period),
         'chart_05b': chart_05b_net_fed_liquidity(nfl),
+        'chart_stim_stacked': chart_stim_stacked_area(nfl, period),
+        'chart_stim_vs_btc': chart_stim_vs_btc(nfl, cr),
+        'chart_stim_vs_ism': chart_stim_vs_ism(nfl, wbci),
+        'chart_excess_reserves': chart_excess_reserves_vs_sofr_ff(),
+        'chart_sofr_iorb_zones': chart_sofr_iorb_zones(),
+        'chart_move_zones': chart_move_zones(),
         'chart_06': chart_06_repo_spread(period),
-        'chart_07': chart_07_debt_liquidity(dl),
-        'chart_08': chart_08_term_premium(tp),
+
+        # ---- TAB 3: Rates & Term Premia ----
         'chart_09': chart_09_curve_phase(curve),
-        'chart_10': chart_10_gold_oil(gold_oil),
+        'chart_us_liq_vs_curve': chart_us_liq_advanced_vs_curve(liq, curve,
+                                                                    period),
+        'chart_08': chart_08_term_premium(tp),
+        'chart_tp_majors': chart_term_premia_majors(),
+        'chart_terminal_rates': chart_terminal_policy_majors(),
+        'chart_world_tp_policy': chart_world_tp_policy(),
         'chart_11': chart_11_world_term_premia(period),
-        'chart_12': chart_12_daily_liquidity_nowcast(period),
+
+        # ---- TAB 4: Markets & Asset Allocation ----
+        'chart_04': chart_04_cyc_def(cyc),
+        'chart_cyc_def_bus': chart_cyc_def_business(cyc, wbci),
+        'chart_msci_liq': chart_msci_vs_global_liq(liq),
+        'chart_10': chart_10_gold_oil(gold_oil),
+        'chart_07': chart_07_debt_liquidity(dl),
+        'chart_debt_liq_crises': chart_debt_liq_with_crises(dl),
+        'chart_debt_maturity': chart_debt_maturity_wall(),
+        'chart_capital_demands': chart_us_capital_demands(period),
+        'chart_gli_vs_bes': chart_gli_pctch_vs_bes(liq),
         'chart_13': chart_13_risk_appetite(ra),
         'chart_14': chart_14_crypto_barometer(cr, liq, wm),
         'chart_15': chart_15_transmission_chain(liq, tp, ra, wbci),
@@ -2489,19 +3392,67 @@ def _build_section_widgets(result: dict) -> list:
     # PAINEL VISUAL PRINCIPAL — termometro + 4 ducks + metrics + 1-liner
     sec.append(wd.HTML(_phase_gauge_html(state)))
 
-    # Charts
-    sec.append(wd.HTML("<div class='how-divider'><div class='how-divider-title'>"
-                         "CHARTS</div></div>"))
-    for name in sorted(result['figs'].keys()):
-        fig = result['figs'][name]
+    # Charts organizados em 4 abas
+    figs = result['figs']
+
+    # Mapeamento de abas (ordem importa)
+    tab_layout = {
+        '🌊 Macro & Cycle': [
+            'chart_01', 'chart_cycle_65m', 'chart_gli_vs_wbc',
+            'chart_02', 'chart_03', 'chart_daily_ai_gdp',
+            'chart_12', 'chart_flash_pli', 'chart_flash_tli',
+        ],
+        '💰 Stimulus & Plumbing': [
+            'chart_05b', 'chart_stim_stacked',
+            'chart_stim_vs_btc', 'chart_stim_vs_ism',
+            'chart_05', 'chart_excess_reserves',
+            'chart_sofr_iorb_zones', 'chart_move_zones', 'chart_06',
+        ],
+        '📈 Rates & Term Premia': [
+            'chart_09', 'chart_us_liq_vs_curve',
+            'chart_08', 'chart_tp_majors',
+            'chart_terminal_rates', 'chart_world_tp_policy', 'chart_11',
+        ],
+        '🎯 Markets & Allocation': [
+            'chart_04', 'chart_cyc_def_bus', 'chart_msci_liq',
+            'chart_10', 'chart_07', 'chart_debt_liq_crises',
+            'chart_debt_maturity', 'chart_capital_demands',
+            'chart_gli_vs_bes', 'chart_13', 'chart_14', 'chart_15',
+        ],
+    }
+
+    def _fig_widget(fig):
         try:
-            sec.append(go.FigureWidget(fig))
+            return go.FigureWidget(fig)
         except Exception:
-            # fallback via Output+display
             out = wd.Output()
             with out:
                 display(fig)
-            sec.append(out)
+            return out
+
+    tab_children = []
+    tab_titles = list(tab_layout.keys())
+
+    for tab_name, chart_keys in tab_layout.items():
+        tab_widgets = []
+        # Adiciona HTML panels especificos de cada aba
+        if tab_name.endswith('Allocation'):
+            tab_widgets.append(wd.HTML(chart_asset_allocation_grid_html()))
+            tab_widgets.append(wd.HTML(chart_asset_allocation_cycle_svg()))
+            tab_widgets.append(wd.HTML(chart_debt_liquidity_cycle_html()))
+        for key in chart_keys:
+            if key in figs:
+                tab_widgets.append(_fig_widget(figs[key]))
+        tab_children.append(wd.VBox(tab_widgets,
+                                        layout=wd.Layout(overflow='auto',
+                                                            max_height='85vh')))
+
+    tabs = wd.Tab()
+    tabs.children = tab_children
+    for i, title in enumerate(tab_titles):
+        tabs.set_title(i, title)
+    tabs.selected_index = 0
+    sec.append(tabs)
 
     # Detalhes colapsaveis no fim (JSON + Memo + Audit)
     state_pretty = json.dumps(state, indent=2, default=str)
