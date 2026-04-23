@@ -2543,36 +2543,90 @@ def chart_daily_ai_world_gdp(period: str = '-3Y') -> 'go.Figure':
     return fig
 
 
+def _build_flash_composite(components: dict, scale: float = 12.0,
+                              center: float = 50.0,
+                              y_min: float = 0, y_max: float = 100) -> pd.Series:
+    """
+    Combina dict de series em composite 0-100.
+    Cada serie e resampleada pra daily + ffill (limite 30d) + z-score 252d.
+    Usa nanmean p/ aceitar series com inicios diferentes.
+    """
+    if not components:
+        return pd.Series(dtype=float)
+
+    # 1. Resample tudo pra daily com ffill ate 30 dias (cobre weekly/monthly)
+    aligned = {}
+    for name, s in components.items():
+        s = _clean(s)
+        if len(s) < 30:
+            continue
+        sd = s.resample('D').last().ffill(limit=30)
+        # Z-score rolling 252d (com min_periods 60)
+        roll_m = sd.rolling(252, min_periods=60).mean()
+        roll_s = sd.rolling(252, min_periods=60).std()
+        z = (sd - roll_m) / roll_s
+        aligned[name] = z
+
+    if not aligned:
+        return pd.Series(dtype=float)
+
+    df = pd.DataFrame(aligned)
+    # Mean across columns ignorando NaN (cada componente pode comecar
+    # em data diferente — nao queremos perder a serie inteira)
+    composite = df.mean(axis=1, skipna=True)
+    # Drop datas em que TODAS componentes sao NaN
+    composite = composite.dropna()
+
+    # Scale + center, soft clip pra ver dinamica
+    norm = center + composite * scale
+    norm = norm.clip(y_min, y_max)
+    return norm
+
+
 def chart_flash_pli_us(period: str = '-2Y') -> 'go.Figure':
-    """Daily Flash Liquidity Indexes (US Fed)."""
+    """Daily Flash Liquidity Indexes (US Fed) — 0-100 composite."""
     fig = _fig_base('Daily Flash Liquidity Indexes (US Fed)', height=380)
-    # Composite: -SOFR-IORB - MOVE/100 + Reserves z
-    parts = {}
+    components = {}
+
+    # Spread SOFR-IORB (negativo = saude)
     sofr = safe_load('SOFRRATE Index', period=period, label='SOFR')
     iorb = safe_load('IORB Index', period=period, label='IORB')
-    if len(sofr) and len(iorb):
+    if len(sofr) > 30 and len(iorb) > 30:
         s, i = _clean(sofr).align(_clean(iorb), join='inner')
-        spread = -(s - i)  # spread negativo = saude
-        parts['spread'] = spread
+        if len(s) > 30:
+            components['-spread_sofr_iorb'] = -(s - i) * 100  # bps invertido
+
+    # MOVE invertido (vol baixa = saude)
     move = safe_load('MOVE Index', period=period, label='MOVE')
-    if len(move) > 50:
-        m = -(_clean(move) - 80) / 50
-        parts['move'] = m
+    if len(move) > 30:
+        components['-MOVE'] = -_clean(move)
+
+    # Reserves (Fed Bank Reserves) — alta = liquidez +
     res = safe_load(['FARBRBFB Index', 'WRESBAL Index'], period=period,
                       label='WRESBAL')
-    if len(res) > 50:
-        r = _clean(res).resample('D').last().ffill()
-        z = (r - r.rolling(252).mean()) / r.rolling(252).std()
-        parts['reserves'] = z
+    if len(res) > 30:
+        components['reserves'] = _clean(res)
 
-    if not parts:
+    # TGA invertido (TGA alta = drena liquidez)
+    tga = safe_load(['USCBFDRA Index', 'WTREGEN Index'], period=period,
+                      label='TGA')
+    if len(tga) > 30:
+        components['-TGA'] = -_clean(tga)
+
+    # RRP invertido
+    rrp = safe_load(['TOMOREPO Index', 'RRPONTSYD Index'], period=period,
+                      label='RRP')
+    if len(rrp) > 30:
+        components['-RRP'] = -_clean(rrp)
+
+    norm = _build_flash_composite(components, scale=12.0, center=50)
+    if len(norm) < 30:
+        fig.add_annotation(text='Componentes insuficientes',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666666'))
+        fig.update_yaxes(title_text='Index (0-100)', range=[0, 100])
         return fig
-    df = pd.DataFrame(parts).dropna(how='all')
-    composite = df.mean(axis=1)
-    # Normaliza pra 0-100
-    norm = 50 + composite * 15
-    norm = norm.clip(0, 100)
-    norm = _clean(norm)
+
     fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                 name='Policy Liquidity Index PLI Daily Flash',
                                 line=dict(color=PALETTE['orange'], width=1.6)))
@@ -2586,31 +2640,32 @@ def chart_flash_pli_us(period: str = '-2Y') -> 'go.Figure':
 
 
 def chart_flash_tli_global(liq: dict, period: str = '-2Y') -> 'go.Figure':
-    """Daily Flash Liquidity Indexes (Global Liquidity - AE)."""
+    """Daily Flash Liquidity Indexes (Global Liquidity - AE) — 0-100 composite."""
     fig = _fig_base('Daily Flash Liquidity Indexes (Global Liquidity - AE)',
                       height=380)
-    # Composite global: -DXY z + Copper z - HY z + EMFX z
-    parts = {}
-    for tk, lbl, sign in [
+    components = {}
+
+    for tk_or_list, lbl, sign in [
         ('DXY Curncy', 'DXY', -1),
         ('HG1 Comdty', 'Copper', 1),
         ('LF98OAS Index', 'HY_OAS', -1),
-        ('USTWEME Index', 'EMFX', 1),
+        ('LUACOAS Index', 'IG_OAS', -1),
+        (['USTWEME Index', 'EMCI Index'], 'EMFX', 1),
         ('XAU Curncy', 'Gold', 1),
+        ('BCOM Index', 'BCOM', 1),
     ]:
-        s = safe_load(tk, period=period, label=lbl)
-        if len(s) > 250:
-            sd = _clean(s).resample('D').last().ffill()
-            z = (sd - sd.rolling(252).mean()) / sd.rolling(252).std()
-            parts[lbl] = sign * z
+        s = safe_load(tk_or_list, period=period, label=lbl)
+        if len(s) > 30:
+            components[f'{lbl}_{sign:+d}'] = sign * _clean(s)
 
-    if not parts:
+    norm = _build_flash_composite(components, scale=12.0, center=50)
+    if len(norm) < 30:
+        fig.add_annotation(text='Componentes insuficientes',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666666'))
+        fig.update_yaxes(title_text='Index (0-100)', range=[0, 100])
         return fig
-    df = pd.DataFrame(parts).dropna(how='all')
-    composite = df.mean(axis=1)
-    norm = 50 + composite * 12
-    norm = norm.clip(0, 100)
-    norm = _clean(norm)
+
     fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                 name='Total Liquidity Index TLI Daily Flash',
                                 line=dict(color=PALETTE['orange'], width=1.6)))
