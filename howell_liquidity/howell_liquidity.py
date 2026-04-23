@@ -2326,13 +2326,11 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
     """US Liquidity (Advanced 9 Months) & 'Average' Treasury Yield Curve."""
     fig = _fig_dual("US Liquidity (Advanced 9M) & 'Average' Treasury Yield Curve",
                       height=420)
-    # US liquidity proxy = NFL ou liq YoY normalizado 0-100
+    # US liquidity proxy normalizado robusto 0-100
     if 'liq_z' in liq:
         z = _clean(liq['liq_z'])
-        # Normaliza pra 0-100 (rolling minmax)
-        norm = ((z - z.rolling(60, min_periods=12).min()) /
-                (z.rolling(60, min_periods=12).max() -
-                 z.rolling(60, min_periods=12).min())) * 100
+        norm = _robust_normalize(z, lo_pct=5, hi_pct=95, out_min=10,
+                                     out_max=90)
         norm = norm.shift(-9 * 21)  # advance 9 months
         fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                     name='US Domestic Liquidity (+9m)',
@@ -2378,6 +2376,26 @@ def chart_msci_vs_global_liq(liq: dict, period: str = '-15Y') -> 'go.Figure':
     return fig
 
 
+def _robust_normalize(s: pd.Series, lo_pct: float = 5,
+                         hi_pct: float = 95,
+                         out_min: int = 10, out_max: int = 90) -> pd.Series:
+    """
+    Normaliza pra [out_min, out_max] usando percentis (winsorize) em vez
+    de min/max absolutos — evita que outliers (2020 COVID etc) comprimam
+    a serie inteira pra um lado.
+    """
+    s = _clean(s)
+    if len(s) < 10:
+        return s
+    lo = np.nanpercentile(s.values, lo_pct)
+    hi = np.nanpercentile(s.values, hi_pct)
+    if hi - lo < 1e-9:
+        return pd.Series(np.full(len(s), (out_min + out_max) / 2),
+                          index=s.index)
+    norm = (s - lo) / (hi - lo) * (out_max - out_min) + out_min
+    return norm.clip(out_min - 5, out_max + 5)  # permite leve overshoot
+
+
 def chart_global_liq_cycle_65m(liq: dict) -> 'go.Figure':
     """Global Liquidity Cycle (Advanced Economies) com 65-month wave overlay."""
     fig = _fig_base('Global Liquidity Cycle (Advanced Economies)',
@@ -2385,18 +2403,30 @@ def chart_global_liq_cycle_65m(liq: dict) -> 'go.Figure':
     if 'liq_z' not in liq:
         return fig
     z = _clean(liq['liq_z'])
-    # Normaliza pra 10-90
-    norm = (z - z.min()) / (z.max() - z.min()) * 80 + 10
+    # Normaliza pra 10-90 com winsorize 5/95 (evita compressao por outlier)
+    norm = _robust_normalize(z, lo_pct=5, hi_pct=95)
     fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                 name='GLI',
-                                line=dict(color='#000000', width=1.4)))
-    # 65-month wave
+                                line=dict(color='#cce8ff', width=1.6)))
+    # 65-month wave alinhada ao centro de massa da serie
     n = len(norm)
     if n > 60:
         t = np.arange(n)
-        wave = 50 + 40 * np.sin(2 * np.pi * t / 65)
+        # Acha fase melhor pra alinhar wave com serie real (correlacao max)
+        best_phase = 0
+        best_corr = -1
+        y = norm.values
+        for phi_step in range(0, 65, 3):
+            wave = 50 + 35 * np.sin(2 * np.pi * t / 65 +
+                                       2 * np.pi * phi_step / 65)
+            c = np.corrcoef(y, wave)[0, 1]
+            if pd.notna(c) and c > best_corr:
+                best_corr = c
+                best_phase = phi_step
+        wave = 50 + 35 * np.sin(2 * np.pi * t / 65 +
+                                   2 * np.pi * best_phase / 65)
         fig.add_trace(go.Scatter(x=norm.index, y=wave, mode='lines',
-                                    name='65-Month Wave',
+                                    name=f'65-Month Wave (ρ={best_corr:.2f})',
                                     line=dict(color=PALETTE['red'], width=1.4,
                                                dash='dash')))
     fig.update_yaxes(title_text='Index 0-100', range=[0, 100])
@@ -2409,17 +2439,17 @@ def chart_gli_vs_wbc_6m(liq: dict, wbci: dict) -> 'go.Figure':
                       height=420)
     if 'liq_z' in liq:
         z = _clean(liq['liq_z'])
-        norm = (z - z.min()) / (z.max() - z.min()) * 80 + 10
+        norm = _robust_normalize(z, lo_pct=5, hi_pct=95)
         fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                     name='GLI',
-                                    line=dict(color=PALETTE['orange'], width=1.6)))
+                                    line=dict(color=PALETTE['orange'], width=1.8)))
     if 'core4_z' in wbci:
         w = _clean(wbci['core4_z'])
-        norm_w = (w - w.min()) / (w.max() - w.min()) * 80 + 10
+        norm_w = _robust_normalize(w, lo_pct=5, hi_pct=95)
         norm_w = norm_w.shift(-6)  # advance WBC 6m
         fig.add_trace(go.Scatter(x=norm_w.index, y=norm_w.values, mode='lines',
                                     name='World Business Cycle (+6m)',
-                                    line=dict(color='#000000', width=1.4)))
+                                    line=dict(color='#cce8ff', width=1.4)))
     fig.update_yaxes(title_text='Index', range=[0, 100])
     return fig
 
