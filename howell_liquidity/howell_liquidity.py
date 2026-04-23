@@ -116,17 +116,24 @@ PALETTE = {
 
 DASH_TEMPLATE = {
     'layout': {
-        'plot_bgcolor':  PALETTE['bg'],
-        'paper_bgcolor': PALETTE['bg'],
-        'font': {'color': PALETTE['text'], 'family': 'Arial, Helvetica, sans-serif',
+        'plot_bgcolor':  '#FFFFFF',
+        'paper_bgcolor': '#FFFFFF',
+        'font': {'color': '#1a1a1a',
+                 'family': 'Arial, Helvetica, sans-serif',
                  'size': 12},
-        'xaxis': {'gridcolor': '#1e2330', 'zerolinecolor': '#1e2330'},
-        'yaxis': {'gridcolor': '#1e2330', 'zerolinecolor': '#1e2330'},
-        'colorway': [PALETTE['orange'], PALETTE['blue'], PALETTE['yellow'],
-                      PALETTE['green'], PALETTE['red'], PALETTE['purple'],
-                      PALETTE['beige']],
-        'margin': {'l': 50, 'r': 20, 't': 50, 'b': 40},
-        'legend': {'orientation': 'h', 'y': -0.15, 'bgcolor': 'rgba(0,0,0,0)'},
+        'title': {'font': {'color': '#1a1a1a', 'size': 14}},
+        'xaxis': {'gridcolor': '#E5E7EB', 'zerolinecolor': '#9CA3AF',
+                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'}},
+        'yaxis': {'gridcolor': '#E5E7EB', 'zerolinecolor': '#9CA3AF',
+                   'linecolor': '#9CA3AF', 'tickfont': {'color': '#1a1a1a'}},
+        'colorway': [PALETTE['orange'], '#000000', PALETTE['red'],
+                      PALETTE['beige'], PALETTE['blue'], PALETTE['green'],
+                      PALETTE['purple']],
+        'margin': {'l': 60, 'r': 30, 't': 50, 'b': 40},
+        'legend': {'orientation': 'h', 'y': -0.18,
+                    'bgcolor': 'rgba(255,255,255,0.6)',
+                    'bordercolor': '#E5E7EB', 'borderwidth': 1,
+                    'font': {'color': '#1a1a1a'}},
     }
 }
 
@@ -1950,7 +1957,7 @@ def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
     _add_recession_shading(fig)
     _add_zero_line(fig, secondary_y=False)
     fig.update_yaxes(title_text='Global Liquidity %ch', secondary_y=False,
-                      title_font=dict(color='#cce8ff'))
+                      title_font=dict(color='#1a1a1a'))
     fig.update_yaxes(title_text='BES %ch', secondary_y=True,
                       title_font=dict(color=PALETTE['orange']), showgrid=False)
     return fig
@@ -1984,7 +1991,7 @@ def chart_stim_vs_btc(nfl: dict, cr: dict) -> 'go.Figure':
     fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='6m Change in BTC$',
-                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False)
     return fig
 
@@ -2012,7 +2019,7 @@ def chart_stim_vs_ism(nfl: dict, wbci: dict) -> 'go.Figure':
     fig.update_yaxes(title_text='US$ Billions', secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='12m Ch in Index', secondary_y=True,
-                      title_font=dict(color='#cce8ff'), showgrid=False)
+                      title_font=dict(color='#1a1a1a'), showgrid=False)
     return fig
 
 
@@ -2173,7 +2180,7 @@ def chart_excess_reserves_vs_sofr_ff(period: str = '-2Y') -> 'go.Figure':
     fig.update_yaxes(title_text='Excess Reserves (US$ bn)', secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='SOFR less FF Spread',
-                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False, autorange='reversed')
     return fig
 
@@ -2195,7 +2202,7 @@ def chart_sofr_iorb_zones(period: str = '-5Y') -> 'go.Figure':
                    opacity=0.15, layer='below', line_width=0,
                    annotation_text='Normal Zone',
                    annotation_position='top left',
-                   annotation_font=dict(color='#cce8ff', size=10))
+                   annotation_font=dict(color='#1a1a1a', size=10))
     # Danger zone: >0 (SOFR acima do IORB = stress)
     fig.add_hrect(y0=0, y1=0.35, fillcolor=PALETTE['red'],
                    opacity=0.08, layer='below', line_width=0,
@@ -2221,7 +2228,7 @@ def chart_move_zones(period: str = '-15Y') -> 'go.Figure':
                    layer='below', line_width=0,
                    annotation_text='Normal Zone',
                    annotation_position='bottom right',
-                   annotation_font=dict(color='#cce8ff', size=10))
+                   annotation_font=dict(color='#1a1a1a', size=10))
     # Danger zone: >145
     fig.add_hline(y=145, line=dict(color=PALETTE['red'], width=1.2,
                                       dash='dash'),
@@ -2234,38 +2241,58 @@ def chart_move_zones(period: str = '-15Y') -> 'go.Figure':
 
 
 def chart_term_premia_majors(period: str = '-3Y') -> 'go.Figure':
-    """Daily Bond Term Premia: Major Markets — proxy via 10Y - short rate."""
+    """Daily Bond Term Premia: Major Markets.
+    Proxy = yield 10Y menos policy rate do PROPRIO pais (TP simplificado),
+    nao mais US FFR como ancora unica."""
     fig = _fig_base('Daily Bond Term Premia: Major Markets', height=420)
+    # (label, 10Y ticker, 10Y fred_label, policy tickers, cor, dash)
     countries = [
-        ('US 10y',     'USGG10YR Index', 'US10Y',  PALETTE['red']),
-        ('10y Bund',   'GDBR10 Index',   'DE10Y',  PALETTE['orange']),
-        ('10y JGB',    'GJGB10 Index',   'JP10Y',  '#000000'),
-        ('10y OAT',    'GFRN10 Index',   'FR10Y',  PALETTE['beige']),
-        ('10y UK Gilt','GUKG10 Index',   'UK10Y',  '#666666'),
-        ('10y China GB','GCNY10YR Index','CN10Y',  '#8B0000'),
+        ('US 10y',      'USGG10YR Index', 'US10Y', ['FDTR Index'],
+         PALETTE['red'], False),
+        ('10y Bund',    'GDBR10 Index',   'DE10Y',
+         ['EURR002W Index', 'EUORDEPO Index'], PALETTE['orange'], False),
+        ('10y JGB',     'GJGB10 Index',   'JP10Y',
+         ['BOJDPR Index', 'MUTKCALM Index'], '#000000', True),
+        ('10y OAT',     'GFRN10 Index',   'FR10Y',
+         ['EURR002W Index', 'EUORDEPO Index'], PALETTE['beige'], True),
+        ('10y UK Gilt', 'GUKG10 Index',   'UK10Y', ['UKBRBASE Index'],
+         '#666666', False),
+        ('10y China GB','GCNY10YR Index', 'CN10Y',
+         ['CHLR12M Index', 'CHGNDEPP Index'], '#8B0000', True),
+        ('10y BTP',     'GBTPGR10 Index', 'IT10Y',
+         ['EURR002W Index', 'EUORDEPO Index'], '#d67f3a', True),
     ]
-    # Proxy TP: yield 10Y menos politica (FED 10Y como ancora — simplificacao)
-    pol = safe_load('FDTR Index', period=period, label='US_FF')
-    pol_s = _clean(pol).resample('D').last().ffill() if len(pol) else None
-    for label, tk, lbl, color in countries:
-        s = safe_load(tk, period=period, label=lbl)
-        if len(s) < 30:
+
+    any_plotted = False
+    for label, tk, ylbl, pol_tks, color, dashed in countries:
+        y = safe_load(tk, period=period, label=ylbl)
+        if len(y) < 30:
             continue
-        s_d = _clean(s).resample('D').last().ffill()
-        # Term premium proxy = yield - politica us (rough)
-        if pol_s is not None:
-            s_d, p = s_d.align(pol_s, join='inner')
-            tp = (s_d - p) / 100.0  # em pp escala unitaria
+        y_d = _clean(y).resample('D').last().ffill()
+
+        # Policy rate do proprio pais
+        pol = safe_load(pol_tks, period=period,
+                          label=label.replace(' ', '_'))
+        if len(pol) >= 30:
+            p_d = _clean(pol).resample('D').last().ffill()
+            y_d, p_d = y_d.align(p_d, join='inner')
+            tp = (y_d - p_d) / 100.0
         else:
-            tp = s_d / 100.0
-        dash = 'dash' if 'JGB' in label or 'OAT' in label or 'China' in label \
-                else 'solid'
+            tp = y_d / 100.0
+
+        dash = 'dash' if dashed else 'solid'
         fig.add_trace(go.Scatter(x=tp.index, y=tp.values, mode='lines',
                                     name=label,
-                                    line=dict(color=color, width=1.3,
+                                    line=dict(color=color, width=1.4,
                                                dash=dash)))
+        any_plotted = True
+
+    if not any_plotted:
+        fig.add_annotation(text='Todos os 10Y yields falharam — verifique entitlements',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666666'))
     _add_zero_line(fig)
-    fig.update_yaxes(title_text='Implied Term Premia 10-Year Bond')
+    fig.update_yaxes(title_text='Implied Term Premia 10Y (yield − policy rate)')
     return fig
 
 
@@ -2317,7 +2344,7 @@ def chart_world_tp_policy(period: str = '-3Y') -> 'go.Figure':
                       secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='Terminal Policy Rate', secondary_y=True,
-                      title_font=dict(color='#cce8ff'), showgrid=False)
+                      title_font=dict(color='#1a1a1a'), showgrid=False)
     return fig
 
 
@@ -2347,7 +2374,7 @@ def chart_us_liq_advanced_vs_curve(liq: dict, curve: dict,
                       secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text="'Average' Yield Curve",
-                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False)
     return fig
 
@@ -2369,7 +2396,7 @@ def chart_msci_vs_global_liq(liq: dict, period: str = '-15Y') -> 'go.Figure':
                                     line=dict(color=PALETTE['orange'], width=1.8)),
                         secondary_y=True)
     fig.update_yaxes(title_text='MSCI World$ Index', secondary_y=False,
-                      title_font=dict(color='#cce8ff'))
+                      title_font=dict(color='#1a1a1a'))
     fig.update_yaxes(title_text='Global Liquidity (US$ Trillions)',
                       secondary_y=True, title_font=dict(color=PALETTE['orange']),
                       showgrid=False)
@@ -2407,7 +2434,7 @@ def chart_global_liq_cycle_65m(liq: dict) -> 'go.Figure':
     norm = _robust_normalize(z, lo_pct=5, hi_pct=95)
     fig.add_trace(go.Scatter(x=norm.index, y=norm.values, mode='lines',
                                 name='GLI',
-                                line=dict(color='#cce8ff', width=1.6)))
+                                line=dict(color='#1a1a1a', width=1.6)))
     # 65-month wave alinhada ao centro de massa da serie
     n = len(norm)
     if n > 60:
@@ -2449,7 +2476,7 @@ def chart_gli_vs_wbc_6m(liq: dict, wbci: dict) -> 'go.Figure':
         norm_w = norm_w.shift(-6)  # advance WBC 6m
         fig.add_trace(go.Scatter(x=norm_w.index, y=norm_w.values, mode='lines',
                                     name='World Business Cycle (+6m)',
-                                    line=dict(color='#cce8ff', width=1.4)))
+                                    line=dict(color='#1a1a1a', width=1.4)))
     fig.update_yaxes(title_text='Index', range=[0, 100])
     return fig
 
@@ -2473,7 +2500,7 @@ def chart_cyc_def_business(cyc: dict, wbci: dict) -> 'go.Figure':
     fig.update_yaxes(title_text='World Business Cycle', secondary_y=False,
                       title_font=dict(color=PALETTE['orange']))
     fig.update_yaxes(title_text='Cyclicals vs Defensives',
-                      secondary_y=True, title_font=dict(color='#cce8ff'),
+                      secondary_y=True, title_font=dict(color='#1a1a1a'),
                       showgrid=False)
     return fig
 
