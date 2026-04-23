@@ -2437,26 +2437,35 @@ def chart_15_transmission_chain(liq: dict, tp: dict, ra: dict,
 
 def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
     """GLI$ (+13w) & BES$ 6week Changes — GLI replica.
-    LEFT: GLI 13-week pct change (range -3% a +4%)
-    RIGHT: BES 6-week pct change (range -100% a +100%)"""
+    LEFT: GLI 13-week pct change suavizado (rolling 6m mean)
+    RIGHT: BES 6-week pct change normalizado +/-100%"""
     fig = _fig_dual('GLI$ (+13w) & BES$ 6week Changes', height=420)
+    debug_info = []
 
-    # GLI: normaliza pra MENSAL primeiro, depois 3-month pct change
-    # (= 13 weeks). Evita step-pattern de mistura de freq.
+    # GLI: monthly pct_change(3) + rolling 6m smooth
+    # Evita saturacao early-period quando composicao do total muda
+    # (paises adicionados no group, FX shocks 2008/2011, etc.)
     gli_series = None
+    src = None
     if liq.get('total') is not None:
         gli_series = _clean(liq['total'])
+        src = 'total'
     elif liq.get('cb_sum') is not None:
         gli_series = _clean(liq['cb_sum'])
+        src = 'cb_sum'
     if gli_series is not None and len(gli_series) > 20:
         gli_m = gli_series.resample('M').last().ffill(limit=2)
-        gli_pct = (gli_m.pct_change(3) * 100).dropna()  # 3 meses = 13w
-        # Smooth com EMA 2-mes pra remover ruido weekly residual
-        gli_pct = gli_pct.ewm(span=2, adjust=False).mean()
-        # Clip outliers (GLI ref: -3% a +4%, range conservador -4 a +5)
-        gli_pct = _clean(gli_pct).clip(-4, 5)
+        gli_pct_raw = (gli_m.pct_change(3) * 100).dropna()
+        # Rolling 6m mean — suaviza forte sem clip artificial
+        gli_pct = gli_pct_raw.rolling(6, min_periods=2).mean()
+        # Clip leve so pra outliers extremos (>15% em 3m e dado ruim)
+        gli_pct = _clean(gli_pct).clip(-10, 10)
+        debug_info.append(f'GLI src={src}, raw range '
+                            f'{gli_pct_raw.min():+.1f}-{gli_pct_raw.max():+.1f}%')
+        debug_info.append(f'GLI smooth: {gli_pct.min():+.1f}-'
+                            f'{gli_pct.max():+.1f}%')
         fig.add_trace(go.Scatter(x=gli_pct.index, y=gli_pct.values,
-                                    mode='lines', name='GLI$',
+                                    mode='lines', name='GLI$ (6m smooth)',
                                     line=dict(color='#000000', width=1.6),
                                     hovertemplate='%{y:+.2f}%<extra></extra>'),
                         secondary_y=False)
@@ -2482,11 +2491,12 @@ def chart_gli_pctch_vs_bes(liq: dict, period: str = '-10Y') -> 'go.Figure':
     _add_zero_line(fig, secondary_y=False)
     fig.update_yaxes(title_text='Global Liquidity %ch', secondary_y=False,
                       title_font=dict(color='#1a1a1a'),
-                      range=[-4, 5], ticksuffix='%', dtick=1)
+                      range=[-10, 10], ticksuffix='%', dtick=2)
     fig.update_yaxes(title_text='BES$ %ch', secondary_y=True,
                       title_font=dict(color=PALETTE['orange']),
                       showgrid=False, range=[-100, 100], ticksuffix='%',
                       dtick=20)
+    _debug_annotation(fig, debug_info, y_pos=-0.20)
     return fig
 
 
