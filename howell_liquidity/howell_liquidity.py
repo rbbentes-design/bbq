@@ -2689,7 +2689,7 @@ def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
 
     # Linha principal (laranja) + fill
     fig.add_trace(go.Scatter(x=demand.index, y=demand.values, mode='lines',
-                                name=source,
+                                name='Federal net issuance 4q / GDP',
                                 line=dict(color=PALETTE['orange'], width=2.5),
                                 hovertemplate='%{y:.1f}%<extra></extra>'))
 
