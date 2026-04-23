@@ -197,16 +197,37 @@ TICKERS_REPO = {
 }
 TICKERS_WBCI_CORE4 = {
     'US_ISM':    ['NAPMPMI Index'],
-    'JP_TANKAN': ['JNTGMFG Index', 'JNTGSECE Index', 'JNTGSEMS Index'],
-    'DE_IFO':    ['GRIFPBUS Index', 'IFOEPECU Index'],
-    # ECONUKCI = UK CBI Industrial Trends (confirmado)
-    'UK_CBI':    ['ECONUKCI Index', 'ECONUKCD Index'],
+    # JNTGALLI = Tankan All Enterprises Actual (confirmado)
+    # JWCOOVRL = Japan overall business condition
+    'JP_TANKAN': ['JNTGALLI Index', 'JWCOOVRL Index', 'JNTGMFG Index'],
+    'DE_IFO':    ['GRIFPBUS Index'],
+    # LTSBBANX = UK CBI (confirmado direto)
+    'UK_CBI':    ['LTSBBANX Index', 'ECONUKCI Index'],
 }
 TICKERS_WBCI_EXT = {
-    'US_ISM_SVC': 'NAPMNMI Index',
-    'EZ_PMI':     'MPMIEZCA Index',
-    'CN_CAIXIN':  'MPMICNMA Index',
-    'GLOBAL_PMI': 'MPMIGLMA Index',
+    # NAPMNMAN = ISM Services (nao NAPMNMI)
+    'US_ISM_SVC':  ['NAPMNMAN Index', 'NAPMNMI Index'],
+    # ECSUSUUS = US business condition general
+    'US_BUSINESS': ['ECSUSUUS Index'],
+    # EMPRGBCI = Empire State Manufacturing
+    'US_EMPIRE':   ['EMPRGBCI Index'],
+    'EZ_PMI':      ['MPMIEZCA Index'],
+    # SCCNSMEI = China business condition
+    'CN_BUSINESS': ['SCCNSMEI Index', 'MPMICNMA Index'],
+    'GLOBAL_PMI':  ['MPMIGLMA Index'],
+    # Novos paises extended
+    'FR_INSEE':    ['INSECOMP Index'],
+    'IT_ISTAT':    ['ITESECSE Index'],
+    'CA_BOC':      ['BCBSPC1 Index'],
+}
+# Chicago Fed Business Survey (additional context, §3.2)
+TICKERS_CHICAGO_FED = {
+    'CFSB_OVERALL':  ['CFSBACTI Index'],
+    'CFSB_OUTLOOK':  ['CFSBOUTL Index'],
+    'CFSB_MFG':      ['CFSBACMF Index'],
+    'CFSB_NONMFG':   ['CFSBACNM Index'],
+    'CFSB_HIRING':   ['CFSBHIRI Index'],
+    'CFSB_CAPEX':    ['CFSBCAPS Index'],
 }
 TICKERS_REAL_ECON = {
     'OECD_CLI': 'OECDCLI Index',
