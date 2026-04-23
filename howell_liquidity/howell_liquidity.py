@@ -2069,21 +2069,66 @@ def chart_stim_stacked_area(nfl: dict, period: str = '-8Y') -> 'go.Figure':
 
 
 def chart_us_capital_demands(period: str = '-25Y') -> 'go.Figure':
-    """Demands on US Capital Markets (%GDP) + cycle pattern overlay."""
+    """Demands on US Capital Markets (%GDP) + cycle pattern overlay.
+    Cadeia de fallbacks pra encontrar uma serie de demanda de capital."""
     fig = _fig_base('Demands on US Capital Markets (%US GDP)', height=380)
-    # Proxy: US Treasury issuance (bills+notes+bonds flow) / GDP
-    fed_sec = safe_load('FARBSECH Index', period=period, label='FED_SEC_HELD')
-    if len(fed_sec) > 100:
-        s = _clean(fed_sec).resample('M').last()
-        yoy = s.pct_change(12) * 100
-        fig.add_trace(go.Scatter(x=yoy.index, y=yoy.values, mode='lines',
-                                    name='US Capital Demand %GDP',
-                                    line=dict(color=PALETTE['orange'], width=2)))
-        # Cycle overlay (sine wave 5y)
-        n = len(yoy)
-        cycle = 7.5 + 7.5 * np.sin(2 * np.pi * np.arange(n) / 60)
-        fig.add_trace(go.Scatter(x=yoy.index, y=cycle, mode='lines',
-                                    name='Cycle pattern (60m)',
+
+    # Tentar varias fontes em ordem
+    candidates = [
+        (['FARBSECH Index'], 'FED_SEC_HELD', 'Fed Securities Held YoY%'),
+        (['ALCBBKCR Index', 'ALCBCBCT Index'], 'US',
+         'US Bank Credit YoY%'),
+        (['M2 Index', 'M2NS Index'], 'US_M2', 'US M2 YoY%'),
+        (['LUATTRUU Index'], 'TREAS', 'US Treasury Total Return YoY%'),
+    ]
+
+    yoy = None
+    label_used = None
+    for tks, label, name in candidates:
+        s = safe_load(tks, period=period, label=label)
+        if len(s) > 60:
+            sm = _clean(s).resample('M').last().dropna()
+            if len(sm) > 24:
+                yoy = sm.pct_change(12) * 100
+                yoy = _clean(yoy)
+                if len(yoy) > 24:
+                    label_used = name
+                    break
+
+    if yoy is None or len(yoy) < 24:
+        fig.add_annotation(text='Sem dados de demanda de capital disponiveis',
+                            xref='paper', yref='paper', x=0.5, y=0.5,
+                            showarrow=False, font=dict(color='#666666'))
+        fig.update_yaxes(title_text='%')
+        return fig
+
+    fig.add_trace(go.Scatter(x=yoy.index, y=yoy.values, mode='lines',
+                                name=label_used,
+                                line=dict(color=PALETTE['orange'], width=2)))
+    # Cycle overlay (sine wave 60m, fase ajustada por correlacao)
+    n = len(yoy)
+    if n > 60:
+        t = np.arange(n)
+        y_vals = yoy.values
+        center = float(np.nanmean(y_vals))
+        amp = float(np.nanstd(y_vals)) * 1.2
+        # Phase lock
+        best_phi = 0
+        best_corr = -1
+        for phi_step in range(0, 60, 3):
+            wave = center + amp * np.sin(2 * np.pi * t / 60
+                                            + 2 * np.pi * phi_step / 60)
+            try:
+                c = np.corrcoef(y_vals, wave)[0, 1]
+                if pd.notna(c) and c > best_corr:
+                    best_corr = c
+                    best_phi = phi_step
+            except Exception:
+                pass
+        wave = center + amp * np.sin(2 * np.pi * t / 60
+                                        + 2 * np.pi * best_phi / 60)
+        fig.add_trace(go.Scatter(x=yoy.index, y=wave, mode='lines',
+                                    name=f'Cycle pattern 60m (ρ={best_corr:.2f})',
                                     line=dict(color='#000000', width=1.2,
                                                dash='dash')))
     fig.update_yaxes(title_text='%')
@@ -2781,63 +2826,90 @@ def chart_asset_allocation_cycle_svg() -> str:
 
 
 def chart_debt_liquidity_cycle_html() -> str:
-    """Debt/Liquidity Cycle — diagrama conceptual HTML."""
+    """Debt/Liquidity Cycle — diagrama conceptual SVG com setas."""
     return """
     <div class='how-card'>
       <div class='how-section'>Debt / Liquidity Cycle</div>
-      <div style='display:flex; gap:30px; align-items:center;
-                   justify-content:center; padding:20px; flex-wrap:wrap;'>
-        <div style='text-align:center; min-width:160px;'>
-          <div style='background:rgba(232,116,44,0.2); padding:12px;
-                       border-radius:50%; width:120px; height:120px;
-                       margin:0 auto; display:flex; align-items:center;
-                       justify-content:center; flex-direction:column;'>
-            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Repo /</div>
-            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Collateral</div>
-          </div>
-          <div style='color:#cce8ff; font-size:11px; margin-top:8px;'>
-            <b>77%</b> global lending<br/>collateral-backed
-          </div>
-          <ul style='color:#8b949e; font-size:10px; text-align:left;
-                       padding-left:20px; margin-top:8px;'>
-            <li>MOVE Index (collateral haircuts)</li>
-            <li>SOFR spreads (imbalance)</li>
-          </ul>
-        </div>
+      <svg viewBox='0 0 900 320' style='width:100%; height:auto;'>
+        <defs>
+          <!-- Marker para seta branca -->
+          <marker id='arrow-white' viewBox='0 0 10 10' refX='8' refY='5'
+                   markerWidth='8' markerHeight='8' orient='auto-start-reverse'>
+            <path d='M 0 0 L 10 5 L 0 10 z' fill='#ffffff'/>
+          </marker>
+          <!-- Gradient pra circulos -->
+          <radialGradient id='grad-orange'>
+            <stop offset='0%' stop-color='rgba(232,116,44,0.45)'/>
+            <stop offset='100%' stop-color='rgba(232,116,44,0.20)'/>
+          </radialGradient>
+        </defs>
 
-        <div style='text-align:center; flex:1; min-width:200px; max-width:280px;'>
-          <div style='background:rgba(214,69,69,0.4); padding:18px;
-                       border-radius:6px; color:#cce8ff; font-weight:700;
-                       font-size:18px;'>Liquidity</div>
-          <div style='color:#E8742C; font-style:italic; padding:10px 0;
-                       font-size:12px; line-height:1.4;'>
-            Financial Stability requires<br/>a robust Debt/Liquidity ratio
-          </div>
-          <div style='background:rgba(214,69,69,0.25); padding:18px;
-                       border-radius:6px; color:#cce8ff; font-weight:700;
-                       font-size:18px;'>Debt</div>
-        </div>
+        <!-- Esquerda: Repo / Collateral (circulo) -->
+        <circle cx='150' cy='160' r='75' fill='url(#grad-orange)'
+                 stroke='#E8742C' stroke-width='1.5'/>
+        <text x='150' y='155' text-anchor='middle' fill='#E8742C'
+              font-weight='700' font-size='15'>Repo /</text>
+        <text x='150' y='173' text-anchor='middle' fill='#E8742C'
+              font-weight='700' font-size='15'>Collateral</text>
 
-        <div style='text-align:center; min-width:160px;'>
-          <div style='background:rgba(232,116,44,0.2); padding:12px;
-                       border-radius:50%; width:120px; height:120px;
-                       margin:0 auto; display:flex; align-items:center;
-                       justify-content:center;'>
-            <div style='color:#E8742C; font-weight:700; font-size:14px;'>Refinancing</div>
-          </div>
-          <div style='color:#cce8ff; font-size:11px; margin-top:8px;'>
-            <b>70-80%</b> transactions<br/>refinance existing debts
-          </div>
-          <ul style='color:#8b949e; font-size:10px; text-align:left;
-                       padding-left:20px; margin-top:8px;'>
-            <li>Term premia (maturity risk)</li>
-            <li>Credit spreads (credit risk)</li>
-          </ul>
-        </div>
-      </div>
+        <!-- Centro: Liquidity (caixa em cima) -->
+        <rect x='370' y='60' width='200' height='75' rx='6'
+              fill='rgba(214,69,69,0.45)' stroke='#D64545' stroke-width='1.2'/>
+        <text x='470' y='105' text-anchor='middle' fill='#cce8ff'
+              font-weight='800' font-size='22'>Liquidity</text>
+
+        <!-- Centro: Debt (caixa em baixo) -->
+        <rect x='370' y='210' width='200' height='75' rx='6'
+              fill='rgba(214,69,69,0.30)' stroke='#D64545' stroke-width='1.2'/>
+        <text x='470' y='255' text-anchor='middle' fill='#cce8ff'
+              font-weight='800' font-size='22'>Debt</text>
+
+        <!-- Texto Financial Stability entre as caixas -->
+        <text x='470' y='160' text-anchor='middle' fill='#E8742C'
+              font-style='italic' font-size='11'>Financial Stability requires</text>
+        <text x='470' y='178' text-anchor='middle' fill='#E8742C'
+              font-style='italic' font-size='11'>a robust Debt/Liquidity ratio</text>
+
+        <!-- Direita: Refinancing (circulo) -->
+        <circle cx='790' cy='160' r='75' fill='url(#grad-orange)'
+                 stroke='#E8742C' stroke-width='1.5'/>
+        <text x='790' y='165' text-anchor='middle' fill='#E8742C'
+              font-weight='700' font-size='15'>Refinancing</text>
+
+        <!-- SETAS BRANCAS -->
+        <!-- Repo/Collateral → Liquidity (curva up-right) -->
+        <path d='M 215 130 Q 290 50 365 95'
+              stroke='#ffffff' stroke-width='2.5' fill='none'
+              marker-end='url(#arrow-white)'/>
+
+        <!-- Liquidity → Debt (vertical down center) -->
+        <path d='M 470 140 L 470 205'
+              stroke='#ffffff' stroke-width='2.5' fill='none'
+              marker-end='url(#arrow-white)'/>
+
+        <!-- Refinancing → Debt (curva down-left) -->
+        <path d='M 725 195 Q 650 285 575 245'
+              stroke='#ffffff' stroke-width='2.5' fill='none'
+              marker-end='url(#arrow-white)'/>
+
+        <!-- Annotations laterais -->
+        <text x='30' y='275' fill='#cce8ff' font-size='10' font-weight='700'>
+          77% global lending</text>
+        <text x='30' y='290' fill='#cce8ff' font-size='10'>
+          collateral-backed</text>
+        <text x='30' y='308' fill='#8b949e' font-size='9'>
+          • MOVE Index (collateral haircuts)</text>
+
+        <text x='735' y='275' fill='#cce8ff' font-size='10' font-weight='700'>
+          70-80% transactions</text>
+        <text x='735' y='290' fill='#cce8ff' font-size='10'>
+          refinance existing debts</text>
+        <text x='735' y='308' fill='#8b949e' font-size='9'>
+          • Term premia / Credit spreads</text>
+      </svg>
       <div class='how-note' style='margin-top:8px;'>
         US repo market = $12.6tn daily exposures (Q3 2025, OFR data).
-        Maior mercado de funding short-term do mundo.
+        Setas brancas indicam o fluxo do ciclo.
       </div>
     </div>
     """
