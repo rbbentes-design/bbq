@@ -193,6 +193,8 @@ TICKERS_REPO = {
     'WRESBAL':['FARBRBFB Index', 'WRESBAL Index', 'ARESDPIT Index'],
     # TOMOREPO = temp OMO repo (confirmado como proxy RRP)
     'RRP':    ['TOMOREPO Index', 'RRPONTSYD Index', 'RRPONTSYAWARD Index'],
+    # USCBFDRA = Treasury General Account (TGA) — confirmado
+    'TGA':    ['USCBFDRA Index', 'WTREGEN Index', 'WDTGAL Index'],
     'MOVE':   ['MOVE Index'],
 }
 TICKERS_WBCI_CORE4 = {
@@ -712,6 +714,54 @@ def gdp_weight(series_dict: dict, weights: dict = None) -> pd.Series:
 # ============================================================================
 # 5. Indicator builders
 # ============================================================================
+
+def build_net_fed_liquidity(period: str = '-20Y') -> dict:
+    """
+    Net Fed Liquidity (formula BBG CIX do ripple):
+        NFL = FARBAST - TOMOREPO*1000 - USCBFDRA*1000
+             = Fed Balance Sheet - RRP - TGA
+
+    Multiplicador 1000 porque TOMOREPO/USCBFDRA sao em millions e FARBAST em
+    billions — normaliza pra mesma unidade. Resultado em USD bilhoes.
+    """
+    log.info('[nfl] carregando Fed BS, RRP, TGA...')
+    fed = safe_load(TICKERS_CB['FED'], period=period, label='FED')
+    rrp = safe_load(TICKERS_REPO['RRP'], period=period, label='RRP')
+    tga = safe_load(TICKERS_REPO['TGA'], period=period, label='TGA')
+
+    if len(fed) == 0:
+        return {'error': 'Fed BS vazio'}
+
+    # Alinha todas pela data (weekly usualy)
+    fed_w = _clean(fed).resample('W').last()
+    nfl = fed_w.copy()
+    if len(rrp) > 0:
+        rrp_w = _clean(rrp).resample('W').last()
+        rrp_w, fed_aligned = rrp_w.align(fed_w, join='inner')
+        nfl = fed_aligned - (rrp_w * 1000)
+    if len(tga) > 0:
+        tga_w = _clean(tga).resample('W').last()
+        tga_w, nfl_aligned = tga_w.align(nfl, join='inner')
+        nfl = nfl_aligned - (tga_w * 1000)
+
+    # YoY + z
+    nfl_yoy = yoy_pct(nfl, periods=52)
+    nfl_z = rolling_z(nfl, window_years=5)
+
+    return {
+        'nfl_series': nfl,
+        'fed_bs': fed_w,
+        'rrp': _clean(rrp).resample('W').last() if len(rrp) else pd.Series(),
+        'tga': _clean(tga).resample('W').last() if len(tga) else pd.Series(),
+        'nfl_yoy_pct': nfl_yoy,
+        'nfl_z': nfl_z,
+        'latest_nfl': float(nfl.iloc[-1]) if len(nfl) else None,
+        'latest_yoy_pct': float(nfl_yoy.iloc[-1]) if len(nfl_yoy.dropna()) else None,
+        'latest_z': float(nfl_z.iloc[-1]) if len(nfl_z.dropna()) else None,
+        'direction_13w': ('rising' if nfl.diff(13).iloc[-1] > 0 else 'falling')
+                          if len(nfl) > 13 else 'unknown',
+    }
+
 
 def build_global_liquidity(period: str = '-20Y') -> dict:
     """
@@ -1350,6 +1400,48 @@ def chart_04_cyc_def(cyc: dict) -> 'go.Figure':
     return fig
 
 
+def chart_05b_net_fed_liquidity(nfl: dict) -> 'go.Figure':
+    """
+    Net Fed Liquidity: FARBAST - RRP*1000 - TGA*1000
+    Componentes no mesmo eixo + NFL composta como area laranja.
+    """
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.update_layout(template=DASH_TEMPLATE, height=400,
+                       title='Chart 5b — Net Fed Liquidity '
+                             '(Fed BS − RRP − TGA)')
+    if 'nfl_series' in nfl:
+        n = _clean(nfl['nfl_series'])
+        fig.add_trace(go.Scatter(x=n.index, y=n.values, mode='lines',
+                                    name='Net Fed Liquidity',
+                                    line=dict(color=PALETTE['orange'], width=2.5),
+                                    fill='tozeroy',
+                                    fillcolor='rgba(232,116,44,0.12)'),
+                        secondary_y=False)
+    if 'fed_bs' in nfl and len(nfl.get('fed_bs', [])) > 0:
+        b = _clean(nfl['fed_bs'])
+        fig.add_trace(go.Scatter(x=b.index, y=b.values, mode='lines',
+                                    name='Fed BS (FARBAST)',
+                                    line=dict(color=PALETTE['beige'], width=1.2,
+                                               dash='dot')),
+                        secondary_y=False)
+    if 'rrp' in nfl and len(nfl.get('rrp', [])) > 0:
+        r = _clean(nfl['rrp']) * 1000
+        fig.add_trace(go.Scatter(x=r.index, y=r.values, mode='lines',
+                                    name='RRP × 1000',
+                                    line=dict(color=PALETTE['red'], width=1.2),
+                                    visible='legendonly'),
+                        secondary_y=False)
+    if 'tga' in nfl and len(nfl.get('tga', [])) > 0:
+        t = _clean(nfl['tga']) * 1000
+        fig.add_trace(go.Scatter(x=t.index, y=t.values, mode='lines',
+                                    name='TGA × 1000',
+                                    line=dict(color=PALETTE['purple'], width=1.2),
+                                    visible='legendonly'),
+                        secondary_y=False)
+    fig.update_yaxes(title_text='USD bn', secondary_y=False)
+    return fig
+
+
 def chart_05_stimulus(liq: dict, period: str = '-10Y') -> 'go.Figure':
     """Ch 5: Stimulus decomp (Fed QE / Not-QE / Treasury QE)."""
     fig = _fig_base('Chart 5 — Fed Stimulus Decomposition (Reserves, RRP, Treasury)')
@@ -1678,6 +1770,7 @@ def run_harvest(years: int = 20) -> dict:
 
     # Indicators
     liq = build_global_liquidity(period)
+    nfl = build_net_fed_liquidity(period)
     wbci = build_wbci(period)
     cyc = build_cyc_def(period)
     tp = build_term_premium(period)
@@ -1708,6 +1801,12 @@ def run_harvest(years: int = 20) -> dict:
             'slope_3m': liq.get('latest_slope_3m'),
             'contribution_central_bank_pct': liq.get('cb_contrib_pct'),
             'contribution_private_sector_pct': liq.get('private_contrib_pct'),
+        },
+        'net_fed_liquidity': {
+            'nfl_usd_bn': nfl.get('latest_nfl'),
+            'yoy_pct': nfl.get('latest_yoy_pct'),
+            'z_5y': nfl.get('latest_z'),
+            'direction_13w': nfl.get('direction_13w'),
         },
         'wbci': {
             'core4_z': wbci.get('latest_core4_z'),
@@ -1798,7 +1897,8 @@ def run_harvest(years: int = 20) -> dict:
         'chart_02': chart_02_wbci(wbci),
         'chart_03': chart_03_growth_nowcast(period),
         'chart_04': chart_04_cyc_def(cyc),
-        'chart_05': chart_05_stimulus(liq, period),
+        'chart_05':  chart_05_stimulus(liq, period),
+        'chart_05b': chart_05b_net_fed_liquidity(nfl),
         'chart_06': chart_06_repo_spread(period),
         'chart_07': chart_07_debt_liquidity(dl),
         'chart_08': chart_08_term_premium(tp),
