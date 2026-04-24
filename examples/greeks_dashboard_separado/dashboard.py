@@ -4615,6 +4615,72 @@ def run_analysis(_):
                 'squeeze_components': (_sq_result_v1['components'] if '_sq_result_v1' in dir() and _sq_result_v1 else {}),
             }
 
+            # === Dados extras pra ZIP export (nao bloqueia dashboard) ==========
+            # SPX Rebalancing prediction (probabilidades de entrada/saida)
+            try:
+                _snapshot['spx_prediction'] = {
+                    'enabled': bool(spx_pred_ok) if 'spx_pred_ok' in dir() else False,
+                    'top_in':  top_in_spx.to_dict('records')
+                                 if 'top_in_spx' in dir() and top_in_spx is not None
+                                    and hasattr(top_in_spx, 'to_dict') else [],
+                    'top_out': top_out_spx.to_dict('records')
+                                 if 'top_out_spx' in dir() and top_out_spx is not None
+                                    and hasattr(top_out_spx, 'to_dict') else [],
+                }
+            except Exception:
+                _snapshot['spx_prediction'] = {'enabled': False,
+                                                'top_in': [], 'top_out': []}
+
+            # Gamma Squeeze detalhado (curvas, componentes, score)
+            try:
+                _sq_full = _sq_result_v1 if '_sq_result_v1' in dir() and _sq_result_v1 else {}
+                _snapshot['gamma_squeeze'] = {
+                    'score':      float(_sq_full.get('score', 0)),
+                    'components': dict(_sq_full.get('components', {})),
+                    'interp':     str(_sq_full.get('interp', '')),
+                    'net_gex_bn': float(_sq_gex_v1 * 0.1) if '_sq_gex_v1' in dir() else None,
+                    'pc_ratio':   float(_sq_pc_v1) if '_sq_pc_v1' in dir() else None,
+                    'gamma_flip': float(gamma_flip) if 'gamma_flip' in dir()
+                                    and gamma_flip is not None else None,
+                    'call_wall':  float(call_wall) if 'call_wall' in dir()
+                                    and call_wall is not None else None,
+                    'put_wall':   float(put_wall) if 'put_wall' in dir()
+                                    and put_wall is not None else None,
+                    'iv_30d':     float(iv_30d) if pd.notna(iv_30d) else None,
+                    'rv_30d':     float(rv_30d) if pd.notna(rv_30d) else None,
+                }
+            except Exception:
+                _snapshot['gamma_squeeze'] = {}
+
+            # Tail Risk detalhado
+            try:
+                _snapshot['tail_risk'] = {
+                    'score':      float(analytics.get('tail_score', 0)) if analytics else 0.0,
+                    'components': dict(analytics.get('tail_components', {})) if analytics else {},
+                    'interp':     str(analytics.get('tail_interp', '')) if analytics else '',
+                    # log_returns serie historica pra CSV
+                    'log_returns': analytics.get('log_returns').to_dict()
+                                      if analytics and analytics.get('log_returns') is not None
+                                         and hasattr(analytics.get('log_returns'), 'to_dict') else {},
+                    'tail_metrics': dict(analytics.get('tail_metrics', {})) if analytics else {},
+                }
+            except Exception:
+                _snapshot['tail_risk'] = {}
+
+            # Dynamic Book / Ajuste Dinamico — lê de charts.LAST_DYN_BOOK_SNAPSHOT
+            # (populado por build_dynamic_book_tab no baseline e cada 'Aplicar')
+            try:
+                from . import charts as _ch_mod
+                _dyn_snap = getattr(_ch_mod, 'LAST_DYN_BOOK_SNAPSHOT', {}) or {}
+                _snapshot['dynamic_book'] = dict(_dyn_snap) if _dyn_snap else {}
+            except Exception:
+                try:
+                    import charts as _ch_mod
+                    _dyn_snap = getattr(_ch_mod, 'LAST_DYN_BOOK_SNAPSHOT', {}) or {}
+                    _snapshot['dynamic_book'] = dict(_dyn_snap) if _dyn_snap else {}
+                except Exception:
+                    _snapshot['dynamic_book'] = {}
+
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
             try:
                 mpl_items = _capture_matplotlib_figures(
@@ -4721,7 +4787,7 @@ def _on_export_zip(_):
 
             buf = _io.BytesIO()
             with _zf.ZipFile(buf, 'w', _zf.ZIP_DEFLATED) as zf:
-                # 1. metrics.json
+                # 1. metrics.json (summary)
                 payload = {
                     'ticker':  ticker,
                     'spot':    _snapshot.get('spot'),
@@ -4731,12 +4797,73 @@ def _on_export_zip(_):
                 zf.writestr('metrics.json',
                             _json.dumps(payload, indent=2, default=str))
 
-                # 2. jarvis.html
+                # 2. jarvis.html (full dashboard HTML)
                 html = _export_dashboard_html()
                 if html:
                     if isinstance(html, str):
                         html = html.encode('utf-8')
                     zf.writestr('jarvis.html', html)
+
+                # 3. spx_prediction.json + CSVs (rebalanceamento SPX)
+                _spx = _snapshot.get('spx_prediction') or {}
+                if _spx.get('enabled') or _spx.get('top_in') or _spx.get('top_out'):
+                    zf.writestr('spx_prediction.json',
+                                _json.dumps(_spx, indent=2, default=str))
+                    # CSVs separados se dados existirem
+                    try:
+                        import pandas as _pd
+                        if _spx.get('top_in'):
+                            _df_in = _pd.DataFrame(_spx['top_in'])
+                            zf.writestr('spx_prediction_top_in.csv',
+                                        _df_in.to_csv(index=False))
+                        if _spx.get('top_out'):
+                            _df_out = _pd.DataFrame(_spx['top_out'])
+                            zf.writestr('spx_prediction_top_out.csv',
+                                        _df_out.to_csv(index=False))
+                    except Exception:
+                        pass
+
+                # 4. gamma_squeeze.json (score + components + niveis)
+                _gs = _snapshot.get('gamma_squeeze') or {}
+                if _gs:
+                    zf.writestr('gamma_squeeze.json',
+                                _json.dumps(_gs, indent=2, default=str))
+
+                # 5. tail_risk.json + returns.csv
+                _tr = _snapshot.get('tail_risk') or {}
+                if _tr:
+                    # JSON com score + components + metrics (sem log_returns,
+                    # que vai separado como CSV)
+                    _tr_summary = {k: v for k, v in _tr.items()
+                                    if k != 'log_returns'}
+                    zf.writestr('tail_risk.json',
+                                _json.dumps(_tr_summary, indent=2, default=str))
+                    # log_returns historicos em CSV
+                    if _tr.get('log_returns'):
+                        try:
+                            import pandas as _pd
+                            _lr = _pd.Series(_tr['log_returns'])
+                            _lr.index = _pd.to_datetime(_lr.index)
+                            _lr.name = 'log_return'
+                            zf.writestr('tail_log_returns.csv',
+                                        _lr.to_csv(header=True))
+                        except Exception:
+                            pass
+
+                # 6. dynamic_book.json + CSV da expiry_agg
+                _db = _snapshot.get('dynamic_book') or {}
+                if _db:
+                    zf.writestr('dynamic_book.json',
+                                _json.dumps(_db, indent=2, default=str))
+                    # CSV da agregacao por vencimento (expiry_agg)
+                    if _db.get('expiry_agg'):
+                        try:
+                            import pandas as _pd
+                            _df_agg = _pd.DataFrame(_db['expiry_agg'])
+                            zf.writestr('dynamic_book_expiry_agg.csv',
+                                        _df_agg.to_csv(index=False))
+                        except Exception:
+                            pass
 
             buf.seek(0)
             data = buf.read()
@@ -4750,11 +4877,21 @@ def _on_export_zip(_):
                 f"document.body.removeChild(a);"
             )
             display(HTML(f"<script>{js}</script>"))
+            # Lista os arquivos realmente incluidos no ZIP
+            try:
+                _zf_read = _zf.ZipFile(_io.BytesIO(data), 'r')
+                _files = sorted(_zf_read.namelist())
+                _zf_read.close()
+                _files_str = ', '.join(_files)
+            except Exception:
+                _files_str = 'metrics.json + jarvis.html + extras'
             display(wd.HTML(
                 f"<div class='mm-dash'><div class='mm-card'>"
                 f"<p>✅ ZIP gerado: <b>{zip_name}</b></p>"
-                f"<p><small>metrics.json + jarvis.html &middot; "
+                f"<p><small>{len(_files)} arquivos &middot; "
                 f"{len(data)/1024:.0f} KB</small></p>"
+                f"<p style='font-size:10px;color:#888;font-family:monospace;'>"
+                f"{_files_str}</p>"
                 f"</div></div>"
             ))
         except Exception as exc:

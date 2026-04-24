@@ -1,5 +1,9 @@
 """Charts and analysis: macro, skew, dealer scenarios, gamma, squeeze, vol smile, dynamic book."""
 
+# Snapshot exposto pro ZIP export — populado por build_dynamic_book_tab
+# no baseline e apos cada 'Aplicar' (cenario atualizado). Leitura: dashboard.py
+LAST_DYN_BOOK_SNAPSHOT: dict = {}
+
 import numpy as np
 import pandas as pd
 import math
@@ -1956,6 +1960,35 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         df_agg = df_agg.sort_values('Vencimento')
         AGG_SIGN = {'ΔΔ Net', 'ΔΓ', 'ΔVega', 'P&L ($)', 'Hedge Adj (Δ)',
                     'Δpos Base', 'Δpos Cen.', 'Vanna (pos)', 'Charm/d (pos)'}
+
+        # Popula snapshot pro ZIP export (charts.LAST_DYN_BOOK_SNAPSHOT)
+        try:
+            LAST_DYN_BOOK_SNAPSHOT.clear()
+            LAST_DYN_BOOK_SNAPSHOT.update({
+                'ticker': ticker,
+                'spot': float(spot),
+                'rfr': float(rfr),
+                'scenario': {
+                    'd_spot':     float(w_dspot.value),
+                    'd_vol_put':  float(w_dvol_put.value),
+                    'd_vol_call': float(w_dvol_call.value),
+                    'd_rate_bp':  float(w_drate.value),
+                    'days_ahead': int(w_days.value),
+                    'aum_bn':     float(w_aum.value),
+                },
+                'expiry_agg': df_agg.to_dict('records'),
+                'totals': {
+                    'tot_dpos_base':  float(tot_db),
+                    'tot_dpos_after': float(tot_da),
+                    'tot_pnl':        float(tot_pnl),
+                    'tot_hedge_adj':  float(tot_adj),
+                    'tot_vega_base':  float(tot_vb),
+                    'tot_vega_after': float(tot_va),
+                    'n_expiries':     int(n_exp),
+                },
+            })
+        except Exception:
+            pass
 
         # ── Consolidado ───────────────────────────────────────────────────────
         tot_db  = dpos_b.sum()
