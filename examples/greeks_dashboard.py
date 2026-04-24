@@ -7417,6 +7417,11 @@ def build_vol_smile_chart(df_orig, spot, ticker=''):
     ])
 
 
+# Snapshot modulo-level exposto pro ZIP export.
+# Populado por build_dynamic_book_tab apos df_agg ser computado.
+LAST_DYN_BOOK_SNAPSHOT: dict = {}
+
+
 def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
     """
     Aba Ajuste Dinâmico do Book.
@@ -7707,6 +7712,35 @@ def build_dynamic_book_tab(df_orig, spot, rfr, ticker='', dealer_aum_bn=0.0):
         tot_vb  = (g_b['vega'] * oi100).sum()
         tot_va  = (g_a['vega'] * oi100).sum()
         n_exp   = grp.shape[0]
+
+        # Popula snapshot modulo-level pro ZIP export
+        try:
+            LAST_DYN_BOOK_SNAPSHOT.clear()
+            LAST_DYN_BOOK_SNAPSHOT.update({
+                'ticker': ticker,
+                'spot': float(spot),
+                'rfr': float(rfr),
+                'scenario': {
+                    'd_spot':     float(w_dspot.value),
+                    'd_vol_put':  float(w_dvol_put.value),
+                    'd_vol_call': float(w_dvol_call.value),
+                    'd_rate_bp':  float(w_drate.value),
+                    'days_ahead': int(w_days.value),
+                    'aum_bn':     float(w_aum.value),
+                },
+                'expiry_agg': df_agg.to_dict('records'),
+                'totals': {
+                    'tot_dpos_base':  float(tot_db),
+                    'tot_dpos_after': float(tot_da),
+                    'tot_pnl':        float(tot_pnl),
+                    'tot_hedge_adj':  float(tot_adj),
+                    'tot_vega_base':  float(tot_vb),
+                    'tot_vega_after': float(tot_va),
+                    'n_expiries':     int(n_exp),
+                },
+            })
+        except Exception:
+            pass
 
         adj_lbl  = ('▲ Comprar' if tot_adj > 0 else ('▼ Vender' if tot_adj < 0 else '—'))
         col_pnl  = 'rgba(0,212,232,.95)'  if tot_pnl >= 0 else 'rgba(248,81,73,.95)'
@@ -14460,6 +14494,65 @@ def run_analysis(_):
                 'squeeze_components': (_sq_result_v1['components'] if '_sq_result_v1' in dir() and _sq_result_v1 else {}),
             }
 
+            # === Dados extras pra ZIP export ==================================
+            # SPX Rebalancing prediction (probabilidades entrada/saida)
+            try:
+                _snapshot['spx_prediction'] = {
+                    'enabled': bool(spx_pred_ok) if 'spx_pred_ok' in dir() else False,
+                    'top_in':  top_in_spx.to_dict('records')
+                                 if 'top_in_spx' in dir() and top_in_spx is not None
+                                    and hasattr(top_in_spx, 'to_dict') else [],
+                    'top_out': top_out_spx.to_dict('records')
+                                 if 'top_out_spx' in dir() and top_out_spx is not None
+                                    and hasattr(top_out_spx, 'to_dict') else [],
+                }
+            except Exception:
+                _snapshot['spx_prediction'] = {'enabled': False,
+                                                'top_in': [], 'top_out': []}
+
+            # Gamma Squeeze detalhado
+            try:
+                _sq_full = _sq_result_v1 if '_sq_result_v1' in dir() and _sq_result_v1 else {}
+                _snapshot['gamma_squeeze'] = {
+                    'score':      float(_sq_full.get('score', 0)),
+                    'components': dict(_sq_full.get('components', {})),
+                    'interp':     str(_sq_full.get('interp', '')),
+                    'net_gex_bn': float(_sq_gex_v1 * 0.1) if '_sq_gex_v1' in dir() else None,
+                    'pc_ratio':   float(_sq_pc_v1) if '_sq_pc_v1' in dir() else None,
+                    'gamma_flip': float(gamma_flip) if 'gamma_flip' in dir()
+                                    and gamma_flip is not None else None,
+                    'call_wall':  float(call_wall) if 'call_wall' in dir()
+                                    and call_wall is not None else None,
+                    'put_wall':   float(put_wall) if 'put_wall' in dir()
+                                    and put_wall is not None else None,
+                    'iv_30d':     float(iv_30d) if pd.notna(iv_30d) else None,
+                    'rv_30d':     float(rv_30d) if pd.notna(rv_30d) else None,
+                }
+            except Exception:
+                _snapshot['gamma_squeeze'] = {}
+
+            # Tail Risk detalhado
+            try:
+                _snapshot['tail_risk'] = {
+                    'score':      float(analytics.get('tail_score', 0)) if analytics else 0.0,
+                    'components': dict(analytics.get('tail_components', {})) if analytics else {},
+                    'interp':     str(analytics.get('tail_interp', '')) if analytics else '',
+                    'log_returns': analytics.get('log_returns').to_dict()
+                                      if analytics and analytics.get('log_returns') is not None
+                                         and hasattr(analytics.get('log_returns'), 'to_dict') else {},
+                    'tail_metrics': dict(analytics.get('tail_metrics', {})) if analytics else {},
+                }
+            except Exception:
+                _snapshot['tail_risk'] = {}
+
+            # Dynamic Book / Ajuste Dinamico (populado por LAST_DYN_BOOK_SNAPSHOT
+            # global — single file version)
+            try:
+                _dyn_snap = globals().get('LAST_DYN_BOOK_SNAPSHOT', {}) or {}
+                _snapshot['dynamic_book'] = dict(_dyn_snap) if _dyn_snap else {}
+            except Exception:
+                _snapshot['dynamic_book'] = {}
+
             # Tab 2 (Exposições) usa matplotlib — captura separadamente
             try:
                 mpl_items = _capture_matplotlib_figures(
@@ -14566,7 +14659,7 @@ def _on_export_zip(_):
 
             buf = _io.BytesIO()
             with _zf.ZipFile(buf, 'w', _zf.ZIP_DEFLATED) as zf:
-                # 1. metrics.json
+                # 1. metrics.json (summary)
                 payload = {
                     'ticker':  ticker,
                     'spot':    _snapshot.get('spot'),
@@ -14576,16 +14669,79 @@ def _on_export_zip(_):
                 zf.writestr('metrics.json',
                             _json.dumps(payload, indent=2, default=str))
 
-                # 2. jarvis.html
+                # 2. jarvis.html (full dashboard)
                 html = _export_dashboard_html()
                 if html:
                     if isinstance(html, str):
                         html = html.encode('utf-8')
                     zf.writestr('jarvis.html', html)
 
+                # 3. SPX Rebalance prediction
+                _spx = _snapshot.get('spx_prediction') or {}
+                if _spx.get('enabled') or _spx.get('top_in') or _spx.get('top_out'):
+                    zf.writestr('spx_prediction.json',
+                                _json.dumps(_spx, indent=2, default=str))
+                    try:
+                        if _spx.get('top_in'):
+                            _df_in = pd.DataFrame(_spx['top_in'])
+                            zf.writestr('spx_prediction_top_in.csv',
+                                        _df_in.to_csv(index=False))
+                        if _spx.get('top_out'):
+                            _df_out = pd.DataFrame(_spx['top_out'])
+                            zf.writestr('spx_prediction_top_out.csv',
+                                        _df_out.to_csv(index=False))
+                    except Exception:
+                        pass
+
+                # 4. Gamma Squeeze detalhado
+                _gs = _snapshot.get('gamma_squeeze') or {}
+                if _gs:
+                    zf.writestr('gamma_squeeze.json',
+                                _json.dumps(_gs, indent=2, default=str))
+
+                # 5. Tail Risk + log_returns CSV
+                _tr = _snapshot.get('tail_risk') or {}
+                if _tr:
+                    _tr_summary = {k: v for k, v in _tr.items()
+                                    if k != 'log_returns'}
+                    zf.writestr('tail_risk.json',
+                                _json.dumps(_tr_summary, indent=2, default=str))
+                    if _tr.get('log_returns'):
+                        try:
+                            _lr = pd.Series(_tr['log_returns'])
+                            _lr.index = pd.to_datetime(_lr.index)
+                            _lr.name = 'log_return'
+                            zf.writestr('tail_log_returns.csv',
+                                        _lr.to_csv(header=True))
+                        except Exception:
+                            pass
+
+                # 6. Dynamic Book (Ajuste Dinamico)
+                _db = _snapshot.get('dynamic_book') or {}
+                if _db:
+                    zf.writestr('dynamic_book.json',
+                                _json.dumps(_db, indent=2, default=str))
+                    if _db.get('expiry_agg'):
+                        try:
+                            _df_agg = pd.DataFrame(_db['expiry_agg'])
+                            zf.writestr('dynamic_book_expiry_agg.csv',
+                                        _df_agg.to_csv(index=False))
+                        except Exception:
+                            pass
+
             buf.seek(0)
             data = buf.read()
             b64  = _b64.b64encode(data).decode('ascii')
+
+            # Lista arquivos do ZIP
+            try:
+                _zf_read = _zf.ZipFile(_io.BytesIO(data), 'r')
+                _files = sorted(_zf_read.namelist())
+                _zf_read.close()
+                _files_str = ', '.join(_files)
+            except Exception:
+                _files = []
+                _files_str = 'metrics.json + jarvis.html + extras'
 
             js = (
                 f"var a=document.createElement('a');"
@@ -14598,8 +14754,10 @@ def _on_export_zip(_):
             display(wd.HTML(
                 f"<div class='mm-dash'><div class='mm-card'>"
                 f"<p>✅ ZIP gerado: <b>{zip_name}</b></p>"
-                f"<p><small>metrics.json + jarvis.html &middot; "
+                f"<p><small>{len(_files)} arquivos &middot; "
                 f"{len(data)/1024:.0f} KB</small></p>"
+                f"<p style='font-size:10px;color:#888;font-family:monospace;'>"
+                f"{_files_str}</p>"
                 f"</div></div>"
             ))
         except Exception as exc:
